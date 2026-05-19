@@ -1,0 +1,57 @@
+# Git y CI
+.git
+.github
+.gitignore
+.gitattributes
+
+# Entorno y secretos
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Datos persistentes (nunca empaquetar en la imagen)
+storage/
+uploads/
+data/
+
+# Binarios y artefactos locales
+/app
+tukifac-api
+*.exe
+*.dll
+*.so
+*.test
+*.out
+dist/
+bin/
+build/
+
+# IDE y OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Documentación y notas (no afectan el build)
+docs/
+*.md
+!README.md
+instrucciones_vps.txt
+req.md
+
+# Logs y temporales
+*.log
+logs/
+tmp/
+temp/
+
+# Node (si existe en el monorepo)
+node_modules/
+
+# Docker (evitar contexto recursivo)
+Dockerfile*
+docker-compose*.yml
+.dockerignore

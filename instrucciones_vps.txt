@@ -1,0 +1,35 @@
+# COMANDOS CORRECTOS PARA BACKBLAZE / RCLONE
+
+# Ver configuración rclone
+
+cat /home/deploy-ben/.config/rclone/rclone.conf
+
+# Ver remotes configurados
+
+sudo -u deploy-ben rclone listremotes
+
+# Ver buckets remotos
+
+sudo -u deploy-ben rclone lsd b2-backups:
+
+# Ver archivos dentro del bucket
+
+sudo -u deploy-ben rclone ls b2-backups:tukifac-backups
+
+# Ver carpetas backup remotas
+
+sudo -u deploy-ben rclone lsd b2-backups:tukifac-backups
+
+# Descargar un backup remoto
+
+sudo -u deploy-ben rclone copy 
+b2-backups:tukifac-backups/2026-05-08_02-00-01 
+/root/restore-test
+
+# Subir archivo manual
+
+sudo -u deploy-ben rclone copy /ruta/archivo.zip b2-backups:tukifac-backups
+
+# Ver tamaño total del bucket
+
+sudo -u deploy-ben rclone size b2-backups:tukifac-backups

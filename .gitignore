@@ -1,0 +1,10 @@
+# Binario compilado
+/app
+*.exe
+
+# Datos locales del servicio
+/storage/
+/uploads/
+
+# Entorno
+.env

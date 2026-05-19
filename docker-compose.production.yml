@@ -1,0 +1,51 @@
+# Tukifac Backend — producción
+# Ubicación en VPS: /opt/tukifac/docker-compose.production.yml
+#
+# MySQL y facturador son servicios EXTERNOS (otros VPS).
+# Nginx Proxy Manager → http://127.0.0.1:3000 (no exponer 3000 al público).
+#
+# Primer arranque / cada deploy con cambios de esquema:
+#   docker exec tukifac-backend-go ./tukifac-api migrate
+
+name: tukifac-backend
+
+services:
+  backend-go:
+    image: ${TUKIFAC_IMAGE:?Define TUKIFAC_IMAGE en .env}
+    container_name: tukifac-backend-go
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-America/Lima}
+      APP_ENV: ${APP_ENV:-production}
+      PORT: "3000"
+      INVOICE_STORAGE_PATH: ${INVOICE_STORAGE_PATH:-/app/storage/invoices}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data/uploads:/app/uploads
+      - ./data/storage:/app/storage
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
+        reservations:
+          memory: 256M
+    tmpfs:
+      - /tmp:size=64M,mode=1777

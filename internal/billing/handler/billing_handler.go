@@ -1,0 +1,448 @@
+package handler
+
+import (
+	"fmt"
+	"strconv"
+	"time"
+
+	"tukifac/config"
+	"tukifac/internal/billing/service"
+	"tukifac/pkg/database"
+
+	"github.com/gofiber/fiber/v3"
+	"gorm.io/gorm"
+)
+
+type BillingHandler struct{}
+
+func NewBillingHandler() *BillingHandler { return &BillingHandler{} }
+
+func db(c fiber.Ctx) *gorm.DB {
+	v, _ := c.Locals("tenantDB").(*gorm.DB)
+	return v
+}
+func email(c fiber.Ctx) string {
+	v, _ := c.Locals("user_email").(string)
+	return v
+}
+func tenantName(c fiber.Ctx) string {
+	if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+		return t.Name
+	}
+	return ""
+}
+
+func (h *BillingHandler) ListPage(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	invoices, _ := svc.ListInvoices(service.InvoiceListParams{
+		Status: c.Query("status"),
+	})
+	return c.Render("billing/index", fiber.Map{
+		"Title":      "Facturación Electrónica",
+		"UserEmail":  email(c),
+		"TenantName": tenantName(c),
+		"IsDev":      config.AppConfig.IsDev(),
+		"Invoices":   invoices,
+		"Status":     c.Query("status"),
+		"Success":    c.Query("success"),
+	}, "layouts/base")
+}
+
+func (h *BillingHandler) SendToSUNAT(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+
+	svc := service.NewBillingService(db(c))
+	invoice, err := svc.SendToSUNAT(uint(saleID))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   err.Error(),
+			"invoice": invoice,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"invoice": invoice,
+	})
+}
+
+// ResendToSUNAT reenvía el comprobante usando el payload guardado (solo cuando falló el envío, no si fue rechazado por SUNAT).
+func (h *BillingHandler) ResendToSUNAT(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	invoice, err := svc.ResendToSUNAT(uint(saleID))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "invoice": invoice})
+	}
+	return c.JSON(fiber.Map{"success": true, "invoice": invoice})
+}
+
+// VoidWithCreditNoteAPI anula la venta generando y enviando una nota de crédito a SUNAT; luego anula la venta original.
+func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   err.Error(),
+			"nc_sale": ncSale,
+			"invoice": ncInvoice,
+		})
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Nota de crédito emitida y venta anulada",
+		"nc_sale": ncSale,
+		"invoice": ncInvoice,
+	})
+}
+
+func (h *BillingHandler) GetInvoiceAPI(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+
+	svc := service.NewBillingService(db(c))
+	invoice, err := svc.GetInvoice(uint(saleID))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if invoice == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sin registro de facturación"})
+	}
+	return c.JSON(invoice)
+}
+
+func (h *BillingHandler) GetInvoiceDocumentAPI(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	kind := c.Params("kind") // xml, xml-generated, cdr, pdf
+	validKind := kind == "xml" || kind == "xml-generated" || kind == "cdr" || kind == "pdf"
+	if !validKind {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Tipo de documento no válido. Use: xml, xml-generated, cdr o pdf"})
+	}
+	svc := service.NewBillingService(db(c))
+
+	c.Set(fiber.HeaderAccessControlExposeHeaders, "Content-Disposition")
+
+	// Nombre de archivo según formato SUNAT (ej. 03-B001-26.pdf, 03-B001-26.xml).
+	filename, _ := svc.GetInvoiceDocumentFilename(uint(saleID), kind)
+	if filename == "" {
+		switch kind {
+		case "pdf":
+			filename = "comprobante.pdf"
+		case "xml":
+			filename = "comprobante-enviado.xml"
+		case "xml-generated":
+			filename = "comprobante-generado.xml"
+		case "cdr":
+			filename = "cdr.zip"
+		default:
+			filename = "comprobante"
+		}
+	}
+
+	// PDF: no se almacena; se sirve desde Lycet (POST /invoice/pdf).
+	if kind == "pdf" {
+		pdfBytes, pdfErr := svc.GetInvoicePDFContent(uint(saleID))
+		if pdfErr != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": pdfErr.Error()})
+		}
+		if len(pdfBytes) > 0 {
+			c.Set(fiber.HeaderContentType, "application/pdf")
+			c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`inline; filename="%s"`, filename))
+			return c.Send(pdfBytes)
+		}
+	}
+
+	// XML generado (firmado) sin envío a SUNAT: se obtiene de Lycet (POST /invoice/xml), no se almacena.
+	if kind == "xml-generated" {
+		xmlBytes, xmlErr := svc.GetInvoiceXMLGeneratedContent(uint(saleID))
+		if xmlErr != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": xmlErr.Error()})
+		}
+		if len(xmlBytes) > 0 {
+			c.Set(fiber.HeaderContentType, "text/xml; charset=utf-8")
+			c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, filename))
+			return c.Send(xmlBytes)
+		}
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "XML generado no disponible"})
+	}
+
+	// XML enviado a SUNAT y CDR: se guardan en el tenant al enviar; se sirven desde almacenamiento.
+	fullPath, err := svc.GetInvoiceDocumentPath(uint(saleID), kind)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if fullPath == "" {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Documento no disponible"})
+	}
+	if kind == "pdf" {
+		c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`inline; filename="%s"`, filename))
+	}
+	if kind == "xml" {
+		c.Set(fiber.HeaderContentType, "text/xml; charset=utf-8")
+		c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, filename))
+	}
+	if kind == "cdr" {
+		c.Set(fiber.HeaderContentType, "application/zip")
+		c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, filename))
+	}
+	return c.SendFile(fullPath)
+}
+
+// --- Resúmenes diarios y Comunicaciones de baja ---
+
+// ListSummariesAPI GET /billing/summaries
+func (h *BillingHandler) ListSummariesAPI(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	list, err := svc.ListSummaries()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"summaries": list})
+}
+
+// CreateSummaryAPI POST /billing/summaries — body: { "fec_resumen": "2026-03-05" }
+func (h *BillingHandler) CreateSummaryAPI(c fiber.Ctx) error {
+	var body struct {
+		FecResumen string `json:"fec_resumen"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "fec_resumen requerido (YYYY-MM-DD)"})
+	}
+	fecResumen, err := parseDate(body.FecResumen)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "fec_resumen inválido (use YYYY-MM-DD)"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.CreateSummary(fecResumen)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "summary": rec})
+}
+
+// GetSummaryStatusAPI GET /billing/summaries/:id/status
+func (h *BillingHandler) GetSummaryStatusAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.GetSummaryStatus(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
+}
+
+// ListVoidedAPI GET /billing/voided
+func (h *BillingHandler) ListVoidedAPI(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	list, err := svc.ListVoided()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"voided": list})
+}
+
+// CreateVoidedAPI POST /billing/voided — body: { "details": [ { "tipo_doc", "serie", "correlativo", "des_motivo_baja" } ] }
+func (h *BillingHandler) CreateVoidedAPI(c fiber.Ctx) error {
+	var body struct {
+		Details []service.CreateVoidedInput `json:"details"`
+	}
+	if err := c.Bind().JSON(&body); err != nil || len(body.Details) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "details requerido (array con al menos un comprobante)"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.CreateVoided(body.Details)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "voided": rec})
+}
+
+// GetVoidedStatusAPI GET /billing/voided/:id/status
+func (h *BillingHandler) GetVoidedStatusAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.GetVoidedStatus(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
+}
+
+// NotificationCountsAPI GET /billing/notification-counts — cantidades de comprobantes electrónicos por estado (para campanita del header).
+func (h *BillingHandler) NotificationCountsAPI(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	pending, errorCount, rejected, err := svc.GetNotificationCounts()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"pending":  pending,
+		"error":    errorCount,
+		"rejected": rejected,
+	})
+}
+
+// ConsultInvoiceStatusAPI GET /billing/invoice-status?tipo=01&serie=F001&numero=1
+func (h *BillingHandler) ConsultInvoiceStatusAPI(c fiber.Ctx) error {
+	tipo := c.Query("tipo")
+	serie := c.Query("serie")
+	numero := c.Query("numero")
+	if tipo == "" || serie == "" || numero == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "tipo, serie y numero son requeridos"})
+	}
+	svc := service.NewBillingService(db(c))
+	result, err := svc.ConsultInvoiceStatus(tipo, serie, numero)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(result)
+}
+
+func parseDate(s string) (time.Time, error) {
+	return time.ParseInLocation("2006-01-02", s, time.Local)
+}
+
+// --- Guías de remisión ---
+
+func (h *BillingHandler) ListDespatchesAPI(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	list, err := svc.ListDespatches()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"despatches": list})
+}
+
+func (h *BillingHandler) CreateDespatchAPI(c fiber.Ctx) error {
+	var input service.CreateDespatchInput
+	if err := c.Bind().JSON(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.CreateAndSendDespatch(input)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "despatch": rec})
+}
+
+func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.GetDespatchStatus(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
+}
+
+// --- Retención ---
+
+func (h *BillingHandler) ListRetentionsAPI(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	list, err := svc.ListRetentions()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"retentions": list})
+}
+
+func (h *BillingHandler) CreateRetentionAPI(c fiber.Ctx) error {
+	var input service.CreateRetentionInput
+	if err := c.Bind().JSON(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.CreateAndSendRetention(input)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "retention": rec})
+}
+
+// --- Percepción ---
+
+func (h *BillingHandler) ListPerceptionsAPI(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	list, err := svc.ListPerceptions()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"perceptions": list})
+}
+
+func (h *BillingHandler) CreatePerceptionAPI(c fiber.Ctx) error {
+	var input service.CreatePerceptionInput
+	if err := c.Bind().JSON(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.CreateAndSendPerception(input)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "perception": rec})
+}
+
+// --- Reversión ---
+
+func (h *BillingHandler) ListReversionsAPI(c fiber.Ctx) error {
+	svc := service.NewBillingService(db(c))
+	list, err := svc.ListReversions()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"reversions": list})
+}
+
+func (h *BillingHandler) CreateReversionAPI(c fiber.Ctx) error {
+	var body struct {
+		Details []service.CreateVoidedInput `json:"details"`
+	}
+	if err := c.Bind().JSON(&body); err != nil || len(body.Details) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "details requerido (array con al menos un comprobante)"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.CreateReversion(body.Details)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "reversion": rec})
+}
+
+func (h *BillingHandler) GetReversionStatusAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewBillingService(db(c))
+	rec, err := svc.GetReversionStatus(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
+}
