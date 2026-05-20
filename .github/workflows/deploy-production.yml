@@ -31,9 +31,6 @@ permissions:
   contents: read
   packages: write
 
-outputs:
-  image: ${{ steps.meta.outputs.tags }}
-
 steps:
   - name: Checkout
     uses: actions/checkout@v4
@@ -80,13 +77,12 @@ steps:
     uses: appleboy/ssh-action@v1.2.0
     env:
       IMAGE_SHA: ghcr.io/${{ github.repository }}:${{ github.sha }}
-      SKIP_MIGRATE: ${{ github.event.inputs.skip_migrate || 'false' }}
 
     with:
       host: ${{ secrets.VPS_HOST }}
       username: ${{ secrets.VPS_USER }}
       key: ${{ secrets.VPS_SSH_KEY }}
-      envs: IMAGE_SHA,SKIP_MIGRATE
+      envs: IMAGE_SHA
       script_stop: true
 
       script: |
@@ -96,7 +92,7 @@ steps:
 
         mkdir -p .deploy
 
-        echo "Logging into GHCR..."
+        echo "Login GHCR..."
         echo "${{ secrets.VPS_GHCR_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
         PREV=$(grep '^TUKIFAC_IMAGE=' .env | cut -d= -f2- || true)
@@ -105,36 +101,34 @@ steps:
           echo "$PREV" > .deploy/previous-image
         fi
 
-        echo "Updating image tag..."
+        echo "Updating image..."
         sed -i "s|^TUKIFAC_IMAGE=.*|TUKIFAC_IMAGE=${IMAGE_SHA}|" .env
 
         echo "Pulling image..."
         docker compose -f docker-compose.production.yml pull backend-go
 
-        echo "Recreating container..."
+        echo "Restarting container..."
         docker compose -f docker-compose.production.yml up -d --no-deps --force-recreate backend-go
 
-        echo "Waiting for backend health..."
+        echo "Waiting for backend..."
         until curl -sf http://127.0.0.1:3000/health; do
-          echo "Backend not ready yet..."
+          echo "Backend not ready..."
           sleep 5
         done
 
-        if [ "${SKIP_MIGRATE}" != "true" ]; then
-          echo "Running migrations..."
-          docker exec tukifac-backend-go ./tukifac-api migrate
-        fi
+        echo "Running migrations..."
+        docker exec tukifac-backend-go ./tukifac-api migrate
 
-        echo "Health check..."
+        echo "Final health check..."
         curl -sf http://127.0.0.1:3000/health
 
-        echo "Deploy completed successfully"
+        echo "Deploy completed"
 
   - name: Rollback hint
     if: failure()
     run: |
-      echo "Deploy falló."
-      echo "Rollback manual:"
+      echo "Deploy failed"
+      echo "Run in VPS:"
       echo "cd /opt/tukifac"
       echo "bash deploy/scripts/rollback.sh"
 ```
