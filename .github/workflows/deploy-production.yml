@@ -73,7 +73,7 @@ jobs:
       - name: Deploy SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
-          IMAGE_SHA: ghcr.io/${{ github.repository }}:${{ github.sha }}
+            IMAGE_SHA: ghcr.io/${{ github.repository }}:latest
 
         with:
           host: ${{ secrets.VPS_HOST }}
