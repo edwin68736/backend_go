@@ -238,3 +238,4 @@ Si el backend **no** llega a enviar a SUNAT (por ejemplo, faltan campos obligato
 - **404** – RUC de la empresa no registrado en `empresas.json` (según implementación).
 
 En esos casos no hay `sunatResponse`; el frontend debe tratar el 4xx y el cuerpo como error de validación o autorización, no como respuesta de SUNAT.
+una prueba
