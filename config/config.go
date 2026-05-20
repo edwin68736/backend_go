@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/pkg/domains"
+
 	"github.com/joho/godotenv"
 )
 
@@ -30,8 +32,17 @@ type Config struct {
 	MigrationBatchSize  int
 	MigrationBatchPause time.Duration
 
-	// Dominio de la aplicación (para subdominios)
+	// Dominio raíz de tenants: empresa1.APP_DOMAIN (ej. tukifac.com).
+	// Alias env: ROOT_DOMAIN (tiene prioridad sobre APP_DOMAIN).
 	AppDomain string
+
+	// URL pública del API (CORS). Ej: https://api.tukifac.com
+	APIPublicURL string
+	// Host del API sin esquema (alternativa a API_PUBLIC_URL). Ej: api.tukifac.com
+	APIHost string
+
+	// Subdominios reservados (no son tenants): api, app, www, admin, central + extras en .env
+	ReservedSubdomains []string
 
 	// Entorno: "development" | "production"
 	AppEnv string
@@ -108,8 +119,11 @@ func Load() error {
 		MigrationBatchSize:  getEnvInt("MIGRATION_BATCH_SIZE", 50),
 		MigrationBatchPause: getEnvDuration("MIGRATION_BATCH_PAUSE", "2s"),
 
-		AppDomain: getEnv("APP_DOMAIN", "localhost"),
-		AppEnv:    appEnv,
+		AppDomain:          resolveRootDomain(),
+		APIPublicURL:       strings.TrimSpace(getEnv("API_PUBLIC_URL", "")),
+		APIHost:            domains.NormalizeHost(getEnv("API_HOST", "")),
+		ReservedSubdomains: domains.MergeReserved(splitEnvList(getEnv("RESERVED_SUBDOMAINS", ""))),
+		AppEnv:             appEnv,
 
 		JWTSecret:   getEnv("JWT_SECRET", "tenant-secret-change-in-production"),
 		SAJWTSecret: getEnv("SA_JWT_SECRET", "superadmin-secret-change-in-production"),
@@ -143,7 +157,29 @@ func Load() error {
 
 		LogLevel: getEnv("LOG_LEVEL", defaultLogLevel(appEnv)),
 	}
+
+	if AppConfig.APIPublicURL == "" && AppConfig.APIHost != "" {
+		AppConfig.APIPublicURL = domains.OriginFromHost(AppConfig.APIHost)
+	}
+	if AppConfig.APIPublicURL == "" {
+		AppConfig.APIPublicURL = strings.TrimSpace(getEnv("API_PUBLIC_URL", ""))
+	}
+
 	return nil
+}
+
+// resolveRootDomain: ROOT_DOMAIN o APP_DOMAIN (sin protocolo).
+func resolveRootDomain() string {
+	root := strings.TrimSpace(getEnv("ROOT_DOMAIN", ""))
+	if root == "" {
+		root = getEnv("APP_DOMAIN", "localhost")
+	}
+	return domains.NormalizeRootDomain(root)
+}
+
+// IsReservedSubdomain indica si el slug del host no debe tratarse como tenant.
+func (c *Config) IsReservedSubdomain(slug string) bool {
+	return domains.IsReserved(slug, c.ReservedSubdomains)
 }
 
 func defaultLogLevel(appEnv string) string {

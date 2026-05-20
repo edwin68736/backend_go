@@ -8,6 +8,7 @@ import (
 
 	subssvc "tukifac/internal/subscriptions/service"
 	usersvc "tukifac/internal/users/service"
+	"tukifac/config"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/utils"
@@ -64,6 +65,10 @@ func (s *TenantService) Create(input CreateTenantInput) (*database.Tenant, error
 		if len(slug) < 2 {
 			slug = utils.Slugify(input.Name) // fallback con guiones si queda muy corto
 		}
+	}
+
+	if config.AppConfig != nil && config.AppConfig.IsReservedSubdomain(slug) {
+		return nil, fmt.Errorf("el subdominio %q está reservado (api, app, www, etc.). Elige otro identificador", slug)
 	}
 
 	// Verificar que el slug sea único

@@ -10,12 +10,11 @@ import (
 )
 
 // TenantResolver identifica el tenant activo en cada request mediante:
-//  1. Subdominio real (producción): empresa1.tukifac.com
+//  1. Subdominio real: {slug}.ROOT_DOMAIN (ej. empresa1.tukifac.com con APP_DOMAIN=tukifac.com)
 //  2. Header X-Tenant-Slug (clientes API / Postman)
 //  3. Cookie dev_tenant (solo desarrollo, simula subdominio desde localhost)
 //
-// Funciona igual que laravel-tenancy: cada tenant tiene su propio subdominio
-// y la app resuelve dinámicamente a cuál base de datos conectar.
+// Hosts no-tenant (api, app, www…) se excluyen vía RESERVED_SUBDOMAINS en .env.
 func TenantResolver() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		host := c.Hostname()
@@ -34,9 +33,8 @@ func TenantResolver() fiber.Handler {
 			slug = c.Cookies("dev_tenant")
 		}
 
-		// Sin tenant identificado → contexto central (superadmin)
-		// "api" evita que el propio host de la API (api.dominio.com) se interprete como tenant cuando APP_DOMAIN es el dominio raíz
-		if slug == "" || slug == "www" || slug == "admin" || slug == "api" {
+		// Sin tenant o subdominio reservado (api, app, www…) → contexto central / rutas públicas
+		if slug == "" || config.AppConfig.IsReservedSubdomain(slug) {
 			return c.Next()
 		}
 

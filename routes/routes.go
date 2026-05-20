@@ -36,13 +36,15 @@ import (
 func Setup(app *fiber.App) {
 	cfg := config.AppConfig
 	corsMatcher := corspolicy.NewMatcher(cfg)
-	logger.L.Info("cors_configured",
+	logger.L.Info("domains_configured",
 		slog.String("app_env", cfg.AppEnv),
-		slog.String("app_domain", cfg.AppDomain),
+		slog.String("root_domain", cfg.AppDomain),
+		slog.String("api_public_url", cfg.APIPublicURL),
 		slog.String("frontend_url", cfg.FrontendURL),
 		slog.String("central_frontend_url", cfg.CentralFrontendURL),
-		slog.Any("base_hosts", corsMatcher.BaseHosts()),
-		slog.Int("exact_origins_count", corsMatcher.ExactCount()),
+		slog.Any("reserved_subdomains", cfg.ReservedSubdomains),
+		slog.Any("cors_base_hosts", corsMatcher.BaseHosts()),
+		slog.Int("cors_exact_origins", corsMatcher.ExactCount()),
 	)
 	app.Use(middleware.SecurityHeaders())
 	app.Use(middleware.RequestID())

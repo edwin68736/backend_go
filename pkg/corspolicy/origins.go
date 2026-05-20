@@ -5,16 +5,17 @@ import (
 	"strings"
 
 	"tukifac/config"
+	"tukifac/pkg/domains"
 )
 
 // Matcher decide si un Origin del navegador puede recibir Access-Control-Allow-Origin.
 type Matcher struct {
-	exact      map[string]struct{}
-	baseHosts  []string
-	allowHTTP  bool
+	exact     map[string]struct{}
+	baseHosts []string // dominio raíz → permite https://tenant1.tukifac.com
+	allowHTTP bool
 }
 
-// NewMatcher construye reglas desde variables de entorno (FRONTEND_URL, APP_DOMAIN, etc.).
+// NewMatcher construye reglas desde .env (sin dominios hardcodeados).
 func NewMatcher(cfg *config.Config) *Matcher {
 	m := &Matcher{
 		exact:     make(map[string]struct{}),
@@ -29,37 +30,17 @@ func NewMatcher(cfg *config.Config) *Matcher {
 
 	addExact(cfg.FrontendURL)
 	addExact(cfg.CentralFrontendURL)
+	addExact(cfg.APIPublicURL)
 
 	for _, raw := range cfg.CORSExtraOrigins {
 		addExact(raw)
 	}
 
-	// Origen del API (p. ej. https://api.tukifac.com) derivado del frontend app.*
-	if apiOrigin := deriveAPIOrigin(cfg.FrontendURL); apiOrigin != "" {
-		addExact(apiOrigin)
-	}
-	if apiOrigin := deriveAPIOrigin(cfg.CentralFrontendURL); apiOrigin != "" {
-		addExact(apiOrigin)
+	// Solo el dominio raíz habilita tenants por subdominio (*.tukifac.com).
+	if root := domains.NormalizeRootDomain(cfg.AppDomain); root != "" && root != "localhost" {
+		m.baseHosts = append(m.baseHosts, root)
 	}
 
-	addHost := func(host string) {
-		host = normalizeHost(host)
-		if host == "" || host == "localhost" {
-			return
-		}
-		for _, h := range m.baseHosts {
-			if h == host {
-				return
-			}
-		}
-		m.baseHosts = append(m.baseHosts, host)
-	}
-
-	addHost(hostFromURL(cfg.FrontendURL))
-	addHost(hostFromURL(cfg.CentralFrontendURL))
-	addHost(normalizeHost(cfg.AppDomain))
-
-	// Localhost en desarrollo
 	if cfg.IsDev() {
 		for _, o := range devLocalhostOrigins() {
 			addExact(o)
@@ -69,12 +50,12 @@ func NewMatcher(cfg *config.Config) *Matcher {
 	return m
 }
 
-// BaseHosts devuelve hosts usados para subdominios (*.app.ejemplo.com).
+// BaseHosts dominio raíz para CORS de subdominios tenant.
 func (m *Matcher) BaseHosts() []string {
 	return append([]string(nil), m.baseHosts...)
 }
 
-// ExactCount cantidad de orígenes exactos configurados (para logs de arranque).
+// ExactCount orígenes exactos (app, api, localhost…).
 func (m *Matcher) ExactCount() int {
 	return len(m.exact)
 }
@@ -132,41 +113,4 @@ func normalizeOrigin(o string) string {
 	o = strings.TrimSpace(o)
 	o = strings.TrimRight(o, "/")
 	return o
-}
-
-func normalizeHost(h string) string {
-	h = strings.TrimSpace(h)
-	h = strings.TrimPrefix(h, "https://")
-	h = strings.TrimPrefix(h, "http://")
-	if i := strings.IndexByte(h, '/'); i >= 0 {
-		h = h[:i]
-	}
-	if i := strings.IndexByte(h, ':'); i >= 0 {
-		h = h[:i]
-	}
-	return strings.ToLower(strings.TrimSpace(h))
-}
-
-func hostFromURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if !strings.Contains(raw, "://") {
-		raw = "https://" + raw
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return normalizeHost(u.Hostname())
-}
-
-// deriveAPIOrigin: app.tukifac.com → https://api.tukifac.com
-func deriveAPIOrigin(frontendURL string) string {
-	host := hostFromURL(frontendURL)
-	if host == "" || !strings.HasPrefix(host, "app.") {
-		return ""
-	}
-	return "https://api." + strings.TrimPrefix(host, "app.")
 }
