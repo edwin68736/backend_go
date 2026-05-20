@@ -69,7 +69,6 @@ name: Deploy VPS
 needs: build
 runs-on: ubuntu-latest
 
-```
 steps:
   - name: Deploy SSH
     uses: appleboy/ssh-action@v1.2.0
