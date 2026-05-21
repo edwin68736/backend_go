@@ -24,6 +24,7 @@ func RegisterRoutes(app *fiber.App) {
 
 	// API protegida
 	saAPI := app.Group("/api/superadmin", middleware.SuperAdminAuthAPI())
+	saAPI.Get("/platform-domains", handler.PlatformDomainsAPI)
 	saAPI.Get("/stats", dashHandler.StatsAPI)
 	saAPI.Get("/users", authHandler.ListUsersAPI)
 	saAPI.Post("/users", authHandler.CreateUserAPI)

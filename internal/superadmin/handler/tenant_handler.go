@@ -40,25 +40,8 @@ func (h *TenantHandler) ListAPI(c fiber.Ctx) error {
 	billingByTenant, _ := h.svc.BillingEnabledByTenantIDs(tenantIDs(tenants))
 	out := make([]fiber.Map, 0, len(tenants))
 	for _, t := range tenants {
-		m := fiber.Map{
-			"id":                 t.ID,
-			"name":               t.Name,
-			"slug":               t.Slug,
-			"db_name":            t.DBName,
-			"plan":               t.Plan,
-			"status":             t.Status,
-			"email":              t.Email,
-			"phone":              t.Phone,
-			"ruc":                t.RUC,
-			"address":            t.Address,
-			"ubigeo":             t.Ubigeo,
-			"sunat_env_mode":     t.SunatEnvMode,
-			"sunat_connected_at": t.SunatConnectedAt,
-			"trial_ends_at":      t.TrialEndsAt,
-			"created_at":         t.CreatedAt,
-			"updated_at":         t.UpdatedAt,
-			"billing_enabled":    billingByTenant[t.ID],
-		}
+		m := enrichTenantMap(&t)
+		m["billing_enabled"] = billingByTenant[t.ID]
 		out = append(out, m)
 	}
 	return c.JSON(fiber.Map{"data": out})
@@ -96,7 +79,10 @@ func (h *TenantHandler) CreateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": tenant})
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"success": true,
+		"data":    enrichTenantMap(tenant),
+	})
 }
 
 // PUT /api/superadmin/tenants/:id

@@ -72,3 +72,22 @@ func OriginFromHost(host string) string {
 	}
 	return "https://" + host
 }
+
+// TenantHost devuelve el host del tenant: {slug}.{root} → empresa1.tukifac.com
+func TenantHost(slug, rootDomain string) string {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	root := NormalizeRootDomain(rootDomain)
+	if slug == "" || root == "" || root == "localhost" {
+		return ""
+	}
+	return slug + "." + root
+}
+
+// TenantURL URL HTTPS del panel tenant (mismo SPA que FRONTEND_URL, otro subdominio).
+func TenantURL(slug, rootDomain string) string {
+	host := TenantHost(slug, rootDomain)
+	if host == "" {
+		return ""
+	}
+	return "https://" + host
+}
