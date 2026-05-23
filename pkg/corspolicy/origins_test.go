@@ -60,6 +60,29 @@ func TestMatcherDevLocalhost(t *testing.T) {
 	}
 }
 
+func TestMatcherProductionAllowsNativeShell(t *testing.T) {
+	cfg := &config.Config{
+		AppEnv:             "production",
+		AppDomain:          "tukifac.com",
+		APIPublicURL:       "https://api.tukifac.com",
+		FrontendURL:        "https://app.tukifac.com",
+		CentralFrontendURL: "https://app.tukifac.com",
+		ReservedSubdomains: domains.MergeReserved(nil),
+	}
+	m := NewMatcher(cfg)
+
+	for _, o := range []string{
+		"tauri://localhost",
+		"https://tauri.localhost",
+		"https://localhost",
+		"capacitor://localhost",
+	} {
+		if !m.Allow(o) {
+			t.Errorf("expected native shell allowed in production: %s", o)
+		}
+	}
+}
+
 func TestMatcherProductionDeniesLocalhostSubdomains(t *testing.T) {
 	cfg := &config.Config{
 		AppEnv:             "production",

@@ -47,6 +47,11 @@ func NewMatcher(cfg *config.Config) *Matcher {
 		}
 	}
 
+	// Tauri / Capacitor: orígenes del WebView empaquetado (no son sitios web arbitrarios).
+	for _, o := range nativeShellOrigins() {
+		addExact(o)
+	}
+
 	return m
 }
 
@@ -70,9 +75,19 @@ func devLocalhostOrigins() []string {
 		"http://localhost:4174",
 		"http://127.0.0.1:3000",
 		"http://127.0.0.1:5173",
+	}
+}
+
+// nativeShellOrigins — WebView de Tauri/Capacitor en builds de producción.
+func nativeShellOrigins() []string {
+	return []string{
 		"tauri://localhost",
 		"http://tauri.localhost",
 		"https://tauri.localhost",
+		"https://localhost",
+		"http://localhost",
+		"capacitor://localhost",
+		"ionic://localhost",
 	}
 }
 
