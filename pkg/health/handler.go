@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/tenantcache"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -48,8 +49,20 @@ func Readiness(c fiber.Ctx) error {
 		})
 	}
 
+	redisStatus := "disabled"
+	if tenantcache.Connected() {
+		ctxR, cancelR := context.WithTimeout(context.Background(), readinessTimeout)
+		defer cancelR()
+		if err := tenantcache.RDB().Ping(ctxR).Err(); err != nil {
+			redisStatus = "down"
+		} else {
+			redisStatus = "up"
+		}
+	}
+
 	return c.JSON(fiber.Map{
 		"status": "ok",
 		"mysql":  "up",
+		"redis":  redisStatus,
 	})
 }

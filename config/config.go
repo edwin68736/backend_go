@@ -52,9 +52,12 @@ type Config struct {
 	TenantPoolMaxActive     int
 	TenantPoolEvictInterval time.Duration
 
-	// Redis
-	RedisURL      string
-	RedisPoolSize int
+	// Redis (resuelto en Load desde REDIS_URL / REDIS_ADDR / REDIS_HOST+PORT)
+	Redis            RedisSettings
+	RedisURL         string // URL canónica (compatibilidad)
+	RedisPoolSize    int
+	RedisMinIdleConns int
+	RedisMaxRetries  int
 
 	// Billing async queue (Redis LIST)
 	BillingAsyncEnabled   bool
@@ -190,9 +193,6 @@ func Load() error {
 		TenantPoolMaxActive:     getEnvInt("TENANT_POOL_MAX_ACTIVE", 200),
 		TenantPoolEvictInterval: getEnvDuration("TENANT_POOL_EVICT_INTERVAL", "2m"),
 
-		RedisURL:      getEnv("REDIS_URL", "redis://127.0.0.1:6379/0"),
-		RedisPoolSize: getEnvInt("REDIS_POOL_SIZE", 32),
-
 		BillingAsyncEnabled:   getEnvBool("BILLING_ASYNC_ENABLED", true),
 		BillingQueueWorkers:   getEnvInt("BILLING_QUEUE_WORKERS", 4),
 		BillingMaxRetries:     getEnvInt("BILLING_MAX_RETRIES", 5),
@@ -256,6 +256,13 @@ func Load() error {
 	if AppConfig.APIPublicURL == "" {
 		AppConfig.APIPublicURL = strings.TrimSpace(getEnv("API_PUBLIC_URL", ""))
 	}
+
+	redis := ResolveRedisSettings(appEnv)
+	AppConfig.Redis = redis
+	AppConfig.RedisURL = redis.URL
+	AppConfig.RedisPoolSize = redis.PoolSize
+	AppConfig.RedisMinIdleConns = redis.MinIdleConns
+	AppConfig.RedisMaxRetries = redis.MaxRetries
 
 	return nil
 }

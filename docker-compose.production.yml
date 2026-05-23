@@ -2,6 +2,7 @@
 # Ubicación en VPS: /opt/tukifac/docker-compose.production.yml
 #
 # MySQL y facturador son servicios EXTERNOS (otros VPS).
+# Redis: contenedor tukifac-redis en la misma red Docker (ver REDIS_URL en .env).
 # Nginx Proxy Manager → http://127.0.0.1:3000 (no exponer 3000 al público).
 #
 # Entrypoint: solo API (sin migraciones al arrancar).

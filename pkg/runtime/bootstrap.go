@@ -29,11 +29,25 @@ func Init(cfg *config.Config) error {
 
 	billingqueue.Start(cfg, rdb, billworker.ProcessJob)
 
+	billingAsync := billingqueue.Enabled()
+	tenantCache := tenantcache.Connected()
+
 	logger.L.Info("runtime_initialized",
-		slog.Bool("redis", rdb != nil),
-		slog.Bool("billing_async", billingqueue.Enabled()),
+		slog.Bool("redis", tenantCache),
+		slog.String("redis_addr", cfg.Redis.RedisSafeAddr()),
+		slog.Bool("redis_connected", tenantCache),
+		slog.Bool("tenant_cache_enabled", tenantCache),
+		slog.Bool("billing_async", billingAsync),
+		slog.Bool("fallback_mode_enabled", !tenantCache),
 		slog.Int("tenant_pool_max", cfg.TenantPoolMaxActive),
 	)
+
+	if cfg.IsProd() && cfg.Redis.Enabled && !tenantCache {
+		logger.L.Warn("redis_expected_in_production",
+			slog.String("hint", "set REDIS_URL=redis://tukifac-redis:6379/0 or REDIS_ADDR=tukifac-redis:6379 in .env; ensure backend and redis share Docker network"),
+		)
+	}
+
 	return nil
 }
 
