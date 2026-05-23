@@ -3,6 +3,7 @@ package restaurant
 import (
 	"tukifac/internal/restaurant/handler"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/restaurantperm"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -10,54 +11,54 @@ import (
 func RegisterRoutes(api fiber.Router) {
 	h := handler.New()
 
-	r := api.Group("/restaurant", middleware.RequireModule("restaurant"))
+	r := api.Group("/restaurant",
+		middleware.RequireModule("restaurant"),
+		middleware.LoadRestaurantPermissions(),
+		middleware.RequireRestaurantStaff(),
+	)
 
-	// Roles: admin, vendedor, mozo, cocinero
-	adminOnly := middleware.RequireRestaurantRole("admin")
-	adminVendedor := middleware.RequireRestaurantRole("admin", "vendedor")
-	adminVendedorMozo := middleware.RequireRestaurantRole("admin", "vendedor", "mozo")
-	allRoles := middleware.RequireRestaurantRole("admin", "vendedor", "mozo", "cocinero")
+	manage := middleware.RequireRestaurantAdminOrTenantAdmin()
 
-	// Gestión de roles (admin restaurante O administrador tenant)
-	roleMgmt := middleware.RequireRestaurantAdminOrTenantAdmin()
-	r.Get("/me", allRoles, h.GetMyRestaurantRole)
-	r.Get("/roles/assignments", roleMgmt, h.ListRestaurantRoleAssignments)
-	r.Put("/users/:id/restaurant-role", roleMgmt, h.SetUserRestaurantRole)
+	r.Get("/session/permissions", h.SessionPermissions)
+	r.Get("/staff", manage, h.ListStaff)
+	r.Get("/staff/management", manage, h.ListStaffManagement)
+	r.Put("/users/:id/staff", manage, h.UpsertUserStaff)
 
-	// Config: solo admin
-	r.Get("/settings", adminOnly, h.GetSettings)
-	r.Put("/settings", adminOnly, h.UpdateSettings)
+	r.Get("/settings", middleware.RequireAnyRestaurantPerm(restaurantperm.OrdersCharge, restaurantperm.TablesOpen, restaurantperm.KitchenView, restaurantperm.SettingsManage), h.GetSettings)
+	r.Put("/settings", manage, h.UpdateSettings)
 
-	r.Get("/floors", adminOnly, h.ListFloors)
-	r.Post("/floors", adminOnly, h.CreateFloor)
-	r.Put("/floors/:id", adminOnly, h.UpdateFloor)
-	r.Delete("/floors/:id", adminOnly, h.DeleteFloor)
+	r.Get("/floors", middleware.RequireRestaurantPerm(restaurantperm.TablesView), h.ListFloors)
+	r.Post("/floors", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.CreateFloor)
+	r.Put("/floors/:id", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.UpdateFloor)
+	r.Delete("/floors/:id", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.DeleteFloor)
 
-	r.Get("/tables", adminVendedorMozo, h.ListTables)
-	r.Post("/tables", adminOnly, h.CreateTable)
-	r.Put("/tables/:id", adminOnly, h.UpdateTable)
-	r.Delete("/tables/:id", adminOnly, h.DeleteTable)
-	r.Get("/tables/:id/session", adminVendedorMozo, h.GetTableSession)
+	r.Get("/tables", middleware.RequireRestaurantPerm(restaurantperm.TablesView), h.ListTables)
+	r.Post("/tables", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.CreateTable)
+	r.Put("/tables/:id", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.UpdateTable)
+	r.Delete("/tables/:id", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.DeleteTable)
+	r.Get("/tables/:id/session", middleware.RequireRestaurantPerm(restaurantperm.TablesView), h.GetTableSession)
 
-	r.Get("/waiters", adminVendedorMozo, h.ListWaiters)
-	r.Post("/waiters", adminOnly, h.CreateWaiter)
-	r.Put("/waiters/:id", adminOnly, h.UpdateWaiter)
-	r.Delete("/waiters/:id", adminOnly, h.DeleteWaiter)
+	r.Get("/orders", middleware.RequireAnyRestaurantPerm(restaurantperm.TablesView, restaurantperm.KitchenView, restaurantperm.POSUse), h.ListOpenOrders)
+	r.Get("/delivery-drivers", middleware.RequireRestaurantPerm(restaurantperm.DeliveryView), h.ListDeliveryDrivers)
+	r.Post("/delivery-drivers", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.CreateDeliveryDriver)
+	r.Put("/delivery-drivers/:id", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.UpdateDeliveryDriver)
+	r.Delete("/delivery-drivers/:id", middleware.RequireRestaurantPerm(restaurantperm.ProductsManage), h.DeleteDeliveryDriver)
 
-	// Sesiones: admin, vendedor, mozo
-	r.Post("/sessions", adminVendedorMozo, h.OpenSession)
-	r.Get("/sessions/:id", adminVendedorMozo, h.GetSession)
-	r.Post("/sessions/:id/orders", adminVendedorMozo, h.AddOrder)
-	r.Post("/sessions/:id/bill", adminVendedor, h.BillSession)
-	r.Post("/sessions/:id/close", adminVendedor, h.CloseSession)
-	r.Post("/sessions/:id/cancel", adminVendedor, h.CancelSession)
+	r.Post("/sessions", middleware.RequireRestaurantPerm(restaurantperm.TablesOpen), h.OpenSession)
+	r.Get("/sessions/:id", middleware.RequireRestaurantPerm(restaurantperm.TablesView), h.GetSession)
+	r.Patch("/sessions/:id", middleware.RequireRestaurantPerm(restaurantperm.TablesView), h.UpdateSession)
+	r.Put("/sessions/:id/order-status", middleware.RequireAnyRestaurantPerm(restaurantperm.TablesView, restaurantperm.KitchenView), h.UpdateOrderStatus)
+	r.Get("/sessions/:id/precuenta", middleware.RequireRestaurantPerm(restaurantperm.TablesView), h.GetPrecuenta)
+	r.Post("/sessions/:id/orders", middleware.RequireRestaurantPerm(restaurantperm.TablesOpen), h.AddOrder)
+	r.Post("/sessions/:id/bill", middleware.RequireRestaurantPerm(restaurantperm.OrdersCharge), h.BillSession)
+	r.Post("/sessions/:id/close", middleware.RequireRestaurantPerm(restaurantperm.OrdersCharge), h.CloseSession)
+	r.Post("/sessions/:id/cancel", middleware.RequireRestaurantPerm(restaurantperm.OrdersCharge), h.CancelSession)
 
-	// Comandas: todos los roles (cocinero solo tiene esto)
-	r.Put("/comandas/:id/status", allRoles, h.UpdateComandaStatus)
-	r.Post("/comandas/:id/print", allRoles, h.PrintComanda)
-	r.Delete("/comandas/:id", adminOnly, h.CancelComanda)
+	r.Put("/comandas/:id/status", middleware.RequireRestaurantPerm(restaurantperm.KitchenUpdate), h.UpdateComandaStatus)
+	r.Post("/comandas/:id/print", middleware.RequireRestaurantPerm(restaurantperm.KitchenView), h.PrintComanda)
+	r.Delete("/comandas/:id", middleware.RequireRestaurantPerm(restaurantperm.SettingsManage), h.CancelComanda)
 
-	r.Get("/kitchen", allRoles, h.KitchenView)
+	r.Get("/kitchen", middleware.RequireRestaurantPerm(restaurantperm.KitchenView), h.KitchenView)
 }
 
 // RegisterSalePaymentRoutes registra los endpoints de pagos bajo /api/sales

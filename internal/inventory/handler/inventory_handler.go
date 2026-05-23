@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"tukifac/internal/inventory/service"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 
 	"github.com/gofiber/fiber/v3"
@@ -381,13 +382,17 @@ func (h *InventoryHandler) AdjustmentAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
 	}
-	if body.ProductID == 0 || body.BranchID == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "product_id y branch_id son requeridos"})
+	if body.ProductID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "product_id requerido"})
+	}
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
 	}
 	svc := service.NewInventoryService(db(c))
-	err := svc.RecordAdjustment(service.AdjustmentInput{
+	err = svc.RecordAdjustment(service.AdjustmentInput{
 		ProductID: body.ProductID,
-		BranchID:  body.BranchID,
+		BranchID:  branchID,
 		Type:      body.Type,
 		Quantity:  body.Quantity,
 		Notes:     body.Notes,
@@ -403,7 +408,8 @@ func (h *InventoryHandler) MovementsAPI(c fiber.Ctx) error {
 	svc := service.NewInventoryService(db(c))
 	tdb := db(c)
 	productID, _ := strconv.ParseUint(c.Query("product_id"), 10, 32)
-	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	reqB, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ResolveReadBranchFilter(c, uint(reqB))
 
 	var dateFrom, dateTo *time.Time
 	if df := c.Query("date_from"); df != "" {

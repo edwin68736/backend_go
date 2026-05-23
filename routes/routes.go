@@ -7,6 +7,7 @@ import (
 	"tukifac/config"
 	"tukifac/pkg/corspolicy"
 	"tukifac/pkg/logger"
+	authHandler "tukifac/internal/auth/handler"
 	"tukifac/internal/auth"
 	"tukifac/internal/billing"
 	"tukifac/internal/cashbank"
@@ -21,6 +22,7 @@ import (
 	"tukifac/internal/purchases"
 	"tukifac/internal/restaurant"
 	"tukifac/internal/sales"
+	"tukifac/internal/tenantportal"
 	superadmin "tukifac/internal/superadmin"
 	"tukifac/internal/ubigeo"
 	"tukifac/internal/users"
@@ -54,6 +56,8 @@ func Setup(app *fiber.App) {
 	app.Get("/", health.Liveness)
 	app.Get("/health", health.Readiness)
 	app.Get("/metrics", health.Metrics)
+	app.Get("/fleet-health", health.FleetHealth)
+	app.Get("/api/internal/fleet-health", health.FleetHealth)
 
 	// CORS antes de rate limits: preflight OPTIONS debe recibir Allow-Origin si el origen es válido.
 	app.Use(cors.New(cors.Config{
@@ -73,9 +77,17 @@ func Setup(app *fiber.App) {
 
 	// Archivos subidos por tenant (uploads/tenants/{RUC}/...)
 	app.All("/uploads/*", tenantstorage.UploadsHandler)
+	app.Get("/storage/*", func(c fiber.Ctx) error {
+		p := c.Params("*")
+		if p == "" {
+			return c.Status(fiber.StatusNotFound).SendString("not found")
+		}
+		return c.SendFile("./storage/" + p)
+	})
 
 	// Middleware global de resolución de tenant por subdominio / header
 	app.Use(middleware.TenantResolver())
+	app.Use(middleware.TenantDBRelease())
 
 	// ── RUTAS PÚBLICAS (sin middleware de auth) ──
 	// Endpoint público: consulta tenant por RUC (módulo restaurante - primera vez)
@@ -115,6 +127,9 @@ func Setup(app *fiber.App) {
 	// Tenant login
 	auth.RegisterRoutes(app)
 
+	// Restaurante: config y PIN (sin JWT, con tenant)
+	restaurant.RegisterPublicRoutes(app.Group("/api"))
+
 	// Utilidades de desarrollo
 	if config.AppConfig.IsDev() {
 		app.Get("/dev/enter/:slug", func(c fiber.Ctx) error {
@@ -143,13 +158,19 @@ func Setup(app *fiber.App) {
 	// Se usa un prefijo /api/t/ internamente pero los módulos solo ven su ruta relativa.
 	// El middleware TenantAuthAPI se aplica SOLO a las rutas registradas en este grupo,
 	// no a las rutas públicas (/api/superadmin/login, /api/login) ya registradas arriba.
-	tenantAPI := app.Group("/api", middleware.TenantAuthAPI(), middleware.ValidateTenantBinding())
+	tenantAPI := app.Group("/api", middleware.TenantAuthAPI(), middleware.ValidateTenantBinding(), middleware.SubscriptionGate(), middleware.BranchContextMiddleware())
+
+	sessionH := authHandler.NewSessionHandler()
+	tenantAPI.Get("/session/context", sessionH.GetContext)
+	tenantAPI.Get("/session/capabilities", sessionH.GetCapabilities)
+	tenantAPI.Post("/session/switch-branch", sessionH.SwitchBranch)
 
 	ubigeoTenant := ubigeo.NewTenantHandler()
 	tenantAPI.Get("/ubigeo/regiones", ubigeoTenant.RegionesAPI)
 	tenantAPI.Get("/ubigeo/provincias", ubigeoTenant.ProvinciasAPI)
 	tenantAPI.Get("/ubigeo/distritos", ubigeoTenant.DistritosAPI)
 
+	tenantportal.RegisterRoutes(tenantAPI)
 	dashboard.RegisterRoutes(tenantAPI)
 	company.RegisterRoutes(tenantAPI)
 	users.RegisterRoutes(tenantAPI)

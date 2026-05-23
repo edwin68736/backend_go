@@ -3,36 +3,22 @@ package database
 import (
 	"fmt"
 	"regexp"
-	"sync"
 
 	"tukifac/config"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 var tenantDBNamePattern = regexp.MustCompile(`^saas_tenant_[a-z0-9_]+$`)
 
-var tenantPool sync.Map // map[string]*gorm.DB
-
-// GetTenantDB retorna (o crea) la conexión GORM del tenant desde el pool.
-// No ejecuta migraciones: el esquema debe estar al día vía `./tukifac-api migrate`.
+// GetTenantDB retorna el pool GORM del tenant vía TenantDBManager (singleflight + eviction).
+// Debe parearse con ReleaseTenantDB al final del request (middleware TenantDBRelease).
 func GetTenantDB(dbName string) (*gorm.DB, error) {
-	if err := validateTenantDBName(dbName); err != nil {
-		return nil, err
+	if defaultManager == nil {
+		return nil, ErrNoTenantDBManager
 	}
-
-	if cached, ok := tenantPool.Load(dbName); ok {
-		return cached.(*gorm.DB), nil
-	}
-
-	db, err := openTenantDB(dbName)
-	if err != nil {
-		return nil, err
-	}
-	tenantPool.Store(dbName, db)
-	return db, nil
+	return defaultManager.acquire(dbName)
 }
 
 func openTenantDB(dbName string) (*gorm.DB, error) {
@@ -41,7 +27,7 @@ func openTenantDB(dbName string) (*gorm.DB, error) {
 		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, dbName,
 	)
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger:      logger.Default.LogMode(logger.Warn),
+		Logger:      gormLogger(),
 		PrepareStmt: true,
 	})
 	if err != nil {
@@ -89,11 +75,9 @@ func validateTenantDBName(dbName string) error {
 	return nil
 }
 
-// RemoveTenantFromPool elimina una conexión del pool y cierra sus conexiones MySQL.
+// RemoveTenantFromPool cierra y elimina el pool del tenant.
 func RemoveTenantFromPool(dbName string) {
-	if cached, ok := tenantPool.LoadAndDelete(dbName); ok {
-		if db, ok := cached.(*gorm.DB); ok {
-			closeDB(db)
-		}
+	if defaultManager != nil {
+		defaultManager.Remove(dbName)
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"tukifac/internal/sales/service"
 	billingSvc "tukifac/internal/billing/service"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 
@@ -141,10 +142,15 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		}
 	}
 
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+
 	taxCfg := tax.LoadFromDB(db(c))
 	svc := service.NewSaleService(db(c))
 	sale, err := svc.Create(service.CreateSaleInput{
-		BranchID:      body.BranchID,
+		BranchID:      branchID,
 		ContactID:     body.ContactID,
 		UserID:        userID(c),
 		CashSessionID: body.CashSessionID,
@@ -244,7 +250,8 @@ func (h *SaleHandler) CancelForm(c fiber.Ctx) error {
 // GET /api/sales?q=&from=&to=&doc_type=&billing_status=&sunat_code=00|01,03&contact_id=
 func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 	svc := service.NewSaleService(db(c))
-	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ResolveReadBranchFilter(c, uint(reqBranch))
 	contactID, _ := strconv.ParseUint(c.Query("contact_id"), 10, 32)
 	var dateFrom, dateTo *time.Time
 	if from := c.Query("from"); from != "" {
@@ -316,7 +323,8 @@ func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 // GET /api/sales/by-product?from=&to=&branch_id=&category_id=
 func (h *SaleHandler) ListByProductAPI(c fiber.Ctx) error {
 	svc := service.NewSaleService(db(c))
-	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ResolveReadBranchFilter(c, uint(reqBranch))
 	catID, _ := strconv.ParseUint(c.Query("category_id"), 10, 32)
 	var dateFrom, dateTo *time.Time
 	if from := c.Query("from"); from != "" {

@@ -7,8 +7,8 @@ import (
 	"tukifac/config"
 	"tukifac/pkg/cmd"
 	"tukifac/pkg/cron"
-	"tukifac/pkg/database"
 	"tukifac/pkg/logger"
+	"tukifac/pkg/runtime"
 	"tukifac/routes"
 
 	"github.com/gofiber/fiber/v3"
@@ -31,18 +31,21 @@ func main() {
 }
 
 func runServer(cfg *config.Config) {
-	if err := database.ConnectCentral(); err != nil {
-		logger.L.Error("startup_failed", slog.String("step", "connect_central"), slog.Any("error", err))
+	if err := runtime.Init(cfg); err != nil {
+		logger.L.Error("startup_failed", slog.String("step", "runtime_init"), slog.Any("error", err))
 		panic(err)
 	}
+	defer runtime.Shutdown()
+	runtime.ListenShutdown()
 
 	if err := cmd.AutoMigrateDev(); err != nil {
 		logger.L.Error("auto_migrate_dev_failed", slog.Any("error", err))
 		panic(err)
 	}
 
-	// Cron de vencimientos solo tras esquema central (migrate-central en entrypoint o AutoMigrateDev).
+	// Cron de vencimientos espera esquema central (deploy migrate-central o AutoMigrateDev en dev).
 	cron.StartExpirationChecker()
+	cron.StartSaasScheduler()
 
 	app := fiber.New(fiber.Config{
 		AppName:      "Tukifac SaaS ERP",

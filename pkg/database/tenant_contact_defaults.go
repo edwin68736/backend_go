@@ -35,14 +35,15 @@ func EnsureDefaultSaleContact(db *gorm.DB) error {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		addr, ubi := NormalizeTenantContactAddressUbigeo("", "")
 		def := TenantContact{
-			Type:         "customer",
-			DocType:      "0",
-			DocNumber:    "99999999",
-			BusinessName: "Clientes varios",
-			TradeName:    "Público en general",
-			Address:      addr,
-			Ubigeo:       ubi,
-			Active:       true,
+			Type:            "customer",
+			DocType:         "0",
+			DocNumber:       "99999999",
+			BusinessName:    "Clientes Varios",
+			TradeName:       "Público en general",
+			Address:         addr,
+			Ubigeo:          ubi,
+			IsDefaultWalkIn: true,
+			Active:          true,
 		}
 		return db.Create(&def).Error
 	}

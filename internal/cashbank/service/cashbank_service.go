@@ -37,21 +37,35 @@ func NewCashBankService(db *gorm.DB) *CashBankService {
 
 // =================== CAJA ===================
 
-// OpenSession abre una nueva sesión de caja.
-func (s *CashBankService) OpenSession(branchID, userID uint, openingBalance float64, notes string) (*database.TenantCashSession, error) {
-	// Verificar que no haya una sesión abierta
+// OpenSessionInput datos al abrir caja (B+ / preparado Fase C).
+type OpenSessionInput struct {
+	BranchID       uint
+	UserID         uint
+	OpeningBalance float64
+	Notes          string
+	RegisterCode   *string
+	RegisterName   *string
+}
+
+// OpenSession abre sesión de caja del usuario (máx. 1 open por branch_id + user_id).
+func (s *CashBankService) OpenSession(in OpenSessionInput) (*database.TenantCashSession, error) {
+	if in.BranchID == 0 || in.UserID == 0 {
+		return nil, errors.New("sucursal y usuario requeridos")
+	}
 	var existing database.TenantCashSession
-	if err := s.db.Where("branch_id = ? AND status = ?", branchID, "open").First(&existing).Error; err == nil {
-		return nil, errors.New("ya existe una sesión de caja abierta para esta sucursal")
+	if err := s.db.Where("branch_id = ? AND user_id = ? AND status = ?", in.BranchID, in.UserID, "open").First(&existing).Error; err == nil {
+		return nil, errors.New("ya tienes una caja abierta en esta sucursal; ciérrala antes de abrir otra")
 	}
 
 	now := time.Now()
 	session := &database.TenantCashSession{
-		BranchID:       branchID,
-		UserID:         userID,
-		OpenedBy:       userID,
-		OpeningBalance: openingBalance,
-		Notes:          notes,
+		BranchID:       in.BranchID,
+		UserID:         in.UserID,
+		OpenedBy:       in.UserID,
+		RegisterCode:   in.RegisterCode,
+		RegisterName:   in.RegisterName,
+		OpeningBalance: in.OpeningBalance,
+		Notes:          in.Notes,
 		Status:         "open",
 		OpenedAt:       now,
 	}
@@ -59,15 +73,59 @@ func (s *CashBankService) OpenSession(branchID, userID uint, openingBalance floa
 	return session, err
 }
 
+func sessionOwnerID(st *database.TenantCashSession) uint {
+	if st.UserID > 0 {
+		return st.UserID
+	}
+	return st.OpenedBy
+}
+
+func (s *CashBankService) assertSessionOwnedBy(st *database.TenantCashSession, userID uint, allowAny bool) error {
+	if allowAny {
+		return nil
+	}
+	if sessionOwnerID(st) != userID {
+		return errors.New("solo puede operar su propia sesión de caja")
+	}
+	return nil
+}
+
+// ValidateCashSessionForUser valida sesión para cobros y movimientos.
+func (s *CashBankService) ValidateCashSessionForUser(cashSessionID, userID, branchID uint) (*database.TenantCashSession, error) {
+	if cashSessionID == 0 {
+		return nil, errors.New("sesión de caja requerida")
+	}
+	var st database.TenantCashSession
+	if err := s.db.First(&st, cashSessionID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("sesión de caja no encontrada")
+		}
+		return nil, err
+	}
+	if st.Status != "open" {
+		return nil, errors.New("la sesión de caja está cerrada")
+	}
+	if branchID > 0 && st.BranchID != branchID {
+		return nil, errors.New("la sesión de caja no pertenece a la sucursal activa")
+	}
+	if err := s.assertSessionOwnedBy(&st, userID, false); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
 // CloseSession cierra una sesión de caja. Arqueo opcional: si se envía, se valida la suma con el saldo esperado y se guarda.
 // Si no se envía arqueo, closing_balance puede ser el esperado o uno manual; si se envía arqueo, closing_balance se sobrescribe con la suma del arqueo.
-func (s *CashBankService) CloseSession(sessionID, userID uint, closingBalance float64, notes string, arqueo map[string]float64) error {
+func (s *CashBankService) CloseSession(sessionID, userID uint, closingBalance float64, notes string, arqueo map[string]float64, allowAnyOwner bool) error {
 	var session database.TenantCashSession
 	if err := s.db.First(&session, sessionID).Error; err != nil {
 		return errors.New("sesión de caja no encontrada")
 	}
 	if session.Status == "closed" {
 		return errors.New("la sesión ya está cerrada")
+	}
+	if err := s.assertSessionOwnedBy(&session, userID, allowAnyOwner); err != nil {
+		return err
 	}
 
 	expected := s.getExpectedBalance(sessionID)
@@ -130,7 +188,9 @@ func (s *CashBankService) SaveArqueo(sessionID, userID uint, arqueo map[string]f
 	sum = sumArqueo(arqueo)
 
 	if session.Status == "open" {
-		// Caja abierta: actualizar arqueo (borrador) cuando sea
+		if err := s.assertSessionOwnedBy(&session, userID, false); err != nil {
+			return 0, err
+		}
 		return sum, s.db.Model(&session).Update("arqueo_json", string(arqueoJSON)).Error
 	}
 	// Caja cerrada
@@ -160,10 +220,13 @@ func (s *CashBankService) GetSessionByID(sessionID uint) (*database.TenantCashSe
 	return &session, nil
 }
 
-// GetOpenSession retorna la sesión abierta. Si branchID > 0 filtra por sucursal; si branchID == 0 retorna la primera sesión abierta (cualquier sucursal) para que la vista muestre la caja cuando no se envía branch_id.
-func (s *CashBankService) GetOpenSession(branchID, _ uint) (*database.TenantCashSession, error) {
+// GetOpenSession retorna la sesión abierta del usuario en la sucursal (nunca la primera global).
+func (s *CashBankService) GetOpenSession(branchID, userID uint) (*database.TenantCashSession, error) {
+	if userID == 0 {
+		return nil, errors.New("usuario requerido para consultar caja abierta")
+	}
 	var session database.TenantCashSession
-	q := s.db.Where("status = ?", "open")
+	q := s.db.Where("status = ? AND user_id = ?", "open", userID)
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)
 	}
@@ -172,6 +235,62 @@ func (s *CashBankService) GetOpenSession(branchID, _ uint) (*database.TenantCash
 		return nil, nil
 	}
 	return &session, err
+}
+
+// OpenSessionListItem fila para listado de cajas abiertas en sucursal (solo lectura).
+type OpenSessionListItem struct {
+	ID              uint    `json:"id"`
+	BranchID        uint    `json:"branch_id"`
+	UserID          uint    `json:"user_id"`
+	UserName        string  `json:"user_name"`
+	OpeningBalance  float64 `json:"opening_balance"`
+	CurrentBalance  float64 `json:"current_balance"`
+	OpenedAt        string  `json:"opened_at"`
+	RegisterCode    *string `json:"register_code,omitempty"`
+	RegisterName    *string `json:"register_name,omitempty"`
+}
+
+// ListOpenSessionsInBranch todas las sesiones abiertas de una sucursal (varios cajeros).
+func (s *CashBankService) ListOpenSessionsInBranch(branchID uint) ([]OpenSessionListItem, error) {
+	if branchID == 0 {
+		return nil, errors.New("sucursal requerida")
+	}
+	var sessions []database.TenantCashSession
+	if err := s.db.Where("branch_id = ? AND status = ?", branchID, "open").Order("opened_at ASC").Find(&sessions).Error; err != nil {
+		return nil, err
+	}
+	items := make([]OpenSessionListItem, 0, len(sessions))
+	for _, st := range sessions {
+		income, expense := s.sessionMovementTotals(st.ID)
+		cur := st.OpeningBalance + income - expense
+		name := ""
+		var u database.TenantUser
+		if s.db.Select("name").First(&u, sessionOwnerID(&st)).Error == nil {
+			name = u.Name
+		}
+		items = append(items, OpenSessionListItem{
+			ID:             st.ID,
+			BranchID:       st.BranchID,
+			UserID:         sessionOwnerID(&st),
+			UserName:       name,
+			OpeningBalance: st.OpeningBalance,
+			CurrentBalance: cur,
+			OpenedAt:       st.OpenedAt.Format(time.RFC3339),
+			RegisterCode:   st.RegisterCode,
+			RegisterName:   st.RegisterName,
+		})
+	}
+	return items, nil
+}
+
+func (s *CashBankService) sessionMovementTotals(sessionID uint) (income, expense float64) {
+	s.db.Model(&database.TenantCashMovement{}).
+		Where("cash_session_id = ? AND type = ?", sessionID, "income").
+		Select("COALESCE(SUM(amount), 0)").Scan(&income)
+	s.db.Model(&database.TenantCashMovement{}).
+		Where("cash_session_id = ? AND type = ?", sessionID, "expense").
+		Select("COALESCE(SUM(amount), 0)").Scan(&expense)
+	return
 }
 
 // AddMovement registra un movimiento manual de caja. Verifica que la sesión exista y esté abierta.
@@ -191,6 +310,9 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 	}
 	if session.Status != "open" {
 		return errors.New("no se pueden registrar movimientos en una caja cerrada")
+	}
+	if err := s.assertSessionOwnedBy(&session, userID, false); err != nil {
+		return err
 	}
 	if err := s.db.Create(&database.TenantCashMovement{
 		CashSessionID: sessionID,
@@ -475,7 +597,17 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 	switch pm.DestinationType {
 	case "cash":
 		if cashSessionID == nil || *cashSessionID == 0 {
-			return nil // sin sesión de caja, no registrar en caja (evitar error)
+			return errors.New("se requiere sesión de caja abierta del usuario para pagos en efectivo")
+		}
+		var st database.TenantCashSession
+		if err := exec.First(&st, *cashSessionID).Error; err != nil {
+			return errors.New("sesión de caja no encontrada")
+		}
+		if st.Status != "open" {
+			return errors.New("no se puede registrar pago en una caja cerrada")
+		}
+		if userID > 0 && sessionOwnerID(&st) != userID {
+			return errors.New("el pago en efectivo debe registrarse en su propia sesión de caja")
 		}
 		return exec.Create(&database.TenantCashMovement{
 			CashSessionID: *cashSessionID,

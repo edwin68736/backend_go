@@ -5,6 +5,8 @@ import (
 	consultaHandler "tukifac/internal/consulta/handler"
 	"tukifac/internal/payments"
 	"tukifac/internal/plans"
+	"tukifac/internal/saasadmin"
+	"tukifac/internal/saasdocuments"
 	"tukifac/internal/subscriptions"
 	"tukifac/internal/superadmin/handler"
 	ubigeo "tukifac/internal/ubigeo"
@@ -17,6 +19,7 @@ func RegisterRoutes(app *fiber.App) {
 	authHandler := handler.NewAuthSAHandler()
 	dashHandler := handler.NewDashboardHandler()
 	tenantHandler := handler.NewTenantHandler()
+	migrationHandler := handler.NewMigrationHandler()
 	ubigeoCentral := ubigeo.NewCentralHandler()
 
 	// Login público
@@ -41,11 +44,20 @@ func RegisterRoutes(app *fiber.App) {
 	saAPI.Get("/tenants/:id", tenantHandler.GetAPI)
 	saAPI.Post("/tenants", tenantHandler.CreateAPI)
 	saAPI.Put("/tenants/:id", tenantHandler.UpdateAPI)
+	saAPI.Post("/tenants/:id/destroy-complete", tenantHandler.DestroyCompleteAPI)
 	saAPI.Patch("/tenants/:id/status", tenantHandler.ToggleStatusAPI)
 	saAPI.Get("/tenants/:id/modules", tenantHandler.GetModulesAPI)
 	saAPI.Post("/tenants/:id/modules", tenantHandler.SetModuleAPI)
 	saAPI.Post("/tenants/:id/migrate", tenantHandler.MigrateAPI)
 	saAPI.Post("/tenants/migrate-all", tenantHandler.MigrateAllAPI)
+
+	saAPI.Get("/migrations", migrationHandler.ListAPI)
+	saAPI.Get("/migrations/summary", migrationHandler.SummaryAPI)
+	saAPI.Post("/migrations/resume-fleet", migrationHandler.ResumeFleetAPI)
+	saAPI.Post("/migrations/:tenantId/retry", migrationHandler.RetryAPI)
+	saAPI.Post("/migrations/:tenantId/migrate", migrationHandler.MigrateAPI)
+	saAPI.Post("/migrations/:tenantId/pause", migrationHandler.PauseAPI)
+	saAPI.Post("/migrations/:tenantId/resume", migrationHandler.ResumeAPI)
 	saAPI.Get("/tenants/:id/sunat-config", tenantHandler.GetSunatConfigAPI)
 	saAPI.Put("/tenants/:id/sunat-config", tenantHandler.UpdateSunatConfigAPI)
 	saAPI.Patch("/tenants/:id/sunat-env", tenantHandler.PatchSunatEnvAPI)
@@ -68,5 +80,7 @@ func RegisterRoutes(app *fiber.App) {
 	// Planes, módulos del catálogo, suscripciones y pagos
 	plans.RegisterRoutes(saAPI)
 	subscriptions.RegisterRoutes(saAPI)
+	saasadmin.RegisterRoutes(saAPI)
+	saasdocuments.RegisterRoutes(saAPI)
 	payments.RegisterRoutes(saAPI)
 }

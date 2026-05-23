@@ -296,18 +296,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		// Crear TenantSalePayment y distribuir cada pago a caja o cuenta bancaria
 		cbSvc := cashbanksvc.NewCashBankService(s.db)
 		if input.CashSessionID != nil && *input.CashSessionID > 0 {
-			var cashSession database.TenantCashSession
-			if err := tx.First(&cashSession, *input.CashSessionID).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return errors.New("la sesión de caja indicada no existe")
-				}
+			if _, err := cbSvc.ValidateCashSessionForUser(*input.CashSessionID, input.UserID, input.BranchID); err != nil {
 				return err
-			}
-			if cashSession.Status != "open" {
-				return errors.New("no se puede registrar la venta en una caja cerrada")
-			}
-			if cashSession.BranchID != input.BranchID {
-				return fmt.Errorf("la caja no corresponde a la sucursal de la venta (caja: %d, venta: %d)", cashSession.BranchID, input.BranchID)
 			}
 		}
 		for _, p := range payments {

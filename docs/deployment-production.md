@@ -156,6 +156,7 @@ El backend usa `X-Tenant-Slug` para elegir la base de datos del tenant. En produ
 
 ## 5. Checklist producción
 
+- [ ] Migraciones SaaS: [MIGRATIONS-SaaS.md](./MIGRATIONS-SaaS.md) — `migrate-init-versions`, cron `migrate-fleet`, panel Fleet Migrations.
 - [ ] Backend: `APP_ENV=production`, `APP_DOMAIN=app.tukifac.cloud`, CORS sin localhost en producción (ya manejado por `allowedOrigin`).
 - [ ] Panel central: build con `VITE_API_URL=https://api.tukifac.cloud/api`, desplegado en `https://app.tukifac.cloud`.
 - [ ] Panel tenant: build con `VITE_API_URL=https://api.tukifac.cloud` (archivo `tenant-frontend-react/.env.production`), desplegado en el mismo servidor que `app.tukifac.cloud` con wildcard `*.app.tukifac.cloud`. **Si no se define la variable, el login intentará usar localhost y fallará en producción.**

@@ -5,9 +5,12 @@ import (
 	"strconv"
 	"time"
 
+	"errors"
+
 	"tukifac/config"
 	"tukifac/internal/billing/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas/docusage"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -32,8 +35,16 @@ func tenantName(c fiber.Ctx) string {
 	return ""
 }
 
-func (h *BillingHandler) ListPage(c fiber.Ctx) error {
+func billingSvc(c fiber.Ctx) *service.BillingService {
 	svc := service.NewBillingService(db(c))
+	if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+		svc.SetCentralTenantID(t.ID)
+	}
+	return svc
+}
+
+func (h *BillingHandler) ListPage(c fiber.Ctx) error {
+	svc := billingSvc(c)
 	invoices, _ := svc.ListInvoices(service.InvoiceListParams{
 		Status: c.Query("status"),
 	})
@@ -54,19 +65,81 @@ func (h *BillingHandler) SendToSUNAT(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 
-	svc := service.NewBillingService(db(c))
-	invoice, err := svc.SendToSUNAT(uint(saleID))
+	tenant, _ := c.Locals("tenant").(*database.Tenant)
+	slug, _ := c.Locals("tenant_slug").(string)
+	var tenantID uint
+	tenantDB := ""
+	if tenant != nil {
+		tenantDB = tenant.DBName
+		tenantID = tenant.ID
+	}
+
+	svc := billingSvc(c)
+	invoice, err := svc.EnqueueSendToSUNAT(uint(saleID), tenantID, slug, tenantDB)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error":   err.Error(),
+		code := fiber.StatusBadRequest
+		if errors.Is(err, docusage.ErrQuotaExceeded) {
+			code = fiber.StatusPaymentRequired
+		}
+		return c.Status(code).JSON(fiber.Map{
+			"error": err.Error(), "code": "DOCUMENT_QUOTA_EXCEEDED",
 			"invoice": invoice,
 		})
 	}
 
+	// 202 Accepted cuando la emisión está en cola — nunca afirmar éxito SUNAT aquí.
+	if invoice != nil && (invoice.JobStatus == "pending" || invoice.JobStatus == "processing" || invoice.JobStatus == "retrying") {
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+			"success":    false,
+			"async":      true,
+			"job_status": invoice.JobStatus,
+			"invoice":    invoice,
+			"message":    "Factura en proceso; consulte GET /api/billing/status/:saleId",
+		})
+	}
+
+	status, _ := svc.GetBillingStatus(uint(saleID))
+	safe := status != nil && status.SafeToPrint
+	msg := "Factura en proceso; consulte el estado del comprobante"
+	if safe {
+		msg = "Comprobante aceptado por SUNAT"
+	}
 	return c.JSON(fiber.Map{
-		"success": true,
-		"invoice": invoice,
+		"success":       safe,
+		"async":         false,
+		"safe_to_print": safe,
+		"status":        status,
+		"invoice":       invoice,
+		"message":       msg,
 	})
+}
+
+// GetBillingStatus GET /api/billing/status/:saleId — estado verificable (polling).
+func (h *BillingHandler) GetBillingStatus(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := billingSvc(c)
+	st, err := svc.GetBillingStatus(uint(saleID))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(st)
+}
+
+// GetBillingJobStatus GET /api/billing/job/:saleId
+func (h *BillingHandler) GetBillingJobStatus(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := billingSvc(c)
+	inv, err := svc.GetBillingJobStatus(uint(saleID))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "comprobante no encontrado"})
+	}
+	return c.JSON(fiber.Map{"invoice": inv})
 }
 
 // ResendToSUNAT reenvía el comprobante usando el payload guardado (solo cuando falló el envío, no si fue rechazado por SUNAT).
@@ -75,7 +148,7 @@ func (h *BillingHandler) ResendToSUNAT(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	invoice, err := svc.ResendToSUNAT(uint(saleID))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "invoice": invoice})
@@ -89,7 +162,7 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -112,7 +185,7 @@ func (h *BillingHandler) GetInvoiceAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	invoice, err := svc.GetInvoice(uint(saleID))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -133,7 +206,7 @@ func (h *BillingHandler) GetInvoiceDocumentAPI(c fiber.Ctx) error {
 	if !validKind {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Tipo de documento no válido. Use: xml, xml-generated, cdr o pdf"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 
 	c.Set(fiber.HeaderAccessControlExposeHeaders, "Content-Disposition")
 
@@ -207,7 +280,7 @@ func (h *BillingHandler) GetInvoiceDocumentAPI(c fiber.Ctx) error {
 
 // ListSummariesAPI GET /billing/summaries
 func (h *BillingHandler) ListSummariesAPI(c fiber.Ctx) error {
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	list, err := svc.ListSummaries()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -227,7 +300,7 @@ func (h *BillingHandler) CreateSummaryAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "fec_resumen inválido (use YYYY-MM-DD)"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.CreateSummary(fecResumen)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -241,7 +314,7 @@ func (h *BillingHandler) GetSummaryStatusAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.GetSummaryStatus(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -251,7 +324,7 @@ func (h *BillingHandler) GetSummaryStatusAPI(c fiber.Ctx) error {
 
 // ListVoidedAPI GET /billing/voided
 func (h *BillingHandler) ListVoidedAPI(c fiber.Ctx) error {
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	list, err := svc.ListVoided()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -267,7 +340,7 @@ func (h *BillingHandler) CreateVoidedAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil || len(body.Details) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "details requerido (array con al menos un comprobante)"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.CreateVoided(body.Details)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -281,7 +354,7 @@ func (h *BillingHandler) GetVoidedStatusAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.GetVoidedStatus(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -291,7 +364,7 @@ func (h *BillingHandler) GetVoidedStatusAPI(c fiber.Ctx) error {
 
 // NotificationCountsAPI GET /billing/notification-counts — cantidades de comprobantes electrónicos por estado (para campanita del header).
 func (h *BillingHandler) NotificationCountsAPI(c fiber.Ctx) error {
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	pending, errorCount, rejected, err := svc.GetNotificationCounts()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -311,7 +384,7 @@ func (h *BillingHandler) ConsultInvoiceStatusAPI(c fiber.Ctx) error {
 	if tipo == "" || serie == "" || numero == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "tipo, serie y numero son requeridos"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	result, err := svc.ConsultInvoiceStatus(tipo, serie, numero)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -326,7 +399,7 @@ func parseDate(s string) (time.Time, error) {
 // --- Guías de remisión ---
 
 func (h *BillingHandler) ListDespatchesAPI(c fiber.Ctx) error {
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	list, err := svc.ListDespatches()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -339,7 +412,7 @@ func (h *BillingHandler) CreateDespatchAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.CreateAndSendDespatch(input)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -352,7 +425,7 @@ func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.GetDespatchStatus(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -363,7 +436,7 @@ func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
 // --- Retención ---
 
 func (h *BillingHandler) ListRetentionsAPI(c fiber.Ctx) error {
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	list, err := svc.ListRetentions()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -376,7 +449,7 @@ func (h *BillingHandler) CreateRetentionAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.CreateAndSendRetention(input)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -387,7 +460,7 @@ func (h *BillingHandler) CreateRetentionAPI(c fiber.Ctx) error {
 // --- Percepción ---
 
 func (h *BillingHandler) ListPerceptionsAPI(c fiber.Ctx) error {
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	list, err := svc.ListPerceptions()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -400,7 +473,7 @@ func (h *BillingHandler) CreatePerceptionAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.CreateAndSendPerception(input)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -411,7 +484,7 @@ func (h *BillingHandler) CreatePerceptionAPI(c fiber.Ctx) error {
 // --- Reversión ---
 
 func (h *BillingHandler) ListReversionsAPI(c fiber.Ctx) error {
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	list, err := svc.ListReversions()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -426,7 +499,7 @@ func (h *BillingHandler) CreateReversionAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil || len(body.Details) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "details requerido (array con al menos un comprobante)"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.CreateReversion(body.Details)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -439,7 +512,7 @@ func (h *BillingHandler) GetReversionStatusAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	svc := service.NewBillingService(db(c))
+	svc := billingSvc(c)
 	rec, err := svc.GetReversionStatus(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})

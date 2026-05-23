@@ -2,20 +2,14 @@ package service
 
 import (
 	"errors"
-	"fmt"
-	"time"
 
-	"tukifac/internal/subscriptions/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas"
 )
 
-type PaymentService struct {
-	subSvc *service.SubscriptionService
-}
+type PaymentService struct{}
 
-func NewPaymentService() *PaymentService {
-	return &PaymentService{subSvc: service.NewSubscriptionService()}
-}
+func NewPaymentService() *PaymentService { return &PaymentService{} }
 
 type PaymentDetail struct {
 	database.SaasPayment
@@ -26,7 +20,9 @@ type PaymentDetail struct {
 func (s *PaymentService) List(status string) ([]PaymentDetail, error) {
 	result := make([]PaymentDetail, 0)
 	query := database.CentralDB.Model(&database.SaasPayment{}).Order("created_at desc")
-	if status != "" {
+	if status == "pending" {
+		query = query.Where("status IN ?", []string{database.SaasPayPending, database.SaasPayPendingReview})
+	} else if status != "" {
 		query = query.Where("status = ?", status)
 	}
 	var payments []database.SaasPayment
@@ -64,35 +60,19 @@ type CreatePaymentInput struct {
 	PeriodMonths int     `json:"period_months" form:"period_months"`
 	Notes        string  `json:"notes" form:"notes"`
 	ReceiptURL   string  `json:"receipt_url"`
+	PaymentMethod string `json:"payment_method" form:"payment_method"`
 }
 
 func (s *PaymentService) Create(input CreatePaymentInput) (*database.SaasPayment, error) {
-	if input.TenantID == 0 {
-		return nil, errors.New("tenant_id es requerido")
-	}
-	if input.Amount <= 0 {
-		return nil, errors.New("el monto debe ser mayor a 0")
-	}
-	if input.Currency == "" {
-		input.Currency = "PEN"
-	}
-	if input.PeriodMonths <= 0 {
-		input.PeriodMonths = 1
-	}
-
-	payment := &database.SaasPayment{
+	return saas.SubmitPayment(saas.SubmitPaymentInput{
 		TenantID:     input.TenantID,
 		Amount:       input.Amount,
-		Currency:     input.Currency,
-		PeriodMonths: input.PeriodMonths,
+		PaymentMethod: input.PaymentMethod,
 		ReceiptURL:   input.ReceiptURL,
 		Notes:        input.Notes,
-		Status:       "pending",
-	}
-	if err := database.CentralDB.Create(payment).Error; err != nil {
-		return nil, err
-	}
-	return payment, nil
+		FromAdmin:    true,
+		PeriodMonths: input.PeriodMonths,
+	})
 }
 
 type ApproveInput struct {
@@ -101,71 +81,19 @@ type ApproveInput struct {
 	ReviewerID uint
 }
 
-// Approve aprueba el pago, crea/extiende la suscripción y activa el tenant
 func (s *PaymentService) Approve(paymentID uint, input ApproveInput) error {
-	var payment database.SaasPayment
-	if err := database.CentralDB.First(&payment, paymentID).Error; err != nil {
-		return errors.New("pago no encontrado")
-	}
-	if payment.Status != "pending" {
-		return fmt.Errorf("el pago ya fue %s", payment.Status)
-	}
-
-	now := time.Now()
-	database.CentralDB.Model(&payment).Updates(map[string]interface{}{
-		"status":      "approved",
-		"admin_notes": input.AdminNotes,
-		"reviewed_by": input.ReviewerID,
-		"reviewed_at": now,
-	})
-
-	// Si se especificó un plan, crear/extender suscripción
-	if input.PlanID > 0 {
-		_, err := s.subSvc.Create(service.CreateSubscriptionInput{
-			TenantID: payment.TenantID,
-			PlanID:   input.PlanID,
-			Months:   payment.PeriodMonths,
-			Notes:    fmt.Sprintf("Pago aprobado ID #%d", paymentID),
-		})
-		if err != nil {
-			return fmt.Errorf("error creando suscripción: %w", err)
-		}
-	} else {
-		// Sin plan explícito: solo reactivar tenant y extender suscripción existente
-		sub, err := s.subSvc.GetByTenant(payment.TenantID)
-		if err == nil {
-			s.subSvc.Reactivate(sub.ID, payment.PeriodMonths)
-		} else {
-			database.CentralDB.Model(&database.Tenant{}).
-				Where("id = ?", payment.TenantID).
-				Update("status", "active")
-		}
-	}
-
-	// Vincular pago a la suscripción activa
-	var activeSub database.SaasSubscription
-	if err := database.CentralDB.Where("tenant_id = ? AND status = 'active'", payment.TenantID).
-		Order("created_at desc").First(&activeSub).Error; err == nil {
-		database.CentralDB.Model(&payment).Update("subscription_id", activeSub.ID)
-	}
-
-	return nil
+	return saas.ApprovePayment(paymentID, input.PlanID, 0, input.AdminNotes, input.ReviewerID)
 }
 
-// Reject rechaza el pago
 func (s *PaymentService) Reject(paymentID uint, adminNotes string, reviewerID uint) error {
-	var payment database.SaasPayment
-	if err := database.CentralDB.First(&payment, paymentID).Error; err != nil {
-		return errors.New("pago no encontrado")
-	}
-	if payment.Status != "pending" {
-		return fmt.Errorf("el pago ya fue %s", payment.Status)
-	}
-	now := time.Now()
-	return database.CentralDB.Model(&payment).Updates(map[string]interface{}{
-		"status":      "rejected",
-		"admin_notes": adminNotes,
-		"reviewed_by": reviewerID,
-		"reviewed_at": now,
-	}).Error
+	return saas.RejectPayment(paymentID, adminNotes, reviewerID)
+}
+
+// PendingCount para dashboard.
+func PendingCount() (int64, error) {
+	var n int64
+	err := database.CentralDB.Model(&database.SaasPayment{}).
+		Where("status IN ?", []string{database.SaasPayPendingReview, database.SaasPayPending}).
+		Count(&n).Error
+	return n, err
 }

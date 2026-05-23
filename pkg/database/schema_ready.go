@@ -16,5 +16,8 @@ func IsCentralSchemaReady() bool {
 	if !m.HasColumn(&SaasSubscription{}, "EndDate") {
 		return false
 	}
+	if !m.HasTable(&SaasPlatformSettings{}) {
+		return false
+	}
 	return true
 }

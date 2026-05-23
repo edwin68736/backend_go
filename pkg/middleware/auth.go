@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"tukifac/config"
+	"tukifac/pkg/database"
+	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -23,9 +25,14 @@ type TenantClaims struct {
 	PlanID      uint     `json:"plan_id"`      // Plan activo al momento del login
 	Modules     []string `json:"modules"`      // Módulos habilitados (fuente: BD central al login)
 	Permissions []string `json:"permissions"`  // Permisos del rol en formato "module.action"
-	RestaurantRole string   `json:"restaurant_role"` // Rol operativo en módulo restaurante: admin, vendedor, mozo, cocinero (vacío = sin acceso)
-	Status      string   `json:"status"`        // Estado del tenant al momento del login
+	EmployeeType   string `json:"employee_type"` // admin, cashier, waiter, cook, driver, supervisor
+	AuthMethod     string `json:"am,omitempty"`    // pwd | pin (vacío = pwd)
+	PermVer        uint   `json:"pv,omitempty"`    // versión cache permisos restaurante
+	StaffID        uint   `json:"sid,omitempty"`   // tenant_restaurant_staff.id
+	Status         string `json:"status"`          // Estado del tenant al momento del login
 	Type        string   `json:"type"`         // "tenant"
+	ActiveBranchID       uint `json:"active_branch_id"`
+	BranchSessionVersion uint `json:"branch_session_version"`
 	jwt.RegisteredClaims
 }
 
@@ -108,12 +115,38 @@ func TenantAuthAPI() fiber.Handler {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token inválido o expirado"})
 		}
 
-		// Verificar estado del tenant desde el JWT (sin consultar BD central)
-		if claims.Status != "active" {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error":  "Cuenta suspendida. Contacte al administrador.",
-				"status": claims.Status,
-			})
+		tenant, _ := c.Locals("tenant").(*database.Tenant)
+		path := c.Path()
+		method := c.Method()
+
+		// Billing Hub: suspendido/bloqueado pueden GET; solo suspendido/active pueden POST pago.
+		if IsSubscriptionHubPath(path) {
+			if tenant == nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Contexto de empresa no encontrado"})
+			}
+			if !TenantAllowsBillingHubRead(tenant) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error":  "Acceso al portal de pagos no permitido",
+					"status": tenant.Status,
+				})
+			}
+			if IsSubscriptionPaymentSubmit(path, method) {
+				if err := saas.CanTenantSubmitPayment(tenant); err != nil {
+					return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+						"error": err.Error(),
+						"code":  "PAYMENT_BLOCKED",
+					})
+				}
+			}
+		} else if tenant != nil {
+			// ERP: estado en tiempo real (provisional, grace, día de vencimiento).
+			view, err := saas.GetTenantView(tenant.ID)
+			if err != nil || !view.CanOperate {
+				return c.Status(fiber.StatusPaymentRequired).JSON(fiber.Map{
+					"error": "Acceso operativo restringido por suscripción",
+					"code":  "SUBSCRIPTION_REQUIRED",
+				})
+			}
 		}
 
 		// Inyectar datos en Locals para handlers y middleware de módulos
@@ -121,7 +154,7 @@ func TenantAuthAPI() fiber.Handler {
 		c.Locals("user_email", claims.Email)
 		c.Locals("user_role_id", claims.RoleID)
 		c.Locals("user_role", claims.RoleName)
-		c.Locals("restaurant_role", claims.RestaurantRole)
+		c.Locals("employee_type", claims.EmployeeType)
 		c.Locals("tenant_claims", claims) // acceso completo a claims para RequireModule
 		c.Locals("permissions", claims.Permissions)
 		return c.Next()
@@ -211,50 +244,25 @@ func SuperAdminAuthAPI() fiber.Handler {
 	}
 }
 
-// RequireRestaurantRole verifica que el usuario tenga uno de los roles operativos del restaurante.
-// Roles: admin, vendedor, mozo, cocinero. Solo aplica en rutas del módulo restaurant.
-func RequireRestaurantRole(allowedRoles ...string) fiber.Handler {
-	allowed := make(map[string]struct{}, len(allowedRoles))
-	for _, r := range allowedRoles {
-		allowed[r] = struct{}{}
-	}
-	return func(c fiber.Ctx) error {
-		claims, ok := c.Locals("tenant_claims").(*TenantClaims)
-		if !ok || claims == nil {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Sin contexto de autenticación"})
-		}
-		role := claims.RestaurantRole
-		if role == "" {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "No tienes un rol asignado en el módulo restaurante. Contacta al administrador.",
-			})
-		}
-		if _, ok := allowed[role]; !ok {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "No tienes permiso para esta acción en el restaurante",
-				"role":  role,
-			})
-		}
-		return c.Next()
-	}
-}
-
-// RequireRestaurantAdminOrTenantAdmin permite acceso si el usuario es admin de restaurante O administrador del tenant.
-// Útil para gestionar roles de restaurante desde el panel tenant.
+// RequireRestaurantAdminOrTenantAdmin gestión staff/config (permiso s.m o admin tenant).
 func RequireRestaurantAdminOrTenantAdmin() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		claims, ok := c.Locals("tenant_claims").(*TenantClaims)
 		if !ok || claims == nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Sin contexto de autenticación"})
 		}
-		if claims.RestaurantRole == "admin" {
-			return c.Next()
-		}
 		if claims.RoleName == "Administrador" {
 			return c.Next()
 		}
+		if HasRestaurantPerm(c, "s.m") {
+			return c.Next()
+		}
+		et := claims.EmployeeType
+		if et == "admin" || et == "supervisor" {
+			return c.Next()
+		}
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"error": "Se requiere ser administrador del restaurante o del tenant",
+			"error": "Se requiere permiso de administración del restaurante",
 		})
 	}
 }

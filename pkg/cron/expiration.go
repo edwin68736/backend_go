@@ -4,8 +4,10 @@ import (
 	"log/slog"
 	"time"
 
+	"tukifac/pkg/cronlock"
 	"tukifac/pkg/database"
 	"tukifac/pkg/logger"
+	"tukifac/pkg/saas"
 )
 
 const schemaPollInterval = 10 * time.Second
@@ -56,10 +58,18 @@ func checkExpirations() {
 		return
 	}
 
-	now := time.Now()
+	now := saas.NowLima()
+	today := now.Format("2006-01-02")
+	release, acquired := cronlock.TryAcquireDaily("saas:expiration", today, 23*time.Hour)
+	if !acquired {
+		return
+	}
+	defer release()
+
+	todayStart := saas.CalendarDateLima(now)
 	var expired []database.SaasSubscription
 	if err := database.CentralDB.
-		Where("status = 'active' AND end_date < ?", now).
+		Where("status = 'active' AND end_date < ?", todayStart).
 		Find(&expired).Error; err != nil {
 		logger.L.Error("cron_expiration_query_failed",
 			slog.String("job", "expiration_checker"),

@@ -48,9 +48,29 @@ func TestMatcherDevLocalhost(t *testing.T) {
 	}
 	m := NewMatcher(cfg)
 
-	for _, o := range []string{"http://localhost:3000", "http://localhost:5173"} {
+	for _, o := range []string{
+		"http://localhost:3000",
+		"http://localhost:5173",
+		"http://angel.localhost:5173",
+		"http://empresa.localhost:5174",
+	} {
 		if !m.Allow(o) {
 			t.Errorf("expected allowed in dev: %s", o)
 		}
+	}
+}
+
+func TestMatcherProductionDeniesLocalhostSubdomains(t *testing.T) {
+	cfg := &config.Config{
+		AppEnv:             "production",
+		AppDomain:          "tukifac.com",
+		APIPublicURL:       "https://api.tukifac.com",
+		FrontendURL:        "https://app.tukifac.com",
+		CentralFrontendURL: "https://app.tukifac.com",
+		ReservedSubdomains: domains.MergeReserved(nil),
+	}
+	m := NewMatcher(cfg)
+	if m.Allow("http://angel.localhost:5173") {
+		t.Error("production must not allow angel.localhost")
 	}
 }

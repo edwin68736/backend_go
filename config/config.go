@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +12,16 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// QueryClass clasifica operaciones DB para timeouts.
+type QueryClass int
+
+const (
+	QueryRead QueryClass = iota
+	QueryWrite
+	QueryBilling
+	QueryReport
+)
+
 type Config struct {
 	// Base de datos central
 	DBHost        string
@@ -19,18 +30,53 @@ type Config struct {
 	DBPassword    string
 	CentralDBName string
 
-	// Pool MySQL (central + por cada BD tenant en sync.Map)
-	DBCentralMaxOpen     int
-	DBCentralMaxIdle     int
-	DBTenantMaxOpen      int
-	DBTenantMaxIdle      int
-	DBConnMaxLifetime    time.Duration
-	DBConnMaxIdleTime    time.Duration
-	TenantMetadataTTL time.Duration
+	// Pool MySQL (central + por cada BD tenant en TenantDBManager)
+	DBCentralMaxOpen  int
+	DBCentralMaxIdle  int
+	DBTenantMaxOpen   int
+	DBTenantMaxIdle   int
+	DBConnMaxLifetime time.Duration
+	DBConnMaxIdleTime time.Duration
+	DBReadTimeout     time.Duration
+	DBWriteTimeout    time.Duration
+	DBBillingTimeout  time.Duration
+	DBReportTimeout   time.Duration
+
+	// Tenant metadata cache (Redis + fallback central DB)
+	TenantMetadataTTL      time.Duration
+	TenantCacheNegativeTTL time.Duration
+	TenantCacheMaxStale    time.Duration
+
+	// TenantDBManager
+	TenantPoolIdleTTL       time.Duration
+	TenantPoolMaxActive     int
+	TenantPoolEvictInterval time.Duration
+
+	// Redis
+	RedisURL      string
+	RedisPoolSize int
+
+	// Billing async queue (Redis LIST)
+	BillingAsyncEnabled   bool
+	BillingQueueWorkers   int
+	BillingMaxRetries     int
+	BillingRetryBaseDelay time.Duration
 
 	// Migraciones CLI (lotes)
 	MigrationBatchSize  int
 	MigrationBatchPause time.Duration
+	MigrationAlertWebhook string
+	MigrationAlertEmail   string
+	FleetFailedThreshold          int
+	FleetCircuitBreakerThreshold  int
+	InternalAPIKey                string
+
+	// SMTP opcional (alertas migración)
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUser     string
+	SMTPPassword string
+	SMTPFrom     string
 
 	// Dominio raíz de tenants: empresa1.APP_DOMAIN (ej. tukifac.com).
 	// Alias env: ROOT_DOMAIN (tiene prioridad sobre APP_DOMAIN).
@@ -95,6 +141,22 @@ func (c *Config) IsProd() bool {
 	return c.AppEnv == "production"
 }
 
+// DBContext devuelve contexto con timeout según clase de query.
+func (c *Config) DBContext(class QueryClass) (context.Context, context.CancelFunc) {
+	var d time.Duration
+	switch class {
+	case QueryWrite:
+		d = c.DBWriteTimeout
+	case QueryBilling:
+		d = c.DBBillingTimeout
+	case QueryReport:
+		d = c.DBReportTimeout
+	default:
+		d = c.DBReadTimeout
+	}
+	return context.WithTimeout(context.Background(), d)
+}
+
 var AppConfig *Config
 
 func Load() error {
@@ -109,15 +171,45 @@ func Load() error {
 		DBPassword:    getEnv("DB_PASSWORD", ""),
 		CentralDBName: getEnv("CENTRAL_DB_NAME", "tukifac_saas"),
 
-		DBCentralMaxOpen:  getEnvInt("DB_CENTRAL_MAX_OPEN", 40),
-		DBCentralMaxIdle:  getEnvInt("DB_CENTRAL_MAX_IDLE", 15),
-		DBTenantMaxOpen:   getEnvInt("DB_TENANT_MAX_OPEN", 3),
-		DBTenantMaxIdle:   getEnvInt("DB_TENANT_MAX_IDLE", 2),
+		DBCentralMaxOpen:  getEnvInt("DB_CENTRAL_MAX_OPEN", 25),
+		DBCentralMaxIdle:  getEnvInt("DB_CENTRAL_MAX_IDLE", 10),
+		DBTenantMaxOpen:   getEnvInt("DB_TENANT_MAX_OPEN", 2),
+		DBTenantMaxIdle:   getEnvInt("DB_TENANT_MAX_IDLE", 1),
 		DBConnMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", "30m"),
 		DBConnMaxIdleTime: getEnvDuration("DB_CONN_MAX_IDLE_TIME", "5m"),
-		TenantMetadataTTL:   getEnvDuration("TENANT_METADATA_TTL", "5m"),
-		MigrationBatchSize:  getEnvInt("MIGRATION_BATCH_SIZE", 50),
-		MigrationBatchPause: getEnvDuration("MIGRATION_BATCH_PAUSE", "2s"),
+		DBReadTimeout:     getEnvDuration("DB_READ_TIMEOUT", "3s"),
+		DBWriteTimeout:    getEnvDuration("DB_WRITE_TIMEOUT", "5s"),
+		DBBillingTimeout:  getEnvDuration("DB_BILLING_TIMEOUT", "45s"),
+		DBReportTimeout:   getEnvDuration("DB_REPORT_TIMEOUT", "15s"),
+
+		TenantMetadataTTL:      getEnvDuration("TENANT_METADATA_TTL", "10m"),
+		TenantCacheNegativeTTL: getEnvDuration("TENANT_CACHE_NEGATIVE_TTL", "60s"),
+		TenantCacheMaxStale:    getEnvDuration("TENANT_CACHE_MAX_STALE", "2m"),
+
+		TenantPoolIdleTTL:       getEnvDuration("TENANT_POOL_IDLE_TTL", "25m"),
+		TenantPoolMaxActive:     getEnvInt("TENANT_POOL_MAX_ACTIVE", 200),
+		TenantPoolEvictInterval: getEnvDuration("TENANT_POOL_EVICT_INTERVAL", "2m"),
+
+		RedisURL:      getEnv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+		RedisPoolSize: getEnvInt("REDIS_POOL_SIZE", 32),
+
+		BillingAsyncEnabled:   getEnvBool("BILLING_ASYNC_ENABLED", true),
+		BillingQueueWorkers:   getEnvInt("BILLING_QUEUE_WORKERS", 4),
+		BillingMaxRetries:     getEnvInt("BILLING_MAX_RETRIES", 5),
+		BillingRetryBaseDelay: getEnvDuration("BILLING_RETRY_BASE_DELAY", "30s"),
+		MigrationBatchSize:    getEnvInt("MIGRATION_BATCH_SIZE", 50),
+		MigrationBatchPause:   getEnvDuration("MIGRATION_BATCH_PAUSE", "2s"),
+		MigrationAlertWebhook: getEnv("MIGRATION_ALERT_WEBHOOK", ""),
+		MigrationAlertEmail:   getEnv("MIGRATION_ALERT_EMAIL", ""),
+		FleetFailedThreshold:         getEnvInt("FLEET_FAILED_THRESHOLD", 25),
+		FleetCircuitBreakerThreshold: getEnvInt("FLEET_CIRCUIT_BREAKER_THRESHOLD", 10),
+		InternalAPIKey:               getEnv("INTERNAL_API_KEY", ""),
+
+		SMTPHost:     getEnv("SMTP_HOST", ""),
+		SMTPPort:     getEnvInt("SMTP_PORT", 587),
+		SMTPUser:     getEnv("SMTP_USER", ""),
+		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
+		SMTPFrom:     getEnv("SMTP_FROM", "noreply@tukifac.com"),
 
 		AppDomain:          resolveRootDomain(),
 		APIPublicURL:       strings.TrimSpace(getEnv("API_PUBLIC_URL", "")),

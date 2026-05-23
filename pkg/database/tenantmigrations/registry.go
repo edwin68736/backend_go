@@ -1,0 +1,33 @@
+package tenantmigrations
+
+// TenantMigrations migraciones ordenadas (> baseline V30). Solo versiones nuevas.
+var TenantMigrations = []TenantMigration{
+	V031MultiBranch{},
+	V032RestaurantOrders{},
+	V033DeliveryDriversTimestamps{},
+	V034RestaurantSettingsDeletionPin{},
+	V035RestaurantStaff{},
+	V036StaffDefinitive{},
+	V037StaffSchemaRepair{},
+	V038CashSessionsPerUser{},
+}
+
+// ByVersion mapa versión → migración.
+func ByVersion() map[int]TenantMigration {
+	m := make(map[int]TenantMigration, len(TenantMigrations))
+	for _, mig := range TenantMigrations {
+		m[mig.Version()] = mig
+	}
+	return m
+}
+
+// MaxVersion última versión definida en el registry.
+func MaxVersion() int {
+	max := 0
+	for _, mig := range TenantMigrations {
+		if v := mig.Version(); v > max {
+			max = v
+		}
+	}
+	return max
+}

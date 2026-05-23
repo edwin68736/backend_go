@@ -73,6 +73,45 @@ func (s *InventoryService) recordMovementTx(tx *gorm.DB, input MovementInput) er
 	}).Error
 }
 
+// EnsureProductBranchLink crea fila de stock en 0 si no existe (asigna el producto a la sucursal para carta/POS).
+func (s *InventoryService) EnsureProductBranchLink(productID, branchID uint) error {
+	if productID == 0 || branchID == 0 {
+		return errors.New("producto y sucursal son requeridos")
+	}
+	var stock database.TenantProductStock
+	err := s.db.Where("product_id = ? AND branch_id = ?", productID, branchID).First(&stock).Error
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return s.db.Create(&database.TenantProductStock{
+		ProductID: productID,
+		BranchID:  branchID,
+		Quantity:  0,
+	}).Error
+}
+
+// RecordInitialStock registra entrada inicial (kardex tipo in, referencia STOCK_INICIAL).
+func (s *InventoryService) RecordInitialStock(productID, branchID uint, quantity float64, userID uint, notes string) error {
+	if quantity <= 0 {
+		return nil
+	}
+	if notes == "" {
+		notes = "Stock inicial"
+	}
+	return s.RecordMovement(MovementInput{
+		ProductID: productID,
+		BranchID:  branchID,
+		Type:      "in",
+		Quantity:  quantity,
+		Reference: "STOCK_INICIAL",
+		Notes:     notes,
+		UserID:    userID,
+	})
+}
+
 // RecordMovement registra un movimiento de inventario y actualiza el stock.
 func (s *InventoryService) RecordMovement(input MovementInput) error {
 	if input.ProductID == 0 || input.BranchID == 0 {

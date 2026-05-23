@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	invsvc "tukifac/internal/inventory/service"
 	"tukifac/internal/products/service"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
@@ -186,12 +188,20 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		PreparationArea    string  `json:"preparation_area"`
 		ImageURL           string  `json:"image_url"`
 		ModifierGroupIDs   []uint  `json:"modifier_group_ids"`
+		InitialStock       float64 `json:"initial_stock"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
 	if body.Name == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "El nombre del producto es requerido"})
+	}
+	if body.InitialStock < 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "initial_stock no puede ser negativo"})
+	}
+	manageStock := body.ManageStock
+	if body.InitialStock > 0 {
+		manageStock = true
 	}
 	taxCfg := tax.LoadFromDB(db(c))
 	igvType := body.IgvAffectationType
@@ -210,7 +220,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		TaxRate:            taxCfg.EffectiveRate(igvType),
 		IgvAffectationType: igvType,
 		PriceIncludesIgv:   body.PriceIncludesIgv,
-		ManageStock:        body.ManageStock,
+		ManageStock:        manageStock,
 		ManageSeries:       body.ManageSeries,
 		HasVariants:        body.HasVariants,
 		HasModifiers:       body.HasModifiers,
@@ -224,6 +234,42 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	p, err := service.NewProductService(db(c)).Create(input)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	branchID, berr := branch.ResolveWriteBranchID(c, 0)
+	if body.IsRestaurant && berr == nil && branchID > 0 {
+		inv := invsvc.NewInventoryService(db(c))
+		if body.InitialStock > 0 {
+			if !p.ManageStock {
+				_ = service.NewProductService(db(c)).Delete(p.ID)
+				return c.Status(400).JSON(fiber.Map{"error": "stock inicial requiere control de inventario activo"})
+			}
+			uid, _ := c.Locals("user_id").(uint)
+			if err := inv.RecordInitialStock(
+				p.ID, branchID, body.InitialStock, uid, "Stock inicial — alta de producto",
+			); err != nil {
+				_ = service.NewProductService(db(c)).Delete(p.ID)
+				return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+			}
+		} else if err := inv.EnsureProductBranchLink(p.ID, branchID); err != nil {
+			_ = service.NewProductService(db(c)).Delete(p.ID)
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
+	} else if body.InitialStock > 0 {
+		if !p.ManageStock {
+			_ = service.NewProductService(db(c)).Delete(p.ID)
+			return c.Status(400).JSON(fiber.Map{"error": "stock inicial requiere control de inventario activo"})
+		}
+		if berr != nil {
+			_ = service.NewProductService(db(c)).Delete(p.ID)
+			return c.Status(403).JSON(fiber.Map{"error": berr.Error(), "code": branch.CodeBranchForbidden})
+		}
+		uid, _ := c.Locals("user_id").(uint)
+		if err := invsvc.NewInventoryService(db(c)).RecordInitialStock(
+			p.ID, branchID, body.InitialStock, uid, "Stock inicial — alta de producto",
+		); err != nil {
+			_ = service.NewProductService(db(c)).Delete(p.ID)
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	return c.Status(201).JSON(fiber.Map{"data": p})
 }
@@ -352,8 +398,13 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 			params.StockLessThan = &x
 		}
 	}
-	if bid, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil && bid > 0 {
-		params.BranchID = uint(bid)
+	if reqB, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil && reqB > 0 {
+		params.BranchID = branch.ResolveReadBranchFilter(c, uint(reqB))
+	} else if branch.ActiveBranchID(c) > 0 {
+		msOnly := c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1"
+		if msOnly || params.RestaurantOnly {
+			params.BranchID = branch.ActiveBranchID(c)
+		}
 	}
 	if perPage > 0 {
 		params.Limit = perPage

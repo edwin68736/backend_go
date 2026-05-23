@@ -1,0 +1,230 @@
+package saas
+
+import (
+	"fmt"
+	"strings"
+
+	"tukifac/pkg/database"
+)
+
+// BillingHub respuesta única para /subscription (tenant).
+type BillingHub struct {
+	Subscription   TenantSubscriptionView `json:"subscription"`
+	BillingContext BillingContextView     `json:"billing_context"`
+	PaymentConfig    PaymentConfigView      `json:"payment_config"`
+	Support          SupportConfig          `json:"support"`
+	StatusBanner     StatusBannerView       `json:"status_banner"`
+	Documents        DocumentUsageHubView `json:"documents"`
+	DocumentPackages []CatalogPackageHubView `json:"document_packages,omitempty"`
+	Invoices         []InvoiceView          `json:"invoices"`
+	Payments         []PaymentView          `json:"payments"`
+	Events           []TimelineEventView    `json:"events"`
+}
+
+type StatusBannerView struct {
+	Variant string `json:"variant"` // info, warning, danger, success
+	Message string `json:"message"`
+}
+
+type InvoiceView struct {
+	ID              uint    `json:"id"`
+	Amount          float64 `json:"amount"`
+	ReconnectionFee float64 `json:"reconnection_fee"`
+	Currency        string  `json:"currency"`
+	Status          string  `json:"status"`
+	DueDate         string  `json:"due_date"`
+	PeriodStart     string  `json:"period_start"`
+	PeriodEnd       string  `json:"period_end"`
+	ProvisionalUsed bool    `json:"provisional_used"`
+}
+
+type PaymentView struct {
+	ID            uint    `json:"id"`
+	Amount        float64 `json:"amount"`
+	PaymentMethod string  `json:"payment_method"`
+	Status        string  `json:"status"`
+	Reference     string  `json:"reference"`
+	PaymentDate   string  `json:"payment_date,omitempty"`
+	RejectReason  string  `json:"reject_reason,omitempty"`
+	CreatedAt     string  `json:"created_at"`
+}
+
+// DocumentUsageHubView resumen documentos (rellenado desde docusage en handler o AttachDocumentsToHub).
+type DocumentUsageHubView struct {
+	IsUnlimited      bool   `json:"is_unlimited"`
+	PlanLimit        int    `json:"plan_limit"`
+	PlanUsed         int    `json:"plan_used"`
+	PlanRemaining    int    `json:"plan_remaining"`
+	PackageBonus     int    `json:"package_bonus"`
+	PackageUsed      int    `json:"package_used"`
+	PackageRemaining int    `json:"package_remaining"`
+	TotalAvailable   int    `json:"total_available"`
+	TotalConsumed    int    `json:"total_consumed"`
+	UsagePercent     int    `json:"usage_percent"`
+	WarningLevel     string `json:"warning_level"`
+	WarningMessage   string `json:"warning_message,omitempty"`
+	CanEmit          bool   `json:"can_emit"`
+	BillingCycleEnd  string `json:"billing_cycle_end,omitempty"`
+}
+
+type CatalogPackageHubView struct {
+	ID           uint    `json:"id"`
+	Name         string  `json:"name"`
+	Description  string  `json:"description"`
+	DocumentsQty int     `json:"documents_qty"`
+	Price        float64 `json:"price"`
+	Currency     string  `json:"currency"`
+}
+
+type TimelineEventView struct {
+	ID        uint   `json:"id"`
+	EventType string `json:"event_type"`
+	Label     string `json:"label"`
+	Reason    string `json:"reason"`
+	CreatedAt string `json:"created_at"`
+}
+
+// GetBillingHub agrega todo el contexto de cobro para el tenant.
+func GetBillingHub(tenantID uint) (BillingHub, error) {
+	cfg, _ := LoadSettings()
+	sub, err := GetTenantView(tenantID)
+	if err != nil {
+		return BillingHub{}, err
+	}
+	sub.PortalURL = strings.TrimSpace(cfg.PortalURLOverride)
+	sub.NextBillingDate = sub.EndDate
+	if sub.PendingInvoiceID > 0 {
+		var inv database.SaasBillingCycle
+		if database.CentralDB.First(&inv, sub.PendingInvoiceID).Error == nil {
+			sub.NextBillingDate = inv.DueDate.In(lima()).Format(timeRFC3339Lima)
+		}
+	}
+
+	ux := BuildBillingContext(sub, cfg, tenantID)
+	banner := StatusBannerView{Variant: "success", Message: "Tu suscripción está activa."}
+	if ux.ShowStatusBanner {
+		banner = StatusBannerView{Variant: ux.StatusBannerVariant, Message: ux.StatusBannerMessage}
+	}
+
+	hub := BillingHub{
+		Subscription:   sub,
+		BillingContext: ux,
+		PaymentConfig:  TenantPaymentConfig(cfg),
+		Support:        cfg.Support,
+		StatusBanner:   banner,
+		Invoices:       ListInvoicesView(tenantID),
+		Payments:       ListPaymentsView(tenantID),
+		Events:         ListTimelineEvents(tenantID),
+	}
+	return hub, nil
+}
+
+// ListInvoicesView facturas/ciclos del tenant.
+func ListInvoicesView(tenantID uint) []InvoiceView {
+	var cycles []database.SaasBillingCycle
+	database.CentralDB.Where("tenant_id = ?", tenantID).Order("due_date desc").Limit(24).Find(&cycles)
+	out := make([]InvoiceView, 0, len(cycles))
+	for _, c := range cycles {
+		out = append(out, InvoiceView{
+			ID: c.ID, Amount: c.Amount, ReconnectionFee: c.ReconnectionFee, Currency: c.Currency,
+			Status: c.Status, ProvisionalUsed: c.ProvisionalUsed,
+			DueDate: c.DueDate.In(lima()).Format(timeRFC3339Lima),
+			PeriodStart: c.PeriodStart.In(lima()).Format(timeRFC3339Lima),
+			PeriodEnd: c.PeriodEnd.In(lima()).Format(timeRFC3339Lima),
+		})
+	}
+	return out
+}
+
+// ListPaymentsView historial de pagos del tenant.
+func ListPaymentsView(tenantID uint) []PaymentView {
+	var rows []database.SaasPayment
+	database.CentralDB.Where("tenant_id = ?", tenantID).Order("created_at desc").Limit(50).Find(&rows)
+	out := make([]PaymentView, 0, len(rows))
+	for _, p := range rows {
+		v := PaymentView{
+			ID: p.ID, Amount: p.Amount, PaymentMethod: p.PaymentMethod, Status: p.Status,
+			Reference: p.Reference, CreatedAt: p.CreatedAt.In(lima()).Format(timeRFC3339Lima),
+		}
+		if p.PaymentDate != nil {
+			v.PaymentDate = p.PaymentDate.In(lima()).Format("2006-01-02")
+		}
+		if p.Status == database.SaasPayRejected {
+			v.RejectReason = p.AdminNotes
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// ListTimelineEvents auditoría visible para el tenant.
+func ListTimelineEvents(tenantID uint) []TimelineEventView {
+	var rows []database.SaasSubscriptionEvent
+	database.CentralDB.Where("tenant_id = ?", tenantID).Order("created_at desc").Limit(40).Find(&rows)
+	out := make([]TimelineEventView, 0, len(rows))
+	for _, e := range rows {
+		out = append(out, TimelineEventView{
+			ID: e.ID, EventType: e.EventType, Label: EventLabel(e.EventType),
+			Reason: e.Reason, CreatedAt: e.CreatedAt.In(lima()).Format(timeRFC3339Lima),
+		})
+	}
+	return out
+}
+
+// EventLabel etiqueta humana para timeline.
+func EventLabel(t string) string {
+	switch t {
+	case EventProvisionalGranted:
+		return "Acceso provisional concedido"
+	case EventPaymentRejected:
+		return "Pago rechazado"
+	case EventTenantBlocked:
+		return "Cuenta bloqueada"
+	case EventTenantUnblocked:
+		return "Cuenta desbloqueada"
+	case EventPaymentApproved:
+		return "Pago aprobado"
+	case EventSuspended:
+		return "Servicio suspendido"
+	case EventReactivated:
+		return "Servicio reactivado"
+	default:
+		return t
+	}
+}
+
+// BuildStatusBanner mensaje principal para UI.
+func BuildStatusBanner(sub TenantSubscriptionView, cfg PlatformSettings) StatusBannerView {
+	if sub.IsBlocked {
+		return StatusBannerView{Variant: "danger", Message: sub.SupportMessage}
+	}
+	if sub.HasPendingPaymentReview {
+		return StatusBannerView{Variant: "info", Message: "Tienes un pago en validación. Te avisaremos cuando sea aprobado."}
+	}
+	if sub.Status == database.SaasSubProvisionalActive && sub.ProvisionalHoursLeft > 0 {
+		return StatusBannerView{
+			Variant: "success",
+			Message: fmt.Sprintf("Acceso provisional activo (%d h restantes aprox.)", sub.ProvisionalHoursLeft),
+		}
+	}
+	if sub.IsSuspended || !sub.CanOperate {
+		return StatusBannerView{
+			Variant: "warning",
+			Message: fmt.Sprintf("Tu cuenta está suspendida. Monto pendiente: S/ %.2f", sub.PendingAmount),
+		}
+	}
+	if sub.InGracePeriod {
+		return StatusBannerView{Variant: "warning", Message: "Periodo de gracia: realiza tu pago para evitar la suspensión."}
+	}
+	if sub.ShowRenewalBanner && sub.DaysUntilExpiry > 0 {
+		return StatusBannerView{
+			Variant: "info",
+			Message: fmt.Sprintf("Tu plan vence en %d día(s)", sub.DaysUntilExpiry),
+		}
+	}
+	if sub.IsOverdue {
+		return StatusBannerView{Variant: "warning", Message: "Tu suscripción está vencida. Regulariza tu pago."}
+	}
+	_ = cfg
+	return StatusBannerView{Variant: "success", Message: "Tu suscripción está activa."}
+}

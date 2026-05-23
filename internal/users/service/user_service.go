@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 
 	"gorm.io/gorm"
@@ -78,6 +79,14 @@ func (s *UserService) Create(input CreateUserInput) (*database.TenantUser, error
 		Phone:    input.Phone,
 		Active:   input.Active,
 	}
+	if database.TenantBranchMultiSchemaReady(s.db) {
+		home := input.BranchID
+		user.HomeBranchID = home
+		var role database.TenantRole
+		if err := s.db.First(&role, input.RoleID).Error; err == nil {
+			user.CanSwitchBranch = branch.IsTenantAdmin(role.Name)
+		}
+	}
 	if err := user.SetPassword(input.Password); err != nil {
 		return nil, err
 	}
@@ -104,12 +113,24 @@ func (s *UserService) Update(id uint, input UpdateUserInput) error {
 	}
 
 	updates := map[string]interface{}{
-		"name":     input.Name,
-		"email":    input.Email,
-		"phone":    input.Phone,
-		"role_id":  input.RoleID,
-		"active":   input.Active,
+		"name":      input.Name,
+		"email":     input.Email,
+		"phone":     input.Phone,
+		"role_id":   input.RoleID,
+		"active":    input.Active,
 		"branch_id": input.BranchID,
+	}
+	if database.TenantBranchMultiSchemaReady(s.db) {
+		updates["home_branch_id"] = input.BranchID
+		var role database.TenantRole
+		if err := s.db.First(&role, input.RoleID).Error; err == nil {
+			updates["can_switch_branch"] = branch.IsTenantAdmin(role.Name)
+		}
+	}
+	if user.BranchID != nil && input.BranchID != nil && *user.BranchID != *input.BranchID {
+		_ = branch.BumpSessionVersion(s.db, id)
+	} else if (user.BranchID == nil) != (input.BranchID == nil) {
+		_ = branch.BumpSessionVersion(s.db, id)
 	}
 
 	if input.Password != "" {

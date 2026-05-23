@@ -6,11 +6,12 @@ import (
 	"strings"
 	"time"
 
-	subssvc "tukifac/internal/subscriptions/service"
 	usersvc "tukifac/internal/users/service"
 	"tukifac/config"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/saas"
+	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/utils"
 
 	"gorm.io/gorm"
@@ -40,7 +41,8 @@ type CreateTenantInput struct {
 	SubscriptionMonths int    `json:"subscription_months"` // duración en meses de la suscripción al crear (0 = no crear suscripción automática)
 }
 
-func (s *TenantService) Create(input CreateTenantInput) (*database.Tenant, error) {
+// Create provisioning completo y transaccional (rollback automático si falla cualquier paso).
+func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant, err error) {
 	if input.Name == "" {
 		return nil, errors.New("el nombre es requerido")
 	}
@@ -48,173 +50,124 @@ func (s *TenantService) Create(input CreateTenantInput) (*database.Tenant, error
 		return nil, errors.New("email y contraseña del administrador son requeridos")
 	}
 
-	var slug string
-	if input.Slug != "" {
-		normalized, err := utils.NormalizeSubdomain(input.Slug)
-		if err != nil {
-			return nil, err
-		}
-		slug = normalized
-	} else {
-		slug = utils.Slugify(input.Name)
-		if slug == "" {
-			return nil, errors.New("nombre inválido para generar subdominio")
-		}
-		// Quitar guiones para mantener subdominio corto cuando se genera desde el nombre
-		slug = strings.ReplaceAll(slug, "-", "")
-		if len(slug) < 2 {
-			slug = utils.Slugify(input.Name) // fallback con guiones si queda muy corto
-		}
+	slug, err := resolveCreateSlug(input)
+	if err != nil {
+		return nil, err
 	}
-
 	if config.AppConfig != nil && config.AppConfig.IsReservedSubdomain(slug) {
 		return nil, fmt.Errorf("el subdominio %q está reservado (api, app, www, etc.). Elige otro identificador", slug)
 	}
-
-	// Verificar que el slug sea único
-	var existing database.Tenant
-	if err := s.db.Where("slug = ?", slug).First(&existing).Error; err == nil {
+	var slugCount int64
+	if err = s.db.Unscoped().Model(&database.Tenant{}).Where("slug = ?", slug).Count(&slugCount).Error; err != nil {
+		return nil, err
+	}
+	if slugCount > 0 {
 		return nil, errors.New("ya existe una empresa con ese subdominio. Elige otro identificador")
 	}
 
-	dbName := "saas_tenant_" + slug
-	plan := input.Plan
+	plan := strings.TrimSpace(input.Plan)
 	if plan == "" {
 		plan = "trial"
 	}
+	months := input.SubscriptionMonths
+	if months <= 0 {
+		months = 1
+	}
 
+	dbName := "saas_tenant_" + slug
 	trialEnd := time.Now().AddDate(0, 0, 30)
-	tenant := &database.Tenant{
-		Name:        input.Name,
-		Slug:        slug,
-		DBName:      dbName,
-		Plan:        plan,
-		Status:      "active",
-		Email:       input.Email,
-		Phone:       input.Phone,
-		RUC:         input.RUC,
-		Address:     input.Address,
-		Ubigeo:      input.Ubigeo,
-		TrialEndsAt: &trialEnd,
+	tenant = &database.Tenant{
+		Name: input.Name, Slug: slug, DBName: dbName, Plan: plan, Status: "active",
+		Email: input.Email, Phone: input.Phone, RUC: input.RUC,
+		Address: input.Address, Ubigeo: input.Ubigeo, TrialEndsAt: &trialEnd,
 	}
 
-	if err := s.db.Create(tenant).Error; err != nil {
-		return nil, fmt.Errorf("creando tenant: %w", err)
+	defer func() {
+		if err != nil {
+			database.RollbackTenantProvision(s.db, tenant.ID, dbName)
+		}
+	}()
+
+	// 1. Tenant central
+	if err = s.db.Create(tenant).Error; err != nil {
+		return nil, fmt.Errorf("creando tenant central: %w", err)
+	}
+	middleware.InvalidateTenantCache(slug)
+
+	seedIn := database.TenantSeedInput{
+		AdminEmail: input.AdminEmail, AdminPassword: input.AdminPassword,
+		CompanyName: input.Name, RUC: input.RUC,
+		Address: input.Address, Ubigeo: input.Ubigeo,
+		Phone: input.Phone, Email: input.Email,
 	}
 
-	// Crear la base de datos del tenant
-	if err := database.CreateTenantDB(dbName); err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
-		return nil, fmt.Errorf("creando BD del tenant: %w", err)
+	// 2–4. BD + migrate + seed (transacción en BD tenant)
+	if err = database.ProvisionTenantDB(dbName, seedIn); err != nil {
+		return nil, err
 	}
 
-	database.RemoveTenantFromPool(dbName)
-	if err := database.MigrateTenantSchema(dbName); err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
-		return nil, fmt.Errorf("migrando esquema del tenant: %w", err)
+	if err = database.UpsertTenantSchemaVersion(
+		tenant.ID, database.TenantSchemaTargetVersion, database.TenantSchemaTargetVersion,
+		database.TenantSchemaStatusCompleted,
+	); err != nil {
+		return nil, fmt.Errorf("registro tenant_schema_versions: %w", err)
 	}
+
 	tenantDB, err := database.GetTenantDB(dbName)
 	if err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
-		return nil, fmt.Errorf("conectando BD del tenant: %w", err)
+		return nil, fmt.Errorf("conectando BD tenant: %w", err)
 	}
+	defer database.ReleaseTenantDB(dbName)
 
-	// Seed inicial del tenant (incluye domicilio fiscal: dirección y ubigeo del formulario)
-	if err := database.SeedTenant(tenantDB, input.AdminEmail, input.AdminPassword, input.Name, input.RUC, input.Address, input.Ubigeo); err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
-		return nil, fmt.Errorf("inicializando datos del tenant: %w", err)
-	}
-
-	// Seed de permisos y asignación de todos los permisos al rol Administrador
 	roleSvc := usersvc.NewRoleService(tenantDB)
-	if err := roleSvc.SeedPermissions(); err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
-		return nil, fmt.Errorf("inicializando permisos del tenant: %w", err)
+	if err = roleSvc.SeedPermissions(); err != nil {
+		return nil, fmt.Errorf("inicializando permisos: %w", err)
 	}
 	perms, err := roleSvc.AllPermissions()
 	if err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
-		return nil, fmt.Errorf("listando permisos del tenant: %w", err)
+		return nil, fmt.Errorf("listando permisos: %w", err)
 	}
 	var adminRole database.TenantRole
-	if err := tenantDB.Where("name = ?", "Administrador").First(&adminRole).Error; err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
-		return nil, fmt.Errorf("rol Administrador no encontrado: %w", err)
+	if err = tenantDB.Where("name = ?", "Administrador").First(&adminRole).Error; err != nil {
+		return nil, fmt.Errorf("rol Administrador: %w", err)
 	}
 	permIDs := make([]uint, len(perms))
 	for i, p := range perms {
 		permIDs[i] = p.ID
 	}
-	if err := roleSvc.SetRolePermissions(adminRole.ID, permIDs); err != nil {
-		s.rollbackNewTenant(tenant.ID, dbName)
+	if err = roleSvc.SetRolePermissions(adminRole.ID, permIDs); err != nil {
 		return nil, fmt.Errorf("asignando permisos al Administrador: %w", err)
 	}
 
-	// Activar módulos base
-	baseModules := []string{"sales", "purchases", "inventory", "cashbank", "contacts", "products"}
-	for _, mod := range baseModules {
-		s.db.Create(&database.TenantModule{
-			TenantID:   tenant.ID,
-			ModuleKey:  mod,
-			Enabled:    true,
-			ConfigJSON: strPtr("{}"),
-		})
-	}
-	// Registrar módulos adicionales desactivados por defecto (catálogo extendido)
-	otherModules := []string{
-		"billing",
-		"restaurant",
-		"ecommerce",
-		"hotel",
-		"clinic",
-		"transport",
-		"manufacturing",
-		"memberships",
-		"hr",
-		"accounting",
-		"bi",
-		"fixedassets",
-		"documents",
-		"support",
-	}
-	for _, mod := range otherModules {
-		s.db.Create(&database.TenantModule{
-			TenantID:   tenant.ID,
-			ModuleKey:  mod,
-			Enabled:    false,
-			ConfigJSON: strPtr("{}"),
-		})
+	// 5–6. Suscripción + billing cycle (módulos según plan vía syncTenantModulesFromPlanTx)
+	if _, err = saas.ProvisionInitialSubscription(
+		tenant.ID, plan, months, "Suscripción creada al registrar la empresa",
+	); err != nil {
+		return nil, fmt.Errorf("suscripción SaaS: %w", err)
 	}
 
-	// Crear suscripción según el plan elegido y duración en meses (si se indicó)
-	if input.SubscriptionMonths > 0 && plan != "" {
-		var saasPlan database.SaasPlan
-		if err := s.db.Where("LOWER(name) = LOWER(?) AND active = ?", plan, true).First(&saasPlan).Error; err == nil {
-			subSvc := subssvc.NewSubscriptionService()
-			_, err = subSvc.Create(subssvc.CreateSubscriptionInput{
-				TenantID: tenant.ID,
-				PlanID:   saasPlan.ID,
-				Months:   input.SubscriptionMonths,
-				Notes:    "Suscripción creada al registrar la empresa",
-			})
-			if err != nil {
-				// No fallar la creación del tenant; solo quedaría sin suscripción
-				_ = err
-			}
-		}
-	}
-
+	saas.InvalidateTenantCache(tenant.ID)
 	return tenant, nil
 }
 
-// rollbackNewTenant revierte alta parcial: quita del pool, borra BD tenant y registro central.
-func (s *TenantService) rollbackNewTenant(tenantID uint, dbName string) {
-	database.RemoveTenantFromPool(dbName)
-	_ = database.DropTenantDB(dbName)
-	if tenantID > 0 {
-		s.db.Where("tenant_id = ?", tenantID).Delete(&database.TenantModule{})
-		s.db.Delete(&database.Tenant{}, tenantID)
+func resolveCreateSlug(input CreateTenantInput) (string, error) {
+	if input.Slug != "" {
+		return utils.NormalizeSubdomain(input.Slug)
 	}
+	slug := utils.Slugify(input.Name)
+	if slug == "" {
+		return "", errors.New("nombre inválido para generar subdominio")
+	}
+	slug = strings.ReplaceAll(slug, "-", "")
+	if len(slug) < 2 {
+		slug = utils.Slugify(input.Name)
+	}
+	return slug, nil
+}
+
+// rollbackNewTenant revierte alta parcial (purge central hard delete + drop BD).
+func (s *TenantService) rollbackNewTenant(tenantID uint, dbName string) {
+	database.RollbackTenantProvision(s.db, tenantID, dbName)
 }
 
 func (s *TenantService) List(query, status, regionID, provinciaID string) ([]database.Tenant, error) {
@@ -425,4 +378,65 @@ func (s *TenantService) Stats() (map[string]int64, error) {
 	stats["basic"] = basic
 	stats["pro"] = pro
 	return stats, nil
+}
+
+// DestroyTenantInput cuerpo para eliminación completa (clave de operaciones + confirmación de slug).
+type DestroyTenantInput struct {
+	OperationsKey string `json:"operations_key"`
+	ConfirmSlug   string `json:"confirm_slug"`
+}
+
+// DestroyTenantResult resumen de la eliminación física.
+type DestroyTenantResult struct {
+	TenantID      uint     `json:"tenant_id"`
+	Slug          string   `json:"slug"`
+	DBName        string   `json:"db_name"`
+	DBDropped     bool     `json:"db_dropped"`
+	CentralPurged bool     `json:"central_purged"`
+	PathsRemoved  []string `json:"paths_removed"`
+	FileErrors    []string `json:"file_errors,omitempty"`
+}
+
+// DestroyTenantComplete elimina BD tenant, datos centrales y archivos locales (no toca Lycet/SUNAT externo).
+func (s *TenantService) DestroyTenantComplete(id uint, input DestroyTenantInput) (*DestroyTenantResult, error) {
+	if err := saas.VerifyOperationsKey(input.OperationsKey); err != nil {
+		return nil, err
+	}
+	var tenant database.Tenant
+	if err := s.db.Unscoped().First(&tenant, id).Error; err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(input.ConfirmSlug) != tenant.Slug {
+		return nil, errors.New("confirm_slug no coincide con el subdominio del tenant")
+	}
+
+	res := &DestroyTenantResult{
+		TenantID: tenant.ID,
+		Slug:     tenant.Slug,
+		DBName:   tenant.DBName,
+	}
+
+	database.RemoveTenantFromPool(tenant.DBName)
+	if err := database.DropTenantDB(tenant.DBName); err != nil {
+		return nil, fmt.Errorf("eliminar BD tenant: %w", err)
+	}
+	res.DBDropped = true
+
+	invBase := ""
+	if config.AppConfig != nil {
+		invBase = config.AppConfig.InvoiceStoragePath
+	}
+	removed, fileErrs := tenantstorage.RemoveAllTenantFiles(tenant.ID, tenant.RUC, invBase)
+	res.PathsRemoved = removed
+	for _, e := range fileErrs {
+		res.FileErrors = append(res.FileErrors, e.Error())
+	}
+
+	if err := database.PurgeTenantCentralData(s.db, tenant.ID); err != nil {
+		return res, fmt.Errorf("purge central: %w", err)
+	}
+	res.CentralPurged = true
+	middleware.InvalidateTenantCache(tenant.Slug)
+	saas.InvalidateTenantCache(tenant.ID)
+	return res, nil
 }

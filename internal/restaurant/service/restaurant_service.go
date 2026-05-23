@@ -3,12 +3,15 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"tukifac/internal/restaurant/staff"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
 
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -38,53 +41,6 @@ func restaurantLinePayableTotal(db *gorm.DB, taxCfg tax.Config, productID *uint,
 	return total
 }
 
-// GetUserRestaurantRole retorna el rol operativo del usuario en el módulo restaurante.
-// Vacío si no tiene rol asignado.
-func (s *RestaurantService) GetUserRestaurantRole(userID uint) (string, error) {
-	var r database.TenantUserRestaurantRole
-	if err := s.db.Where("user_id = ?", userID).First(&r).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", nil
-		}
-		return "", err
-	}
-	return r.Role, nil
-}
-
-// SetUserRestaurantRole asigna o actualiza el rol restaurante de un usuario.
-// Role: admin, vendedor, mozo, cocinero. Vacío para quitar el rol.
-func (s *RestaurantService) SetUserRestaurantRole(userID uint, role string) error {
-	valid := map[string]bool{"admin": true, "vendedor": true, "mozo": true, "cocinero": true}
-	if role != "" && !valid[role] {
-		return errors.New("rol inválido: usa admin, vendedor, mozo o cocinero")
-	}
-	if role == "" {
-		return s.db.Where("user_id = ?", userID).Delete(&database.TenantUserRestaurantRole{}).Error
-	}
-	var r database.TenantUserRestaurantRole
-	err := s.db.Where("user_id = ?", userID).First(&r).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return s.db.Create(&database.TenantUserRestaurantRole{UserID: userID, Role: role}).Error
-	}
-	return s.db.Model(&r).Update("role", role).Error
-}
-
-// ListUserRestaurantRoles retorna el mapa user_id -> role para los usuarios del tenant.
-func (s *RestaurantService) ListUserRestaurantRoles() (map[uint]string, error) {
-	var list []database.TenantUserRestaurantRole
-	if err := s.db.Find(&list).Error; err != nil {
-		return nil, err
-	}
-	m := make(map[uint]string)
-	for _, r := range list {
-		m[r.UserID] = r.Role
-	}
-	return m, nil
-}
-
 // ============================= PISOS / SALAS =============================
 
 func (s *RestaurantService) GetRestaurantSettings() (*database.TenantRestaurantSetting, error) {
@@ -98,28 +54,77 @@ func (s *RestaurantService) GetRestaurantSettings() (*database.TenantRestaurantS
 	return &cfg, nil
 }
 
+func isDeletionPinConfigured(stored string) bool {
+	stored = strings.TrimSpace(stored)
+	if stored == "" {
+		return false
+	}
+	if strings.HasPrefix(stored, "$2a$") || strings.HasPrefix(stored, "$2b$") {
+		return len(stored) > 20
+	}
+	return len(stored) >= 4
+}
+
+func (s *RestaurantService) HasDeletionPin() (bool, error) {
+	cfg, err := s.GetRestaurantSettings()
+	if err != nil {
+		return false, err
+	}
+	return isDeletionPinConfigured(cfg.DeletionPin), nil
+}
+
 func (s *RestaurantService) SaveRestaurantSettings(deletionPin string) error {
+	deletionPin = strings.TrimSpace(deletionPin)
+	if len(deletionPin) < 4 {
+		return errors.New("el PIN debe tener al menos 4 dígitos")
+	}
+	if len(deletionPin) > 6 {
+		return errors.New("el PIN no puede tener más de 6 dígitos")
+	}
+	for _, r := range deletionPin {
+		if r < '0' || r > '9' {
+			return errors.New("el PIN solo puede contener dígitos")
+		}
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(deletionPin), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	stored := string(hash)
+
 	var cfg database.TenantRestaurantSetting
 	if err := s.db.First(&cfg).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			cfg.DeletionPin = deletionPin
+			cfg.DeletionPin = stored
 			return s.db.Create(&cfg).Error
 		}
 		return err
 	}
-	return s.db.Model(&cfg).Update("deletion_pin", deletionPin).Error
+	return s.db.Model(&cfg).Update("deletion_pin", stored).Error
 }
 
 // VerifyDeletionPin verifica que el PIN coincida con el configurado. Si no hay PIN configurado, retorna error pidiendo configurarlo.
 func (s *RestaurantService) VerifyDeletionPin(pin string) error {
+	pin = strings.TrimSpace(pin)
+	if pin == "" {
+		return errors.New("se requiere el PIN de seguridad")
+	}
 	cfg, err := s.GetRestaurantSettings()
 	if err != nil {
 		return err
 	}
-	if cfg.DeletionPin == "" {
-		return errors.New("configure el PIN de seguridad en Ajustes del Restaurante (panel tenant) antes de anular comandas")
+	stored := strings.TrimSpace(cfg.DeletionPin)
+	if !isDeletionPinConfigured(stored) {
+		return errors.New("configure el PIN de seguridad en Ajustes del Restaurante (panel tenant) antes de anular pedidos o comandas")
 	}
-	if cfg.DeletionPin != pin {
+	if strings.HasPrefix(stored, "$2a$") || strings.HasPrefix(stored, "$2b$") {
+		if bcrypt.CompareHashAndPassword([]byte(stored), []byte(pin)) != nil {
+			return errors.New("PIN incorrecto")
+		}
+		return nil
+	}
+	// Compatibilidad con PIN en texto plano guardado antes del hash.
+	if stored != pin {
 		return errors.New("PIN incorrecto")
 	}
 	return nil
@@ -127,17 +132,24 @@ func (s *RestaurantService) VerifyDeletionPin(pin string) error {
 
 // ============================= PISOS / SALAS =============================
 
-func (s *RestaurantService) ListFloors() ([]database.TenantRestaurantFloor, error) {
+func (s *RestaurantService) ListFloors(branchID uint) ([]database.TenantRestaurantFloor, error) {
 	var floors []database.TenantRestaurantFloor
-	err := s.db.Where("active = ?", true).Order("sort_order ASC, name ASC").Find(&floors).Error
+	q := s.db.Where("active = ?", true)
+	if branchID > 0 {
+		q = q.Where("branch_id = ?", branchID)
+	}
+	err := q.Order("sort_order ASC, name ASC").Find(&floors).Error
 	return floors, err
 }
 
-func (s *RestaurantService) CreateFloor(name string, order int) (*database.TenantRestaurantFloor, error) {
+func (s *RestaurantService) CreateFloor(branchID uint, name string, order int) (*database.TenantRestaurantFloor, error) {
 	if name == "" {
 		return nil, errors.New("el nombre del piso es requerido")
 	}
-	f := &database.TenantRestaurantFloor{Name: name, SortOrder: order, Active: true}
+	if branchID == 0 {
+		return nil, errors.New("sucursal requerida")
+	}
+	f := &database.TenantRestaurantFloor{BranchID: branchID, Name: name, SortOrder: order, Active: true}
 	err := s.db.Create(f).Error
 	return f, err
 }
@@ -167,7 +179,7 @@ type TableWithSession struct {
 	WaiterName  string  `json:"waiter_name"`
 }
 
-func (s *RestaurantService) ListTables(floorID uint) ([]TableWithSession, error) {
+func (s *RestaurantService) ListTables(branchID, floorID uint) ([]TableWithSession, error) {
 	type raw struct {
 		database.TenantRestaurantTable
 		FloorName   string  `gorm:"column:floor_name"`
@@ -177,11 +189,15 @@ func (s *RestaurantService) ListTables(floorID uint) ([]TableWithSession, error)
 	}
 	var rows []raw
 	q := s.db.Table("tenant_restaurant_tables t").
-		Select("t.*, f.name AS floor_name, ts.id AS session_id, COALESCE(ts.total_amount,0) AS total_amount, COALESCE(w.name,'') AS waiter_name").
+		Select("t.*, f.name AS floor_name, ts.id AS session_id, COALESCE(ts.total_amount,0) AS total_amount, COALESCE(NULLIF(st.display_name,''), u.name, '') AS waiter_name").
 		Joins("JOIN tenant_restaurant_floors f ON f.id = t.floor_id").
 		Joins("LEFT JOIN tenant_table_sessions ts ON ts.table_id = t.id AND ts.status = 'open'").
-		Joins("LEFT JOIN tenant_waiters w ON w.id = ts.waiter_id").
+		Joins("LEFT JOIN tenant_restaurant_staff st ON st.id = ts.staff_id").
+		Joins("LEFT JOIN tenant_users u ON u.id = st.user_id").
 		Where("t.active = ?", true)
+	if branchID > 0 {
+		q = q.Where("t.branch_id = ?", branchID)
+	}
 	if floorID > 0 {
 		q = q.Where("t.floor_id = ?", floorID)
 	}
@@ -200,11 +216,15 @@ func (s *RestaurantService) ListTables(floorID uint) ([]TableWithSession, error)
 	return result, nil
 }
 
-func (s *RestaurantService) CreateTable(floorID uint, name string, capacity int) (*database.TenantRestaurantTable, error) {
-	if floorID == 0 || name == "" {
-		return nil, errors.New("piso y nombre son requeridos")
+func (s *RestaurantService) CreateTable(branchID, floorID uint, name string, capacity int) (*database.TenantRestaurantTable, error) {
+	if branchID == 0 || floorID == 0 || name == "" {
+		return nil, errors.New("sucursal, piso y nombre son requeridos")
 	}
-	t := &database.TenantRestaurantTable{FloorID: floorID, Name: name, Capacity: capacity, Status: "libre", Active: true}
+	var floor database.TenantRestaurantFloor
+	if err := s.db.Where("id = ? AND branch_id = ?", floorID, branchID).First(&floor).Error; err != nil {
+		return nil, errors.New("piso no pertenece a esta sucursal")
+	}
+	t := &database.TenantRestaurantTable{BranchID: branchID, FloorID: floorID, Name: name, Capacity: capacity, Status: "libre", Active: true}
 	err := s.db.Create(t).Error
 	return t, err
 }
@@ -223,41 +243,16 @@ func (s *RestaurantService) DeleteTable(id uint) error {
 	return s.db.Delete(&database.TenantRestaurantTable{}, id).Error
 }
 
-// ============================= MOZOS =============================
-
-func (s *RestaurantService) ListWaiters() ([]database.TenantWaiter, error) {
-	var w []database.TenantWaiter
-	err := s.db.Where("active = ?", true).Order("name ASC").Find(&w).Error
-	return w, err
-}
-
-func (s *RestaurantService) CreateWaiter(name, code string, userID *uint) (*database.TenantWaiter, error) {
-	if name == "" {
-		return nil, errors.New("el nombre del mozo es requerido")
-	}
-	w := &database.TenantWaiter{Name: name, Code: code, UserID: userID, Active: true}
-	err := s.db.Create(w).Error
-	return w, err
-}
-
-func (s *RestaurantService) UpdateWaiter(id uint, name, code string, active bool) error {
-	return s.db.Model(&database.TenantWaiter{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"name": name, "code": code, "active": active,
-	}).Error
-}
-
-func (s *RestaurantService) DeleteWaiter(id uint) error {
-	return s.db.Delete(&database.TenantWaiter{}, id).Error
-}
-
 // ============================= SESIONES DE MESA =============================
 
 type SessionDetail struct {
 	database.TenantTableSession
-	TableName  string           `json:"table_name"`
-	FloorName  string           `json:"floor_name"`
-	WaiterName string           `json:"waiter_name"`
-	Orders     []OrderDetail    `json:"orders"`
+	TableName   string        `json:"table_name"`
+	FloorName   string        `json:"floor_name"`
+	WaiterName  string        `json:"waiter_name"`
+	DriverName  string        `json:"driver_name"`
+	ContactName string        `json:"contact_name"`
+	Orders      []OrderDetail `json:"orders"`
 }
 
 type OrderDetail struct {
@@ -265,39 +260,21 @@ type OrderDetail struct {
 	Comandas []database.TenantComanda `json:"comandas"`
 }
 
-func (s *RestaurantService) OpenTable(tableID *uint, waiterID *uint, branchID, userID uint, guests int, notes string) (*database.TenantTableSession, error) {
-	// Si hay mesa, verificar que está libre
-	if tableID != nil {
-		var table database.TenantRestaurantTable
-		if err := s.db.First(&table, *tableID).Error; err != nil {
-			return nil, errors.New("mesa no encontrada")
-		}
-		if table.Status != "libre" {
-			return nil, fmt.Errorf("la mesa '%s' ya está ocupada", table.Name)
-		}
+func (s *RestaurantService) staffDisplayName(staffID *uint) string {
+	if staffID == nil || *staffID == 0 {
+		return ""
 	}
-
-	now := time.Now()
-	sess := &database.TenantTableSession{
-		TableID:  tableID,
-		WaiterID: waiterID,
-		UserID:   userID,
-		BranchID: branchID,
-		Guests:   guests,
-		OpenedAt: now,
-		Status:   "open",
-		Notes:    notes,
+	st, err := staff.New(s.db).GetStaffByID(*staffID)
+	if err != nil {
+		return ""
 	}
+	return staff.New(s.db).StaffDisplayName(st)
+}
 
-	return sess, s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(sess).Error; err != nil {
-			return err
-		}
-		if tableID != nil {
-			tx.Model(&database.TenantRestaurantTable{}).Where("id = ?", *tableID).
-				Update("status", "ocupada")
-		}
-		return nil
+func (s *RestaurantService) OpenTable(tableID *uint, staffID *uint, branchID, userID uint, guests int, notes string) (*database.TenantTableSession, error) {
+	return s.OpenTableExtended(OpenSessionInput{
+		TableID: tableID, StaffID: staffID, BranchID: branchID, UserID: userID,
+		Guests: guests, Notes: notes,
 	})
 }
 
@@ -321,10 +298,22 @@ func (s *RestaurantService) GetSessionDetail(sessionID uint) (*SessionDetail, er
 			}
 		}
 	}
-	if sess.WaiterID != nil {
-		var waiter database.TenantWaiter
-		if s.db.First(&waiter, *sess.WaiterID).Error == nil {
-			detail.WaiterName = waiter.Name
+	if sess.StaffID != nil {
+		detail.WaiterName = s.staffDisplayName(sess.StaffID)
+	}
+	if sess.DeliveryDriverID != nil {
+		var d database.TenantDeliveryDriver
+		if s.db.First(&d, *sess.DeliveryDriverID).Error == nil {
+			detail.DriverName = d.Name
+		}
+	}
+	if sess.ContactID != nil {
+		var c database.TenantContact
+		if s.db.First(&c, *sess.ContactID).Error == nil {
+			detail.ContactName = c.BusinessName
+			if detail.CustomerName == "" {
+				detail.CustomerName = c.BusinessName
+			}
 		}
 	}
 
@@ -361,7 +350,7 @@ type NewOrderItem struct {
 	Notes       string  `json:"notes"`
 }
 
-func (s *RestaurantService) AddOrder(sessionID uint, waiterID *uint, userID uint, items []NewOrderItem, notes string) (*OrderDetail, error) {
+func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint, items []NewOrderItem, notes string) (*OrderDetail, error) {
 	if len(items) == 0 {
 		return nil, errors.New("el pedido debe tener al menos un ítem")
 	}
@@ -380,9 +369,13 @@ func (s *RestaurantService) AddOrder(sessionID uint, waiterID *uint, userID uint
 		nextNum = lastOrder.OrderNumber + 1
 	}
 
+	if staffID == nil && sess.StaffID != nil {
+		staffID = sess.StaffID
+	}
+
 	order := &database.TenantTableOrder{
 		SessionID:   sessionID,
-		WaiterID:    waiterID,
+		StaffID:     staffID,
 		UserID:      userID,
 		OrderNumber: nextNum,
 		Notes:       notes,
@@ -421,7 +414,18 @@ func (s *RestaurantService) AddOrder(sessionID uint, waiterID *uint, userID uint
 		tx.Model(&database.TenantTableSession{}).Where("id = ?", sessionID).
 			UpdateColumn("total_amount", gorm.Expr("total_amount + ?", sessionTotal))
 
-		return nil
+		now := time.Now()
+		sessUpdates := map[string]interface{}{
+			"order_status": OrderStatusSentToKitchen,
+		}
+		if sess.SentToKitchenAt == nil {
+			sessUpdates["sent_to_kitchen_at"] = now
+		}
+		if sess.OrderStatus == OrderStatusDraft || sess.OrderStatus == OrderStatusPending || sess.OrderStatus == "" {
+			sessUpdates["order_status"] = OrderStatusSentToKitchen
+		}
+		tx.Model(&database.TenantTableSession{}).Where("id = ?", sessionID).Updates(sessUpdates)
+		return s.syncSessionOrderStatus(tx, sessionID)
 	})
 
 	if err != nil {
@@ -439,8 +443,15 @@ func (s *RestaurantService) UpdateComandaStatus(id uint, status string, userID u
 	if !validStatuses[status] {
 		return errors.New("estado inválido: usa pendiente, preparacion, lista o entregada")
 	}
-	return s.db.Model(&database.TenantComanda{}).Where("id = ?", id).
-		Update("status", status).Error
+	err := s.db.Model(&database.TenantComanda{}).Where("id = ?", id).Update("status", status).Error
+	if err != nil {
+		return err
+	}
+	var c database.TenantComanda
+	if s.db.First(&c, id).Error == nil {
+		return s.syncSessionOrderStatus(s.db, c.SessionID)
+	}
+	return nil
 }
 
 // CancelComanda anula una comanda (solo admin).
@@ -499,6 +510,7 @@ func (s *RestaurantService) GetKitchenComandas(branchID uint) ([]database.Tenant
 type BillInput struct {
 	SessionID     uint
 	UserID        uint
+	EmployeeType  string // staff restaurante: bloquea efectivo a waiter
 	SeriesID      uint
 	DocType       string
 	IssueDate     time.Time
@@ -526,12 +538,26 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		return nil, errors.New("la sesión ya está cerrada o facturada")
 	}
 
-	// Recopilar todas las comandas activas (no anuladas) de la sesión
+	// Comandas a facturar.
+	// Cierre total (POS / mesa): incluye todos los estados de cocina; "entregada" = servido, no facturado aún.
+	// Cobro parcial (mesa sigue abierta): solo ítems aún no facturados en un cobro anterior.
+	q := s.db.Where("session_id = ? AND cancelled_at IS NULL", input.SessionID)
+	if !input.CloseSession {
+		q = q.Where("status != ?", "entregada")
+	}
 	var comandas []database.TenantComanda
-	s.db.Where("session_id = ? AND cancelled_at IS NULL", input.SessionID).Find(&comandas)
+	if err := q.Find(&comandas).Error; err != nil {
+		return nil, err
+	}
 	if len(comandas) == 0 {
 		return nil, errors.New("no hay ítems para facturar en esta sesión")
 	}
+
+	resolvedCash, err := s.resolveCashSessionForPayments(sess.BranchID, input.UserID, input.EmployeeType, input.CashSessionID, input.Payments)
+	if err != nil {
+		return nil, err
+	}
+	input.CashSessionID = resolvedCash
 
 	// Obtener la serie
 	var series database.TenantDocumentSeries
@@ -628,10 +654,11 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	}
 
 	sale := &database.TenantSale{
-		BranchID:      sess.BranchID,
-		UserID:        input.UserID,
-		ContactID:     input.ContactID,
-		CashSessionID: input.CashSessionID,
+		BranchID:            sess.BranchID,
+		UserID:              input.UserID,
+		ContactID:           input.ContactID,
+		RestaurantSessionID: &input.SessionID,
+		CashSessionID:       input.CashSessionID,
 		SeriesID:      input.SeriesID,
 		DocType:       input.DocType,
 		Series:        series.Series,
@@ -716,6 +743,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			// Cerrar sesión y liberar mesa
 			tx.Model(&sess).Updates(map[string]interface{}{
 				"status": "billed", "closed_at": now, "sale_id": sale.ID,
+				"order_status": OrderStatusPaid, "paid_at": now,
 			})
 			if sess.TableID != nil {
 				tx.Model(&database.TenantRestaurantTable{}).Where("id = ?", *sess.TableID).
@@ -726,29 +754,64 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		} else {
 			// Generar venta pero mantener mesa abierta: descontar lo facturado del total de la sesión
 			tx.Model(&sess).UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", total))
-			// Marcar comandas como entregadas (la sesión sigue abierta)
-			tx.Model(&database.TenantComanda{}).Where("session_id = ?", input.SessionID).
-				Update("status", "entregada")
+			// Marcar solo las comandas facturadas en este cobro (evita doble facturación en cobros parciales)
+			billedIDs := make([]uint, 0, len(comandas))
+			for _, c := range comandas {
+				billedIDs = append(billedIDs, c.ID)
+			}
+			if len(billedIDs) > 0 {
+				tx.Model(&database.TenantComanda{}).Where("id IN ?", billedIDs).
+					Update("status", "entregada")
+			}
 		}
 
 		return nil
 	})
 }
 
-// CancelSession cancela una sesión sin cobrar.
-func (s *RestaurantService) CancelSession(sessionID uint, reason string, userID uint) error {
+// CancelSession anula un pedido abierto: exige PIN, sin venta asociada, elimina registros (hard delete).
+func (s *RestaurantService) CancelSession(sessionID uint, pin, reason string, userID uint) error {
+	_ = userID
+	if err := s.VerifyDeletionPin(pin); err != nil {
+		return err
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return errors.New("indique el motivo de anulación")
+	}
+
 	var sess database.TenantTableSession
 	if err := s.db.First(&sess, sessionID).Error; err != nil {
-		return errors.New("sesión no encontrada")
+		return errors.New("pedido no encontrado")
 	}
 	if sess.Status != "open" {
-		return errors.New("la sesión no está abierta")
+		return errors.New("solo se pueden anular pedidos abiertos")
 	}
-	now := time.Now()
+	if sess.SaleID != nil {
+		return errors.New("no se puede anular: el pedido ya fue facturado")
+	}
+
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		tx.Model(&sess).Updates(map[string]interface{}{
-			"status": "cancelled", "closed_at": now,
-		})
+		var orderIDs []uint
+		if err := tx.Model(&database.TenantTableOrder{}).
+			Where("session_id = ?", sessionID).
+			Pluck("id", &orderIDs).Error; err != nil {
+			return err
+		}
+
+		comandaQ := tx.Where("session_id = ?", sessionID)
+		if len(orderIDs) > 0 {
+			comandaQ = tx.Where("session_id = ? OR order_id IN ?", sessionID, orderIDs)
+		}
+		if err := comandaQ.Delete(&database.TenantComanda{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("session_id = ?", sessionID).Delete(&database.TenantTableOrder{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&database.TenantTableSession{}, sessionID).Error; err != nil {
+			return err
+		}
 		if sess.TableID != nil {
 			tx.Model(&database.TenantRestaurantTable{}).Where("id = ?", *sess.TableID).
 				Update("status", "libre")
@@ -831,6 +894,54 @@ func (s *RestaurantService) GetSalePayments(saleID uint) ([]database.TenantSaleP
 }
 
 // ============================= HELPERS =============================
+
+func (s *RestaurantService) resolveCashSessionForPayments(
+	branchID, userID uint,
+	employeeType string,
+	cashSessionID *uint,
+	payments []PaymentInput,
+) (*uint, error) {
+	cbSvc := cashbanksvc.NewCashBankService(s.db)
+	needsCash := false
+	for _, p := range payments {
+		if p.Amount <= 0 {
+			continue
+		}
+		pm, err := cbSvc.GetPaymentMethodByCode(p.Method)
+		if err == nil && pm != nil && pm.DestinationType == "cash" {
+			needsCash = true
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(p.Method), "cash") || strings.EqualFold(strings.TrimSpace(p.Method), "efectivo") {
+			needsCash = true
+			break
+		}
+	}
+	if !needsCash {
+		return cashSessionID, nil
+	}
+	et := strings.ToLower(strings.TrimSpace(employeeType))
+	if et == "waiter" || et == "mozo" {
+		return nil, errors.New("los mozos no pueden cobrar en efectivo; use otro método de pago o un cajero")
+	}
+	var sid uint
+	if cashSessionID != nil && *cashSessionID > 0 {
+		sid = *cashSessionID
+	} else {
+		sess, err := cbSvc.GetOpenSession(branchID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if sess == nil {
+			return nil, errors.New("debe abrir su caja para cobrar en efectivo")
+		}
+		sid = sess.ID
+	}
+	if _, err := cbSvc.ValidateCashSessionForUser(sid, userID, branchID); err != nil {
+		return nil, err
+	}
+	return &sid, nil
+}
 
 func roundFloat(f float64) float64 {
 	return float64(int(f*100+0.5)) / 100

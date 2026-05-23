@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"tukifac/internal/purchases/service"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 
@@ -187,20 +188,9 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
 
-	// Sucursal: la del usuario logueado; si no tiene asignada, la primera activa (ej. administrador)
-	branchID := body.BranchID
-	if branchID == 0 {
-		var user database.TenantUser
-		if tdb.First(&user, userID(c)).Error == nil && user.BranchID != nil && *user.BranchID > 0 {
-			branchID = *user.BranchID
-		}
-	}
-	if branchID == 0 {
-		var firstBranch database.TenantBranch
-		if tdb.Where("active = ?", true).First(&firstBranch).Error != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "No hay sucursal activa. Asigne una sucursal al usuario o active al menos una."})
-		}
-		branchID = firstBranch.ID
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
 	}
 
 	taxCfg := tax.LoadFromDB(tdb)

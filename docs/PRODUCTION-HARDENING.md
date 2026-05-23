@@ -44,54 +44,57 @@ DB_CENTRAL_MAX_OPEN + (tenants_activos_concurrentes × DB_TENANT_MAX_OPEN) < 0.7
 
 ---
 
-## 2. Migraciones — solo CLI (estilo Laravel)
+## 2. Migraciones — Migration System v2
 
-### Política actual
+**Documentación completa:** [MIGRATIONS-SaaS.md](./MIGRATIONS-SaaS.md)
 
-- **Producción:** el servidor HTTP **no** ejecuta `AutoMigrate` ni seeds en requests.
-- `GetTenantDB()` solo abre/reutiliza conexión del pool.
-- Tras cada deploy con cambios de esquema:
+### Política actual (producción)
 
-```bash
-cd /opt/tukifac && bash deploy/scripts/deploy.sh
-# o: docker exec tukifac-backend-go ./tukifac-api migrate
-```
+- El servidor HTTP **no** ejecuta migraciones en requests.
+- `GetTenantDB()` solo abre/reutiliza el pool (sin `AutoMigrate` por request).
+- **Deploy:** `migrate` = solo BD central; reinicio del contenedor.
+- **Fleet:** `migrate-fleet` vía cron (`deploy/scripts/migrate-fleet.sh`), no en el deploy.
+- **Baseline V30**, target **V31** (multi-sucursal incremental).
+- `migrate-tenants` y `migrate-all` **deshabilitados** si `APP_ENV=production`.
 
-Ver [DEPLOY-VPS-UBUNTU.md](./DEPLOY-VPS-UBUNTU.md) para CI/CD completo (GHCR + SSH).
+### Comandos principales
 
-### Comandos
+| Comando | Producción |
+|---------|------------|
+| `migrate` | Deploy — solo central |
+| `migrate-init-versions` | Una vez — registry V30 |
+| `migrate-bump-target` | Tras release con nueva versión |
+| `migrate-fleet` | Cron — tenants pendientes |
+| `migrate-backfill-fleet` | Cron — backfills run-once |
+| `migrate-tenant <slug>` | Emergencia bootstrap |
+| `migrate-tenants` | **Bloqueado** en producción |
 
-| Comando | Qué hace |
-|---------|----------|
-| `migrate` | `EnsureCentralDB` + `MigrateCentral` + memberships + `SeedCentral` + todos los tenants **activos** |
-| `migrate-central` | Solo BD central |
-| `migrate-tenants` | Solo tenants `status=active` |
-| `migrate-tenant <slug>` | Un tenant |
-
-### Lotes MySQL
-
-```env
-MIGRATION_BATCH_SIZE=50      # tenants por lote antes de pausa
-MIGRATION_BATCH_PAUSE=2s     # pausa entre lotes
-```
-
-Si un tenant falla, el proceso **continúa** y muestra resumen SUCCESS/FAILED.
-
-### Desarrollo opcional
+### Lotes y cron
 
 ```env
-AUTO_MIGRATE_DEV=true
+MIGRATION_BATCH_SIZE=50
+MIGRATION_BATCH_PAUSE=2s
 ```
 
-Migra central + todos los tenants al arrancar `go run .` — **nunca** en producción.
+```cron
+*/5 * * * * /opt/tukifac/deploy/scripts/migrate-fleet.sh
+```
+
+### Panel y observabilidad
+
+- Super Admin → **Fleet Migrations** (`/fleet-migrations`)
+- `GET /api/internal/fleet-health` (header `X-Internal-Key`)
+- Métricas en `/metrics`: `tukifac_migration_*`, `tukifac_fleet_*`
+
+### Desarrollo
+
+```env
+AUTO_MIGRATE_DEV=true   # nunca en producción
+```
 
 ### Alta de tenant nuevo
 
-`TenantService.Create` llama `MigrateTenantSchema` explícitamente (no depende del CLI global).
-
-### Panel Super Admin
-
-`POST /api/superadmin/tenants/:id/migrate` y `migrate-all` siguen disponibles; delegan en `MigrateTenantSchema` / `MigrateTenantsBatch`.
+`TenantService.Create` → `MigrateTenantSchema` (bootstrap AutoMigrate una vez) + registro en `tenant_schema_versions`.
 
 ---
 
@@ -352,7 +355,7 @@ Recomendación migración 500 clientes:
 |--------|-----------|-------|
 | N+1 contactos en listado ventas | `sale_service.go` ~572+ | Query extra por lote de IDs — OK con paginación |
 | `sync.Map` tenant pools sin límite | `tenant.go` | Muchos tenants distintos en pico → muchos pools; monitorear memoria |
-| Cron 24h + query central | `cron/expiration.go` | Solo arranca si `IsCentralSchemaReady()`; entrypoint corre `migrate-central` antes del API |
+| Cron 24h + query central | `cron/expiration.go` | Espera `IsCentralSchemaReady()`; deploy corre `migrate-central` antes del restart (sin migrate en entrypoint) |
 | Rate limiter memoria por IP | `ratelimit.go` | Crece con IPs únicas; reinicio limpia |
 
 ### BAJO

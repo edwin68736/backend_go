@@ -16,11 +16,11 @@ Guía completa para desplegar el backend Go multi-tenant en producción real.
 
 | Tema | Decisión |
 |------|----------|
-| Migraciones | **Solo CLI** `./tukifac-api migrate` — nunca en requests HTTP |
+| Migraciones | **Migration v2** — ver [MIGRATIONS-SaaS.md](./MIGRATIONS-SaaS.md): deploy = central; fleet = cron |
 | Persistencia | Volúmenes `data/uploads` y `data/storage` |
 | Imagen | GHCR con tag **`sha`** (rollback) + `latest` |
 | Downtime | ~2–5 s al recrear contenedor (un solo réplica) |
-| Deploy | `pull` → `up --force-recreate` → `migrate` → `health` |
+| Deploy | `pull` → `migrate-central` → `up --force-recreate` → `health` |
 | Puerto público | **No** exponer 3000; solo NPM |
 
 ---
@@ -82,6 +82,8 @@ Estructura final:
 ├── deploy/scripts/
 │   ├── deploy.sh
 │   ├── migrate.sh
+│   ├── migrate-init.sh
+│   ├── migrate-fleet.sh
 │   ├── rollback.sh
 │   └── health-check.sh
 └── data/
@@ -272,12 +274,13 @@ SKIP_MIGRATE=1 bash deploy/scripts/deploy.sh
 
 Con **una réplica**, `force-recreate` implica ~2–5 s sin servicio. Los volúmenes **no** se pierden.
 
-Orden óptimo:
+Orden óptimo (implementado en `deploy/scripts/deploy.sh`):
 
 1. `pull` (sin detener)
-2. `up --force-recreate` (downtime breve)
-3. `migrate` (antes de tráfico pesado si el cambio es breaking)
+2. `migrate-central` — BD central (`docker compose run ... migrate-central`)
+3. `up --force-recreate` (downtime breve)
 4. `health`
+5. Fleet tenants en background: `deploy/scripts/migrate-fleet.sh` (cron)
 
 Para cambios de esquema breaking: ventana de mantenimiento o deploy en horario valle.
 
@@ -303,19 +306,24 @@ Push a `main` → `.github/workflows/deploy-production.yml`:
 
 ## H. Cómo migrar
 
+**Guía completa:** [MIGRATIONS-SaaS.md](./MIGRATIONS-SaaS.md)
+
 | Comando | Cuándo |
 |---------|--------|
-| `./tukifac-api migrate` | Deploy con cambios de esquema (central + tenants activos) |
-| `./tukifac-api migrate-central` | Solo tablas centrales |
-| `./tukifac-api migrate-tenants` | Solo BDs tenant activas |
-| `./tukifac-api migrate-tenant slug` | Un tenant (debug) |
+| `./tukifac-api migrate-central` | Deploy — BD central (antes del restart) |
+| `./tukifac-api migrate-init-versions` | Una vez — registry baseline V30 |
+| `./tukifac-api migrate-bump-target` | Tras release con nueva versión de esquema |
+| `./tukifac-api migrate-fleet` | Cron — tenants pendientes (V30→V31, etc.) |
+| `./tukifac-api migrate-backfill-fleet` | Cron — backfills run-once |
+| `./tukifac-api migrate-tenant slug` | Emergencia bootstrap un tenant |
+| `./tukifac-api migrate-tenants` | **Bloqueado en producción** |
 
 En Docker:
 
 ```bash
-bash deploy/scripts/migrate.sh
-# o
-docker compose -f docker-compose.production.yml exec -T backend-go ./tukifac-api migrate
+bash deploy/scripts/migrate.sh          # solo central
+bash deploy/scripts/migrate-init.sh   # primera vez
+bash deploy/scripts/migrate-fleet.sh  # fleet + backfill (cron)
 ```
 
 Lotes (cientos de tenants):
@@ -377,7 +385,7 @@ curl -s http://127.0.0.1:3000/health
 | 502 en NPM | Contenedor parado o puerto incorrecto | `docker ps`, `curl 127.0.0.1:3000/health` |
 | 429 Too Many Requests | Rate limit | Ajustar `RATE_LIMIT_*` en `.env` |
 | 403 token/empresa | `X-Tenant-Slug` ≠ JWT | Corregir frontend |
-| Tabla no existe | Falta migrate post-deploy | `docker exec ... ./tukifac-api migrate` |
+| Tabla no existe | Falta migrate-central post-deploy | `docker exec ... ./tukifac-api migrate-central` |
 | migrate tenant fallido | Permisos MySQL en esa BD | `migrate-tenant slug` y revisar error |
 | GHCR pull denied | Sin login | `docker login ghcr.io` |
 | Archivos perdidos | Sin volúmenes | Verificar `./data/uploads` y `./data/storage` en compose |

@@ -10,6 +10,8 @@ import (
 func RegisterRoutes(api fiber.Router) {
 	h := handler.NewBillingHandler()
 	api.Post("/billing/send/:saleId", middleware.RequireModule("billing"), h.SendToSUNAT)
+	api.Get("/billing/status/:saleId", middleware.RequireModule("billing"), h.GetBillingStatus)
+	api.Get("/billing/job/:saleId", middleware.RequireModule("billing"), h.GetBillingJobStatus)
 	api.Post("/billing/resend/:saleId", middleware.RequireModule("billing"), h.ResendToSUNAT)
 	api.Post("/billing/void-with-credit-note/:saleId", middleware.RequireModule("billing"), h.VoidWithCreditNoteAPI)
 	api.Get("/billing/invoice/:saleId", middleware.RequireModule("billing"), h.GetInvoiceAPI)

@@ -17,6 +17,7 @@ import (
 
 	"tukifac/config"
 	salesvc "tukifac/internal/sales/service"
+	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/tenantstorage"
@@ -25,12 +26,16 @@ import (
 )
 
 type BillingService struct {
-	db           *gorm.DB
-	baseURL      string
-	token        string
-	useLycet     bool // true = Lycet facturador; false = Tukifac legacy
-	orchestrator *InvoiceOrchestrator
+	db              *gorm.DB
+	baseURL         string
+	token           string
+	useLycet        bool // true = Lycet facturador; false = Tukifac legacy
+	orchestrator    *InvoiceOrchestrator
+	centralTenantID uint // ID tenant en BD central (cuota documentos)
 }
+
+// SetCentralTenantID asocia el tenant SaaS para control de cupo documentos.
+func (s *BillingService) SetCentralTenantID(id uint) { s.centralTenantID = id }
 
 func NewBillingService(db *gorm.DB) *BillingService {
 	svc := &BillingService{db: db}
@@ -437,48 +442,46 @@ func (s *BillingService) sendToLycet(saleID uint, companyCfg *database.TenantCom
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	payloadJSON := string(payloadBytes)
-	client := facturador.NewClient(s.baseURL, s.token)
-	resp, err := client.SendInvoice(payload)
-	if err != nil {
-		var invoice database.TenantInvoice
-		s.db.Where("sale_id = ?", saleID).FirstOrCreate(&invoice, database.TenantInvoice{SaleID: saleID})
-		now := time.Now()
-		invoice.SentAt = &now
-		invoice.RetryCount++
-		invoice.SunatStatus = "error"
-		invoice.SunatMessage = err.Error()
-		invoice.PayloadJSON = payloadJSON
-		s.db.Save(&invoice)
-		s.db.Model(&sale).Update("billing_status", "error")
-		return &invoice, err
-	}
-	// Respuesta Lycet según RESPUESTA-SUNAT-BACKEND.md: success, cdrResponse, error (conexión)
+
 	var invoice database.TenantInvoice
-	s.db.Where("sale_id = ?", saleID).FirstOrCreate(&invoice, database.TenantInvoice{SaleID: saleID})
+	s.db.Where("sale_id = ?", saleID).FirstOrCreate(&invoice, database.TenantInvoice{
+		SaleID:         saleID,
+		PipelineStatus: billingstate.DRAFT,
+	})
+	if billingstate.HasFinalSunatOutcome(&invoice) {
+		return &invoice, errors.New("comprobante ya tiene resultado SUNAT definitivo; no se reenvía")
+	}
+	docKey := billingstate.DocumentIdempotencyKey(companyCfg.RUC, tipoDoc, serie, correlativo)
+	if invoice.IdempotencyKey == "" {
+		invoice.IdempotencyKey = docKey
+	}
+
+	_ = billingstate.TransitionPipeline(s.db, saleID, billingstate.SENDING_TO_FACTURADOR)
+
+	client := facturador.Shared()
+	resp, err := client.SendInvoice(payload)
 	now := time.Now()
 	invoice.SentAt = &now
 	invoice.ResponseAt = &now
 	invoice.RetryCount++
 	invoice.PayloadJSON = payloadJSON
+
+	if err != nil {
+		invoice.SunatMessage = err.Error()
+		invoice.LycetResponseJSON = ""
+		patch := billingstate.BuildPatch(billingstate.FAILED, &invoice, err.Error())
+		billingstate.ApplyToInvoice(&invoice, patch)
+		_ = s.db.Save(&invoice).Error
+		_ = billingstate.SyncSaleBillingStatus(s.db, saleID, patch.PipelineStatus)
+		return &invoice, err
+	}
+
 	invoice.SunatMessage = resp.Message()
 	invoice.SunatCDRCode = resp.CDRCode()
 	invoice.SunatCDRNotes = sunatNotesToJSON(resp.CDRNotes())
 	invoice.SunatHash = resp.Hash
 	invoice.LycetResponseJSON = lycetResponseToJSON(resp)
-	if resp.Success() {
-		invoice.SunatStatus = "accepted"
-		s.db.Model(&sale).Update("billing_status", "accepted")
-	} else {
-		if resp.ConnectionError() != "" {
-			invoice.SunatStatus = "error"
-			invoice.SunatMessage = resp.ConnectionError()
-			s.db.Model(&sale).Update("billing_status", "error")
-		} else {
-			invoice.SunatStatus = "rejected"
-			s.db.Model(&sale).Update("billing_status", "rejected")
-		}
-	}
-	// Guardar solo XML y CDR en disco del tenant (vienen en la respuesta de /send). El PDF no se almacena, se sirve desde Lycet.
+
 	basePath := config.AppConfig.InvoiceStoragePath
 	if basePath == "" {
 		basePath = "./storage/invoices"
@@ -496,16 +499,39 @@ func (s *BillingService) sendToLycet(saleID uint, companyCfg *database.TenantCom
 		invoice.XMLURL = xmlPath
 	}
 	if resp.CDRZipBase64() != "" {
-		cdrDec, err := base64.StdEncoding.DecodeString(resp.CDRZipBase64())
-		if err == nil {
+		cdrDec, decErr := base64.StdEncoding.DecodeString(resp.CDRZipBase64())
+		if decErr == nil {
 			cdrPath, _ := saveInvoiceFile(basePath, ruc, provider, tipoDoc, serie, correlativo, "cdr.zip", cdrDec)
 			invoice.CDRURL = cdrPath
-		} else {
-			invoice.CDRURL = "(CDR recibido)"
 		}
 	}
-	s.db.Save(&invoice)
-	return &invoice, nil
+
+	pipeline, _ := billingstate.EvaluateLycet(resp, invoice.XMLURL, invoice.CDRURL)
+	msg := resp.Message()
+	if resp.ConnectionError() != "" {
+		msg = resp.ConnectionError()
+	}
+	patch := billingstate.BuildPatch(pipeline, &invoice, msg)
+	patch.SunatCDRCode = invoice.SunatCDRCode
+	patch.SunatCDRNotes = invoice.SunatCDRNotes
+	patch.SunatHash = invoice.SunatHash
+	patch.XMLURL = invoice.XMLURL
+	patch.CDRURL = invoice.CDRURL
+	billingstate.ApplyToInvoice(&invoice, patch)
+	_ = s.db.Save(&invoice).Error
+	_ = billingstate.SyncSaleBillingStatus(s.db, saleID, patch.PipelineStatus)
+
+	if pipeline == billingstate.SUNAT_ACCEPTED || pipeline == billingstate.OBSERVED {
+		return &invoice, nil
+	}
+	if pipeline == billingstate.SUNAT_REJECTED {
+		return &invoice, fmt.Errorf("%s", msg)
+	}
+	if pipeline == billingstate.FAILED {
+		return &invoice, fmt.Errorf("%s", msg)
+	}
+	// Respuesta ambigua (sin CDR): no afirmar éxito.
+	return &invoice, fmt.Errorf("envío sin confirmación SUNAT; estado=%s", pipeline)
 }
 
 // ResendToSUNAT reenvía el comprobante regenerando el XML (y payload) desde la venta actual.
@@ -515,7 +541,7 @@ func (s *BillingService) ResendToSUNAT(saleID uint) (*database.TenantInvoice, er
 	if err := s.db.Where("sale_id = ?", saleID).First(&invoice).Error; err != nil || invoice.ID == 0 {
 		return nil, errors.New("comprobante no encontrado")
 	}
-	if invoice.SunatStatus == "accepted" {
+	if billingstate.HasAcceptanceEvidence(&invoice) || billingstate.HasFinalSunatOutcome(&invoice) {
 		return nil, errors.New("el documento ya fue aceptado por SUNAT; no se puede reenviar")
 	}
 	if invoice.SunatStatus == "rejected" {
@@ -586,6 +612,9 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint) (*data
 	}
 	if err := s.db.Create(&ncSale).Error; err != nil {
 		return nil, nil, fmt.Errorf("crear venta nota de crédito: %w", err)
+	}
+	if err := s.reserveGenericDocument("credit_note", ncSale.ID, ncSale.Number); err != nil {
+		return nil, nil, err
 	}
 	var origItems []database.TenantSaleItem
 	s.db.Where("sale_id = ?", originalSaleID).Find(&origItems)
@@ -757,7 +786,7 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint) (*data
 	var ncLegends []facturador.InvoiceLegend
 	facturador.SetSUNATLegend1000(&ncLegends, mtoImpVentaNC, tipoMoneda)
 	notePayload.Legends = ncLegends
-	client := facturador.NewClient(s.baseURL, s.token)
+	client := facturador.Shared()
 	resp, err := client.SendNote(notePayload)
 	notePayloadJSON := ""
 	if j, _ := json.Marshal(notePayload); len(j) > 0 {
@@ -1031,13 +1060,22 @@ func (s *BillingService) sendToTukifac(saleID uint, companyCfg *database.TenantC
 	invoice.CDRURL = tukifacResp.CDRURL
 	invoice.PDFURL = tukifacResp.PDFURL
 
-	if tukifacResp.Success {
-		s.db.Model(&sale).Update("billing_status", "accepted")
+	pipeline := billingstate.FAILED
+	if tukifacResp.Success && strings.TrimSpace(tukifacResp.CDRURL) != "" && strings.TrimSpace(tukifacResp.XMLURL) != "" {
+		pipeline = billingstate.SUNAT_ACCEPTED
+		invoice.SunatCDRCode = "0"
+	} else if tukifacResp.Success {
+		pipeline = billingstate.UNKNOWN
 	} else {
-		s.db.Model(&sale).Update("billing_status", "rejected")
+		pipeline = billingstate.SUNAT_REJECTED
 	}
-
-	s.db.Save(&invoice)
+	patch := billingstate.BuildPatch(pipeline, &invoice, invoice.SunatMessage)
+	billingstate.ApplyToInvoice(&invoice, patch)
+	_ = s.db.Save(&invoice).Error
+	_ = billingstate.SyncSaleBillingStatus(s.db, saleID, pipeline)
+	if pipeline != billingstate.SUNAT_ACCEPTED {
+		return &invoice, fmt.Errorf("sin confirmación SUNAT completa (XML/CDR)")
+	}
 	return &invoice, nil
 }
 
@@ -1165,7 +1203,7 @@ func (s *BillingService) GetInvoicePDFContent(saleID uint) ([]byte, error) {
 		if err := json.Unmarshal([]byte(invoice.NotePayloadJSON), &payload); err != nil {
 			return nil, fmt.Errorf("payload nota inválido: %w", err)
 		}
-		client := facturador.NewClient(s.baseURL, s.token)
+		client := facturador.Shared()
 		return client.GetNotePDF(&payload)
 	}
 	// Para Lycet: siempre obtener PDF del endpoint de Lycet (no generar en este backend).
@@ -1174,7 +1212,7 @@ func (s *BillingService) GetInvoicePDFContent(saleID uint) ([]byte, error) {
 		if err := json.Unmarshal([]byte(invoice.PayloadJSON), &payload); err != nil {
 			return nil, fmt.Errorf("payload inválido: %w", err)
 		}
-		client := facturador.NewClient(s.baseURL, s.token)
+		client := facturador.Shared()
 		pdfBytes, err := client.GetInvoicePDF(&payload)
 		if err != nil {
 			return nil, err
@@ -1210,7 +1248,7 @@ func (s *BillingService) GetInvoiceXMLGeneratedContent(saleID uint) ([]byte, err
 		if err := json.Unmarshal([]byte(invoice.NotePayloadJSON), &payload); err != nil {
 			return nil, fmt.Errorf("payload nota inválido: %w", err)
 		}
-		client := facturador.NewClient(s.baseURL, s.token)
+		client := facturador.Shared()
 		return client.GetNoteXML(&payload)
 	}
 	if !s.useLycet || invoice.PayloadJSON == "" {
@@ -1220,7 +1258,7 @@ func (s *BillingService) GetInvoiceXMLGeneratedContent(saleID uint) ([]byte, err
 	if err := json.Unmarshal([]byte(invoice.PayloadJSON), &payload); err != nil {
 		return nil, fmt.Errorf("payload inválido: %w", err)
 	}
-	client := facturador.NewClient(s.baseURL, s.token)
+	client := facturador.Shared()
 	return client.GetInvoiceXML(&payload)
 }
 
@@ -1355,7 +1393,11 @@ func (s *BillingService) CreateSummary(fecResumen time.Time) (*database.TenantSu
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	client := facturador.NewClient(s.baseURL, s.token)
+	summaryDocID := uint(dayStart.Unix() % 0x7fffffff)
+	if err := s.reserveGenericDocument("summary", summaryDocID, correlativo); err != nil {
+		return nil, err
+	}
+	client := facturador.Shared()
 	resp, err := client.SendSummary(payload)
 	if err != nil {
 		return nil, err
@@ -1389,7 +1431,7 @@ func (s *BillingService) GetSummaryStatus(id uint) (*database.TenantSunatSummary
 	if s.db.Select("ruc").First(&cfg).Error != nil {
 		return &rec, nil
 	}
-	client := facturador.NewClient(s.baseURL, s.token)
+	client := facturador.Shared()
 	result, err := client.GetSummaryStatus(rec.Ticket, cfg.RUC)
 	if err != nil {
 		return &rec, err
@@ -1485,7 +1527,11 @@ func (s *BillingService) CreateVoided(details []CreateVoidedInput) (*database.Te
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	client := facturador.NewClient(s.baseURL, s.token)
+	voidID := uint(now.Unix() % 0x7fffffff)
+	if err := s.reserveGenericDocument("voided", voidID, correlativo); err != nil {
+		return nil, err
+	}
+	client := facturador.Shared()
 	resp, err := client.SendVoided(payload)
 	if err != nil {
 		return nil, err
@@ -1551,7 +1597,7 @@ func (s *BillingService) GetVoidedStatus(id uint) (*database.TenantSunatVoided, 
 	if s.db.Select("ruc").First(&cfg).Error != nil {
 		return &rec, nil
 	}
-	client := facturador.NewClient(s.baseURL, s.token)
+	client := facturador.Shared()
 	result, err := client.GetVoidedStatus(rec.Ticket, cfg.RUC)
 	if err != nil {
 		return &rec, err
@@ -1601,7 +1647,7 @@ func (s *BillingService) ConsultInvoiceStatus(tipo, serie, numero string) (*fact
 	if s.db.Select("ruc").First(&cfg).Error != nil {
 		return nil, errors.New("no hay configuración de empresa")
 	}
-	client := facturador.NewClient(s.baseURL, s.token)
+	client := facturador.Shared()
 	return client.GetInvoiceStatus(tipo, serie, numero, cfg.RUC)
 }
 
@@ -1770,11 +1816,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		Details:      details,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	client := facturador.NewClient(s.baseURL, s.token)
-	resp, err := client.SendDespatch(payload)
-	if err != nil {
-		return nil, err
-	}
+	docNum := fmt.Sprintf("%s-%s", series.Series, correlativoStr)
 	rec := &database.TenantDespatch{
 		BranchID:          input.BranchID,
 		SeriesID:          input.SeriesID,
@@ -1783,11 +1825,22 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		IssueDate:         now,
 		DestinatarioRUC:   input.Destinatario.NumDoc,
 		DestinatarioRazon: input.Destinatario.RznSocial,
-		Ticket:            resp.Ticket(),
 		Status:            "pending",
 		PayloadJSON:       string(payloadJSON),
 		DetailsCount:      len(details),
 	}
+	if err := s.db.Create(rec).Error; err != nil {
+		return nil, err
+	}
+	if err := s.reserveGenericDocument("guide_remitter", rec.ID, docNum); err != nil {
+		return nil, err
+	}
+	client := facturador.Shared()
+	resp, err := client.SendDespatch(payload)
+	if err != nil {
+		return nil, err
+	}
+	rec.Ticket = resp.Ticket()
 	if resp.CDRZipBase64() != "" {
 		rec.Status = "accepted"
 		if resp.SunatResponse != nil && resp.SunatResponse.CDRResponse != nil {
@@ -1819,7 +1872,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 			rec.Status = "rejected"
 		}
 	}
-	if err := s.db.Create(rec).Error; err != nil {
+	if err := s.db.Save(rec).Error; err != nil {
 		return nil, err
 	}
 	return rec, nil
@@ -1837,7 +1890,7 @@ func (s *BillingService) GetDespatchStatus(id uint) (*database.TenantDespatch, e
 	if s.db.Select("ruc").First(&cfg).Error != nil {
 		return &rec, nil
 	}
-	client := facturador.NewClient(s.baseURL, s.token)
+	client := facturador.Shared()
 	result, err := client.GetDespatchStatus(rec.Ticket, cfg.RUC)
 	if err != nil {
 		return &rec, err
@@ -1955,7 +2008,11 @@ func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*da
 		Details:      details,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	client := facturador.NewClient(s.baseURL, s.token)
+	retID := uint(len(input.Series))*1000000 + parseCorrelativeUint(input.Correlativo)
+	if err := s.reserveGenericDocument("retention", retID, input.Series+"-"+input.Correlativo); err != nil {
+		return nil, err
+	}
+	client := facturador.Shared()
 	resp, err := client.SendRetention(payload)
 	if err != nil {
 		return nil, err
@@ -2086,7 +2143,11 @@ func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*
 		Details:      details,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	client := facturador.NewClient(s.baseURL, s.token)
+	percID := uint(len(input.Series))*1000000 + parseCorrelativeUint(input.Correlativo)
+	if err := s.reserveGenericDocument("perception", percID, input.Series+"-"+input.Correlativo); err != nil {
+		return nil, err
+	}
+	client := facturador.Shared()
 	resp, err := client.SendPerception(payload)
 	if err != nil {
 		return nil, err
@@ -2177,19 +2238,25 @@ func (s *BillingService) CreateReversion(details []CreateVoidedInput) (*database
 		Details:         voidedDetails,
 	}
 	payloadJSON, _ := json.Marshal(payload)
-	client := facturador.NewClient(s.baseURL, s.token)
-	resp, err := client.SendReversion(payload)
-	if err != nil {
-		return nil, err
-	}
 	rec := &database.TenantSunatReversion{
 		FecComunicacion: now,
 		Correlativo:     correlativo,
-		Ticket:          resp.Ticket(),
 		Status:          "pending",
 		PayloadJSON:     string(payloadJSON),
 		DetailsCount:    len(details),
 	}
+	if err := s.db.Create(rec).Error; err != nil {
+		return nil, err
+	}
+	if err := s.reserveGenericDocument("reversion", rec.ID, correlativo); err != nil {
+		return nil, err
+	}
+	client := facturador.Shared()
+	resp, err := client.SendReversion(payload)
+	if err != nil {
+		return nil, err
+	}
+	rec.Ticket = resp.Ticket()
 	if resp.CDRZipBase64() != "" {
 		rec.Status = "accepted"
 		if resp.SunatResponse != nil && resp.SunatResponse.CDRResponse != nil {
@@ -2221,7 +2288,7 @@ func (s *BillingService) CreateReversion(details []CreateVoidedInput) (*database
 			rec.Status = "rejected"
 		}
 	}
-	if err := s.db.Create(rec).Error; err != nil {
+	if err := s.db.Save(rec).Error; err != nil {
 		return nil, err
 	}
 	return rec, nil
@@ -2239,7 +2306,7 @@ func (s *BillingService) GetReversionStatus(id uint) (*database.TenantSunatRever
 	if s.db.Select("ruc").First(&cfg).Error != nil {
 		return &rec, nil
 	}
-	client := facturador.NewClient(s.baseURL, s.token)
+	client := facturador.Shared()
 	result, err := client.GetReversionStatus(rec.Ticket, cfg.RUC)
 	if err != nil {
 		return &rec, err

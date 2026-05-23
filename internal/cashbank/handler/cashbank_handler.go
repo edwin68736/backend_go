@@ -7,6 +7,8 @@ import (
 	"tukifac/config"
 	"tukifac/internal/cashbank/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/middleware"
+	"tukifac/pkg/restaurantperm"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -33,6 +35,21 @@ func tenantName(c fiber.Ctx) string {
 		return t.Name
 	}
 	return ""
+}
+
+// canManageAnyCashSession admin tenant o supervisor restaurante puede cerrar caja ajena.
+func canManageAnyCashSession(c fiber.Ctx) bool {
+	if claims, ok := c.Locals("tenant_claims").(*middleware.TenantClaims); ok && claims != nil {
+		if claims.RoleName == "Administrador" {
+			return true
+		}
+		for _, p := range claims.Permissions {
+			if p == "cashbank.manage" {
+				return true
+			}
+		}
+	}
+	return middleware.HasRestaurantPerm(c, restaurantperm.SettingsManage)
 }
 
 // SessionView extiende TenantCashSession con campos calculados para las vistas.
@@ -131,7 +148,9 @@ func (h *CashBankHandler) OpenSessionForm(c fiber.Ctx) error {
 	openingBalance, _ := strconv.ParseFloat(c.FormValue("opening_balance"), 64)
 
 	svc := service.NewCashBankService(tdb)
-	_, err := svc.OpenSession(uint(branchID), userID(c), openingBalance, c.FormValue("notes"))
+	_, err := svc.OpenSession(service.OpenSessionInput{
+		BranchID: uint(branchID), UserID: userID(c), OpeningBalance: openingBalance, Notes: c.FormValue("notes"),
+	})
 	if err != nil {
 		var branches []database.TenantBranch
 		tdb.Where("active = ?", true).Find(&branches)
@@ -214,7 +233,7 @@ func (h *CashBankHandler) CloseSessionForm(c fiber.Ctx) error {
 	closingBalance, _ := strconv.ParseFloat(c.FormValue("closing_balance"), 64)
 
 	svc := service.NewCashBankService(db(c))
-	if err := svc.CloseSession(uint(sessionID), userID(c), closingBalance, c.FormValue("notes"), nil); err != nil {
+	if err := svc.CloseSession(uint(sessionID), userID(c), closingBalance, c.FormValue("notes"), nil, canManageAnyCashSession(c)); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(err.Error())
 	}
 	return c.Redirect().To("/cashbank/cash?success=closed")

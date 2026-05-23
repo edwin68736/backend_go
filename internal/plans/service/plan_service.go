@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas/docusage"
 )
 
 type PlanService struct{}
@@ -56,6 +57,8 @@ type CreatePlanInput struct {
 	Price        float64  `json:"price"`
 	BillingCycle string   `json:"billing_cycle"`
 	Modules      []string `json:"modules"`
+	IsUnlimitedDocuments  bool `json:"is_unlimited_documents"`
+	MonthlyDocumentsLimit int  `json:"monthly_documents_limit"`
 }
 
 func (s *PlanService) Create(input CreatePlanInput) (*database.SaasPlan, error) {
@@ -66,11 +69,10 @@ func (s *PlanService) Create(input CreatePlanInput) (*database.SaasPlan, error) 
 		input.BillingCycle = "monthly"
 	}
 	plan := &database.SaasPlan{
-		Name:         input.Name,
-		Description:  input.Description,
-		Price:        input.Price,
-		BillingCycle: input.BillingCycle,
-		Active:       true,
+		Name: input.Name, Description: input.Description, Price: input.Price,
+		BillingCycle: input.BillingCycle, Active: true,
+		IsUnlimitedDocuments: input.IsUnlimitedDocuments,
+		MonthlyDocumentsLimit: input.MonthlyDocumentsLimit,
 	}
 	if err := database.CentralDB.Create(plan).Error; err != nil {
 		return nil, err
@@ -88,13 +90,24 @@ func (s *PlanService) Update(id uint, input CreatePlanInput) error {
 		input.BillingCycle = "monthly"
 	}
 	database.CentralDB.Model(&plan).Updates(map[string]interface{}{
-		"name":          input.Name,
-		"description":   input.Description,
-		"price":         input.Price,
+		"name": input.Name, "description": input.Description, "price": input.Price,
 		"billing_cycle": input.BillingCycle,
+		"is_unlimited_documents": input.IsUnlimitedDocuments,
+		"monthly_documents_limit": input.MonthlyDocumentsLimit,
 	})
 	s.syncModules(id, input.Modules)
+	syncBillingCyclesDocumentQuota(id)
 	return nil
+}
+
+// syncBillingCyclesDocumentQuota propaga monthly_documents_limit a ciclos abiertos del plan.
+func syncBillingCyclesDocumentQuota(planID uint) {
+	var cycles []database.SaasBillingCycle
+	database.CentralDB.Where("plan_id = ? AND status IN ?", planID,
+		[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).Find(&cycles)
+	for i := range cycles {
+		_ = docusage.SyncCycleDocumentQuotaFromPlan(&cycles[i], planID)
+	}
 }
 
 func (s *PlanService) ToggleActive(id uint) error {

@@ -6,9 +6,11 @@ import (
 
 	"tukifac/config"
 	"tukifac/internal/users/service"
-	restsvc "tukifac/internal/restaurant/service"
+	reststaff "tukifac/internal/restaurant/staff"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -144,17 +146,11 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Contexto de empresa no encontrado"})
 	}
 
-	// REGLA CENTRAL: verificar estado del tenant antes de cualquier cosa.
-	// La suspensión es siempre manual desde el panel central.
-	if tenant.Status != "active" {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"error":  "Cuenta suspendida. Contacte al administrador del sistema.",
-			"status": tenant.Status,
-		})
-	}
+	// Suspendidos/bloqueados pueden iniciar sesión para ver deuda y contactar soporte.
+	subscriptionBlocked := tenant.Status != "active"
 
-	var user database.TenantUser
-	if err := tenantDB.Where("email = ? AND active = ?", req.Email, true).First(&user).Error; err != nil {
+	user, legacyBranch, err := database.LoadTenantUserForBranchByEmail(tenantDB, req.Email)
+	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Credenciales inválidas"})
 	}
 
@@ -183,26 +179,29 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 		enabledModules = append(enabledModules, m.ModuleKey)
 	}
 
-	// Plan activo (PlanID para referencia)
 	var planID uint
-	var subscriptionInfo fiber.Map
-	var sub database.SaasSubscription
-	if err := database.CentralDB.
-		Where("tenant_id = ? AND status IN ('active','trial')", tenant.ID).
-		Order("created_at desc").First(&sub).Error; err == nil {
-		planID = sub.PlanID
-		var plan database.SaasPlan
-		database.CentralDB.First(&plan, sub.PlanID)
-		subscriptionInfo = fiber.Map{
-			"plan_name":  plan.Name,
-			"status":     sub.Status,
-			"end_date":   sub.EndDate,
-			"start_date": sub.StartDate,
-		}
+	subView, _ := saas.GetTenantView(tenant.ID)
+	planID = subView.PlanID
+	subscriptionInfo := fiber.Map{
+		"plan_name":             subView.PlanName,
+		"status":                subView.Status,
+		"tenant_status":         subView.TenantStatus,
+		"end_date":              subView.EndDate,
+		"start_date":            subView.StartDate,
+		"days_until_expiry":     subView.DaysUntilExpiry,
+		"can_operate":           subView.CanOperate,
+		"is_blocked":            subView.IsBlocked,
+		"strike_count":          subView.StrikeCount,
+		"can_submit_payment":    subView.CanSubmitPayment,
+		"provisional_until":     subView.ProvisionalUntil,
+		"support_message":       subView.SupportMessage,
+		"show_renewal_banner":   subView.ShowRenewalBanner,
+		"show_suspended_banner": subView.ShowSuspendedBanner,
+		"pending_amount":        subView.PendingAmount,
+		"reconnection_fee":      subView.ReconnectionFee,
+		"portal_url":            subView.PortalURL,
 	}
 
-	// Rol operativo en módulo restaurante (solo si el tenant tiene el módulo)
-	restaurantRole := ""
 	hasRestaurant := false
 	for _, m := range enabledModules {
 		if m == "restaurant" {
@@ -210,27 +209,61 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 			break
 		}
 	}
+	employeeType := ""
+	staffID := uint(0)
+	permVer := uint(0)
 	if hasRestaurant {
-		restSvc := restsvc.New(tenantDB)
-		restaurantRole, _ = restSvc.GetUserRestaurantRole(user.ID)
+		staffSvc := reststaff.New(tenantDB)
+		permVer, _ = staffSvc.GetPermCacheVersion()
+		if st, err := staffSvc.GetStaffByUserID(user.ID); err == nil && st.IsActive {
+			employeeType = st.EmployeeType
+			staffID = st.ID
+		}
 	}
 
-	// Construir JWT con todos los permisos embebidos.
-	// El middleware TenantAuthAPI NO consultará la BD central en requests posteriores.
+	if !legacyBranch {
+		branch.SyncUserBranchFields(user, role.Name)
+		if user.HomeBranchID == nil || (user.HomeBranchID != nil && *user.HomeBranchID == 0) {
+			if hid, err := branch.ResolveHomeBranchID(tenantDB, user); err == nil {
+				hb := hid
+				user.HomeBranchID = &hb
+				user.BranchID = &hb
+				_ = database.PersistUserBranchFieldsOnLogin(tenantDB, user.ID, hb, branch.CanSwitchBranch(role.Name, user))
+			}
+		}
+	}
+
+	activeBranchID, err := branch.ResolveHomeBranchID(tenantDB, user)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	canSwitch := branch.CanSwitchBranch(role.Name, user)
+	activeBrief, _ := branch.GetBranchBrief(tenantDB, activeBranchID)
+
+	sessionVersion := uint(0)
+	if !legacyBranch {
+		sessionVersion = user.BranchSessionVersion
+	}
+
 	claims := &middleware.TenantClaims{
-		UserID:         user.ID,
-		Email:          user.Email,
-		RoleID:         user.RoleID,
-		RoleName:       role.Name,
-		TenantSlug:     tenant.Slug,
-		TenantDB:       tenant.DBName,
-		TenantID:       tenant.ID,
-		PlanID:         planID,
-		Modules:        enabledModules,
-		Permissions:    permissionKeys,
-		RestaurantRole: restaurantRole,
-		Status:         tenant.Status,
-		Type:           "tenant",
+		UserID:               user.ID,
+		Email:                user.Email,
+		RoleID:               user.RoleID,
+		RoleName:             role.Name,
+		TenantSlug:           tenant.Slug,
+		TenantDB:             tenant.DBName,
+		TenantID:             tenant.ID,
+		PlanID:               planID,
+		Modules:              enabledModules,
+		Permissions:          permissionKeys,
+		EmployeeType:         employeeType,
+		AuthMethod:           "pwd",
+		PermVer:              permVer,
+		StaffID:              staffID,
+		Status:               tenant.Status,
+		Type:                 "tenant",
+		ActiveBranchID:       activeBranchID,
+		BranchSessionVersion: sessionVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -243,17 +276,29 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generando token"})
 	}
 
+	restPerms := []string(nil)
+	if hasRestaurant && employeeType != "" {
+		restPerms, _ = reststaff.New(tenantDB).ResolvePermissionKeys(tenant.ID, user.ID, permVer)
+	}
+
 	return c.JSON(fiber.Map{
 		"token": tokenString,
 		"user": fiber.Map{
-			"id":               user.ID,
-			"name":             user.Name,
-			"email":            user.Email,
-			"role":             role.Name,
-			"restaurant_role":  restaurantRole,
+			"id":                user.ID,
+			"name":              user.Name,
+			"email":             user.Email,
+			"role":              role.Name,
+			"employee_type":     employeeType,
+			"staff_id":          staffID,
+			"home_branch_id":    activeBranchID,
+			"can_switch_branch": canSwitch,
 		},
-		"modules":      enabledModules,
-		"permissions":  permissionKeys,
-		"subscription": subscriptionInfo,
+		"active_branch":         activeBrief,
+		"can_switch_branch":     canSwitch,
+		"modules":               enabledModules,
+		"permissions":            permissionKeys,
+		"restaurant_permissions": restPerms,
+		"subscription":           subscriptionInfo,
+		"subscription_blocked":   subscriptionBlocked,
 	})
 }

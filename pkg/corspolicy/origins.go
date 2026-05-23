@@ -101,6 +101,12 @@ func (m *Matcher) Allow(origin string) bool {
 	}
 
 	host := strings.ToLower(u.Hostname())
+
+	// Desarrollo: Vite en localhost y subdominios tenant (angel.localhost:5173).
+	if m.allowHTTP && (host == "localhost" || strings.HasSuffix(host, ".localhost")) {
+		return true
+	}
+
 	for _, base := range m.baseHosts {
 		if host == base || strings.HasSuffix(host, "."+base) {
 			return true

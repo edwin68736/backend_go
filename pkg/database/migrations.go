@@ -1,7 +1,6 @@
 package database
 
 import (
-	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -27,6 +26,8 @@ type Tenant struct {
 	SunatConnectedAt   *time.Time     `json:"sunat_connected_at"`                           // última sincronización exitosa con Lycet/SUNAT
 	SunatEnvMode       string         `gorm:"size:20;default:'demo'" json:"sunat_env_mode"` // demo/beta = pruebas, production = producción
 	TrialEndsAt        *time.Time     `json:"trial_ends_at"`
+	StrikeCount        int            `gorm:"default:0" json:"strike_count"`
+	PaymentBlocked     bool           `gorm:"default:false" json:"payment_blocked"`
 	CreatedAt          time.Time      `json:"created_at"`
 	UpdatedAt          time.Time      `json:"updated_at"`
 	DeletedAt          gorm.DeletedAt `gorm:"index" json:"-"`
@@ -86,6 +87,9 @@ type SaasPlan struct {
 	Price        float64   `gorm:"not null;default:0" json:"price"`
 	BillingCycle string    `gorm:"size:20;default:'monthly'" json:"billing_cycle"` // monthly | yearly | lifetime
 	Active       bool      `gorm:"default:true" json:"active"`
+	// Límite documentos electrónicos SUNAT por ciclo de suscripción.
+	IsUnlimitedDocuments  bool `gorm:"default:false" json:"is_unlimited_documents"`
+	MonthlyDocumentsLimit int  `gorm:"default:0" json:"monthly_documents_limit"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -109,31 +113,42 @@ type SaasPlanModule struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// SaasSubscription — suscripción activa de un tenant
+// SaasSubscription — suscripción activa de un tenant (source of truth SaaS).
 type SaasSubscription struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	TenantID  uint      `gorm:"not null;index" json:"tenant_id"`
-	PlanID    uint      `gorm:"not null" json:"plan_id"`
-	StartDate time.Time `gorm:"not null" json:"start_date"`
-	EndDate   time.Time `gorm:"not null" json:"end_date"`
-	Status    string    `gorm:"size:30;default:'active'" json:"status"` // active | expired | suspended | trial
-	Notes     string    `gorm:"size:500" json:"notes"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           uint       `gorm:"primaryKey" json:"id"`
+	TenantID     uint       `gorm:"not null;index" json:"tenant_id"`
+	PlanID       uint       `gorm:"not null" json:"plan_id"`
+	BillingCycle string     `gorm:"size:20;default:'monthly'" json:"billing_cycle"` // monthly | semiannual | annual
+	StartDate    time.Time  `gorm:"not null" json:"start_date"`
+	EndDate      time.Time  `gorm:"not null" json:"end_date"`
+	GraceEndsAt  *time.Time `json:"grace_ends_at,omitempty"`
+	ProvisionalUntil *time.Time `json:"provisional_until,omitempty"`
+	Status       string     `gorm:"size:30;default:'active';index" json:"status"`
+	Notes        string     `gorm:"size:500" json:"notes"`
+	CancelledAt  *time.Time `json:"cancelled_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
-// SaasPayment — pagos manuales con comprobante
+// SaasPayment — pagos manuales con comprobante (solo BD central).
 type SaasPayment struct {
 	ID             uint       `gorm:"primaryKey" json:"id"`
 	TenantID       uint       `gorm:"not null;index" json:"tenant_id"`
 	SubscriptionID *uint      `gorm:"index" json:"subscription_id"`
+	BillingCycleID *uint      `gorm:"index" json:"billing_cycle_id"`
 	Amount         float64    `gorm:"not null;default:0" json:"amount"`
+	ReconnectionFee float64   `gorm:"default:0" json:"reconnection_fee"`
 	Currency       string     `gorm:"size:10;default:'PEN'" json:"currency"`
 	PeriodMonths   int        `gorm:"default:1" json:"period_months"`
+	PaymentMethod  string     `gorm:"size:30" json:"payment_method"` // yape, plin, transfer, deposit
+	PaymentDate    *time.Time `json:"payment_date,omitempty"`
+	Reference      string     `gorm:"size:120" json:"reference"`
 	ReceiptURL     string     `gorm:"size:500" json:"receipt_url"`
-	Status         string     `gorm:"size:30;default:'pending'" json:"status"` // pending | approved | rejected
+	Status         string     `gorm:"size:30;default:'pending_review';index" json:"status"`
+	ProvisionalApplied bool     `gorm:"default:false" json:"provisional_applied"`
 	Notes          string     `gorm:"size:500" json:"notes"`
 	AdminNotes     string     `gorm:"size:500" json:"admin_notes"`
+	SubmittedBy    *uint      `json:"submitted_by,omitempty"` // tenant user id
 	ReviewedBy     *uint      `json:"reviewed_by"`
 	ReviewedAt     *time.Time `json:"reviewed_at"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -190,6 +205,7 @@ func (UbiDistrito) TableName() string { return "ubi_distritos" }
 func MigrateCentral() error {
 	return CentralDB.AutoMigrate(
 		&Tenant{},
+		&TenantSchemaVersion{},
 		&SuperAdminUser{},
 		&TenantModule{},
 		&AuditLog{},
@@ -198,6 +214,13 @@ func MigrateCentral() error {
 		&SaasPlanModule{},
 		&SaasSubscription{},
 		&SaasPayment{},
+		&SaasPlatformSettings{},
+		&SaasBillingCycle{},
+		&SaasNotificationLog{},
+		&SaasSubscriptionEvent{},
+		&SaasDocumentPackage{},
+		&SaasTenantDocumentPackage{},
+		&SaasElectronicDocumentUsage{},
 		&CentralAjuste{},
 		&UbiRegion{},
 		&UbiProvincia{},
@@ -300,9 +323,9 @@ func SeedCentral() error {
 	CentralDB.Model(&SaasPlan{}).Count(&planCount)
 	if planCount == 0 {
 		plans := []SaasPlan{
-			{Name: "Trial", Description: "Período de prueba gratuito 30 días", Price: 0, BillingCycle: "monthly"},
-			{Name: "Basic", Description: "Plan básico para pequeñas empresas", Price: 49, BillingCycle: "monthly"},
-			{Name: "Pro", Description: "Plan profesional con todos los módulos", Price: 99, BillingCycle: "monthly"},
+			{Name: "Trial", Description: "Período de prueba gratuito 30 días", Price: 0, BillingCycle: "monthly", MonthlyDocumentsLimit: 20},
+			{Name: "Basic", Description: "Plan básico para pequeñas empresas", Price: 49, BillingCycle: "monthly", MonthlyDocumentsLimit: 50},
+			{Name: "Pro", Description: "Plan profesional con todos los módulos", Price: 99, BillingCycle: "monthly", IsUnlimitedDocuments: true},
 		}
 		CentralDB.Create(&plans)
 
@@ -338,6 +361,16 @@ func SeedCentral() error {
 			}
 			CentralDB.Create(&proModules)
 		}
+	}
+
+	var docPkgCount int64
+	CentralDB.Model(&SaasDocumentPackage{}).Count(&docPkgCount)
+	if docPkgCount == 0 {
+		CentralDB.Create([]SaasDocumentPackage{
+			{Name: "50 documentos", Description: "Paquete adicional 50 comprobantes", DocumentsQty: 50, Price: 10, SortOrder: 1},
+			{Name: "150 documentos", Description: "Paquete adicional 150 comprobantes", DocumentsQty: 150, Price: 20, SortOrder: 2},
+			{Name: "500 documentos", Description: "Paquete adicional 500 comprobantes", DocumentsQty: 500, Price: 50, SortOrder: 3},
+		})
 	}
 
 	// Ubigeo Perú: departamentos y provincias (y distritos si existe data_ubi.txt)
@@ -381,7 +414,10 @@ type TenantRolePermission struct {
 type TenantUser struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
 	RoleID    uint           `gorm:"not null;index" json:"role_id"`
-	BranchID  *uint          `gorm:"index" json:"branch_id"`
+	BranchID  *uint          `gorm:"index" json:"branch_id"` // legacy; usar home_branch_id
+	HomeBranchID          *uint `gorm:"index" json:"home_branch_id"`
+	CanSwitchBranch       bool  `gorm:"default:false" json:"can_switch_branch"`
+	BranchSessionVersion  uint  `gorm:"default:0" json:"branch_session_version"`
 	Name      string         `gorm:"size:255;not null" json:"name"`
 	Email     string         `gorm:"size:255;uniqueIndex;not null" json:"email"`
 	Password  string         `gorm:"size:255;not null" json:"-"`
@@ -418,8 +454,10 @@ type TenantBranch struct {
 }
 
 type TenantCompanyConfig struct {
-	ID           uint   `gorm:"primaryKey" json:"id"`
-	BusinessName string `gorm:"size:255;not null" json:"business_name"`
+	ID                     uint   `gorm:"primaryKey" json:"id"`
+	DefaultBranchID        *uint  `gorm:"index" json:"default_branch_id,omitempty"`
+	DefaultWalkInContactID *uint  `gorm:"index" json:"default_walk_in_contact_id,omitempty"`
+	BusinessName           string `gorm:"size:255;not null" json:"business_name"`
 	TradeName    string `gorm:"size:255" json:"trade_name"`
 	RUC          string `gorm:"size:20;not null" json:"ruc"`
 	Address      string `gorm:"size:255" json:"address"`
@@ -445,7 +483,7 @@ type TenantCompanyConfig struct {
 	PSEToken         string    `gorm:"size:500" json:"-"`
 	PSEConfigJSON    string    `gorm:"type:text" json:"-"`
 	TukifacToken     string    `gorm:"size:500" json:"-"`
-	ColorTheme       string    `gorm:"size:30;default:'blue'" json:"color_theme"`
+	ColorTheme       string    `gorm:"size:30;default:'green'" json:"color_theme"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -476,9 +514,10 @@ type TenantContact struct {
 	Email         string         `gorm:"size:255" json:"email"`
 	PhotoURL      string         `gorm:"size:500" json:"photo_url"`
 	ContactPerson string         `gorm:"size:255" json:"contact_person"`
-	Notes         string         `gorm:"type:text" json:"notes"`
-	Active        bool           `gorm:"default:true" json:"active"`
-	CreatedAt     time.Time      `json:"created_at"`
+	Notes           string         `gorm:"type:text" json:"notes"`
+	IsDefaultWalkIn bool           `gorm:"default:false;index" json:"is_default_walkin"`
+	Active          bool           `gorm:"default:true" json:"active"`
+	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
 	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
 
@@ -638,7 +677,7 @@ type TenantSale struct {
 	Series         string         `gorm:"size:10;not null" json:"series"`
 	Correlative    uint           `gorm:"not null" json:"correlative"`
 	Number         string         `gorm:"size:20;not null;index" json:"number"`
-	IssueDate      time.Time      `gorm:"not null" json:"issue_date"`
+	IssueDate      time.Time      `gorm:"not null;index" json:"issue_date"`
 	DueDate        *time.Time     `json:"due_date"`
 	Subtotal       float64        `gorm:"type:decimal(15,2);not null" json:"subtotal"`
 	TaxAmount      float64        `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
@@ -648,6 +687,7 @@ type TenantSale struct {
 	Notes          string         `gorm:"type:text" json:"notes"`
 	Status         string         `gorm:"size:30;default:'paid'" json:"status"`            // draft, paid, cancelled, credit
 	BillingStatus  string         `gorm:"size:30;default:'pending'" json:"billing_status"` // pending, sent, accepted, rejected
+	RestaurantSessionID *uint     `gorm:"index" json:"restaurant_session_id,omitempty"` // pedido restaurante que originó la venta
 	OriginalSaleID *uint          `gorm:"index" json:"original_sale_id"`                   // Si es NOTA_CREDITO: venta que se anuló
 	// Si esta venta es factura/boleta (01/03) generada desde una nota de venta (00), apunta al ID de esa NV.
 	IssuedFromNotaSaleID *uint          `gorm:"index" json:"issued_from_nota_sale_id,omitempty"`
@@ -697,6 +737,11 @@ type TenantInvoice struct {
 	SentAt            *time.Time `json:"sent_at"`
 	ResponseAt        *time.Time `json:"response_at"`
 	RetryCount        int        `gorm:"default:0" json:"retry_count"`
+	JobStatus         string     `gorm:"size:30;index;default:'pending'" json:"job_status"` // pending, processing, sent, failed, retrying, dead_letter
+	PipelineStatus    string     `gorm:"size:40;index;default:'DRAFT'" json:"pipeline_status"` // máquina de estados billingstate
+	IdempotencyKey    string     `gorm:"size:128;index" json:"idempotency_key"`
+	JobLastError      string     `gorm:"type:text" json:"job_last_error,omitempty"`
+	NextRetryAt       *time.Time `gorm:"index" json:"next_retry_at,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
@@ -857,6 +902,8 @@ type TenantCashSession struct {
 	BranchID        uint           `gorm:"not null;index" json:"branch_id"`
 	UserID          uint           `gorm:"not null;index" json:"user_id"`
 	OpenedBy        uint           `gorm:"not null" json:"opened_by"`
+	RegisterCode    *string        `gorm:"size:50" json:"register_code,omitempty"` // Fase C: punto de caja físico
+	RegisterName    *string        `gorm:"size:100" json:"register_name,omitempty"`
 	ClosedBy        *uint          `json:"closed_by"`
 	OpeningBalance  float64        `gorm:"type:decimal(15,2);default:0" json:"opening_balance"`
 	ClosingBalance  *float64       `gorm:"type:decimal(15,2)" json:"closing_balance"`
@@ -948,6 +995,7 @@ type TenantExternalModule struct {
 // TenantRestaurantFloor representa un piso o sala del restaurante.
 type TenantRestaurantFloor struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
+	BranchID  uint           `gorm:"not null;index;default:1" json:"branch_id"`
 	Name      string         `gorm:"size:100;not null" json:"name"`
 	SortOrder int            `gorm:"default:0" json:"sort_order"`
 	Active    bool           `gorm:"default:true" json:"active"`
@@ -959,6 +1007,7 @@ type TenantRestaurantFloor struct {
 // TenantRestaurantTable representa una mesa del restaurante.
 type TenantRestaurantTable struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
+	BranchID  uint           `gorm:"not null;index;default:1" json:"branch_id"`
 	FloorID   uint           `gorm:"not null;index" json:"floor_id"`
 	Name      string         `gorm:"size:50;not null" json:"name"`
 	Capacity  int            `gorm:"default:4" json:"capacity"`
@@ -981,29 +1030,59 @@ type TenantWaiter struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// TenantTableSession representa una sesión de consumo activa en una mesa.
+// TenantTableSession representa un pedido restaurante (mesa, llevar, delivery o POS).
+// Status legacy: open, billed, cancelled, closed. OrderStatus: ciclo de negocio del pedido.
 type TenantTableSession struct {
 	ID          uint       `gorm:"primaryKey" json:"id"`
-	TableID     *uint      `gorm:"index" json:"table_id"` // null = pedido rápido sin mesa
-	WaiterID    *uint      `gorm:"index" json:"waiter_id"`
+	TableID     *uint      `gorm:"index" json:"table_id"` // null = sin mesa
+	WaiterID    *uint      `gorm:"index" json:"waiter_id,omitempty"` // deprecado: usar staff_id
+	StaffID     *uint      `gorm:"index" json:"staff_id"`
 	UserID      uint       `gorm:"not null;index" json:"user_id"`
 	BranchID    uint       `gorm:"not null;index" json:"branch_id"`
 	Guests      int        `gorm:"default:1" json:"guests"`
 	OpenedAt    time.Time  `gorm:"not null" json:"opened_at"`
 	ClosedAt    *time.Time `json:"closed_at"`
-	Status      string     `gorm:"size:20;default:'open'" json:"status"` // open, billed, cancelled
+	Status      string     `gorm:"size:20;default:'open'" json:"status"` // open, billed, cancelled, closed
+	OrderCode   string     `gorm:"size:32;index" json:"order_code"`
+	OrderType   string     `gorm:"size:20;default:'dine_in';index" json:"order_type"`   // dine_in, takeaway, delivery, quick_sale
+	OrderStatus string     `gorm:"size:30;default:'pending';index" json:"order_status"` // draft, pending, sent_to_kitchen, preparing, ready, on_the_way, delivered, paid, cancelled
+	ContactID   *uint      `gorm:"index" json:"contact_id"`
+	CustomerName  string   `gorm:"size:200" json:"customer_name"`
+	CustomerPhone string   `gorm:"size:30" json:"customer_phone"`
+	DeliveryDriverID *uint `gorm:"index" json:"delivery_driver_id"`
+	DeliveryAddress  string `gorm:"type:text" json:"delivery_address"`
+	DeliveryReference string `gorm:"size:255" json:"delivery_reference"`
+	EstimatedMinutes  int    `gorm:"default:0" json:"estimated_minutes"`
+	SentToKitchenAt *time.Time `json:"sent_to_kitchen_at"`
+	ReadyAt         *time.Time `json:"ready_at"`
+	PaidAt          *time.Time `json:"paid_at"`
 	Notes       string     `gorm:"type:text" json:"notes"`
-	SaleID      *uint      `gorm:"index" json:"sale_id"` // venta generada al cobrar
+	SaleID      *uint      `gorm:"index" json:"sale_id"`
 	TotalAmount float64    `gorm:"type:decimal(15,2);default:0" json:"total_amount"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// TenantDeliveryDriver repartidor para pedidos delivery.
+type TenantDeliveryDriver struct {
+	ID          uint           `gorm:"primaryKey" json:"id"`
+	Name        string         `gorm:"size:100;not null" json:"name"`
+	Phone       string         `gorm:"size:30" json:"phone"`
+	VehicleType string         `gorm:"size:50" json:"vehicle_type"`
+	Plate       string         `gorm:"size:20" json:"plate"`
+	Active      bool           `gorm:"default:true" json:"active"`
+	Notes       string         `gorm:"type:text" json:"notes"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // TenantTableOrder representa un pedido (ronda) dentro de una sesión de mesa.
 type TenantTableOrder struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	SessionID   uint      `gorm:"not null;index" json:"session_id"`
-	WaiterID    *uint     `gorm:"index" json:"waiter_id"`
+	WaiterID    *uint     `gorm:"index" json:"waiter_id,omitempty"` // deprecado
+	StaffID     *uint     `gorm:"index" json:"staff_id"`
 	UserID      uint      `gorm:"not null;index" json:"user_id"`
 	OrderNumber int       `gorm:"not null" json:"order_number"` // número de pedido dentro de la sesión
 	Notes       string    `gorm:"type:text" json:"notes"`
@@ -1035,11 +1114,35 @@ type TenantComanda struct {
 
 // TenantRestaurantSetting configuración del módulo restaurante (una fila por tenant).
 type TenantRestaurantSetting struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	DeletionPin string    `gorm:"size:20" json:"-"` // PIN para anular comandas (no se expone en JSON)
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	DeletionPin      string    `gorm:"size:72" json:"-"` // hash bcrypt del PIN de anulación (no se expone en JSON)
+	StaffV2Enabled   bool      `gorm:"default:false" json:"staff_v2_enabled"`
+	PermCacheVersion uint      `gorm:"default:0" json:"perm_cache_version"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
+
+// TenantRestaurantStaff perfil operativo restaurante (1:1 con tenant_users).
+type TenantRestaurantStaff struct {
+	ID             uint           `gorm:"primaryKey" json:"id"`
+	UserID         uint           `gorm:"uniqueIndex;not null" json:"user_id"`
+	EmployeeType   string         `gorm:"size:30;not null;index" json:"employee_type"`
+	StaffCode      string         `gorm:"size:20;index" json:"staff_code"`
+	PinHash        string         `gorm:"size:72" json:"-"`
+	DisplayName    string         `gorm:"size:100" json:"display_name"`
+	IsActive       bool           `gorm:"default:true" json:"is_active"`
+	CanCharge      bool           `gorm:"default:false" json:"can_charge"`
+	CanDiscount    bool           `gorm:"default:false" json:"can_discount"`
+	CanOpenTable   bool           `gorm:"default:true" json:"can_open_table"`
+	KitchenAccess  bool           `gorm:"default:false" json:"kitchen_access"`
+	DeliveryAccess bool           `gorm:"default:false" json:"delivery_access"`
+	LegacyWaiterID *uint     `gorm:"index" json:"legacy_waiter_id,omitempty"`
+	Notes          string    `gorm:"type:text" json:"notes,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (TenantRestaurantStaff) TableName() string { return "tenant_restaurant_staff" }
 
 // TenantUserRestaurantRole rol operativo del usuario dentro del módulo restaurante.
 // Independiente de TenantRole; solo aplica en el frontend de restaurante.
@@ -1147,7 +1250,9 @@ func MigrateTenant(db *gorm.DB) error {
 		&TenantTableSession{},
 		&TenantTableOrder{},
 		&TenantComanda{},
+		&TenantDeliveryDriver{},
 		&TenantRestaurantSetting{},
+		&TenantRestaurantStaff{},
 		&TenantUserRestaurantRole{},
 		&TenantSalePayment{},
 		&TenantMembership{},
@@ -1155,6 +1260,8 @@ func MigrateTenant(db *gorm.DB) error {
 		&UbiRegion{},
 		&UbiProvincia{},
 		&UbiDistrito{},
+		&TenantSchemaPatch{},
+		&TenantMigrationHistory{},
 	); err != nil {
 		return err
 	}
@@ -1165,6 +1272,7 @@ func MigrateTenant(db *gorm.DB) error {
 	if err := ensureServiceProductsNoStock(db); err != nil {
 		return err
 	}
+	// Multi-sucursal DDL: V031 en migrate-fleet (tenantmigrations). Bootstrap nuevos tenants vía AutoMigrate structs.
 	return EnsureMembershipModulePermissions(db)
 }
 
@@ -1249,121 +1357,18 @@ func ensureDocumentSeriesColumns(db *gorm.DB) error {
 	return nil
 }
 
-// SeedTenant inserta datos iniciales en la BD de un tenant.
+// SeedTenant inserta datos iniciales en la BD de un tenant (delega a ProvisionTenantSeed).
 func SeedTenant(db *gorm.DB, adminEmail, adminPassword, companyName, ruc, address, ubigeo string) error {
-	// Roles por defecto
-	var roleCount int64
-	db.Model(&TenantRole{}).Count(&roleCount)
-	if roleCount == 0 {
-		roles := []TenantRole{
-			{Name: "Administrador", Description: "Acceso completo al sistema", IsSystem: true},
-			{Name: "Supervisor", Description: "Supervisión y reportes", IsSystem: true},
-			{Name: "Cajero", Description: "Caja y movimientos", IsSystem: true},
-			{Name: "Vendedor", Description: "Gestión de ventas y POS", IsSystem: true},
-			{Name: "Almacenero", Description: "Gestión de inventario", IsSystem: true},
-			{Name: "Contador", Description: "Gestión contable", IsSystem: true},
-		}
-		if err := db.Create(&roles).Error; err != nil {
-			return err
-		}
-	}
-
-	// Sucursal principal
-	var branchCount int64
-	db.Model(&TenantBranch{}).Count(&branchCount)
-	var mainBranchID uint = 1
-	if branchCount == 0 {
-		branch := TenantBranch{Name: "Principal", IsMain: true, Active: true}
-		if err := db.Create(&branch).Error; err != nil {
-			return err
-		}
-		mainBranchID = branch.ID
-	}
-
-	// Configuración de empresa
-	var cfgCount int64
-	db.Model(&TenantCompanyConfig{}).Count(&cfgCount)
-	if cfgCount == 0 {
-		cfg := TenantCompanyConfig{
-			BusinessName: companyName,
-			RUC:          ruc,
-			Address:      strings.TrimSpace(address),
-			Ubigeo:       strings.TrimSpace(ubigeo),
-			Currency:     "PEN",
-			TaxRate:      18.00,
-			SunatEnvMode: "demo",
-		}
-		if err := db.Create(&cfg).Error; err != nil {
-			return err
-		}
-	}
-
-	// Series por defecto (con sunat_code y category para categorizar y facturación electrónica)
-	var seriesCount int64
-	db.Model(&TenantDocumentSeries{}).Count(&seriesCount)
-	if seriesCount == 0 {
-		series := []TenantDocumentSeries{
-			{BranchID: mainBranchID, DocType: "FACTURA", SunatCode: "01", Category: "venta", Series: "F001", Correlative: 1, Active: true},
-			{BranchID: mainBranchID, DocType: "BOLETA", SunatCode: "03", Category: "venta", Series: "B001", Correlative: 1, Active: true},
-			{BranchID: mainBranchID, DocType: "NOTA DE VENTA", SunatCode: "00", Category: "venta", Series: "NV001", Correlative: 1, Active: true}, // 00 = no se envía a SUNAT
-			{BranchID: mainBranchID, DocType: "NOTA_CREDITO", SunatCode: "07", Category: "nota_credito", Series: "FC01", Correlative: 1, Active: true},
-			{BranchID: mainBranchID, DocType: "GUIA_REMISION", SunatCode: "09", Category: "guia_remision", Series: "T001", Correlative: 1, Active: true},
-			{BranchID: mainBranchID, DocType: "RETENCION", SunatCode: "20", Category: "retencion", Series: "R001", Correlative: 1, Active: true},
-			{BranchID: mainBranchID, DocType: "PERCEPCION", SunatCode: "40", Category: "percepcion", Series: "P001", Correlative: 1, Active: true},
-		}
-		if err := db.Create(&series).Error; err != nil {
-			return err
-		}
-	}
-
-	// Usuario administrador del tenant
-	var userCount int64
-	db.Model(&TenantUser{}).Count(&userCount)
-	if userCount == 0 {
-		var adminRole TenantRole
-		db.Where("name = ?", "Administrador").First(&adminRole)
-
-		user := &TenantUser{
-			RoleID: adminRole.ID,
-			Name:   "Administrador",
-			Email:  adminEmail,
-			Active: true,
-		}
-		if err := user.SetPassword(adminPassword); err != nil {
-			return err
-		}
-		if err := db.Create(user).Error; err != nil {
-			return err
-		}
-	}
-
-	// Métodos de pago por defecto
-	var pmCount int64
-	db.Model(&TenantPaymentMethod{}).Count(&pmCount)
-	if pmCount == 0 {
-		paymentMethods := []TenantPaymentMethod{
-			{Name: "Efectivo", Code: "cash", DestinationType: "cash", IsSystem: true, SortOrder: 0, Active: true},
-			{Name: "Yape", Code: "yape", DestinationType: "bank_account", IsSystem: false, SortOrder: 1, Active: true},
-			{Name: "Plin", Code: "plin", DestinationType: "bank_account", IsSystem: false, SortOrder: 2, Active: true},
-			{Name: "Transferencia", Code: "transferencia", DestinationType: "bank_account", IsSystem: false, SortOrder: 3, Active: true},
-			{Name: "Tarjeta", Code: "tarjeta", DestinationType: "bank_account", IsSystem: false, SortOrder: 4, Active: true},
-		}
-		if err := db.Create(&paymentMethods).Error; err != nil {
-			return err
-		}
-	}
-
-	// Cliente por defecto para ventas (SUNAT doc_type 0, doc_number 99999999); dirección/ubigeo por defecto en tenant_contact_defaults.
-	if err := EnsureDefaultSaleContact(db); err != nil {
+	if err := ProvisionTenantSeed(db, TenantSeedInput{
+		AdminEmail: adminEmail, AdminPassword: adminPassword,
+		CompanyName: companyName, RUC: ruc, Address: address, Ubigeo: ubigeo,
+	}); err != nil {
 		return err
 	}
-
-	// Ubigeo Perú: departamentos y provincias (y distritos si existe data_ubi.txt)
 	if err := SeedUbigeoRegionesProvincias(db); err != nil {
 		return err
 	}
 	_ = SeedUbigeoDistritos(db, UbigeoDistritosCSVPath())
-
 	return nil
 }
 

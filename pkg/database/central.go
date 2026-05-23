@@ -21,7 +21,7 @@ func ConnectCentral() error {
 	)
 
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger:      logger.Default.LogMode(logger.Warn),
+		Logger:      gormLogger(),
 		PrepareStmt: true,
 	})
 	if err != nil {

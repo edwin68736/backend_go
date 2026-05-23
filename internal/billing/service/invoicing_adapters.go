@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 
 	"gorm.io/gorm"
@@ -273,24 +274,26 @@ func (a *pseAdapter) SendToSUNAT(saleID uint, companyCfg *database.TenantCompany
 		)
 	}
 
-	// 8. Process Success
 	var invoice database.TenantInvoice
 	a.db.Where("sale_id = ?", saleID).FirstOrCreate(&invoice, database.TenantInvoice{SaleID: saleID})
+	if billingstate.HasFinalSunatOutcome(&invoice) {
+		return &invoice, errors.New("comprobante ya tiene resultado SUNAT definitivo")
+	}
 
 	now := time.Now()
 	invoice.SentAt = &now
 	invoice.ResponseAt = &now
 	invoice.RetryCount++
-	invoice.SunatStatus = "accepted" // Or map from pseResp.Estado if needed
 	invoice.SunatMessage = pseResp.userMessage()
 	invoice.SunatHash = pseResp.CodigoHash
 	invoice.ExternalID = pseResp.ExternalID
+	invoice.SunatCDRCode = "0"
 
-	// 9. Decode and Save Signed XML
+	xmlSaved := false
+	cdrSaved := false
 	if pseResp.XML != "" && a.storage != nil {
 		signedXMLBytes, err := base64.StdEncoding.DecodeString(pseResp.XML)
 		if err == nil {
-			// Save Signed XML
 			meta, err := a.storage.SaveFile(
 				companyCfg.RUC,
 				"pse",
@@ -302,11 +305,10 @@ func (a *pseAdapter) SendToSUNAT(saleID uint, companyCfg *database.TenantCompany
 			)
 			if err == nil {
 				invoice.XMLURL = meta.FilePath
+				xmlSaved = true
 			}
 		}
 	}
-
-	// 10. Decode and Save CDR (si está presente en la respuesta del PSE)
 	if pseResp.CDR != "" && a.storage != nil {
 		cdrBytes, err := base64.StdEncoding.DecodeString(pseResp.CDR)
 		if err == nil && len(cdrBytes) > 0 {
@@ -321,25 +323,34 @@ func (a *pseAdapter) SendToSUNAT(saleID uint, companyCfg *database.TenantCompany
 			)
 			if err == nil {
 				invoice.CDRURL = meta.FilePath
+				cdrSaved = true
 			}
 		}
 	}
 
-	invoice.PayloadJSON = psePayloadToJSON(map[string]interface{}{
-		"mode":         InvoicingModePSE,
-		"endpoint":     endpoint,
-		"unsigned_xml": unsignedXMLPath,
-		"response":     pseResp,
-	})
-
-	if err := a.db.Save(&invoice).Error; err != nil {
-		// Log error but return success as invoice was processed
-		fmt.Printf("Error saving invoice record: %v\n", err)
+	pipeline := billingstate.EvaluatePSE(pseResp.IsSuccess, pseResp.CodigoHash, pseResp.XML, pseResp.CDR, xmlSaved, cdrSaved)
+	if !cdrSaved {
+		pipeline = billingstate.FAILED
+		invoice.SunatCDRCode = ""
 	}
+	patch := billingstate.BuildPatch(pipeline, &invoice, invoice.SunatMessage)
+	patch.XMLURL = invoice.XMLURL
+	patch.CDRURL = invoice.CDRURL
+	patch.SunatHash = invoice.SunatHash
+	billingstate.ApplyToInvoice(&invoice, patch)
+	invoice.PayloadJSON = psePayloadToJSON(map[string]interface{}{
+		"mode": InvoicingModePSE, "endpoint": endpoint, "unsigned_xml": unsignedXMLPath, "response": pseResp,
+	})
+	_ = a.db.Save(&invoice).Error
+	_ = billingstate.SyncSaleBillingStatus(a.db, saleID, pipeline)
 
-	// Update Sale status
-	_ = a.db.Model(&database.TenantSale{}).Where("id = ?", saleID).Update("billing_status", "accepted").Error
-
+	if pipeline != billingstate.SUNAT_ACCEPTED {
+		msg := invoice.SunatMessage
+		if msg == "" {
+			msg = "PSE no confirmó aceptación SUNAT con CDR"
+		}
+		return &invoice, fmt.Errorf("%s", msg)
+	}
 	return &invoice, nil
 }
 
@@ -416,48 +427,39 @@ func (a *pseAdapter) CheckStatus(saleID uint, companyCfg *database.TenantCompany
 		invoice.SunatHash = cdrResp.CodigoHash
 	}
 
-	if cdrResp.IsSuccess {
-		invoice.SunatStatus = "accepted"
-		// If CDR is present, decode and save
-		if cdrResp.CDR != "" && a.storage != nil {
-			cdrBytes, err := base64.StdEncoding.DecodeString(cdrResp.CDR)
+	cdrSaved := false
+	if cdrResp.CDR != "" && a.storage != nil {
+		cdrBytes, err := base64.StdEncoding.DecodeString(cdrResp.CDR)
+		if err == nil {
+			meta, err := a.storage.SaveFile(
+				companyCfg.RUC,
+				"pse",
+				docType,
+				sale.Series,
+				fmt.Sprintf("%d", sale.Correlative),
+				FileTypeCDR,
+				cdrBytes,
+			)
 			if err == nil {
-				meta, err := a.storage.SaveFile(
-					companyCfg.RUC,
-					"pse",
-					docType,
-					sale.Series,
-					fmt.Sprintf("%d", sale.Correlative),
-					FileTypeCDR,
-					cdrBytes,
-				)
-				if err == nil {
-					invoice.CDRURL = meta.FilePath
-				}
+				invoice.CDRURL = meta.FilePath
+				cdrSaved = true
 			}
 		}
-	} else {
-		// If explicit rejection or error
-		// 0 or other status codes might indicate pending or error
-		if cdrResp.Estado != 0 {
-			invoice.SunatStatus = "rejected"
-		}
 	}
-
+	pipeline := billingstate.EvaluatePSE(cdrResp.IsSuccess, cdrResp.CodigoHash, "", cdrResp.CDR, invoice.XMLURL != "", cdrSaved)
+	if cdrResp.IsSuccess && cdrSaved {
+		invoice.SunatCDRCode = "0"
+	} else if !cdrResp.IsSuccess && cdrResp.Estado != 0 {
+		pipeline = billingstate.SUNAT_REJECTED
+	} else if !cdrSaved {
+		pipeline = billingstate.UNKNOWN
+	}
+	patch := billingstate.BuildPatch(pipeline, &invoice, invoice.SunatMessage)
+	billingstate.ApplyToInvoice(&invoice, patch)
 	now := time.Now()
-	invoice.ResponseAt = &now // Updated status check time
-
-	if err := a.db.Save(&invoice).Error; err != nil {
-		return nil, fmt.Errorf("error actualizando invoice: %v", err)
-	}
-
-	// Sync Sale Status
-	if invoice.SunatStatus == "accepted" {
-		_ = a.db.Model(&database.TenantSale{}).Where("id = ?", saleID).Update("billing_status", "accepted").Error
-	} else if invoice.SunatStatus == "rejected" {
-		_ = a.db.Model(&database.TenantSale{}).Where("id = ?", saleID).Update("billing_status", "rejected").Error
-	}
-
+	invoice.ResponseAt = &now
+	_ = a.db.Save(&invoice).Error
+	_ = billingstate.SyncSaleBillingStatus(a.db, saleID, pipeline)
 	return &invoice, nil
 }
 

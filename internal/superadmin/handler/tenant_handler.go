@@ -17,6 +17,7 @@ import (
 	"tukifac/internal/superadmin/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
+	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -82,6 +83,31 @@ func (h *TenantHandler) CreateAPI(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"success": true,
 		"data":    enrichTenantMap(tenant),
+	})
+}
+
+// POST /api/superadmin/tenants/:id/destroy-complete — elimina tenant, BD y archivos (requiere clave de operaciones).
+func (h *TenantHandler) DestroyCompleteAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body service.DestroyTenantInput
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	res, err := h.svc.DestroyTenantComplete(uint(id), body)
+	if err != nil {
+		code := fiber.StatusBadRequest
+		if err == saas.ErrOperationsKeyNotConfigured || err == saas.ErrOperationsKeyInvalid {
+			code = fiber.StatusForbidden
+		}
+		return c.Status(code).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Tenant eliminado por completo (facturador SUNAT/Lycet no modificado)",
+		"result":  res,
 	})
 }
 
@@ -202,8 +228,11 @@ func (h *TenantHandler) MigrateAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "Migraciones ejecutadas"})
 }
 
-// POST /api/superadmin/tenants/migrate-all — ejecuta migraciones para todos los tenants activos.
+// POST /api/superadmin/tenants/migrate-all — LEGACY; deshabilitado en producción.
 func (h *TenantHandler) MigrateAllAPI(c fiber.Ctx) error {
+	if err := service.GuardMigrateAllProduction(); err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+	}
 	summary, err := h.svc.RunMigrationsAll()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -344,7 +373,7 @@ func (h *TenantHandler) UpdateSunatConfigAPI(c fiber.Ctx) error {
 			if syncErr := svc.SyncFacturadorConfigWithFiles("", "", "", "", ""); syncErr == nil {
 				database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_connected_at", time.Now())
 			}
-			_ = facturador.NewClient(config.AppConfig.FacturadorBaseURL, config.AppConfig.FacturadorToken).PatchAmbiente(cfg.RUC, mapEnvToLycetAmbiente(body.SunatEnvMode))
+			_ = facturador.Shared().PatchAmbiente(cfg.RUC, mapEnvToLycetAmbiente(body.SunatEnvMode))
 		}
 	}
 	return c.JSON(fiber.Map{"success": true})
@@ -384,7 +413,7 @@ func (h *TenantHandler) PatchSunatEnvAPI(c fiber.Ctx) error {
 	database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", body.SunatEnvMode)
 	// Actualizar ambiente en Lycet (PATCH /api/v1/empresas/{ruc}/ambiente)
 	if cfg, _ := svc.GetConfig(); cfg != nil && cfg.RUC != "" && config.AppConfig.FacturadorBaseURL != "" && config.AppConfig.FacturadorToken != "" {
-		_ = facturador.NewClient(config.AppConfig.FacturadorBaseURL, config.AppConfig.FacturadorToken).PatchAmbiente(cfg.RUC, mapEnvToLycetAmbiente(body.SunatEnvMode))
+		_ = facturador.Shared().PatchAmbiente(cfg.RUC, mapEnvToLycetAmbiente(body.SunatEnvMode))
 	}
 
 	{
@@ -472,7 +501,7 @@ func (h *TenantHandler) ListConectadosSunatAPI(c fiber.Ctx) error {
 	if config.AppConfig.FacturadorBaseURL == "" || config.AppConfig.FacturadorToken == "" {
 		return c.JSON(fiber.Map{"data": []interface{}{}})
 	}
-	client := facturador.NewClient(config.AppConfig.FacturadorBaseURL, config.AppConfig.FacturadorToken)
+	client := facturador.Shared()
 	empresasLycet, err := client.ListEmpresas()
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "no se pudo obtener la lista del facturador: " + err.Error(), "data": []interface{}{}})

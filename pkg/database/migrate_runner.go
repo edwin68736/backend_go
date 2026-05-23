@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"tukifac/config"
@@ -40,27 +41,38 @@ func RunCentralMigration() error {
 	if err := SeedCentral(); err != nil {
 		return fmt.Errorf("seed central: %w", err)
 	}
+	if err := EnsureCentralFleetSchema(); err != nil {
+		return fmt.Errorf("central fleet schema: %w", err)
+	}
 	return nil
 }
 
-// MigrateTenantSchema aplica AutoMigrate + seeds de catálogo del tenant (sin pool persistente).
-// Usar en CLI, alta de tenant y endpoints admin de migración.
+// MigrateTenantSchema bootstrap completo (AutoMigrate + seeds). Solo alta de tenant / emergencia.
 func MigrateTenantSchema(dbName string) error {
+	return migrateTenantSchema(dbName, true)
+}
+
+// provisionMigrateTenantSchema bootstrap para alta nueva: sin backfill legacy (aún no hay sucursal).
+func provisionMigrateTenantSchema(dbName string) error {
+	return migrateTenantSchema(dbName, false)
+}
+
+func migrateTenantSchema(dbName string, runBranchBackfill bool) error {
 	db, err := openTenantDB(dbName)
 	if err != nil {
 		return err
 	}
 	defer closeDB(db)
 
-	if err := applyTenantSchema(db, dbName); err != nil {
+	if err := applyTenantBootstrap(db, runBranchBackfill); err != nil {
 		return err
 	}
-	// Si ya estaba en pool, invalidar para que la app reabra con esquema actualizado
 	RemoveTenantFromPool(dbName)
 	return nil
 }
 
-func applyTenantSchema(db *gorm.DB, dbName string) error {
+// applyTenantBootstrap AutoMigrate histórico + seeds (NO usar en migrate-fleet).
+func applyTenantBootstrap(db *gorm.DB, runBranchBackfill bool) error {
 	if err := MigrateTenant(db); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}
@@ -77,10 +89,17 @@ func applyTenantSchema(db *gorm.DB, dbName string) error {
 	if err := SeedPaymentMethodsIfEmpty(db); err != nil {
 		return fmt.Errorf("seed payment methods: %w", err)
 	}
+	// Backfill opcional en bootstrap (omitir en fleet; usar migrate-backfill-fleet).
+	skipEnv := os.Getenv("SKIP_BRANCH_BACKFILL") == "1" || os.Getenv("SKIP_BRANCH_BACKFILL") == "true"
+	if runBranchBackfill && !skipEnv {
+		if err := RunBranchMultiBackfillOnce(db); err != nil {
+			return fmt.Errorf("branch multi backfill: %w", err)
+		}
+	}
 	return nil
 }
 
-// MigrateTenantBySlug migra un tenant por slug (cualquier status).
+// MigrateTenantBySlug migra un tenant por slug (bootstrap).
 func MigrateTenantBySlug(slug string) error {
 	if CentralDB == nil {
 		return fmt.Errorf("BD central no conectada")
@@ -89,7 +108,10 @@ func MigrateTenantBySlug(slug string) error {
 	if err := CentralDB.Where("slug = ?", slug).First(&tenant).Error; err != nil {
 		return fmt.Errorf("tenant no encontrado: %w", err)
 	}
-	return MigrateTenantSchema(tenant.DBName)
+	if err := MigrateTenantSchema(tenant.DBName); err != nil {
+		return err
+	}
+	return UpsertTenantSchemaVersion(tenant.ID, TenantSchemaTargetVersion, TenantSchemaTargetVersion, TenantSchemaStatusCompleted)
 }
 
 // ListTenantsForMigration devuelve tenants a migrar en lote.
@@ -111,7 +133,7 @@ func ListTenantsForMigration(activeOnly bool) ([]Tenant, error) {
 // MigrateProgress callback opcional por tenant (slug, err).
 type MigrateProgress func(slug string, err error)
 
-// MigrateTenantsBatch migra tenants en lotes con pausa configurable (no detiene en error).
+// MigrateTenantsBatch LEGACY: bootstrap AutoMigrate por tenant (emergencia, no usar en deploy).
 func MigrateTenantsBatch(activeOnly bool, onProgress MigrateProgress) MigrateSummary {
 	cfg := config.AppConfig
 	batchSize := cfg.MigrationBatchSize
@@ -123,10 +145,7 @@ func MigrateTenantsBatch(activeOnly bool, onProgress MigrateProgress) MigrateSum
 	tenants, err := ListTenantsForMigration(activeOnly)
 	summary := MigrateSummary{}
 	if err != nil {
-		summary.Failed = append(summary.Failed, TenantMigrateFailure{
-			Slug: "(list)",
-			Err:  err,
-		})
+		summary.Failed = append(summary.Failed, TenantMigrateFailure{Slug: "(list)", Err: err})
 		if onProgress != nil {
 			onProgress("(list)", err)
 		}
@@ -139,15 +158,11 @@ func MigrateTenantsBatch(activeOnly bool, onProgress MigrateProgress) MigrateSum
 			onProgress(t.Slug, migErr)
 		}
 		if migErr != nil {
-			summary.Failed = append(summary.Failed, TenantMigrateFailure{
-				Slug:   t.Slug,
-				DBName: t.DBName,
-				Err:    migErr,
-			})
+			summary.Failed = append(summary.Failed, TenantMigrateFailure{Slug: t.Slug, DBName: t.DBName, Err: migErr})
 		} else {
 			summary.Success = append(summary.Success, t.Slug)
+			_ = UpsertTenantSchemaVersion(t.ID, TenantSchemaTargetVersion, TenantSchemaTargetVersion, TenantSchemaStatusCompleted)
 		}
-
 		if pause > 0 && batchSize > 0 && (i+1)%batchSize == 0 && i+1 < len(tenants) {
 			time.Sleep(pause)
 		}

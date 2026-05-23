@@ -57,9 +57,18 @@ func TenantResolver() fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).SendString("Error conectando a la base de datos de la empresa")
 		}
 
+		c.Locals("tenant_db_name", tenant.DBName)
 		c.Locals("tenant", tenant)
 		c.Locals("tenantDB", tenantDB)
 		c.Locals("tenant_slug", tenant.Slug)
+
+		if tenant.Status != "active" && tenant.Status != database.TenantStatusBlocked &&
+			tenant.Status != database.TenantStatusSuspended && !IsSubscriptionExemptPath(c.Path()) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error":  "Cuenta suspendida o inactiva",
+				"status": tenant.Status,
+			})
+		}
 		if ruc := tenantstorage.SanitizeRUC(tenant.RUC); ruc != "" {
 			c.Locals("tenant_ruc", ruc)
 		}

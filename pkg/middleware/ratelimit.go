@@ -63,6 +63,9 @@ func skipRateLimitPaths(c fiber.Ctx) bool {
 	if strings.HasPrefix(path, "/uploads/") {
 		return true
 	}
+	if strings.HasPrefix(path, "/api/products/bulk-import/") {
+		return true
+	}
 	if c.Method() == fiber.MethodOptions {
 		return true
 	}

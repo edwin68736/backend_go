@@ -53,7 +53,9 @@ backend_principal/
 | Central | `tukifac_saas` | `Tenant`, planes, `TenantModule`, super admins |
 | Tenant | `saas_tenant_{slug}` | Prefijo `Tenant*` en modelos |
 
-`GetTenantDB` usa `sync.Map` como pool y ejecuta `MigrateTenant` en cada obtención (idempotente).
+`GetTenantDB` usa `TenantDBManager` (pool con singleflight + eviction). **No** ejecuta migraciones en cada request.
+
+Migraciones SaaS (V30 baseline, fleet incremental): ver **[docs/MIGRATIONS-SaaS.md](docs/MIGRATIONS-SaaS.md)**.
 
 ### Resolver tenant
 
@@ -140,8 +142,19 @@ CENTRAL_FRONTEND_URL=http://localhost:5174
 go mod download
 go run .
 # http://localhost:3000
-# Health: GET /
+# Health: GET /health
+# Fleet health: GET /api/internal/fleet-health (opcional X-Internal-Key)
 ```
+
+### CLI migraciones (resumen)
+
+```bash
+./tukifac-api migrate-central
+./tukifac-api migrate-init-versions
+./tukifac-api migrate-fleet --workers=4 --limit=100
+```
+
+Ver [docs/MIGRATIONS-SaaS.md](docs/MIGRATIONS-SaaS.md).
 
 ## Convenciones
 
@@ -162,7 +175,7 @@ docker build -f dockerfile -t tukifac-api .
 - `migrations.go` monolítico (~1300+ líneas)
 - `BillingService` muy grande; múltiples adaptadores de facturación
 - Código SSR legacy (`TenantAuthWeb`, handlers con `c.Render`) sin rutas activas
-- `MigrateTenant` en cada `GetTenantDB` — posible cuello de botella en alta carga
+- Fleet de miles de tenants requiere cron `migrate-fleet` (no migrate-all en deploy)
 - `go.mod` con dependencias marcadas `// indirect` sin tidying
 
 ## Extender un módulo

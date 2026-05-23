@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"tukifac/internal/subscriptions/service"
+	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -85,6 +86,9 @@ func (h *SubscriptionHandler) ReactivateAPI(c fiber.Ctx) error {
 
 // POST /api/superadmin/cron/check-expirations
 func (h *SubscriptionHandler) CheckExpirationsAPI(c fiber.Ctx) error {
-	count := h.svc.CheckExpirations()
-	return c.JSON(fiber.Map{"suspended": count, "message": "verificación completada"})
+	r, u, s := saas.RunDailyJobs()
+	return c.JSON(fiber.Map{
+		"reminders": r, "status_updates": u, "suspended": s,
+		"message": "verificación completada",
+	})
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy completo en VPS: pull → up → migrate → health
+# Deploy completo en VPS: pull → migrate-central → restart → health
 # Uso:
 #   ./deploy/scripts/deploy.sh
 #   TUKIFAC_IMAGE=ghcr.io/org/repo:abc123 ./deploy/scripts/deploy.sh
@@ -64,6 +64,17 @@ if [[ "${SKIP_PULL}" != "1" ]]; then
   docker compose -f "${COMPOSE_FILE}" pull backend-go
 fi
 
+if [[ "${SKIP_MIGRATE}" != "1" ]]; then
+  echo "==> Migración BD central (ANTES del restart, imagen nueva)"
+  if ! docker compose -f "${COMPOSE_FILE}" run --rm --no-deps backend-go ./tukifac-api migrate-central; then
+    echo "ERROR: migrate-central falló"
+    exit 1
+  fi
+  echo "    Fleet tenants: usar deploy/scripts/migrate-fleet.sh o cron (docs/MIGRATIONS-SaaS.md)"
+else
+  echo "==> SKIP_MIGRATE=1 — migrate central omitido"
+fi
+
 echo "==> Recrear contenedor (downtime breve ~2-5s)"
 docker compose -f "${COMPOSE_FILE}" up -d --no-deps --force-recreate backend-go
 
@@ -75,17 +86,6 @@ if ! docker ps --format '{{.Names}}' | grep -qx "${CONTAINER}"; then
   echo "ERROR: el contenedor no arrancó"
   docker compose -f "${COMPOSE_FILE}" logs --tail=50 backend-go
   exit 1
-fi
-
-if [[ "${SKIP_MIGRATE}" != "1" ]]; then
-  echo "==> Migraciones (central + tenants activos)"
-  if ! docker compose -f "${COMPOSE_FILE}" exec -T backend-go ./tukifac-api migrate; then
-    echo "ERROR: migrate falló"
-    echo "Rollback sugerido: bash deploy/scripts/rollback.sh"
-    exit 1
-  fi
-else
-  echo "==> SKIP_MIGRATE=1 — migraciones omitidas"
 fi
 
 echo "==> Health check"

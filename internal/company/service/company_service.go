@@ -77,20 +77,24 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return s.db.Create(&input).Error
 	}
-	return s.db.Model(&existing).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		// Razón Social y RUC no se actualizan desde el panel tenant; solo desde el panel central.
-		"trade_name":  input.TradeName,
-		"address":     input.Address,
-		"ubigeo":      input.Ubigeo,
-		"country":     input.Country,
-		"phone":       input.Phone,
-		"email":       input.Email,
-		"website":     input.Website,
-		"logo_url":    input.LogoURL,
-		"currency":    input.Currency,
-		"tax_rate":    input.TaxRate,
-		"color_theme": input.ColorTheme,
-	}).Error
+		"trade_name": input.TradeName,
+		"address":    input.Address,
+		"ubigeo":     input.Ubigeo,
+		"country":    input.Country,
+		"phone":      input.Phone,
+		"email":      input.Email,
+		"website":    input.Website,
+		"logo_url":   input.LogoURL,
+		"currency":   input.Currency,
+		"tax_rate":   input.TaxRate,
+	}
+	// color_theme solo desde panel tenant; Tukichef y otros clientes no deben vaciarlo.
+	if strings.TrimSpace(input.ColorTheme) != "" {
+		updates["color_theme"] = input.ColorTheme
+	}
+	return s.db.Model(&existing).Updates(updates).Error
 }
 
 // SaveSunatConfigTenant guarda solo los campos que el tenant puede editar: IGV, régimen, zona beneficio.
@@ -242,7 +246,7 @@ func (s *CompanyService) syncFacturador(certificateBase64, privateKeyBase64, log
 	if solPassOverride != "" {
 		solPass = solPassOverride
 	}
-	client := facturador.NewClient(config.AppConfig.FacturadorBaseURL, config.AppConfig.FacturadorToken)
+	client := facturador.Shared()
 
 	// Lycet necesita un único PEM con: primero clave privada, luego certificado.
 	if certificateBase64 == "" && cfg.SunatCertificate != "" {

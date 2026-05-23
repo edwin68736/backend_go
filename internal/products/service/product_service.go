@@ -86,9 +86,16 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	}
 	if params.BranchID > 0 {
 		bid := params.BranchID
-		q = q.Where(`(tenant_products.manage_stock = ? OR EXISTS (
-			SELECT 1 FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = ?
-		))`, false, bid)
+		if params.RestaurantOnly {
+			// Carta Tukichef: solo platos asignados a la sucursal (fila en tenant_product_stocks, p. ej. transferencia o alta).
+			q = q.Where(`EXISTS (
+				SELECT 1 FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = ?
+			)`, bid)
+		} else {
+			q = q.Where(`(tenant_products.manage_stock = ? OR EXISTS (
+				SELECT 1 FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = ?
+			))`, false, bid)
+		}
 	}
 	if params.StockLessThan != nil {
 		thr := *params.StockLessThan

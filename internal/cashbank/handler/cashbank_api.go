@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"tukifac/internal/cashbank/service"
+	"tukifac/pkg/branch"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -15,19 +16,44 @@ import (
 
 // GET /api/cashbank/sessions?branch_id=
 func (h *CashBankHandler) ListSessionsAPI(c fiber.Ctx) error {
-	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
-	sessions, err := service.NewCashBankService(db(c)).ListSessions(uint(branchID))
+	req, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ResolveReadBranchFilter(c, uint(req))
+	sessions, err := service.NewCashBankService(db(c)).ListSessions(branchID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"data": sessions})
 }
 
-// GET /api/cashbank/sessions/open?branch_id=
+// GET /api/cashbank/sessions/open/list?branch_id= — cajas abiertas en sucursal (solo lectura).
+func (h *CashBankHandler) ListOpenSessionsInBranchAPI(c fiber.Ctx) error {
+	req, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ActiveBranchID(c)
+	if req > 0 {
+		branchID = uint(req)
+	}
+	if branchID == 0 {
+		return c.Status(403).JSON(fiber.Map{"error": "Sucursal activa requerida", "code": branch.CodeBranchRequired})
+	}
+	list, err := service.NewCashBankService(db(c)).ListOpenSessionsInBranch(branchID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": list})
+}
+
+// GET /api/cashbank/sessions/open?branch_id= — sesión abierta del usuario en la sucursal indicada o activa en JWT.
 func (h *CashBankHandler) GetOpenSessionAPI(c fiber.Ctx) error {
-	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	req, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ResolveReadBranchFilter(c, uint(req))
+	if branchID == 0 {
+		branchID = branch.ActiveBranchID(c)
+	}
+	if branchID == 0 {
+		return c.Status(403).JSON(fiber.Map{"error": "Sucursal activa requerida", "code": branch.CodeBranchRequired})
+	}
 	uid := userID(c)
-	session, err := service.NewCashBankService(db(c)).GetOpenSession(uint(branchID), uid)
+	session, err := service.NewCashBankService(db(c)).GetOpenSession(branchID, uid)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -47,7 +73,13 @@ func (h *CashBankHandler) OpenSessionAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	sess, err := service.NewCashBankService(db(c)).OpenSession(body.BranchID, userID(c), body.OpeningBalance, body.Notes)
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	sess, err := service.NewCashBankService(db(c)).OpenSession(service.OpenSessionInput{
+		BranchID: branchID, UserID: userID(c), OpeningBalance: body.OpeningBalance, Notes: body.Notes,
+	})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -68,7 +100,8 @@ func (h *CashBankHandler) CloseSessionAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if err := service.NewCashBankService(db(c)).CloseSession(uint(id), userID(c), body.ClosingBalance, body.Notes, body.Arqueo); err != nil {
+	allowAny := canManageAnyCashSession(c)
+	if err := service.NewCashBankService(db(c)).CloseSession(uint(id), userID(c), body.ClosingBalance, body.Notes, body.Arqueo, allowAny); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
@@ -139,7 +172,11 @@ func (h *CashBankHandler) AddMovementAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if err := service.NewCashBankService(db(c)).AddMovement(
+	svc := service.NewCashBankService(db(c))
+	if _, err := svc.ValidateCashSessionForUser(uint(id), userID(c), branch.ActiveBranchID(c)); err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := svc.AddMovement(
 		uint(id), userID(c), body.Type, body.Category, body.Reference, body.PaymentMethod, body.Amount, body.Notes,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -169,7 +206,9 @@ func (h *CashBankHandler) GetSessionReportAPI(c fiber.Ctx) error {
 func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
 	var f service.MovementReportFilters
 	if v, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil {
-		f.BranchID = uint(v)
+		f.BranchID = branch.ResolveReadBranchFilter(c, uint(v))
+	} else {
+		f.BranchID = branch.ActiveBranchID(c)
 	}
 	if v, err := strconv.ParseUint(c.Query("user_id"), 10, 32); err == nil {
 		f.UserID = uint(v)

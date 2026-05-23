@@ -94,14 +94,22 @@ jobs:
             echo "Pulling image..."
             docker compose -f docker-compose.production.yml pull backend-go
 
+            SKIP_MIGRATE=0
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.skip_migrate }}" = "true" ]; then
+              SKIP_MIGRATE=1
+              echo "skip_migrate=true — omitiendo migrate"
+            fi
+
+            if [ "$SKIP_MIGRATE" = "0" ]; then
+              echo "Running migrate-central (fleet is separate cron)..."
+              docker compose -f docker-compose.production.yml run --rm --no-deps backend-go ./tukifac-api migrate-central
+            fi
+
             echo "Restarting container..."
             docker compose -f docker-compose.production.yml up -d --no-deps --force-recreate backend-go
 
             echo "Waiting container..."
             sleep 10
-
-            echo "Running migrations..."
-            docker exec tukifac-backend-go ./tukifac-api migrate
 
             echo "Waiting backend..."
             for i in {1..30}; do

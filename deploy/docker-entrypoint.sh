@@ -1,15 +1,6 @@
 #!/bin/sh
-# Arranque en contenedor: migración central rápida y luego el proceso principal (API).
-# El migrate completo (tenants) sigue en deploy: ./tukifac-api migrate
+# Producción: solo arranca la API. migrate-central corre en deploy (antes del restart).
+# Desarrollo local: AUTO_MIGRATE_DEV=true en go run / .env (nunca en APP_ENV=production).
 set -eu
-
-case "${RUN_MIGRATE_ON_START:-1}" in
-  0|false|FALSE|no|NO)
-    ;;
-  *)
-    echo "[entrypoint] migrate-central (esquema central antes del API)..."
-    ./tukifac-api migrate-central
-    ;;
-esac
 
 exec "$@"
