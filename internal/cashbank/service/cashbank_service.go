@@ -579,6 +579,55 @@ func (s *CashBankService) DeletePaymentMethod(id uint) error {
 	return s.db.Delete(&pm).Error
 }
 
+// PaymentLineInput línea de pago para resolver sesión de caja (método + monto).
+type PaymentLineInput struct {
+	Method string
+	Amount float64
+}
+
+// ResolveCashSessionForPayments asigna la sesión de caja del usuario si hay pagos a destino efectivo.
+func (s *CashBankService) ResolveCashSessionForPayments(
+	branchID, userID uint,
+	cashSessionID *uint,
+	payments []PaymentLineInput,
+) (*uint, error) {
+	needsCash := false
+	for _, p := range payments {
+		if p.Amount <= 0 {
+			continue
+		}
+		pm, err := s.GetPaymentMethodByCode(p.Method)
+		if err == nil && pm != nil && pm.DestinationType == "cash" {
+			needsCash = true
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(p.Method), "cash") || strings.EqualFold(strings.TrimSpace(p.Method), "efectivo") {
+			needsCash = true
+			break
+		}
+	}
+	if !needsCash {
+		return cashSessionID, nil
+	}
+	var sid uint
+	if cashSessionID != nil && *cashSessionID > 0 {
+		sid = *cashSessionID
+	} else {
+		sess, err := s.GetOpenSession(branchID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if sess == nil {
+			return nil, errors.New("se requiere sesión de caja abierta del usuario para pagos en efectivo")
+		}
+		sid = sess.ID
+	}
+	if _, err := s.ValidateCashSessionForUser(sid, userID, branchID); err != nil {
+		return nil, err
+	}
+	return &sid, nil
+}
+
 // RecordPayment distribuye un pago según la configuración del método: a caja (TenantCashMovement) o a cuenta bancaria (TenantBankMovement).
 // cashSessionID: requerido cuando destination_type=cash. saleNumber y description para referencias.
 func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, amount float64, cashSessionID *uint, saleNumber, description string, saleID *uint, userID uint) error {

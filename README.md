@@ -187,3 +187,6 @@ docker build -f dockerfile -t tukifac-api .
 
 esto es otro prueba
 
+
+go run . migrate-fleet --workers=4 --limit=100
+

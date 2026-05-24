@@ -8,18 +8,48 @@ import (
 
 	"tukifac/config"
 	"tukifac/pkg/database"
+	"tukifac/pkg/tenantctx"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+func TestValidateTenantBinding_rejectsDBMismatch(t *testing.T) {
+	config.AppConfig = &config.Config{JWTSecret: "test-secret"}
+
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		tenant := &database.Tenant{ID: 1, Slug: "empresa-a", DBName: "saas_tenant_empresa_a"}
+		tenantctx.Bind(c, tenant, nil)
+		c.Locals("tenant_claims", &TenantClaims{
+			TenantSlug: "empresa-a",
+			TenantDB:   "saas_tenant_empresa_b",
+			TenantID:   1,
+			Type:       "tenant",
+		})
+		return c.Next()
+	})
+	app.Get("/api/test", ValidateTenantBinding(), func(c fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest("GET", "/api/test", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+}
 
 func TestValidateTenantBinding_rejectsSlugMismatch(t *testing.T) {
 	config.AppConfig = &config.Config{JWTSecret: "test-secret"}
 
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
-		c.Locals("tenant_slug", "empresa-a")
-		c.Locals("tenant", &database.Tenant{ID: 1, Slug: "empresa-a", DBName: "saas_tenant_empresa_a"})
+		tenant := &database.Tenant{ID: 1, Slug: "empresa-a", DBName: "saas_tenant_empresa_a"}
+		tenantctx.Bind(c, tenant, nil)
 		c.Locals("tenant_claims", &TenantClaims{
 			TenantSlug: "empresa-b",
 			TenantDB:   "saas_tenant_empresa_b",
@@ -48,14 +78,16 @@ func TestValidateTenantBinding_acceptsMatch(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
-		c.Locals("tenant_slug", "empresa-a")
-		c.Locals("tenant", &database.Tenant{ID: 1, Slug: "empresa-a", DBName: "saas_tenant_empresa_a"})
+		tenant := &database.Tenant{ID: 1, Slug: "empresa-a", DBName: "saas_tenant_empresa_a"}
+		tenantctx.Bind(c, tenant, nil)
+		c.Locals("tenant_subdomain_slug", "empresa-a")
 		c.Locals("tenant_claims", &TenantClaims{
-			TenantSlug: "empresa-a",
-			TenantDB:   "saas_tenant_empresa_a",
-			TenantID:   1,
-			Type:       "tenant",
-			Status:     "active",
+			TenantSlug:    "empresa-a",
+			TenantDB:      "saas_tenant_empresa_a",
+			TenantID:      1,
+			TenantVersion: 1,
+			Type:          "tenant",
+			Status:        "active",
 		})
 		return c.Next()
 	})

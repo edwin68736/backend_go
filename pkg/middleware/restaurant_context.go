@@ -21,8 +21,12 @@ func LoadRestaurantPermissions() fiber.Handler {
 		if tenantDB == nil {
 			return c.Next()
 		}
+		tenantSlug := claims.TenantSlug
+		if tenantSlug == "" {
+			tenantSlug, _ = c.Locals("tenant_slug").(string)
+		}
 		svc := staff.New(tenantDB)
-		keys, err := svc.ResolvePermissionKeys(claims.TenantID, claims.UserID, claims.PermVer)
+		keys, err := svc.ResolvePermissionKeys(tenantSlug, claims.TenantID, claims.UserID, claims.PermVer)
 		if err != nil || len(keys) == 0 {
 			// Administrador tenant sin fila staff: acceso gestión vía RoleName en handlers dedicados.
 			if claims.RoleName == "Administrador" {

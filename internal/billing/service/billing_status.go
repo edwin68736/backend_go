@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// GetBillingStatus devuelve estado verificable para polling (GET /billing/status/:saleId).
+// GetBillingStatus devuelve estado local (sin consultar facturador; sync vía webhook/SSE/reconciliación).
 func (s *BillingService) GetBillingStatus(saleID uint) (*billingstate.StatusView, error) {
 	var sale database.TenantSale
 	if err := s.db.First(&sale, saleID).Error; err != nil {

@@ -1,47 +1,51 @@
 package middleware
 
 import (
+	"log/slog"
+	"strings"
+
 	"tukifac/config"
 	"tukifac/pkg/database"
+	"tukifac/pkg/logger"
+	"tukifac/pkg/tenantctx"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/utils"
 
 	"github.com/gofiber/fiber/v3"
 )
 
-// TenantResolver identifica el tenant activo en cada request mediante:
-//  1. Subdominio real: {slug}.ROOT_DOMAIN (ej. empresa1.tukifac.com con APP_DOMAIN=tukifac.com)
-//  2. Header X-Tenant-Slug (clientes API / Postman)
-//  3. Cookie dev_tenant (solo desarrollo, simula subdominio desde localhost)
-//
-// Hosts no-tenant (api, app, www…) se excluyen vía RESERVED_SUBDOMAINS en .env.
+// TenantResolver identifica el tenant activo por request.
+// Ver tenant_resolve.go para política host / X-Tenant-Slug / dev.
 func TenantResolver() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		host := c.Hostname()
-
-		// Prioridad 1: header explícito (útil para Postman / apps móviles)
-		slug := c.Get("X-Tenant-Slug")
-
-		// Prioridad 2: subdominio real (producción y staging)
-		if slug == "" {
-			slug = utils.ExtractSubdomain(host, config.AppConfig.AppDomain)
+		headerSlug := c.Get("X-Tenant-Slug")
+		cookieSlug := ""
+		if config.AppConfig.IsDev() {
+			cookieSlug = c.Cookies("dev_tenant")
 		}
 
-		// Prioridad 3: cookie de simulación (solo modo desarrollo)
-		// Permite trabajar en localhost sin configurar subdominios en /etc/hosts
-		if slug == "" && config.AppConfig.IsDev() {
-			slug = c.Cookies("dev_tenant")
+		subdomainSlug := utils.ExtractSubdomain(host, config.AppConfig.AppDomain)
+		c.Locals("tenant_subdomain_slug", subdomainSlug)
+		c.Locals("tenant_header_slug", strings.TrimSpace(headerSlug))
+
+		slug, blockReason := resolveTenantSlug(host, headerSlug, cookieSlug, c.Path(), config.AppConfig)
+		if blockReason == "header_subdomain_mismatch" {
+			return tenantSecurityForbidden(c, blockReason)
+		}
+		if blockReason == "central_host_header_fallback" {
+			logger.L.Warn("tenant_resolve_central_host_header",
+				slog.String("host", host),
+				slog.String("header_slug", strings.TrimSpace(headerSlug)),
+				slog.String("path", c.Path()),
+				slog.String("hint", "use tenant subdomain URL https://{slug}."+config.AppConfig.AppDomain),
+			)
 		}
 
-		// Sin tenant o subdominio reservado (api, app, www…) → contexto central / rutas públicas
 		if slug == "" || config.AppConfig.IsReservedSubdomain(slug) {
 			return c.Next()
 		}
 
-		// Buscar tenant en BD central (sin filtrar por status).
-		// El control de status se delega:
-		//   - A LoginAPI para el endpoint de autenticación (retorna 403 descriptivo).
-		//   - A TenantAuthAPI para el resto de requests (valida claims.Status del JWT).
 		tenant, err := LookupTenantBySlug(slug)
 		if err != nil {
 			c.ClearCookie("dev_tenant")
@@ -51,16 +55,12 @@ func TenantResolver() fiber.Handler {
 			})
 		}
 
-		// Conectar a la BD del tenant (pool dinámico)
 		tenantDB, err := database.GetTenantDB(tenant.DBName)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).SendString("Error conectando a la base de datos de la empresa")
 		}
 
-		c.Locals("tenant_db_name", tenant.DBName)
-		c.Locals("tenant", tenant)
-		c.Locals("tenantDB", tenantDB)
-		c.Locals("tenant_slug", tenant.Slug)
+		tenantctx.Bind(c, tenant, tenantDB)
 
 		if tenant.Status != "active" && tenant.Status != database.TenantStatusBlocked &&
 			tenant.Status != database.TenantStatusSuspended && !IsSubscriptionExemptPath(c.Path()) {
@@ -79,7 +79,7 @@ func TenantResolver() fiber.Handler {
 // RequireTenant verifica que exista un contexto de tenant activo.
 func RequireTenant() fiber.Handler {
 	return func(c fiber.Ctx) error {
-		if c.Locals("tenant") == nil {
+		if _, ok := tenantctx.Tenant(c); !ok {
 			return c.Status(fiber.StatusBadRequest).SendString("Acceso no permitido sin contexto de empresa")
 		}
 		return c.Next()

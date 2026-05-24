@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/sunat"
 
 	"gorm.io/gorm"
 )
@@ -350,10 +351,8 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 	if p.Type == "" {
 		p.Type = "product"
 	}
-	if p.Unit == "" {
-		p.Unit = "NIU"
-	}
 	normalizeProductServiceFields(p)
+	p.Unit = sunat.NormalizeUnit(p.Unit, p.Type)
 	if strings.EqualFold(strings.TrimSpace(p.Type), "product") && strings.EqualFold(strings.TrimSpace(p.Unit), "ZZ") {
 		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
@@ -413,6 +412,7 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 	if unit == "" {
 		unit = existing.Unit
 	}
+	unit = sunat.NormalizeUnit(unit, effType)
 	if !strings.EqualFold(effType, "service") && strings.EqualFold(unit, "ZZ") {
 		return errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}

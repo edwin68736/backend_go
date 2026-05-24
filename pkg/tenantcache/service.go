@@ -43,16 +43,6 @@ func LookupTenantBySlug(slug string) (*database.Tenant, error) {
 	return lookupCentralDB(slug)
 }
 
-// Invalidate elimina cache Redis y memoria legacy para el slug.
-func Invalidate(slug string) {
-	if slug == "" {
-		return
-	}
-	if Default != nil {
-		Default.invalidate(slug)
-	}
-}
-
 func (s *Service) Lookup(slug string) (*database.Tenant, error) {
 	if slug == "" {
 		return nil, gorm.ErrRecordNotFound
@@ -133,15 +123,6 @@ func (s *Service) setNegative(ctx context.Context, slug string) error {
 		redisFail()
 	}
 	return err
-}
-
-func (s *Service) invalidate(slug string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if s.rdb != nil {
-		_ = s.rdb.Del(ctx, keyPrefix+slug, negativePrefix+slug).Err()
-		redisOK()
-	}
 }
 
 func (s *Service) loadFromCentral(ctx context.Context, slug string) (*Meta, error) {

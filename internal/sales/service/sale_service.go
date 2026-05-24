@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
+	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
 
@@ -138,11 +140,21 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		taxAmount += itemTax
 		total += itemTotal
 
+		itemType := "product"
+		if item.ProductID != nil && *item.ProductID > 0 {
+			var prod database.TenantProduct
+			if s.db.Select("type").First(&prod, *item.ProductID).Error == nil && productIsCatalogService(&prod) {
+				itemType = "service"
+			}
+		} else if strings.EqualFold(strings.TrimSpace(item.Unit), "ZZ") {
+			itemType = "service"
+		}
+
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:          item.ProductID,
 			Code:               item.Code,
 			Description:        item.Description,
-			Unit:               item.Unit,
+			Unit:               sunat.NormalizeUnit(item.Unit, itemType),
 			Quantity:           item.Quantity,
 			UnitPrice:          item.UnitPrice,
 			Discount:           item.Discount,
@@ -295,7 +307,21 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 		// Crear TenantSalePayment y distribuir cada pago a caja o cuenta bancaria
 		cbSvc := cashbanksvc.NewCashBankService(s.db)
-		if input.CashSessionID != nil && *input.CashSessionID > 0 {
+		if !skipPay {
+			payLines := make([]cashbanksvc.PaymentLineInput, 0, len(payments))
+			for _, p := range payments {
+				if p.Amount <= 0 || p.Method == "" {
+					continue
+				}
+				payLines = append(payLines, cashbanksvc.PaymentLineInput{Method: p.Method, Amount: p.Amount})
+			}
+			resolvedCash, err := cbSvc.ResolveCashSessionForPayments(input.BranchID, input.UserID, input.CashSessionID, payLines)
+			if err != nil {
+				return err
+			}
+			input.CashSessionID = resolvedCash
+			sale.CashSessionID = resolvedCash
+		} else if input.CashSessionID != nil && *input.CashSessionID > 0 {
 			if _, err := cbSvc.ValidateCashSessionForUser(*input.CashSessionID, input.UserID, input.BranchID); err != nil {
 				return err
 			}
@@ -413,8 +439,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 func (s *SaleService) GetByID(id uint) (*database.TenantSale, error) {
 	var sale database.TenantSale
-	err := s.db.First(&sale, id).Error
-	return &sale, err
+	if err := s.db.First(&sale, id).Error; err != nil {
+		return nil, err
+	}
+	sales := []database.TenantSale{sale}
+	billingstate.EnrichSalesBillingStatus(s.db, sales)
+	return &sales[0], nil
 }
 
 func (s *SaleService) GetItems(saleID uint) ([]database.TenantSaleItem, error) {
@@ -556,6 +586,7 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 	if err != nil {
 		return sales, total, summary, err
 	}
+	billingstate.EnrichSalesBillingStatus(s.db, sales)
 	// Rellenar nombre del cliente (contact_name)
 	if len(sales) > 0 {
 		ids := make(map[uint]struct{})

@@ -84,22 +84,11 @@ func (h *CompanyHandler) SunatPage(c fiber.Ctx) error {
 
 func (h *CompanyHandler) SunatSubmit(c fiber.Ctx) error {
 	svc := service.NewCompanyService(db(c))
-	enabled := c.FormValue("sunat_enabled") == "1"
 	taxRate, _ := strconv.ParseFloat(c.FormValue("tax_rate"), 64)
 	if taxRate <= 0 {
 		taxRate = 18
 	}
-	if err := svc.SaveSunatConfig(
-		enabled,
-		c.FormValue("sunat_sol_user"),
-		c.FormValue("sunat_sol_pass"),
-		c.FormValue("sunat_certificate"),
-		c.FormValue("sunat_env_mode"),
-		c.FormValue("tukifac_token"),
-		taxRate,
-		c.FormValue("igv_regime"),
-		c.FormValue("tax_benefit_zone") == "1",
-	); err != nil {
+	if err := svc.SaveSunatConfigTenant(taxRate, c.FormValue("igv_regime"), c.FormValue("tax_benefit_zone") == "1"); err != nil {
 		cfg, _ := svc.GetConfig()
 		return c.Render("company/sunat", fiber.Map{
 			"Title":     "Configuración SUNAT",

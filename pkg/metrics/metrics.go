@@ -17,6 +17,9 @@ var (
 	BillingQueueFailed    atomic.Int64
 	BillingQueueDeadLetter atomic.Int64
 
+	FiscalQueueEnqueued atomic.Int64
+	FiscalQueueProcessed atomic.Int64
+
 	RedisOpsOK   atomic.Int64
 	RedisOpsFail atomic.Int64
 

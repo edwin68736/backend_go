@@ -108,11 +108,9 @@ type Config struct {
 	IdleTimeout     time.Duration
 
 	// Facturación electrónica externa
-	TukifacBaseURL            string
-	TukifacAPIToken           string
 	FacturadorBaseURL         string
 	FacturadorToken           string
-	LegacyInvoiceEndpoint     string
+	FiscalQueueWorkers        int
 	InvoiceStoragePath        string
 	ValidaPSEManagementBaseURL string
 	ValidaPSEManagementToken   string
@@ -226,11 +224,9 @@ func Load() error {
 		WriteTimeout:   getEnvDuration("HTTP_WRITE_TIMEOUT", "120s"),
 		IdleTimeout:    getEnvDuration("HTTP_IDLE_TIMEOUT", "120s"),
 
-		TukifacBaseURL:             getEnv("TUKIFAC_BASE_URL", ""),
-		TukifacAPIToken:            getEnv("TUKIFAC_API_TOKEN", ""),
 		FacturadorBaseURL:          getEnv("FACTURADOR_BASE_URL", ""),
 		FacturadorToken:            getEnv("FACTURADOR_TOKEN", ""),
-		LegacyInvoiceEndpoint:      getEnv("LEGACY_INVOICE_ENDPOINT", ""),
+		FiscalQueueWorkers:         getEnvInt("FISCAL_QUEUE_WORKERS", 4),
 		InvoiceStoragePath:         getEnv("INVOICE_STORAGE_PATH", "./storage/invoices"),
 		ValidaPSEManagementBaseURL: getEnv("VALIDAPSE_MGMT_BASE_URL", "https://app.validapse.com/api"),
 		ValidaPSEManagementToken:   getEnv("VALIDAPSE_MGMT_TOKEN", ""),

@@ -98,7 +98,7 @@ func (s *MigrationFleetService) List(p MigrationListParams) ([]MigrationListItem
 	if p.Page <= 0 {
 		p.Page = 1
 	}
-	target := database.TenantSchemaTargetVersion
+	target := database.TenantSchemaTargetVersion()
 
 	q := database.CentralDB.Table("tenants t").
 		Select(`t.id as tenant_id, t.slug as tenant_slug, t.name as company_name,
@@ -265,7 +265,7 @@ func (s *MigrationFleetService) ensureRegistry(tenantID uint) (*database.Tenant,
 	if err := database.CentralDB.Where("tenant_id = ?", tenantID).First(&tsv).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			_ = database.UpsertTenantSchemaVersion(tenantID, database.TenantSchemaBaselineVersion,
-				database.TenantSchemaTargetVersion, database.TenantSchemaStatusPending)
+				database.TenantSchemaTargetVersion(), database.TenantSchemaStatusPending)
 		} else {
 			return nil, err
 		}

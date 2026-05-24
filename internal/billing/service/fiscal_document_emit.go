@@ -1,0 +1,351 @@
+package service
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"tukifac/pkg/database"
+	"tukifac/pkg/facturador"
+)
+
+// emitFiscalDocumentBySale enruta emisión según tipo SUNAT de la venta.
+func (s *BillingService) emitFiscalDocumentBySale(saleID uint, companyCfg *database.TenantCompanyConfig) (*database.TenantInvoice, error) {
+	sunatCode := s.saleSunatCodeByID(saleID)
+	switch sunatCode {
+	case "07", "08":
+		return s.emitNoteDocument(saleID, companyCfg)
+	case "09", "31":
+		return s.emitDespatchDocument(saleID, companyCfg)
+	case "20":
+		return s.emitRetentionDocument(saleID, companyCfg)
+	case "40":
+		return s.emitPerceptionDocument(saleID, companyCfg)
+	default:
+		return s.emitInvoiceDocument(saleID, companyCfg)
+	}
+}
+
+func (s *BillingService) saleSunatCodeByID(saleID uint) string {
+	var sale database.TenantSale
+	if err := s.db.First(&sale, saleID).Error; err != nil {
+		return ""
+	}
+	sunatCode := strings.TrimSpace(getSeriesSunatCode(s.db, sale.SeriesID))
+	if sunatCode != "" {
+		return sunatCode
+	}
+	switch strings.ToUpper(strings.TrimSpace(sale.DocType)) {
+	case "NOTA_CREDITO":
+		return "07"
+	case "NOTA_DEBITO":
+		return "08"
+	case "GUIA_REMISION", "GUIA_TRANSPORTISTA":
+		if strings.Contains(strings.ToUpper(sale.DocType), "TRANSPORT") {
+			return "31"
+		}
+		return "09"
+	case "RETENCION":
+		return "20"
+	case "PERCEPCION":
+		return "40"
+	case "FACTURA":
+		return "01"
+	default:
+		return "03"
+	}
+}
+
+func (s *BillingService) emitNoteDocument(saleID uint, companyCfg *database.TenantCompanyConfig) (*database.TenantInvoice, error) {
+	var inv database.TenantInvoice
+	_ = s.db.Where("sale_id = ?", saleID).First(&inv).Error
+	if strings.TrimSpace(inv.NotePayloadJSON) != "" {
+		tipo := s.saleSunatCodeByID(saleID)
+		if tipo == "" {
+			tipo = "07"
+		}
+		payload := enrichFiscalPayloadJSON(inv.NotePayloadJSON, tipo, "note")
+		return s.enqueueFiscalMicroservice(saleID, companyCfg, nil, payload)
+	}
+	payload, err := s.buildNotePayload(saleID)
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	payloadJSON := enrichFiscalPayloadJSON(string(b), payload.TipoDoc, "note")
+	_ = s.db.Model(&database.TenantInvoice{}).Where("sale_id = ?", saleID).
+		Update("note_payload_json", payloadJSON).Error
+	return s.enqueueFiscalMicroservice(saleID, companyCfg, nil, payloadJSON)
+}
+
+func (s *BillingService) emitDespatchDocument(saleID uint, companyCfg *database.TenantCompanyConfig) (*database.TenantInvoice, error) {
+	var despatch database.TenantDespatch
+	if err := s.db.Where("sale_id = ?", saleID).First(&despatch).Error; err != nil {
+		return nil, fmt.Errorf("guía no encontrada para venta %d: %w", saleID, err)
+	}
+	if strings.TrimSpace(despatch.PayloadJSON) == "" {
+		return nil, errors.New("payload de guía vacío")
+	}
+	tipo := s.saleSunatCodeByID(saleID)
+	if tipo == "" {
+		tipo = "09"
+	}
+	kind := "guia_remision"
+	if tipo == "31" {
+		kind = "guia_transportista"
+	}
+	payload := enrichFiscalPayloadJSON(despatch.PayloadJSON, tipo, kind)
+	return s.enqueueFiscalMicroservice(saleID, companyCfg, nil, payload)
+}
+
+func (s *BillingService) emitRetentionDocument(saleID uint, companyCfg *database.TenantCompanyConfig) (*database.TenantInvoice, error) {
+	var rec database.TenantRetention
+	if err := s.db.Where("sale_id = ?", saleID).First(&rec).Error; err != nil {
+		return nil, fmt.Errorf("retención no encontrada para venta %d: %w", saleID, err)
+	}
+	if strings.TrimSpace(rec.PayloadJSON) == "" {
+		return nil, errors.New("payload de retención vacío")
+	}
+	payload := enrichFiscalPayloadJSON(rec.PayloadJSON, "20", "retention")
+	return s.enqueueFiscalMicroservice(saleID, companyCfg, nil, payload)
+}
+
+func (s *BillingService) emitPerceptionDocument(saleID uint, companyCfg *database.TenantCompanyConfig) (*database.TenantInvoice, error) {
+	var rec database.TenantPerception
+	if err := s.db.Where("sale_id = ?", saleID).First(&rec).Error; err != nil {
+		return nil, fmt.Errorf("percepción no encontrada para venta %d: %w", saleID, err)
+	}
+	if strings.TrimSpace(rec.PayloadJSON) == "" {
+		return nil, errors.New("payload de percepción vacío")
+	}
+	payload := enrichFiscalPayloadJSON(rec.PayloadJSON, "40", "perception")
+	return s.enqueueFiscalMicroservice(saleID, companyCfg, nil, payload)
+}
+
+// buildNotePayload construye NC (07) o ND (08) desde tenant_sales + ítems.
+func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayload, error) {
+	var noteSale database.TenantSale
+	if err := s.db.First(&noteSale, noteSaleID).Error; err != nil {
+		return nil, errors.New("nota no encontrada")
+	}
+	tipoDoc := strings.TrimSpace(getSeriesSunatCode(s.db, noteSale.SeriesID))
+	if tipoDoc == "" {
+		switch strings.ToUpper(noteSale.DocType) {
+		case "NOTA_DEBITO":
+			tipoDoc = "08"
+		default:
+			tipoDoc = "07"
+		}
+	}
+	if tipoDoc != "07" && tipoDoc != "08" {
+		tipoDoc = "07"
+	}
+
+	var orig database.TenantSale
+	hasOrig := false
+	if noteSale.OriginalSaleID != nil {
+		if err := s.db.First(&orig, *noteSale.OriginalSaleID).Error; err == nil {
+			hasOrig = true
+		}
+	}
+	companyCfg, companyAddr, err := s.getCompanyConfigAndAddress()
+	if err != nil {
+		return nil, err
+	}
+	var contact database.TenantContact
+	if noteSale.ContactID != nil {
+		s.db.First(&contact, *noteSale.ContactID)
+	} else if hasOrig && orig.ContactID != nil {
+		s.db.First(&contact, *orig.ContactID)
+	}
+	clientTipoDoc, clientNumDoc, clientRazon, clientAddr, err := s.resolveInvoiceClient(&contact)
+	if err != nil {
+		return nil, err
+	}
+
+	var relDocs []facturador.NoteRelDoc
+	if hasOrig {
+		tipoDocAfectado := "03"
+		if orig.DocType == "FACTURA" || getSeriesSunatCode(s.db, orig.SeriesID) == "01" {
+			tipoDocAfectado = "01"
+		}
+		relDocs = []facturador.NoteRelDoc{{TipoDoc: tipoDocAfectado, NroDoc: fmt.Sprintf("%s-%d", orig.Series, orig.Correlative)}}
+	}
+
+	var items []database.TenantSaleItem
+	s.db.Where("sale_id = ?", noteSaleID).Find(&items)
+	if len(items) == 0 && hasOrig {
+		s.db.Where("sale_id = ?", orig.ID).Find(&items)
+	}
+	if len(items) == 0 {
+		return nil, errors.New("la nota no tiene ítems")
+	}
+	if companyCfg.TaxRate <= 0 {
+		return nil, fmt.Errorf("configure el porcentaje de IGV en Configuración de la empresa (SUNAT)")
+	}
+	companyTaxRate := companyCfg.TaxRate
+	details := make([]facturador.InvoiceDetail, len(items))
+	for i, it := range items {
+		aff := strings.TrimSpace(it.IgvAffectationType)
+		if aff == "" {
+			return nil, fmt.Errorf("el ítem «%s» no tiene tipo de afectación IGV", strings.TrimSpace(it.Description))
+		}
+		mtoValorVenta := round2(it.Subtotal)
+		igv := round2(it.TaxAmount)
+		cantidad := it.Quantity
+		if cantidad <= 0 {
+			return nil, fmt.Errorf("ítem «%s» con cantidad inválida", strings.TrimSpace(it.Description))
+		}
+		mtoValorUnitario := round2(mtoValorVenta / cantidad)
+		mtoPrecioUnitario := round2((mtoValorVenta + igv) / cantidad)
+		codProd := strings.TrimSpace(it.Code)
+		if codProd == "" {
+			return nil, fmt.Errorf("el ítem «%s» no tiene código de producto", strings.TrimSpace(it.Description))
+		}
+		desc := strings.TrimSpace(it.Description)
+		if desc == "" {
+			return nil, fmt.Errorf("ítem en posición %d sin descripción", i+1)
+		}
+		porcentajeIgv := round2(it.TaxRate)
+		if aff != "10" {
+			porcentajeIgv = round2(companyTaxRate)
+		}
+		details[i] = facturador.InvoiceDetail{
+			Unidad: normUnit(it.Unit), Cantidad: cantidad, CodProducto: codProd, Descripcion: desc,
+			MtoValorUnitario: mtoValorUnitario, MtoValorVenta: mtoValorVenta, TipAfeIgv: aff,
+			MtoBaseIgv: mtoValorVenta, PorcentajeIgv: porcentajeIgv, Igv: igv,
+			TotalImpuestos: igv, MtoPrecioUnitario: mtoPrecioUnitario,
+		}
+	}
+	var mtoOperGravadas, mtoOperExoneradas, mtoOperInafectas, mtoIGV float64
+	for _, d := range details {
+		switch d.TipAfeIgv {
+		case "10":
+			mtoOperGravadas += d.MtoValorVenta
+			mtoIGV += d.Igv
+		case "20":
+			mtoOperExoneradas += d.MtoValorVenta
+		case "30":
+			mtoOperInafectas += d.MtoValorVenta
+		default:
+			mtoOperGravadas += d.MtoValorVenta
+			mtoIGV += d.Igv
+		}
+	}
+	mtoOperGravadas = round2(mtoOperGravadas)
+	mtoOperExoneradas = round2(mtoOperExoneradas)
+	mtoOperInafectas = round2(mtoOperInafectas)
+	mtoIGV = round2(mtoIGV)
+	valorVenta := round2(mtoOperGravadas + mtoOperExoneradas + mtoOperInafectas)
+	mtoImpVenta := round2(valorVenta + mtoIGV)
+	if noteSale.Total > 0 {
+		mtoImpVenta = round2(noteSale.Total)
+	}
+	nombreComercial := companyCfg.TradeName
+	if nombreComercial == "" {
+		nombreComercial = companyCfg.BusinessName
+	}
+	tipoMoneda := noteSale.Currency
+	if tipoMoneda == "" {
+		tipoMoneda = "PEN"
+	}
+	codMotivo := "01"
+	if tipoDoc == "08" {
+		codMotivo = "02"
+	}
+	desMotivo := strings.TrimSpace(noteSale.Notes)
+	if desMotivo == "" {
+		if tipoDoc == "08" {
+			desMotivo = "Aumento en el valor"
+		} else {
+			desMotivo = "Anulación de la operación"
+		}
+	}
+	var legends []facturador.InvoiceLegend
+	facturador.SetSUNATLegend1000(&legends, mtoImpVenta, tipoMoneda)
+	return &facturador.NotePayload{
+		UBLVersion:        "2.1",
+		TipoDoc:           tipoDoc,
+		Serie:             noteSale.Series,
+		Correlativo:       fmt.Sprintf("%d", noteSale.Correlative),
+		FechaEmision:      facturador.FormatFiscalDateTime(noteSale.IssueDate),
+		FormaPago:         &facturador.InvoiceFormaPago{Tipo: "Contado"},
+		Company:           facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
+		Client:            facturador.InvoiceClient{TipoDoc: clientTipoDoc, NumDoc: clientNumDoc, RznSocial: clientRazon, Address: clientAddr},
+		TipoMoneda:        tipoMoneda,
+		CodMotivo:         codMotivo,
+		DesMotivo:         desMotivo,
+		RelDocs:           relDocs,
+		MtoOperGravadas:   mtoOperGravadas,
+		MtoOperExoneradas: mtoOperExoneradas,
+		MtoOperInafectas:  mtoOperInafectas,
+		MtoIGV:            mtoIGV,
+		TotalImpuestos:    mtoIGV,
+		ValorVenta:        valorVenta,
+		SubTotal:          mtoImpVenta,
+		MtoImpVenta:       mtoImpVenta,
+		Details:           details,
+		Legends:           legends,
+	}, nil
+}
+
+// buildCreditNotePayload compatibilidad interna.
+func (s *BillingService) buildCreditNotePayload(ncSaleID uint) (*facturador.NotePayload, error) {
+	return s.buildNotePayload(ncSaleID)
+}
+
+func (s *BillingService) resolveInvoiceClient(contact *database.TenantContact) (tipoDoc, numDoc, rzn string, addr facturador.InvoiceAddress, err error) {
+	tipoDoc = "6"
+	numDoc = "00000000000"
+	rzn = "CLIENTE VARIOS"
+	clientDir := ""
+	clientUbigeo := ""
+	if contact != nil && contact.ID > 0 {
+		rzn = contact.BusinessName
+		numDoc = contact.DocNumber
+		clientDir = strings.TrimSpace(contact.Address)
+		clientUbigeo = strings.TrimSpace(contact.Ubigeo)
+		clientDir, clientUbigeo = database.NormalizeTenantContactAddressUbigeo(clientDir, clientUbigeo)
+		switch strings.ToUpper(contact.DocType) {
+		case "DNI", "1":
+			tipoDoc = "1"
+		case "RUC", "6":
+			tipoDoc = "6"
+		case "CE", "4", "CARNET":
+			tipoDoc = "4"
+		case "PASAPORTE", "7":
+			tipoDoc = "7"
+		default:
+			if len(contact.DocNumber) == 8 {
+				tipoDoc = "1"
+			} else if len(contact.DocNumber) == 11 {
+				tipoDoc = "6"
+			}
+		}
+	}
+	if numDoc == "" {
+		numDoc = "00000000000"
+	}
+	if numDoc == "00000000000" || numDoc == "00000000" || numDoc == "99999999" ||
+		(contact != nil && contact.ID > 0 && (strings.ToUpper(strings.TrimSpace(contact.DocType)) == "SIN DOCUMENTO" || strings.TrimSpace(contact.DocType) == "0")) {
+		tipoDoc = "0"
+		numDoc = "99999999999"
+	}
+	if contact == nil || contact.ID == 0 {
+		return "", "", "", addr, errors.New("cliente con dirección y ubigeo requerido")
+	}
+	depC, provC, distC, errC := s.resolveUbigeoToAddress(clientUbigeo)
+	if errC != nil {
+		return "", "", "", addr, fmt.Errorf("cliente: %w", errC)
+	}
+	addr = facturador.InvoiceAddress{
+		Ubigueo: clientUbigeo, CodigoPais: "PE",
+		Departamento: depC, Provincia: provC, Distrito: distC,
+		Direccion: clientDir,
+	}
+	return tipoDoc, numDoc, rzn, addr, nil
+}

@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/saas/docusage"
@@ -39,7 +40,7 @@ func (s *BillingService) reserveSaleDocument(tenantID, saleID uint) error {
 		return nil
 	}
 	docType := docusage.SunatCodeToDocType(sunatCode)
-	docNum := fmt.Sprintf("%s-%s-%08d", ser.Series, ser.SunatCode, sale.Number)
+	docNum := fmt.Sprintf("%s-%s-%s", ser.Series, ser.SunatCode, sale.Number)
 	return docusage.ReserveElectronicDocument(docusage.ReserveInput{
 		TenantID:       tenantID,
 		DocumentType:   docType,
@@ -65,7 +66,7 @@ func (s *BillingService) reserveGenericDocument(docType string, docID uint, docN
 
 // TenantIDFromDB resuelve tenant central por nombre BD (worker/cola).
 func TenantIDFromDB(tenantDBName string) uint {
-	if tenantDBName == "" {
+	if tenantDBName == "" || database.CentralDB == nil {
 		return 0
 	}
 	var t database.Tenant
@@ -73,4 +74,39 @@ func TenantIDFromDB(tenantDBName string) uint {
 		return t.ID
 	}
 	return 0
+}
+
+// TenantSlugFromID resuelve slug SaaS por id central (worker/cola).
+func TenantSlugFromID(tenantID uint) string {
+	if tenantID == 0 || database.CentralDB == nil {
+		return ""
+	}
+	var t database.Tenant
+	if database.CentralDB.Select("slug").First(&t, tenantID).Error == nil {
+		return strings.TrimSpace(t.Slug)
+	}
+	return ""
+}
+
+// TenantSlugFromDB resuelve slug SaaS por nombre BD tenant.
+func TenantSlugFromDB(tenantDBName string) string {
+	if tenantDBName == "" || database.CentralDB == nil {
+		return ""
+	}
+	var t database.Tenant
+	if database.CentralDB.Where("db_name = ?", tenantDBName).First(&t).Error == nil {
+		return strings.TrimSpace(t.Slug)
+	}
+	return ""
+}
+
+// ResolveTenantSlug obtiene slug desde job o BD central.
+func ResolveTenantSlug(tenantID uint, tenantDB, tenantSlug string) string {
+	if s := strings.TrimSpace(tenantSlug); s != "" {
+		return s
+	}
+	if s := TenantSlugFromID(tenantID); s != "" {
+		return s
+	}
+	return TenantSlugFromDB(tenantDB)
 }

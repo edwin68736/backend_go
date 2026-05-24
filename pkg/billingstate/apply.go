@@ -120,6 +120,8 @@ type StatusView struct {
 	JobStatus     string `json:"job_status"`
 	BillingStatus string `json:"billing_status"`
 	Pipeline      string `json:"pipeline_status"`
+	DisplayPhase  string `json:"display_phase"`
+	DisplayLabel  string `json:"display_label"`
 	Async         bool   `json:"async_in_progress"`
 }
 
@@ -133,6 +135,8 @@ func BuildStatusView(inv *database.TenantInvoice, sale *database.TenantSale) Sta
 		v.BillingStatus = sale.BillingStatus
 	}
 	if inv == nil {
+		v.DisplayPhase = PhasePending
+		v.DisplayLabel = DisplayLabelSpanish(PhasePending)
 		return v
 	}
 	p := NormalizePipeline(inv.PipelineStatus)
@@ -162,9 +166,9 @@ func BuildStatusView(inv *database.TenantInvoice, sale *database.TenantSale) Sta
 	}
 	v.SafeToPrint = p == SUNAT_ACCEPTED || p == OBSERVED || IsAcceptanceEvidence(ev)
 	v.Async = isAsyncInProgress(p, inv.JobStatus)
-	if sale != nil && v.BillingStatus == "" {
-		v.BillingStatus = sale.BillingStatus
-	}
+	v.BillingStatus = EffectiveBillingStatus(sale, inv)
+	v.DisplayPhase = DisplayPhaseFromPipeline(p, inv.JobStatus)
+	v.DisplayLabel = DisplayLabelSpanish(v.DisplayPhase)
 	return v
 }
 

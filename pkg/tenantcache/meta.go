@@ -6,8 +6,10 @@ import (
 )
 
 const (
-	keyPrefix      = "tukifac:tenant:slug:"
-	negativePrefix = "tukifac:tenant:miss:"
+	keyPrefix      = "tukifac:tenant:slug:" // metadata por slug
+	negativePrefix = "tukifac:tenant:miss:" // negative cache por slug
+	// Claves derivadas por tenant: tukifac:tenant:{slug}:rp:...
+	TenantKeyPrefix = "tukifac:tenant:"
 )
 
 // Meta metadata de tenant cacheada (distribuida).

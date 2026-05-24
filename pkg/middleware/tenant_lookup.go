@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"tukifac/pkg/database"
+	"tukifac/pkg/restaurantperm"
 	"tukifac/pkg/tenantcache"
 )
 
@@ -17,4 +18,5 @@ func LookupTenantBySlug(slug string) (*database.Tenant, error) {
 // InvalidateTenantCache invalida cache distribuida (Redis) tras cambios en panel central.
 func InvalidateTenantCache(slug string) {
 	tenantcache.Invalidate(slug)
+	restaurantperm.InvalidateTenantMem(slug)
 }

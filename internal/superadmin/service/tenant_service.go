@@ -107,7 +107,7 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	}
 
 	if err = database.UpsertTenantSchemaVersion(
-		tenant.ID, database.TenantSchemaTargetVersion, database.TenantSchemaTargetVersion,
+		tenant.ID, database.TenantSchemaTargetVersion(), database.TenantSchemaTargetVersion(),
 		database.TenantSchemaStatusCompleted,
 	); err != nil {
 		return nil, fmt.Errorf("registro tenant_schema_versions: %w", err)

@@ -26,7 +26,7 @@ func FleetMigrationSummaryQuery() (*FleetMigrationSummary, error) {
 	if CentralDB == nil {
 		return nil, errors.New("BD central no conectada")
 	}
-	target := TenantSchemaTargetVersion
+	target := TenantSchemaTargetVersion()
 	sum := &FleetMigrationSummary{SchemaTargetVersion: target}
 
 	CentralDB.Model(&Tenant{}).Where("deleted_at IS NULL").Count(&sum.Total)

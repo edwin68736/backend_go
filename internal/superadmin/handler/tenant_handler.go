@@ -17,6 +17,7 @@ import (
 	"tukifac/internal/superadmin/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
+	"tukifac/pkg/fiscal"
 	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
@@ -140,44 +141,6 @@ func (h *TenantHandler) ToggleStatusAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
 
-	status := strings.TrimSpace(body.Status)
-	if status == "active" || status == "inactive" {
-		billingByTenant, _ := h.svc.BillingEnabledByTenantIDs([]uint{uint(id)})
-		if billingByTenant[uint(id)] {
-			tenantDB, derr := h.getTenantDBByID(uint(id))
-			if derr != nil {
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
-			}
-			cfg, cerr := companysvc.NewCompanyService(tenantDB).GetConfig()
-			if cerr == nil && cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.InvoicingMode), "pse") {
-				ruc := strings.TrimSpace(cfg.RUC)
-				if ruc != "" {
-					client := newValidaPSEClient()
-					if strings.TrimSpace(client.token) == "" {
-						return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "ValidaPSE no configurado en el servidor (falta VALIDAPSE_MGMT_TOKEN)"})
-					}
-					empresaID, ferr := validaPSEFindEmpresaIDByRUC(client, ruc)
-					if ferr != nil {
-						return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": ferr.Error()})
-					}
-					detail, gerr := validaPSEGetEmpresa(client, empresaID)
-					if gerr != nil {
-						return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": gerr.Error()})
-					}
-					desired := "ACTIVO"
-					if status == "inactive" {
-						desired = "INACTIVO"
-					}
-					if strings.ToUpper(strings.TrimSpace(detail.Estado)) != desired {
-						if err := validaPSEToggleEmpresa(client, empresaID); err != nil {
-							return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
-						}
-					}
-				}
-			}
-		}
-	}
-
 	if err := h.svc.SetStatus(uint(id), body.Status); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -253,20 +216,22 @@ func (h *TenantHandler) MigrateAllAPI(c fiber.Ctx) error {
 }
 
 // getTenantDBByID obtiene el *gorm.DB del tenant por su ID (para uso en sunat/sync).
-func (h *TenantHandler) getTenantDBByID(id uint) (*gorm.DB, error) {
+// El caller debe invocar database.ReleaseTenantDB(dbName) con defer al terminar.
+func (h *TenantHandler) getTenantDBByID(id uint) (*gorm.DB, string, error) {
 	tenant, err := h.svc.GetByID(id)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return database.GetTenantDB(tenant.DBName)
+	db, err := database.GetTenantDB(tenant.DBName)
+	if err != nil {
+		return nil, "", err
+	}
+	return db, tenant.DBName, nil
 }
 
-// mapEnvToLycetAmbiente mapea sunat_env_mode interno (production/beta/demo) al ambiente del facturador (produccion/pruebas).
-func mapEnvToLycetAmbiente(sunatEnvMode string) string {
-	if sunatEnvMode == "production" {
-		return "produccion"
-	}
-	return "pruebas"
+// mapEnvToFacturadorAmbiente mapea sunat_env_mode interno (demo/production) al ambiente del facturador (produccion/pruebas).
+func mapEnvToFacturadorAmbiente(sunatEnvMode string) string {
+	return fiscal.SunatEnvToFacturadorAmbiente(sunatEnvMode)
 }
 
 // GET /api/superadmin/tenants/:id/sunat-config — configuración SUNAT del tenant (desde su BD).
@@ -275,10 +240,11 @@ func (h *TenantHandler) GetSunatConfigAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	tenantDB, err := h.getTenantDBByID(uint(id))
+	tenantDB, dbName, err := h.getTenantDBByID(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
 	}
+	defer database.ReleaseTenantDB(dbName)
 	cfg, err := companysvc.NewCompanyService(tenantDB).GetConfig()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -287,32 +253,72 @@ func (h *TenantHandler) GetSunatConfigAPI(c fiber.Ctx) error {
 	if cfg.SunatEnvMode != "" {
 		database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", cfg.SunatEnvMode)
 	}
-	pseProvider := ""
-	if strings.TrimSpace(cfg.PSEConfigJSON) != "" {
-		var v struct {
-			Provider string `json:"provider"`
-		}
-		if err := json.Unmarshal([]byte(cfg.PSEConfigJSON), &v); err == nil {
-			pseProvider = strings.TrimSpace(v.Provider)
-		}
+	sendMode := strings.TrimSpace(cfg.SendMode)
+	if sendMode == "" {
+		sendMode = "sunat_direct"
 	}
-	mode := strings.TrimSpace(cfg.InvoicingMode)
-	if mode == "" {
-		mode = "legacy_backend"
+	provider := strings.TrimSpace(cfg.FiscalProvider)
+	connStatus := strings.TrimSpace(cfg.FiscalConnectionStatus)
+	connType := strings.TrimSpace(cfg.FiscalConnectionType)
+	pseBaseURLConfigured := false
+	pseTokenConfigured := false
+	solConfigured := false
+	certificateConfigured := false
+	sunatSolUser := ""
+	pseUser := ""
+	certificateFile := ""
+	logoFile := ""
+	pseBaseURL := ""
+	if config.AppConfig.FacturadorBaseURL != "" && cfg.RUC != "" {
+		if entry, err := facturador.Shared().GetEmpresa(cfg.RUC); err == nil && entry != nil {
+			sunatSolUser = strings.TrimSpace(entry.SOLUser)
+			pseUser = strings.TrimSpace(entry.PSEUser)
+			certificateFile = strings.TrimSpace(entry.Certificate)
+			logoFile = strings.TrimSpace(entry.Logo)
+			pseBaseURL = strings.TrimSpace(entry.PSEBaseURL)
+		}
+		if st, err := facturador.Shared().GetEmpresaFiscalStatus(cfg.RUC); err == nil && st != nil {
+			connStatus = st.ConnectionStatus
+			if st.SendMode != "" {
+				sendMode = st.SendMode
+			}
+			if st.Provider != "" {
+				provider = st.Provider
+			}
+			if st.ConnectionType != "" {
+				connType = st.ConnectionType
+			}
+			pseBaseURLConfigured = st.PSEBaseURLConfigured
+			pseTokenConfigured = st.PSETokenConfigured
+			solConfigured = st.SOLConfigured
+			certificateConfigured = st.CertificateConfigured
+		}
 	}
 	return c.JSON(fiber.Map{
-		"sunat_enabled":        cfg.SunatEnabled,
-		"sunat_env_mode":       cfg.SunatEnvMode,
-		"sunat_sol_user":       cfg.SunatSOLUser,
-		"tax_rate":             cfg.TaxRate,
-		"igv_regime":           cfg.IgvRegime,
-		"tax_benefit_zone":     cfg.TaxBenefitZone,
-		"ruc":                  cfg.RUC,
-		"business_name":        cfg.BusinessName,
-		"invoicing_mode":       mode,
-		"pse_provider":         pseProvider,
-		"pse_base_url":         strings.TrimSpace(cfg.PSEBaseURL),
-		"pse_token_configured": strings.TrimSpace(cfg.PSEToken) != "",
+		"sunat_enabled":          cfg.SunatEnabled,
+		"automatic_send":         cfg.AutomaticSend,
+		"sunat_env_mode":         fiscal.NormalizeSunatEnvMode(cfg.SunatEnvMode),
+		"tax_rate":               cfg.TaxRate,
+		"igv_regime":             cfg.IgvRegime,
+		"tax_benefit_zone":       cfg.TaxBenefitZone,
+		"ruc":                    cfg.RUC,
+		"business_name":          cfg.BusinessName,
+		"send_mode":              sendMode,
+		"fiscal_provider":        provider,
+		"connection_type":        connType,
+		"connection_status":      connStatus,
+		"fiscal_last_sync_at":    cfg.FiscalLastSyncAt,
+		"sunat_connected":        cfg.SunatConnected,
+		"pse_base_url_configured": pseBaseURLConfigured,
+		"pse_base_url":           pseBaseURL,
+		"pse_token_configured":   pseTokenConfigured,
+		"sol_configured":         solConfigured,
+		"certificate_configured": certificateConfigured,
+		"sunat_sol_user":         sunatSolUser,
+		"pse_user":                 pseUser,
+		"certificate_file":       certificateFile,
+		"logo_file":              logoFile,
+		"logo_configured":        logoFile != "",
 	})
 }
 
@@ -322,61 +328,147 @@ func (h *TenantHandler) UpdateSunatConfigAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	tenantDB, err := h.getTenantDBByID(uint(id))
+	tenantDB, dbName, err := h.getTenantDBByID(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
 	}
+	defer database.ReleaseTenantDB(dbName)
 	var body struct {
 		SunatEnabled   bool    `json:"sunat_enabled"`
+		AutomaticSend  *bool   `json:"automatic_send"`
 		SunatSolUser   string  `json:"sunat_sol_user"`
 		SunatSolPass   string  `json:"sunat_sol_pass"`
 		Certificate    string  `json:"certificate"`
 		SunatEnvMode   string  `json:"sunat_env_mode"`
-		TukifacToken   string  `json:"tukifac_token"`
 		TaxRate        float64 `json:"tax_rate"`
 		IgvRegime      string  `json:"igv_regime"`
 		TaxBenefitZone bool    `json:"tax_benefit_zone"`
-		InvoicingMode  string  `json:"invoicing_mode"`
+		SendMode       string  `json:"send_mode"`
 		PSEProvider    string  `json:"pse_provider"`
+		FiscalProvider string  `json:"fiscal_provider"`
+		ConnectionType string  `json:"connection_type"`
 		PSEBaseURL     string  `json:"pse_base_url"`
 		PSEToken       string  `json:"pse_token"`
+		PSEUser        string  `json:"pse_user"`
+		PSEPassword    string  `json:"pse_password"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	svc := companysvc.NewCompanyService(tenantDB)
-	if err := svc.SaveSunatConfig(
-		body.SunatEnabled, body.SunatSolUser, body.SunatSolPass,
-		body.Certificate, body.SunatEnvMode, body.TukifacToken,
+	body.SunatEnvMode = fiscal.NormalizeSunatEnvMode(body.SunatEnvMode)
+	var tenant database.Tenant
+	_ = database.CentralDB.Select("id", "slug").First(&tenant, id).Error
+	svc := companysvc.NewCompanyService(tenantDB).WithSaaSContext(uint(id), tenant.Slug)
+
+	sendMode := strings.TrimSpace(body.SendMode)
+	provider := strings.TrimSpace(body.FiscalProvider)
+	if provider == "" {
+		provider = strings.TrimSpace(body.PSEProvider)
+	}
+	connType := strings.TrimSpace(body.ConnectionType)
+	if strings.ToLower(strings.TrimSpace(sendMode)) == "pse" {
+		connType = "bearer"
+		if provider == "" {
+			provider = "validapse"
+		}
+	} else if connType == "" {
+		connType = "bearer"
+	}
+
+	cfg, err := svc.GetConfig()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if fiscal.NormalizeSunatEnvMode(cfg.SunatEnvMode) == "production" && body.SunatEnvMode == "demo" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "No se puede volver a pruebas: el tenant ya está en producción",
+		})
+	}
+
+	psePassword := strings.TrimSpace(body.PSEPassword)
+	pseToken := strings.TrimSpace(body.PSEToken)
+	if strings.ToLower(strings.TrimSpace(sendMode)) == "pse" && pseToken == "" {
+		pseToken = psePassword
+	}
+	pseBaseURL := strings.TrimSpace(body.PSEBaseURL)
+	if strings.ToLower(strings.TrimSpace(sendMode)) == "pse" && pseBaseURL == "" {
+		pseBaseURL = fiscal.ResolvePSEBaseURL(provider)
+	}
+
+	if err := svc.SaveFiscalMetadataCentral(
+		sendMode, provider, connType, body.SunatEnvMode,
+		body.SunatEnabled,
 		body.TaxRate, body.IgvRegime, body.TaxBenefitZone,
+		body.AutomaticSend,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	if strings.TrimSpace(body.InvoicingMode) != "" ||
-		strings.TrimSpace(body.PSEProvider) != "" ||
-		strings.TrimSpace(body.PSEBaseURL) != "" ||
-		strings.TrimSpace(body.PSEToken) != "" {
-		if err := svc.SaveInvoicingConfigCentral(body.InvoicingMode, body.PSEBaseURL, body.PSEToken, body.PSEProvider); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-		}
+
+	certB64 := ""
+	if strings.TrimSpace(body.Certificate) != "" {
+		certB64 = facturador.PEMToBase64(body.Certificate)
 	}
-	// Sincronizar sunat_env_mode en la tabla central de tenants para mostrarlo en el listado
-	if body.SunatEnvMode != "" {
+
+	if config.AppConfig.FacturadorBaseURL != "" && config.AppConfig.FacturadorToken != "" {
+		status, syncErr := svc.SyncFiscalToFacturador(companysvc.FiscalSyncInput{
+			SendMode:       sendMode,
+			Provider:       provider,
+			ConnectionType: connType,
+			SOLUser:        body.SunatSolUser,
+			SOLPass:        body.SunatSolPass,
+			CertificateB64: certB64,
+			PSEBaseURL:     pseBaseURL,
+			PSEUser:        body.PSEUser,
+			PSEPassword:    psePassword,
+			PSEToken:       pseToken,
+			Enabled:        body.SunatEnabled,
+		})
+		if syncErr != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": syncErr.Error()})
+		}
+		now := time.Now()
+		database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"sunat_connected_at": now,
+			"sunat_env_mode":     body.SunatEnvMode,
+		})
+		if status != nil {
+			if cfg, _ := svc.GetConfig(); cfg != nil && cfg.RUC != "" {
+				_ = facturador.Shared().PatchAmbiente(cfg.RUC, mapEnvToFacturadorAmbiente(body.SunatEnvMode))
+			}
+		}
+	} else if body.SunatEnvMode != "" {
 		database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", body.SunatEnvMode)
 	}
-	if cfg, _ := svc.GetConfig(); cfg != nil && cfg.RUC != "" {
-		mode := strings.TrimSpace(cfg.InvoicingMode)
-		if mode == "" {
-			mode = "legacy_backend"
-		}
-		if mode != "pse" && config.AppConfig.FacturadorBaseURL != "" && config.AppConfig.FacturadorToken != "" {
-			if syncErr := svc.SyncFacturadorConfigWithFiles("", "", "", "", ""); syncErr == nil {
-				database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_connected_at", time.Now())
-			}
-			_ = facturador.Shared().PatchAmbiente(cfg.RUC, mapEnvToLycetAmbiente(body.SunatEnvMode))
-		}
-	}
 	return c.JSON(fiber.Map{"success": true})
+}
+
+// POST /api/superadmin/tenants/:id/fiscal-test-connection
+func (h *TenantHandler) TestFiscalConnectionAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	tenantDB, dbName, err := h.getTenantDBByID(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
+	}
+	defer database.ReleaseTenantDB(dbName)
+	cfg, err := companysvc.NewCompanyService(tenantDB).GetConfig()
+	if err != nil || cfg.RUC == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "RUC no configurado"})
+	}
+	if config.AppConfig.FacturadorBaseURL == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "facturador no configurado"})
+	}
+	result, err := facturador.Shared().TestFiscalConnection(cfg.RUC)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	_ = tenantDB.Model(&database.TenantCompanyConfig{}).Where("1=1").Updates(map[string]interface{}{
+		"fiscal_connection_status": result.ConnectionStatus,
+		"sunat_connected":          result.ConnectionStatus == "connected",
+	}).Error
+	return c.JSON(result)
 }
 
 // PATCH /api/superadmin/tenants/:id/sunat-env — cambia modo pruebas/producción del tenant.
@@ -391,71 +483,37 @@ func (h *TenantHandler) PatchSunatEnvAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if body.SunatEnvMode != "beta" && body.SunatEnvMode != "demo" && body.SunatEnvMode != "production" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sunat_env_mode debe ser beta, demo o production"})
+	body.SunatEnvMode = fiscal.NormalizeSunatEnvMode(body.SunatEnvMode)
+	if body.SunatEnvMode != "demo" && body.SunatEnvMode != "production" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sunat_env_mode debe ser demo o production"})
 	}
-	tenantDB, err := h.getTenantDBByID(uint(id))
+	tenantDB, dbName, err := h.getTenantDBByID(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
 	}
+	defer database.ReleaseTenantDB(dbName)
 	svc := companysvc.NewCompanyService(tenantDB)
 	cfg, err := svc.GetConfig()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	prevMode := strings.TrimSpace(cfg.SunatEnvMode)
-	if err := svc.SaveSunatConfig(
-		cfg.SunatEnabled, cfg.SunatSOLUser, "", "", body.SunatEnvMode, "",
+	if fiscal.NormalizeSunatEnvMode(cfg.SunatEnvMode) == "production" && body.SunatEnvMode == "demo" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "No se puede volver a pruebas: el tenant ya está en producción",
+		})
+	}
+	if err := svc.SaveFiscalMetadataCentral(
+		cfg.SendMode, cfg.FiscalProvider, cfg.FiscalConnectionType, body.SunatEnvMode,
+		cfg.SunatEnabled,
 		float64(cfg.TaxRate), cfg.IgvRegime, cfg.TaxBenefitZone,
+		nil,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", body.SunatEnvMode)
 	// Actualizar ambiente en Lycet (PATCH /api/v1/empresas/{ruc}/ambiente)
 	if cfg, _ := svc.GetConfig(); cfg != nil && cfg.RUC != "" && config.AppConfig.FacturadorBaseURL != "" && config.AppConfig.FacturadorToken != "" {
-		_ = facturador.Shared().PatchAmbiente(cfg.RUC, mapEnvToLycetAmbiente(body.SunatEnvMode))
-	}
-
-	{
-		cfg2, _ := svc.GetConfig()
-		if cfg2 != nil && strings.EqualFold(strings.TrimSpace(cfg2.InvoicingMode), "pse") {
-			ruc := strings.TrimSpace(cfg2.RUC)
-			if ruc == "" {
-				_ = svc.SaveSunatConfig(
-					cfg2.SunatEnabled, cfg2.SunatSOLUser, "", "", prevMode, "",
-					float64(cfg2.TaxRate), cfg2.IgvRegime, cfg2.TaxBenefitZone,
-				)
-				_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", prevMode).Error
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "El tenant no tiene RUC configurado"})
-			}
-			client := newValidaPSEClient()
-			if strings.TrimSpace(client.token) == "" {
-				_ = svc.SaveSunatConfig(
-					cfg2.SunatEnabled, cfg2.SunatSOLUser, "", "", prevMode, "",
-					float64(cfg2.TaxRate), cfg2.IgvRegime, cfg2.TaxBenefitZone,
-				)
-				_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", prevMode).Error
-				return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "ValidaPSE no configurado en el servidor (falta VALIDAPSE_MGMT_TOKEN)"})
-			}
-			empresaID, ferr := validaPSEFindEmpresaIDByRUC(client, ruc)
-			if ferr != nil {
-				_ = svc.SaveSunatConfig(
-					cfg2.SunatEnabled, cfg2.SunatSOLUser, "", "", prevMode, "",
-					float64(cfg2.TaxRate), cfg2.IgvRegime, cfg2.TaxBenefitZone,
-				)
-				_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", prevMode).Error
-				return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": ferr.Error()})
-			}
-			servidor := validaPSEServidorFromEnvMode(body.SunatEnvMode)
-			if uerr := validaPSEUpdateEmpresa(client, empresaID, map[string]interface{}{"servidor": servidor}); uerr != nil {
-				_ = svc.SaveSunatConfig(
-					cfg2.SunatEnabled, cfg2.SunatSOLUser, "", "", prevMode, "",
-					float64(cfg2.TaxRate), cfg2.IgvRegime, cfg2.TaxBenefitZone,
-				)
-				_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", prevMode).Error
-				return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": uerr.Error()})
-			}
-		}
+		_ = facturador.Shared().PatchAmbiente(cfg.RUC, mapEnvToFacturadorAmbiente(body.SunatEnvMode))
 	}
 
 	return c.JSON(fiber.Map{"success": true, "sunat_env_mode": body.SunatEnvMode})
@@ -467,26 +525,31 @@ func (h *TenantHandler) SyncFacturadorAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	tenantDB, err := h.getTenantDBByID(uint(id))
+	tenantDB, dbName, err := h.getTenantDBByID(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
 	}
+	defer database.ReleaseTenantDB(dbName)
 	var body struct {
-		CertificateBase64 string `json:"certificate_base64"`
-		PrivateKeyBase64  string `json:"private_key_base64"`
-		LogoBase64        string `json:"logo_base64"`
-		SolUser           string `json:"sol_user"`
-		SolPass           string `json:"sol_pass"`
+		CertificateBase64   string `json:"certificate_base64"`
+		PrivateKeyBase64    string `json:"private_key_base64"`
+		PfxBase64           string `json:"pfx_base64"`
+		CertificatePassword string `json:"certificate_password"`
+		LogoBase64          string `json:"logo_base64"`
+		SolUser             string `json:"sol_user"`
+		SolPass             string `json:"sol_pass"`
 	}
 	_ = c.Bind().JSON(&body)
-	svc := companysvc.NewCompanyService(tenantDB)
-	hasFiles := body.CertificateBase64 != "" || body.PrivateKeyBase64 != "" || body.LogoBase64 != ""
+	var tenant database.Tenant
+	_ = database.CentralDB.Select("id", "slug").First(&tenant, id).Error
+	svc := companysvc.NewCompanyService(tenantDB).WithSaaSContext(uint(id), tenant.Slug)
+	hasFiles := body.CertificateBase64 != "" || body.PrivateKeyBase64 != "" || body.LogoBase64 != "" || body.PfxBase64 != ""
 	if hasFiles {
-		if err := svc.SyncFacturadorConfigWithFiles(body.CertificateBase64, body.PrivateKeyBase64, body.LogoBase64, body.SolUser, body.SolPass); err != nil {
+		if err := svc.SyncFacturadorConfigWithFiles(body.CertificateBase64, body.PrivateKeyBase64, body.LogoBase64, body.SolUser, body.SolPass, body.CertificatePassword, body.PfxBase64); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 	} else {
-		if err := svc.SyncFacturadorConfigWithFiles("", "", "", body.SolUser, body.SolPass); err != nil {
+		if err := svc.SyncFacturadorConfigWithFiles("", "", "", body.SolUser, body.SolPass, "", ""); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
@@ -495,8 +558,8 @@ func (h *TenantHandler) SyncFacturadorAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "Configuración sincronizada con el facturador"})
 }
 
-// GET /api/superadmin/tenants/conectados-sunat — lista empresas registradas en Lycet (GET /api/v1/empresas).
-// La fuente es el facturador Lycet; se cruza con la BD central por RUC para mostrar tenant (nombre, slug, id) y última sincronización si existe.
+// GET /api/superadmin/tenants/conectados-sunat — empresas en facturador Lycet (SUNAT y PSE).
+// Alias: GET /api/superadmin/tenants/conectados-facturador
 func (h *TenantHandler) ListConectadosSunatAPI(c fiber.Ctx) error {
 	if config.AppConfig.FacturadorBaseURL == "" || config.AppConfig.FacturadorToken == "" {
 		return c.JSON(fiber.Map{"data": []interface{}{}})
@@ -525,8 +588,14 @@ func (h *TenantHandler) ListConectadosSunatAPI(c fiber.Ctx) error {
 		Slug             string     `json:"slug"`
 		RUC              string     `json:"ruc"`
 		SunatConnectedAt *time.Time `json:"sunat_connected_at"`
-		EnLycet          bool       `json:"en_lycet"` // siempre true en esta lista (viene de Lycet)
+		EnLycet          bool       `json:"en_lycet"`
 		AmbienteLycet    string     `json:"ambiente_lycet,omitempty"`
+		SendMode         string     `json:"send_mode,omitempty"`
+		Provider         string     `json:"provider,omitempty"`
+		ConexionTipo       string     `json:"conexion_tipo"` // SUNAT | PSE
+		ConnectionStatus   string     `json:"connection_status,omitempty"`
+		PseConfigured      bool       `json:"pse_configured"`
+		Enabled          bool       `json:"enabled"`
 	}
 	out := make([]item, 0, len(empresasLycet))
 	for ruc, entry := range empresasLycet {
@@ -538,25 +607,45 @@ func (h *TenantHandler) ListConectadosSunatAPI(c fiber.Ctx) error {
 		if ambiente == "" {
 			ambiente = "pruebas"
 		}
+		conexion := facturador.ConnectionType(entry)
+		pseConfigured := strings.TrimSpace(entry.PSEUser) != "" || conexion == "PSE"
+		slug := ""
+		if hasTenant {
+			slug = t.Slug
+		} else if strings.TrimSpace(entry.TenantSlug) != "" {
+			slug = strings.TrimSpace(entry.TenantSlug)
+		}
 		if hasTenant {
 			out = append(out, item{
 				ID:               t.ID,
 				Name:             t.Name,
-				Slug:             t.Slug,
+				Slug:             slug,
 				RUC:              ruc,
 				SunatConnectedAt: t.SunatConnectedAt,
 				EnLycet:          true,
 				AmbienteLycet:    ambiente,
+				SendMode:         entry.SendMode,
+				Provider:         entry.Provider,
+				ConexionTipo:       conexion,
+				ConnectionStatus:   entry.ConnectionStatus,
+				PseConfigured:    pseConfigured,
+				Enabled:          entry.Enabled,
 			})
 		} else {
 			out = append(out, item{
 				ID:               0,
 				Name:             "",
-				Slug:             "",
+				Slug:             slug,
 				RUC:              ruc,
 				SunatConnectedAt: nil,
 				EnLycet:          true,
 				AmbienteLycet:    ambiente,
+				SendMode:         entry.SendMode,
+				Provider:         entry.Provider,
+				ConexionTipo:       conexion,
+				ConnectionStatus:   entry.ConnectionStatus,
+				PseConfigured:    pseConfigured,
+				Enabled:          entry.Enabled,
 			})
 		}
 	}
@@ -1049,111 +1138,3 @@ func (h *TenantHandler) TogglePSEEmpresaAPI(c fiber.Ctx) error {
 	})
 }
 
-func (h *TenantHandler) SyncTenantPSECredentialsAPI(c fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
-	}
-
-	billingByTenant, _ := h.svc.BillingEnabledByTenantIDs([]uint{uint(id)})
-	if !billingByTenant[uint(id)] {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "El tenant no tiene el módulo billing habilitado"})
-	}
-
-	tenantDB, err := h.getTenantDBByID(uint(id))
-	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
-	}
-	svc := companysvc.NewCompanyService(tenantDB)
-	cfg, err := svc.GetConfig()
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	ruc := strings.TrimSpace(cfg.RUC)
-	if ruc == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "El tenant no tiene RUC configurado"})
-	}
-
-	client := newValidaPSEClient()
-	if strings.TrimSpace(client.token) == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "ValidaPSE no configurado en el servidor (falta VALIDAPSE_MGMT_TOKEN)"})
-	}
-
-	empresaID, ferr := validaPSEFindEmpresaIDByRUC(client, ruc)
-	if ferr != nil {
-		msg := ferr.Error()
-		if strings.Contains(strings.ToLower(msg), "no existe una empresa") {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": msg})
-		}
-		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": msg})
-	}
-
-	detail, derr := validaPSEGetEmpresa(client, empresaID)
-	if derr != nil {
-		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": derr.Error()})
-	}
-
-	tokenAcceso := strings.TrimSpace(detail.CredencialesCPE.TokenAcceso)
-	if tokenAcceso == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "La empresa existe en el PSE, pero no tiene token_acceso configurado"})
-	}
-
-	cpeBaseURL := strings.TrimSpace(cfg.PSEBaseURL)
-	if cpeBaseURL == "" {
-		cpeBaseURL = validaPSEDefaultCPEBaseURL(config.AppConfig.ValidaPSEManagementBaseURL)
-	}
-
-	servidor := strings.ToUpper(strings.TrimSpace(detail.Servidor))
-	envMode := "production"
-	if strings.Contains(servidor, "DEMO") {
-		envMode = "demo"
-	}
-
-	if err := svc.SaveInvoicingConfigCentral("pse", cpeBaseURL, tokenAcceso, "validapse"); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-	_ = tenantDB.Model(&database.TenantCompanyConfig{}).Where("id = ?", cfg.ID).Update("sunat_env_mode", envMode).Error
-	_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).Update("sunat_env_mode", envMode).Error
-
-	{
-		cfg2, _ := svc.GetConfig()
-		m := map[string]interface{}{"provider": "validapse", "empresa_id": detail.ID, "servidor": detail.Servidor}
-		if strings.TrimSpace(detail.CredencialesCPE.UsuarioSecundaria) != "" {
-			m["usuario_secundaria"] = strings.TrimSpace(detail.CredencialesCPE.UsuarioSecundaria)
-		}
-		b, _ := json.Marshal(m)
-		_ = tenantDB.Model(&database.TenantCompanyConfig{}).Where("id = ?", cfg2.ID).Update("pse_config_json", string(b)).Error
-	}
-
-	{
-		razonSocial := strings.TrimSpace(cfg.BusinessName)
-		if razonSocial == "" {
-			var t database.Tenant
-			_ = database.CentralDB.First(&t, uint(id)).Error
-			razonSocial = strings.TrimSpace(t.Name)
-		}
-		body := map[string]interface{}{}
-		if razonSocial != "" {
-			body["razon_social"] = razonSocial
-		}
-		if fechaFin := validaPSETenantFechaFin(uint(id)); fechaFin != "" {
-			body["fecha_fin"] = fechaFin
-		}
-		if len(body) > 0 {
-			if uerr := validaPSEUpdateEmpresa(client, empresaID, body); uerr != nil {
-				return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": uerr.Error()})
-			}
-		}
-	}
-
-	return c.JSON(fiber.Map{
-		"success":              true,
-		"empresa_id":           empresaID,
-		"servidor":             detail.Servidor,
-		"sunat_env_mode":       envMode,
-		"pse_token_configured": true,
-		"pse_base_url":         cpeBaseURL,
-		"invoicing_mode":       "pse",
-		"pse_provider":         "validapse",
-	})
-}

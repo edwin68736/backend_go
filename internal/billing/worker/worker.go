@@ -27,7 +27,7 @@ func ProcessJob(job billingqueue.Job) error {
 	if tenantID == 0 {
 		tenantID = billingsvc.TenantIDFromDB(job.TenantDB)
 	}
-	_, err = svc.ProcessSendToSUNAT(job.SaleID, tenantID)
+	_, err = svc.ProcessSendToSUNAT(job.SaleID, tenantID, job.TenantSlug)
 	if err == nil {
 		return nil
 	}

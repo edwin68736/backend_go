@@ -48,15 +48,16 @@ func (s *Service) BumpPermCacheVersion() error {
 }
 
 // ResolvePermissionKeys obtiene permisos efectivos (cache → staff profile).
-func (s *Service) ResolvePermissionKeys(tenantID, userID, permVer uint) ([]string, error) {
-	if keys, ok := restaurantperm.GetCached(tenantID, userID, permVer); ok {
+// tenantSlug aísla la cache Redis/memoria entre empresas (obligatorio en producción).
+func (s *Service) ResolvePermissionKeys(tenantSlug string, tenantID, userID, permVer uint) ([]string, error) {
+	if keys, ok := restaurantperm.GetCached(tenantSlug, tenantID, userID, permVer); ok {
 		return keys, nil
 	}
 	keys, err := s.computePermissionKeys(userID)
 	if err != nil {
 		return nil, err
 	}
-	restaurantperm.SetCached(tenantID, userID, permVer, keys)
+	restaurantperm.SetCached(tenantSlug, tenantID, userID, permVer, keys)
 	return keys, nil
 }
 
@@ -78,8 +79,8 @@ func (s *Service) computePermissionKeys(userID uint) ([]string, error) {
 	return restaurantperm.EmployeeTypeToKeys(normalizeType(st.EmployeeType), flags), nil
 }
 
-func (s *Service) HasPermission(tenantID, userID, permVer uint, perm string) (bool, error) {
-	keys, err := s.ResolvePermissionKeys(tenantID, userID, permVer)
+func (s *Service) HasPermission(tenantSlug string, tenantID, userID, permVer uint, perm string) (bool, error) {
+	keys, err := s.ResolvePermissionKeys(tenantSlug, tenantID, userID, permVer)
 	if err != nil {
 		return false, err
 	}

@@ -22,6 +22,7 @@ type TenantClaims struct {
 	TenantSlug  string   `json:"tenant_slug"`
 	TenantDB    string   `json:"tenant_db"`
 	TenantID    uint     `json:"tenant_id"`    // ID del tenant en BD central
+	TenantVersion uint   `json:"tenant_version"` // >= MinTenantJWTVersion; invalida tokens legacy
 	PlanID      uint     `json:"plan_id"`      // Plan activo al momento del login
 	Modules     []string `json:"modules"`      // Módulos habilitados (fuente: BD central al login)
 	Permissions []string `json:"permissions"`  // Permisos del rol en formato "module.action"
@@ -113,6 +114,13 @@ func TenantAuthAPI() fiber.Handler {
 		})
 		if err != nil || !t.Valid || claims.Type != "tenant" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token inválido o expirado"})
+		}
+
+		if err := validateTenantJWTClaims(claims); err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": err.Error(),
+				"code":  "TOKEN_TENANT_INVALID",
+			})
 		}
 
 		tenant, _ := c.Locals("tenant").(*database.Tenant)

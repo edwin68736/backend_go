@@ -89,19 +89,23 @@ func (h *AuthHandler) LoginSubmit(c fiber.Ctx) error {
 
 	tenantSlug := ""
 	tenantDBName := ""
+	var tenantID uint
 	if tenant != nil {
 		tenantSlug = tenant.Slug
 		tenantDBName = tenant.DBName
+		tenantID = tenant.ID
 	}
 
 	claims := &middleware.TenantClaims{
-		UserID:     user.ID,
-		Email:      user.Email,
-		RoleID:     user.RoleID,
-		RoleName:   role.Name,
-		TenantSlug: tenantSlug,
-		TenantDB:   tenantDBName,
-		Type:       "tenant",
+		UserID:        user.ID,
+		Email:         user.Email,
+		RoleID:        user.RoleID,
+		RoleName:      role.Name,
+		TenantSlug:    tenantSlug,
+		TenantDB:      tenantDBName,
+		TenantID:      tenantID,
+		TenantVersion: middleware.CurrentTenantJWTVersion(),
+		Type:          "tenant",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -253,6 +257,7 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 		TenantSlug:           tenant.Slug,
 		TenantDB:             tenant.DBName,
 		TenantID:             tenant.ID,
+		TenantVersion:        middleware.CurrentTenantJWTVersion(),
 		PlanID:               planID,
 		Modules:              enabledModules,
 		Permissions:          permissionKeys,
@@ -278,7 +283,7 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 
 	restPerms := []string(nil)
 	if hasRestaurant && employeeType != "" {
-		restPerms, _ = reststaff.New(tenantDB).ResolvePermissionKeys(tenant.ID, user.ID, permVer)
+		restPerms, _ = reststaff.New(tenantDB).ResolvePermissionKeys(tenant.Slug, tenant.ID, user.ID, permVer)
 	}
 
 	return c.JSON(fiber.Map{

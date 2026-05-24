@@ -40,7 +40,11 @@ func (h *CompanyHandler) UpdateConfigAPI(c fiber.Ctx) error {
 	// Si el tenant tiene SUNAT conectado, sincronizar logo con Lycet y actualizar BD central
 	if svc.IsSunatEnabled() {
 		logoBase64 := extractBase64FromDataURL(input.LogoURL)
-		_ = svc.SyncFacturadorConfigWithFiles("", "", logoBase64, "", "")
+		syncSvc := svc
+		if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+			syncSvc = svc.WithSaaSContext(t.ID, t.Slug)
+		}
+		_ = syncSvc.SyncFacturadorConfigWithFiles("", "", logoBase64, "", "", "", "")
 		if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
 			_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", input.LogoURL).Error
 		}
@@ -75,15 +79,20 @@ func (h *CompanyHandler) GetSunatAPI(c fiber.Ctx) error {
 	})
 }
 
-// GET /api/company/invoicing
+// GET /api/company/invoicing — metadatos fiscales (sin secretos; modo real en facturador SSOT).
 func (h *CompanyHandler) GetInvoicingAPI(c fiber.Ctx) error {
-	mode, pseConfigured, err := service.NewCompanyService(db(c)).GetInvoicingSettings()
+	cfg, err := service.NewCompanyService(db(c)).GetConfig()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	sendMode := cfg.SendMode
+	if sendMode == "" {
+		sendMode = "sunat_direct"
+	}
 	return c.JSON(fiber.Map{
-		"invoicing_mode": mode,
-		"pse_configured": pseConfigured,
+		"send_mode":          sendMode,
+		"fiscal_enabled":     cfg.SunatEnabled,
+		"connection_status":  cfg.FiscalConnectionStatus,
 	})
 }
 
@@ -117,20 +126,25 @@ func (h *CompanyHandler) UpdateSunatAPI(c fiber.Ctx) error {
 // Si envías sol_user/sol_pass se usan para esta sincronización en lugar de lo guardado en BD.
 func (h *CompanyHandler) SyncFacturadorAPI(c fiber.Ctx) error {
 	var body struct {
-		CertificateBase64 string `json:"certificate_base64"`
-		PrivateKeyBase64  string `json:"private_key_base64"`
-		LogoBase64        string `json:"logo_base64"`
-		SolUser           string `json:"sol_user"`
-		SolPass           string `json:"sol_pass"`
+		CertificateBase64   string `json:"certificate_base64"`
+		PrivateKeyBase64    string `json:"private_key_base64"`
+		PfxBase64           string `json:"pfx_base64"`
+		CertificatePassword string `json:"certificate_password"`
+		LogoBase64          string `json:"logo_base64"`
+		SolUser             string `json:"sol_user"`
+		SolPass             string `json:"sol_pass"`
 	}
 	_ = c.Bind().JSON(&body)
 	svc := service.NewCompanyService(db(c))
-	if body.CertificateBase64 != "" || body.PrivateKeyBase64 != "" || body.LogoBase64 != "" {
-		if err := svc.SyncFacturadorConfigWithFiles(body.CertificateBase64, body.PrivateKeyBase64, body.LogoBase64, body.SolUser, body.SolPass); err != nil {
+	if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+		svc = svc.WithSaaSContext(t.ID, t.Slug)
+	}
+	if body.CertificateBase64 != "" || body.PrivateKeyBase64 != "" || body.LogoBase64 != "" || body.PfxBase64 != "" {
+		if err := svc.SyncFacturadorConfigWithFiles(body.CertificateBase64, body.PrivateKeyBase64, body.LogoBase64, body.SolUser, body.SolPass, body.CertificatePassword, body.PfxBase64); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 	} else {
-		if err := svc.SyncFacturadorConfigWithFiles("", "", "", body.SolUser, body.SolPass); err != nil {
+		if err := svc.SyncFacturadorConfigWithFiles("", "", "", body.SolUser, body.SolPass, "", ""); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 	}

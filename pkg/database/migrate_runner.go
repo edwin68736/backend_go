@@ -111,7 +111,7 @@ func MigrateTenantBySlug(slug string) error {
 	if err := MigrateTenantSchema(tenant.DBName); err != nil {
 		return err
 	}
-	return UpsertTenantSchemaVersion(tenant.ID, TenantSchemaTargetVersion, TenantSchemaTargetVersion, TenantSchemaStatusCompleted)
+	return UpsertTenantSchemaVersion(tenant.ID, TenantSchemaTargetVersion(), TenantSchemaTargetVersion(), TenantSchemaStatusCompleted)
 }
 
 // ListTenantsForMigration devuelve tenants a migrar en lote.
@@ -161,7 +161,7 @@ func MigrateTenantsBatch(activeOnly bool, onProgress MigrateProgress) MigrateSum
 			summary.Failed = append(summary.Failed, TenantMigrateFailure{Slug: t.Slug, DBName: t.DBName, Err: migErr})
 		} else {
 			summary.Success = append(summary.Success, t.Slug)
-			_ = UpsertTenantSchemaVersion(t.ID, TenantSchemaTargetVersion, TenantSchemaTargetVersion, TenantSchemaStatusCompleted)
+			_ = UpsertTenantSchemaVersion(t.ID, TenantSchemaTargetVersion(), TenantSchemaTargetVersion(), TenantSchemaStatusCompleted)
 		}
 		if pause > 0 && batchSize > 0 && (i+1)%batchSize == 0 && i+1 < len(tenants) {
 			time.Sleep(pause)

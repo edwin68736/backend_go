@@ -12,6 +12,7 @@ import (
 // Estados del pipeline (orden lógico; no saltar sin transición válida).
 const (
 	DRAFT                 = "DRAFT"
+	PENDING_FISCAL        = "PENDING_FISCAL"
 	PENDING_QUEUE         = "PENDING_QUEUE"
 	PROCESSING            = "PROCESSING"
 	SENDING_TO_FACTURADOR = "SENDING_TO_FACTURADOR"
@@ -29,6 +30,7 @@ const (
 // orderedStages define el orden para validar que no se salte hacia adelante sin pasar por intermedios clave.
 var stageRank = map[string]int{
 	DRAFT:                 0,
+	PENDING_FISCAL:        5,
 	PENDING_QUEUE:         10,
 	PROCESSING:            20,
 	RETRYING:              25,
@@ -83,6 +85,8 @@ func NormalizePipeline(s string) string {
 	switch s {
 	case "PENDING", "PENDING_QUEUE":
 		return PENDING_QUEUE
+	case "PENDING_FISCAL":
+		return PENDING_FISCAL
 	case "PROCESSING":
 		return PROCESSING
 	case "RETRYING":
@@ -114,13 +118,15 @@ func NormalizePipeline(s string) string {
 func LegacyBillingStatus(pipeline string) string {
 	switch NormalizePipeline(pipeline) {
 	case SUNAT_ACCEPTED, OBSERVED:
-		return "accepted"
+		return BillingAccepted
 	case SUNAT_REJECTED:
-		return "rejected"
+		return BillingRejected
 	case FAILED, DEAD_LETTER:
-		return "error"
+		return BillingError
+	case SENDING_TO_FACTURADOR, FACTURADOR_RECEIVED, SENDING_TO_SUNAT, PROCESSING, PENDING_FISCAL, PENDING_QUEUE, RETRYING:
+		return BillingSent
 	default:
-		return "pending"
+		return BillingPending
 	}
 }
 

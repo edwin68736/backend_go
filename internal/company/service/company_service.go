@@ -1,11 +1,9 @@
 package service
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 
-	"tukifac/config"
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
 
@@ -13,11 +11,21 @@ import (
 )
 
 type CompanyService struct {
-	db *gorm.DB
+	db         *gorm.DB
+	tenantID   uint
+	tenantSlug string
 }
 
 func NewCompanyService(db *gorm.DB) *CompanyService {
 	return &CompanyService{db: db}
+}
+
+// WithSaaSContext adjunta tenant central para sync fiscal con facturador.
+func (s *CompanyService) WithSaaSContext(tenantID uint, tenantSlug string) *CompanyService {
+	cp := *s
+	cp.tenantID = tenantID
+	cp.tenantSlug = strings.TrimSpace(tenantSlug)
+	return &cp
 }
 
 func (s *CompanyService) GetConfig() (*database.TenantCompanyConfig, error) {
@@ -35,41 +43,10 @@ func (s *CompanyService) GetConfig() (*database.TenantCompanyConfig, error) {
 	if cfg.IgvRegime == "" {
 		cfg.IgvRegime = "standard"
 	}
-	if strings.TrimSpace(cfg.InvoicingMode) == "" {
-		cfg.InvoicingMode = "legacy_backend"
+	if strings.TrimSpace(cfg.SendMode) == "" {
+		cfg.SendMode = "sunat_direct"
 	}
 	return &cfg, nil
-}
-
-func (s *CompanyService) GetInvoicingSettings() (mode string, pseConfigured bool, err error) {
-	var cfg database.TenantCompanyConfig
-	if err := s.db.Select("invoicing_mode", "pse_base_url", "pse_token").First(&cfg).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "legacy_backend", false, nil
-		}
-		return "", false, err
-	}
-	mode = strings.TrimSpace(cfg.InvoicingMode)
-	if mode == "" {
-		mode = "legacy_backend"
-	}
-	pseConfigured = strings.TrimSpace(cfg.PSEBaseURL) != "" && strings.TrimSpace(cfg.PSEToken) != ""
-	return mode, pseConfigured, nil
-}
-
-func (s *CompanyService) SetInvoicingMode(mode string) error {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = "legacy_backend"
-	}
-	if mode != "legacy_backend" && mode != "pse" {
-		return errors.New("invoicing_mode debe ser legacy_backend o pse")
-	}
-	var existing database.TenantCompanyConfig
-	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("configure primero los datos generales de la empresa")
-	}
-	return s.db.Model(&existing).Update("invoicing_mode", mode).Error
 }
 
 func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
@@ -117,155 +94,42 @@ func (s *CompanyService) SaveSunatConfigTenant(taxRate float64, igvRegime string
 	}).Error
 }
 
-// SaveSunatConfig guarda la configuración completa (panel central): SOL, certificado, ambiente, etc.
-func (s *CompanyService) SaveSunatConfig(enabled bool, solUser, solPass, certificate, envMode, tukifacToken string, taxRate float64, igvRegime string, taxBenefitZone bool) error {
-	var existing database.TenantCompanyConfig
-	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("configure primero los datos generales de la empresa")
-	}
-	if taxRate <= 0 {
-		taxRate = 18
-	}
-	if igvRegime == "" {
-		igvRegime = "standard"
-	}
-	updates := map[string]interface{}{
-		"sunat_enabled":    enabled,
-		"sunat_env_mode":   envMode,
-		"sunat_sol_user":   solUser,
-		"tax_rate":         taxRate,
-		"igv_regime":       igvRegime,
-		"tax_benefit_zone": taxBenefitZone,
-	}
-	if solPass != "" {
-		updates["sunat_sol_pass"] = solPass
-	}
-	if certificate != "" {
-		updates["sunat_certificate"] = certificate
-	}
-	if tukifacToken != "" {
-		updates["tukifac_token"] = tukifacToken
-	}
-	return s.db.Model(&existing).Updates(updates).Error
-}
-
-func (s *CompanyService) SaveInvoicingConfigCentral(mode, pseBaseURL, pseToken, pseProvider string) error {
-	var existing database.TenantCompanyConfig
-	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("configure primero los datos generales de la empresa")
-	}
-
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = "legacy_backend"
-	}
-	if mode != "legacy_backend" && mode != "pse" {
-		return errors.New("invoicing_mode debe ser legacy_backend o pse")
-	}
-
-	updates := map[string]interface{}{
-		"invoicing_mode": mode,
-	}
-
-	pseBaseURL = strings.TrimSpace(pseBaseURL)
-	pseToken = strings.TrimSpace(pseToken)
-	pseProvider = strings.TrimSpace(pseProvider)
-
-	if pseBaseURL != "" {
-		updates["pse_base_url"] = pseBaseURL
-	}
-	if pseToken != "" {
-		updates["pse_token"] = pseToken
-	}
-
-	if pseProvider != "" {
-		b, _ := json.Marshal(map[string]string{"provider": pseProvider})
-		updates["pse_config_json"] = string(b)
-	} else if existing.PSEConfigJSON != "" {
-		var prev struct {
-			Provider string `json:"provider"`
-		}
-		if err := json.Unmarshal([]byte(existing.PSEConfigJSON), &prev); err == nil && prev.Provider != "" {
-			b, _ := json.Marshal(map[string]string{"provider": prev.Provider})
-			updates["pse_config_json"] = string(b)
-		}
-	}
-
-	if mode == "pse" {
-		finalBaseURL := pseBaseURL
-		if finalBaseURL == "" {
-			finalBaseURL = strings.TrimSpace(existing.PSEBaseURL)
-		}
-		finalToken := pseToken
-		if finalToken == "" {
-			finalToken = strings.TrimSpace(existing.PSEToken)
-		}
-		if finalBaseURL == "" || finalToken == "" {
-			return errors.New("configuración PSE incompleta: requiere pse_base_url y pse_token para activar modo PSE")
-		}
-		updates["pse_base_url"] = finalBaseURL
-	}
-
-	return s.db.Model(&existing).Updates(updates).Error
-}
-
-// SyncFacturadorConfig envía la configuración SUNAT del tenant al backend facturador (Lycet).
-// Actualiza el archivo empresas.json en el facturador con SOL_USER, SOL_PASS y nombres de archivo
-// para certificado y logo ({ruc}-cert.pem, {ruc}-logo.png). Esos archivos deben existir en data/
-// del servidor facturador o enviarse por otro medio.
 func (s *CompanyService) SyncFacturadorConfig() error {
-	return s.syncFacturador("", "", "", "", "")
+	return s.syncFacturador("", "", "", "", "", "", "")
 }
 
-// SyncFacturadorConfigWithFiles envía la configuración y opcionalmente el certificado y/o logo en base64.
-// Si se envían privateKeyBase64 y certificateBase64, se construye un único PEM (clave privada + certificado) que es lo que Lycet necesita para firmar.
-// solUserOverride y solPassOverride son opcionales: si se envían en la petición de sync, se usan para esta sincronización en lugar de lo guardado en BD.
-func (s *CompanyService) SyncFacturadorConfigWithFiles(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride string) error {
-	return s.syncFacturador(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride)
+// SyncFacturadorConfigWithFiles envía configuración al facturador.
+// Certificados: PFX (.pfx/.p12) o PEM (combinado o clave + cert) se normalizan al formato Greenter antes del envío.
+func (s *CompanyService) SyncFacturadorConfigWithFiles(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride, certPassword, pfxBase64 string) error {
+	return s.syncFacturador(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride, certPassword, pfxBase64)
 }
 
-func (s *CompanyService) syncFacturador(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride string) error {
-	if config.AppConfig.FacturadorBaseURL == "" || config.AppConfig.FacturadorToken == "" {
-		return errors.New("facturador no configurado: define FACTURADOR_BASE_URL y FACTURADOR_TOKEN en el servidor")
+func (s *CompanyService) syncFacturador(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride, certPassword, pfxBase64 string) error {
+	combined, err := facturador.PrepareGreenterCertificateBase64(pfxBase64, certPassword, privateKeyBase64, certificateBase64)
+	if err != nil {
+		return err
+	}
+	if combined != "" {
+		certificateBase64 = combined
 	}
 	var cfg database.TenantCompanyConfig
 	if err := s.db.First(&cfg).Error; err != nil {
 		return errors.New("configure primero los datos de la empresa y SUNAT")
 	}
-	if cfg.RUC == "" {
-		return errors.New("el RUC de la empresa es requerido para sincronizar con el facturador")
-	}
-	solUser := cfg.SunatSOLUser
-	if solUser == "" {
-		solUser = cfg.RUC + "MODDATOS"
-	}
-	if solUserOverride != "" {
-		solUser = solUserOverride
-	}
-	solPass := cfg.SunatSOLPass
-	if solPassOverride != "" {
-		solPass = solPassOverride
-	}
-	client := facturador.Shared()
-
-	// Lycet necesita un único PEM con: primero clave privada, luego certificado.
-	if certificateBase64 == "" && cfg.SunatCertificate != "" {
-		certificateBase64 = facturador.PEMToBase64(cfg.SunatCertificate)
-	}
-	if privateKeyBase64 != "" && certificateBase64 != "" {
-		combined, err := facturador.BuildCombinedPEMBase64(privateKeyBase64, certificateBase64)
-		if err != nil {
-			return err
-		}
-		certificateBase64 = combined
-	}
-	// Mapear ambiente: API Lycet usa "pruebas" | "produccion"; nosotros usamos production/beta/demo.
-	ambiente := "pruebas"
-	if cfg.SunatEnvMode == "production" {
-		ambiente = "produccion"
-	}
-	// Sincronizar vía POST /api/v1/empresas (API-EMPRESAS.md); una sola empresa con ruc, SOL_USER, SOL_PASS, ambiente, certificado/logo opcionales.
-	return client.SyncEmpresas(cfg.RUC, solUser, solPass, ambiente, certificateBase64, logoBase64)
+	provider := strings.TrimSpace(cfg.FiscalProvider)
+	sendMode := cfg.SendMode
+	_, err = s.SyncFiscalToFacturador(FiscalSyncInput{
+		SendMode:       sendMode,
+		Provider:       provider,
+		ConnectionType: cfg.FiscalConnectionType,
+		SOLUser:        solUserOverride,
+		SOLPass:        solPassOverride,
+		CertificateB64: certificateBase64,
+		CertPassword:   certPassword,
+		LogoB64:        logoBase64,
+		Enabled:        cfg.SunatEnabled,
+	})
+	return err
 }
 
 // IsSunatEnabled indica si la empresa tiene activa la conexión con SUNAT.

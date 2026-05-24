@@ -9,9 +9,9 @@ import (
 	"tukifac/pkg/logger"
 )
 
-// CodeTargetVersion versión objetivo del binario.
+// CodeTargetVersion versión objetivo del binario (tenantmigrations registry).
 func CodeTargetVersion() int {
-	return database.TenantSchemaTargetVersion
+	return database.TenantSchemaTargetVersion()
 }
 
 // InitTenantSchemaVersions delega a database (bootstrap V30).

@@ -8,8 +8,10 @@ import (
 
 	"tukifac/internal/restaurant/service"
 	"tukifac/internal/restaurant/staff"
+	billingsvc "tukifac/internal/billing/service"
 	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/branch"
+	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/restaurantperm"
 	"tukifac/pkg/tax"
@@ -472,6 +474,9 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 	}, taxCfg)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
+		_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(db(c), tenant, sale.ID)
 	}
 	printData, _ := salesvc.BuildPrintDataForSale(db(c), sale.ID)
 	return c.Status(201).JSON(fiber.Map{"success": true, "data": sale, "print_data": printData})

@@ -95,6 +95,7 @@ func (h *RestaurantHandler) PinLogin(c fiber.Ctx) error {
 		TenantSlug:           tenant.Slug,
 		TenantDB:             tenant.DBName,
 		TenantID:             tenant.ID,
+		TenantVersion:        middleware.CurrentTenantJWTVersion(),
 		Modules:              enabledModules,
 		EmployeeType:         employeeType,
 		AuthMethod:           "pin",
@@ -114,7 +115,7 @@ func (h *RestaurantHandler) PinLogin(c fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "error generando sesión"})
 	}
 	activeBrief, _ := branch.GetBranchBrief(tenantDB, activeBranchID)
-	keys, _ := staffSvc.ResolvePermissionKeys(tenant.ID, userID, permVer)
+	keys, _ := staffSvc.ResolvePermissionKeys(tenant.Slug, tenant.ID, userID, permVer)
 
 	return c.JSON(fiber.Map{
 		"token": tokenString,
@@ -147,7 +148,7 @@ func (h *RestaurantHandler) SessionPermissions(c fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "sin base de datos"})
 	}
 	staffSvc := staff.New(tenantDB)
-	keys, err := staffSvc.ResolvePermissionKeys(claims.TenantID, claims.UserID, claims.PermVer)
+	keys, err := staffSvc.ResolvePermissionKeys(claims.TenantSlug, claims.TenantID, claims.UserID, claims.PermVer)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}

@@ -24,9 +24,11 @@ import (
 	"tukifac/internal/sales"
 	"tukifac/internal/tenantportal"
 	superadmin "tukifac/internal/superadmin"
+	"tukifac/internal/fiscal"
 	"tukifac/internal/ubigeo"
 	"tukifac/internal/users"
 	"tukifac/pkg/database"
+	"tukifac/pkg/domains"
 	"tukifac/pkg/health"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/tenantstorage"
@@ -58,6 +60,7 @@ func Setup(app *fiber.App) {
 	app.Get("/metrics", health.Metrics)
 	app.Get("/fleet-health", health.FleetHealth)
 	app.Get("/api/internal/fleet-health", health.FleetHealth)
+	fiscal.RegisterInternalRoutes(app)
 
 	// CORS antes de rate limits: preflight OPTIONS debe recibir Allow-Origin si el origen es válido.
 	app.Use(cors.New(cors.Config{
@@ -114,9 +117,15 @@ func Setup(app *fiber.App) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Empresa no encontrada con ese RUC"})
 			}
 		}
+		subdomain := domains.TenantHost(tenant.Slug, config.AppConfig.AppDomain)
+		apiURL := domains.TenantURL(tenant.Slug, config.AppConfig.AppDomain)
 		return c.JSON(fiber.Map{
 			"slug":                 tenant.Slug,
+			"tenant_slug":          tenant.Slug,
 			"name":                 tenant.Name,
+			"subdomain":            subdomain,
+			"api_url":              apiURL,
+			"tenant_version":       middleware.CurrentTenantJWTVersion(),
 			"token_consulta_datos": tenant.TokenConsultaDatos,
 		})
 	})
@@ -185,6 +194,7 @@ func Setup(app *fiber.App) {
 	restaurant.RegisterRoutes(tenantAPI)
 	restaurant.RegisterSalePaymentRoutes(tenantAPI)
 	modules.RegisterRoutes(tenantAPI)
+	fiscal.RegisterTenantRoutes(tenantAPI)
 
 	// Catch-all
 	app.Use(func(c fiber.Ctx) error {

@@ -39,6 +39,9 @@ func billingSvc(c fiber.Ctx) *service.BillingService {
 	svc := service.NewBillingService(db(c))
 	if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
 		svc.SetCentralTenantID(t.ID)
+		svc.SetTenantSlug(t.Slug)
+	} else if slug, ok := c.Locals("tenant_slug").(string); ok && slug != "" {
+		svc.SetTenantSlug(slug)
 	}
 	return svc
 }
@@ -68,50 +71,24 @@ func (h *BillingHandler) SendToSUNAT(c fiber.Ctx) error {
 	tenant, _ := c.Locals("tenant").(*database.Tenant)
 	slug, _ := c.Locals("tenant_slug").(string)
 	var tenantID uint
-	tenantDB := ""
 	if tenant != nil {
-		tenantDB = tenant.DBName
 		tenantID = tenant.ID
 	}
 
 	svc := billingSvc(c)
-	invoice, err := svc.EnqueueSendToSUNAT(uint(saleID), tenantID, slug, tenantDB)
+	result, err := svc.ManualSendToSUNAT(uint(saleID), tenantID, slug)
 	if err != nil {
 		code := fiber.StatusBadRequest
 		if errors.Is(err, docusage.ErrQuotaExceeded) {
 			code = fiber.StatusPaymentRequired
 		}
 		return c.Status(code).JSON(fiber.Map{
-			"error": err.Error(), "code": "DOCUMENT_QUOTA_EXCEEDED",
-			"invoice": invoice,
+			"error":  err.Error(),
+			"code":   "DOCUMENT_QUOTA_EXCEEDED",
+			"status": "error",
 		})
 	}
-
-	// 202 Accepted cuando la emisión está en cola — nunca afirmar éxito SUNAT aquí.
-	if invoice != nil && (invoice.JobStatus == "pending" || invoice.JobStatus == "processing" || invoice.JobStatus == "retrying") {
-		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-			"success":    false,
-			"async":      true,
-			"job_status": invoice.JobStatus,
-			"invoice":    invoice,
-			"message":    "Factura en proceso; consulte GET /api/billing/status/:saleId",
-		})
-	}
-
-	status, _ := svc.GetBillingStatus(uint(saleID))
-	safe := status != nil && status.SafeToPrint
-	msg := "Factura en proceso; consulte el estado del comprobante"
-	if safe {
-		msg = "Comprobante aceptado por SUNAT"
-	}
-	return c.JSON(fiber.Map{
-		"success":       safe,
-		"async":         false,
-		"safe_to_print": safe,
-		"status":        status,
-		"invoice":       invoice,
-		"message":       msg,
-	})
+	return c.JSON(result)
 }
 
 // GetBillingStatus GET /api/billing/status/:saleId — estado verificable (polling).
@@ -142,18 +119,21 @@ func (h *BillingHandler) GetBillingJobStatus(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"invoice": inv})
 }
 
-// ResendToSUNAT reenvía el comprobante usando el payload guardado (solo cuando falló el envío, no si fue rechazado por SUNAT).
+// ResendToSUNAT sincroniza SSOT, reconcilia estado local y reenvía de forma síncrona si procede.
 func (h *BillingHandler) ResendToSUNAT(c fiber.Ctx) error {
 	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	svc := billingSvc(c)
-	invoice, err := svc.ResendToSUNAT(uint(saleID))
+	result, err := svc.ManualResendToSUNAT(uint(saleID))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "invoice": invoice})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":  err.Error(),
+			"status": "error",
+		})
 	}
-	return c.JSON(fiber.Map{"success": true, "invoice": invoice})
+	return c.JSON(result)
 }
 
 // VoidWithCreditNoteAPI anula la venta generando y enviando una nota de crédito a SUNAT; luego anula la venta original.
@@ -173,9 +153,33 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{
 		"success": true,
-		"message": "Nota de crédito emitida y venta anulada",
+		"message": "Nota de crédito encolada; la venta original se anulará al aceptar SUNAT",
+		"async":   true,
 		"nc_sale": ncSale,
 		"invoice": ncInvoice,
+	})
+}
+
+func (h *BillingHandler) CreateDebitNoteAPI(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := billingSvc(c)
+	ndSale, ndInvoice, err := svc.CreateDebitNoteForSale(uint(saleID))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   err.Error(),
+			"nd_sale": ndSale,
+			"invoice": ndInvoice,
+		})
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Nota de débito encolada para emisión SUNAT",
+		"async":   true,
+		"nd_sale": ndSale,
+		"invoice": ndInvoice,
 	})
 }
 
@@ -254,7 +258,20 @@ func (h *BillingHandler) GetInvoiceDocumentAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "XML generado no disponible"})
 	}
 
-	// XML enviado a SUNAT y CDR: se guardan en el tenant al enviar; se sirven desde almacenamiento.
+	// XML enviado a SUNAT y CDR: disco tenant, URL fiscal o proxy al facturador (SSOT).
+	if kind == "xml" || kind == "cdr" {
+		data, contentType, docErr := svc.GetInvoiceDocumentContent(uint(saleID), kind)
+		if docErr != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": docErr.Error()})
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		c.Set(fiber.HeaderContentType, contentType)
+		c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, filename))
+		return c.Send(data)
+	}
+
 	fullPath, err := svc.GetInvoiceDocumentPath(uint(saleID), kind)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -264,14 +281,6 @@ func (h *BillingHandler) GetInvoiceDocumentAPI(c fiber.Ctx) error {
 	}
 	if kind == "pdf" {
 		c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`inline; filename="%s"`, filename))
-	}
-	if kind == "xml" {
-		c.Set(fiber.HeaderContentType, "text/xml; charset=utf-8")
-		c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, filename))
-	}
-	if kind == "cdr" {
-		c.Set(fiber.HeaderContentType, "application/zip")
-		c.Set(fiber.HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, filename))
 	}
 	return c.SendFile(fullPath)
 }
@@ -417,7 +426,7 @@ func (h *BillingHandler) CreateDespatchAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"success": true, "despatch": rec})
+	return c.JSON(fiber.Map{"success": true, "async": true, "message": "Guía encolada para emisión SUNAT", "despatch": rec})
 }
 
 func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
@@ -454,7 +463,20 @@ func (h *BillingHandler) CreateRetentionAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"success": true, "retention": rec})
+	return c.JSON(fiber.Map{"success": true, "async": true, "message": "Retención encolada para emisión SUNAT", "retention": rec})
+}
+
+func (h *BillingHandler) GetRetentionStatusAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := billingSvc(c)
+	rec, err := svc.GetRetentionStatus(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
 }
 
 // --- Percepción ---
@@ -478,7 +500,20 @@ func (h *BillingHandler) CreatePerceptionAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"success": true, "perception": rec})
+	return c.JSON(fiber.Map{"success": true, "async": true, "message": "Percepción encolada para emisión SUNAT", "perception": rec})
+}
+
+func (h *BillingHandler) GetPerceptionStatusAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := billingSvc(c)
+	rec, err := svc.GetPerceptionStatus(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
 }
 
 // --- Reversión ---

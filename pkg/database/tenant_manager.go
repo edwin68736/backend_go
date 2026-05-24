@@ -134,8 +134,19 @@ func (m *TenantDBManager) acquire(dbName string) (*gorm.DB, error) {
 func (m *TenantDBManager) release(dbName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if e, ok := m.pools[dbName]; ok {
-		e.inUse.Add(-1)
+	e, ok := m.pools[dbName]
+	if !ok {
+		return
+	}
+	for {
+		cur := e.inUse.Load()
+		if cur <= 0 {
+			logger.L.Warn("tenant_pool_release_underflow", slog.String("db", dbName))
+			return
+		}
+		if e.inUse.CompareAndSwap(cur, cur-1) {
+			return
+		}
 	}
 }
 

@@ -129,6 +129,7 @@ func issueTokenWithBranch(tdb *gorm.DB, old *middleware.TenantClaims, user *data
 		TenantSlug:           old.TenantSlug,
 		TenantDB:             old.TenantDB,
 		TenantID:             old.TenantID,
+		TenantVersion:        old.TenantVersion,
 		PlanID:               old.PlanID,
 		Modules:              old.Modules,
 		Permissions:          old.Permissions,

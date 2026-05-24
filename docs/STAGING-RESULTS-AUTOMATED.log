@@ -1,0 +1,16 @@
+
+[2026-05-23 18:16:32] INFO | START | Staging automatizado backend_go + facturador_lycet
+[2026-05-23 18:16:32] RUN | go build | ./...
+[2026-05-23 18:16:32] PASS | go build | OK
+[2026-05-23 18:16:32] RUN | go test ./pkg/fiscalqueue/... | 
+[2026-05-23 18:16:32] PASS | go test ./pkg/fiscalqueue/... | OK
+[2026-05-23 18:16:32] RUN | go test ./pkg/fiscaldedup/... | 
+[2026-05-23 18:16:32] PASS | go test ./pkg/fiscaldedup/... | OK
+[2026-05-23 18:16:32] RUN | go test ./internal/billing/service/... | 
+[2026-05-23 18:16:32] PASS | go test ./internal/billing/service/... | OK
+[2026-05-23 18:16:32] RUN | go test ConcurrentEnqueue100Tenants | 
+[2026-05-23 18:16:32] PASS | go test ConcurrentEnqueue100Tenants | 100 tenants cola fiscal
+[2026-05-23 18:16:32] RUN | php bin/console list app:fiscal | 
+[2026-05-23 18:16:32] SKIP | php bin/console list app:fiscal | PHP/vendor no disponible en este host
+[2026-05-23 18:16:32] SKIP | phpunit fiscal | vendor no instalado
+[2026-05-23 18:16:32] INFO | END | Ver STAGING-RESULTS.md para E2E manual SUNAT/PSE

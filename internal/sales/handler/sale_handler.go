@@ -169,6 +169,8 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	triggerAutoFiscalEnqueue(c, sale)
+
 	// Construir print_data para impresión inmediata
 	items, _ := svc.GetItems(sale.ID)
 	var printPayments []service.PrintPaymentInput
@@ -419,7 +421,19 @@ func (h *SaleHandler) IssueElectronicFromNotaAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	triggerAutoFiscalEnqueue(c, sale)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"sale": sale})
+}
+
+func triggerAutoFiscalEnqueue(c fiber.Ctx, sale *database.TenantSale) {
+	if sale == nil || sale.ID == 0 {
+		return
+	}
+	tenant, ok := c.Locals("tenant").(*database.Tenant)
+	if !ok || tenant == nil {
+		return
+	}
+	_ = billingSvc.TriggerAutoEnqueueAfterSaleCommit(db(c), tenant, sale.ID)
 }
 
 // Crear venta desde formulario clásico (no POS)

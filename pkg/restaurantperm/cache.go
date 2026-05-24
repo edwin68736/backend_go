@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,17 +23,22 @@ var (
 	mem   = map[string]memEntry{}
 )
 
-func cacheKey(tenantID, userID uint, version uint) string {
-	return fmt.Sprintf("tukifac:rp:%d:%d:v%d", tenantID, userID, version)
+// cacheKey namespaced por slug (evita colisión tenantID=0 o IDs reutilizados entre tenants).
+func cacheKey(tenantSlug string, tenantID, userID, version uint) string {
+	slug := strings.TrimSpace(tenantSlug)
+	if slug == "" {
+		slug = fmt.Sprintf("id%d", tenantID)
+	}
+	return fmt.Sprintf("%stenant:%s:rp:%d:%d:v%d", tenantcache.TenantKeyPrefix, slug, tenantID, userID, version)
 }
 
-func memKey(tenantID, userID uint, version uint) string {
-	return cacheKey(tenantID, userID, version)
+func memKey(tenantSlug string, tenantID, userID, version uint) string {
+	return cacheKey(tenantSlug, tenantID, userID, version)
 }
 
 // GetCached devuelve permisos cacheados (Redis primero, memoria local).
-func GetCached(tenantID, userID, version uint) ([]string, bool) {
-	key := cacheKey(tenantID, userID, version)
+func GetCached(tenantSlug string, tenantID, userID, version uint) ([]string, bool) {
+	key := cacheKey(tenantSlug, tenantID, userID, version)
 	if rdb := tenantcache.RDB(); rdb != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -45,7 +51,7 @@ func GetCached(tenantID, userID, version uint) ([]string, bool) {
 		}
 	}
 	memMu.RLock()
-	e, ok := mem[memKey(tenantID, userID, version)]
+	e, ok := mem[memKey(tenantSlug, tenantID, userID, version)]
 	memMu.RUnlock()
 	if ok && time.Now().Before(e.expires) {
 		return e.keys, true
@@ -54,8 +60,8 @@ func GetCached(tenantID, userID, version uint) ([]string, bool) {
 }
 
 // SetCached guarda permisos en Redis y memoria.
-func SetCached(tenantID, userID, version uint, keys []string) {
-	key := cacheKey(tenantID, userID, version)
+func SetCached(tenantSlug string, tenantID, userID, version uint, keys []string) {
+	key := cacheKey(tenantSlug, tenantID, userID, version)
 	if rdb := tenantcache.RDB(); rdb != nil {
 		raw, _ := json.Marshal(keys)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -63,19 +69,35 @@ func SetCached(tenantID, userID, version uint, keys []string) {
 		_ = rdb.Set(ctx, key, raw, cacheTTL).Err()
 	}
 	memMu.Lock()
-	mem[memKey(tenantID, userID, version)] = memEntry{keys: keys, expires: time.Now().Add(cacheTTL)}
+	mem[memKey(tenantSlug, tenantID, userID, version)] = memEntry{keys: keys, expires: time.Now().Add(cacheTTL)}
 	memMu.Unlock()
 }
 
 // InvalidateUser borra entradas conocidas de versión (best-effort).
-func InvalidateUser(tenantID, userID, version uint) {
-	key := cacheKey(tenantID, userID, version)
+func InvalidateUser(tenantSlug string, tenantID, userID, version uint) {
+	key := cacheKey(tenantSlug, tenantID, userID, version)
 	if rdb := tenantcache.RDB(); rdb != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rdb.Del(ctx, key).Err()
 	}
 	memMu.Lock()
-	delete(mem, memKey(tenantID, userID, version))
+	delete(mem, memKey(tenantSlug, tenantID, userID, version))
+	memMu.Unlock()
+}
+
+// InvalidateTenantMem limpia entradas en memoria del proceso para un slug (best-effort).
+func InvalidateTenantMem(tenantSlug string) {
+	tenantSlug = strings.TrimSpace(tenantSlug)
+	if tenantSlug == "" {
+		return
+	}
+	prefix := fmt.Sprintf("%stenant:%s:rp:", tenantcache.TenantKeyPrefix, tenantSlug)
+	memMu.Lock()
+	for k := range mem {
+		if strings.HasPrefix(k, prefix) {
+			delete(mem, k)
+		}
+	}
 	memMu.Unlock()
 }

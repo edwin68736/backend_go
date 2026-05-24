@@ -1,17 +1,22 @@
-// Package facturador implementa el cliente HTTP para el backend facturador Lycet (SUNAT).
+// Package facturador implementa el cliente HTTP para facturador_lycet (API fiscal SUNAT/PSE).
 // Ver API-facturacion.md para la documentación del API.
 package facturador
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
+
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 // Client es el cliente para el API del facturador Lycet.
@@ -135,87 +140,40 @@ func (c *Client) GetEmpresa(ruc string) (*EmpresaEntry, error) {
 	return &entry, nil
 }
 type EmpresaEntry struct {
-	SOLUser     string `json:"SOL_USER"`
-	SOLPass     string `json:"SOL_PASS"`
-	Certificate string `json:"certificate"`
-	Logo        string `json:"logo,omitempty"`
-	Ambiente    string `json:"ambiente,omitempty"` // "pruebas" | "produccion"
-	FEURL       string `json:"FE_URL,omitempty"`
-	REURL       string `json:"RE_URL,omitempty"`
-	GuiaURL     string `json:"GUIA_URL,omitempty"`
+	SOLUser        string `json:"SOL_USER"`
+	SOLPass        string `json:"SOL_PASS"`
+	Certificate    string `json:"certificate"`
+	Logo           string `json:"logo,omitempty"`
+	Ambiente       string `json:"ambiente,omitempty"` // "pruebas" | "produccion"
+	FEURL          string `json:"FE_URL,omitempty"`
+	REURL          string `json:"RE_URL,omitempty"`
+	GuiaURL        string `json:"GUIA_URL,omitempty"`
+	TenantID       int    `json:"tenant_id,omitempty"`
+	TenantSlug     string `json:"tenant_slug,omitempty"`
+	SendMode         string `json:"send_mode,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	PSEUser        string `json:"pse_user,omitempty"`
+	ConnectionType string `json:"connection_type,omitempty"`
+		ConnectionStatus string `json:"connection_status,omitempty"`
+		PSEBaseURL       string `json:"pse_base_url,omitempty"`
+	AutomaticSend  bool   `json:"automatic_send,omitempty"`
+	EmailEnabled   bool   `json:"email_enabled,omitempty"`
+	RetryEnabled   bool   `json:"retry_enabled,omitempty"`
+	Enabled        bool   `json:"enabled,omitempty"`
 }
 
-// EmpresaPayload es el body para POST /api/v1/empresas (una sola empresa, según API-EMPRESAS.md).
-// Al crear: ruc, SOL_USER y SOL_PASS obligatorios. ambiente opcional (default "pruebas").
-// Al actualizar: solo se envían los campos que se quieren cambiar; certificado/logo opcionales.
-type EmpresaPayload struct {
-	RUC                string `json:"ruc"`
-	SOLUser            string `json:"SOL_USER"`
-	SOLPass            string `json:"SOL_PASS"`
-	Ambiente           string `json:"ambiente,omitempty"` // "pruebas" | "produccion"
-	CertificateBase64  string `json:"certificate_base64,omitempty"`
-	LogoBase64         string `json:"logo_base64,omitempty"`
+// ConnectionType devuelve "PSE" o "SUNAT" según configuración en facturador.
+func ConnectionType(entry EmpresaEntry) string {
+	sm := strings.ToLower(strings.TrimSpace(entry.SendMode))
+	pr := strings.ToLower(strings.TrimSpace(entry.Provider))
+	if sm == "pse" || strings.Contains(sm, "pse") ||
+		strings.Contains(pr, "pse") || strings.Contains(pr, "validapse") {
+		return "PSE"
+	}
+	return "SUNAT"
 }
 
-// SyncEmpresas crea o actualiza la empresa en Lycet vía POST /api/v1/empresas (una sola empresa, API-EMPRESAS.md).
-// Body: { "ruc", "SOL_USER", "SOL_PASS", "ambiente"?, "certificate_base64"?, "logo_base64"? }.
-// ambiente: "pruebas" o "produccion"; si está vacío se usa "pruebas".
-func (c *Client) SyncEmpresas(ruc, solUser, solPass, ambiente, certificateBase64, logoBase64 string) error {
-	if ruc == "" {
-		return fmt.Errorf("ruc es obligatorio")
-	}
-	if solUser == "" || solPass == "" {
-		return fmt.Errorf("SOL_USER y SOL_PASS son obligatorios al crear/actualizar empresa")
-	}
-	if ambiente != "produccion" && ambiente != "pruebas" {
-		ambiente = "pruebas"
-	}
-	entry := EmpresaPayload{
-		RUC:     ruc,
-		SOLUser: solUser,
-		SOLPass: solPass,
-		Ambiente: ambiente,
-	}
-	if certificateBase64 != "" {
-		entry.CertificateBase64 = certificateBase64
-	}
-	if logoBase64 != "" {
-		entry.LogoBase64 = logoBase64
-	}
-	bodyBytes, err := json.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("empresas payload: %w", err)
-	}
-	req, err := http.NewRequest("POST", c.addToken("/empresas"), bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("facturador rechazó el token (403): verifica que FACTURADOR_TOKEN sea igual a CLIENT_TOKEN en Lycet")
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("facturador respondió %d: %s", resp.StatusCode, string(respBody))
-	}
-	var result struct {
-		OK      bool   `json:"ok"`
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal(respBody, &result)
-	if !result.OK && result.Message != "" {
-		return fmt.Errorf("facturador: %s", result.Message)
-	}
-	return nil
-}
-
-// PatchAmbiente cambia solo el ambiente de la empresa en Lycet (PATCH /api/v1/empresas/{ruc}/ambiente).
+// PatchAmbiente cambia solo el ambiente de la empresa en el facturador (PATCH /api/v1/empresas/{ruc}/ambiente).
 // ambiente debe ser "pruebas" o "produccion". No modifica Clave SOL, certificado ni logo.
 func (c *Client) PatchAmbiente(ruc, ambiente string) error {
 	if ruc == "" {
@@ -251,91 +209,7 @@ func (c *Client) PatchAmbiente(ruc, ambiente string) error {
 	return nil
 }
 
-// SyncConfiguration envía la configuración de la empresa al facturador (empresas.json).
-// certificateBase64 y logoBase64 son opcionales; si se envían, el facturador puede guardarlos.
-// Para multiempresa el facturador espera archivos con nombre {ruc}-cert.pem y {ruc}-logo.png en data/;
-// este método envía solo el JSON de empresas (SOL_USER, SOL_PASS, nombres de archivo).
-func (c *Client) SyncConfiguration(ruc, solUser, solPass, certificateFilename, logoFilename string) error {
-	entry := EmpresaEntry{
-		SOLUser:     solUser,
-		SOLPass:     solPass,
-		Certificate: certificateFilename,
-		Logo:        logoFilename,
-	}
-	empresas := map[string]EmpresaEntry{ruc: entry}
-	jsonBytes, err := json.Marshal(empresas)
-	if err != nil {
-		return fmt.Errorf("empresas.json: %w", err)
-	}
-	companiesB64 := base64.StdEncoding.EncodeToString(jsonBytes)
-	body := map[string]string{"companies": companiesB64}
-	bodyBytes, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", c.addToken("/configuration/"), bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		msg := string(b)
-		if resp.StatusCode == http.StatusForbidden {
-			return fmt.Errorf("facturador rechazó el token (403): verifica que FACTURADOR_TOKEN en este backend sea exactamente igual a CLIENT_TOKEN en el servidor Lycet")
-		}
-		return fmt.Errorf("facturador respondió %d: %s", resp.StatusCode, msg)
-	}
-	return nil
-}
-
-// SyncConfigurationWithFiles envía empresas.json más el certificado y logo en base64.
-// El facturador puede guardarlos; para un solo tenant por instancia suele usarse así.
-func (c *Client) SyncConfigurationWithFiles(ruc, solUser, solPass, certificateBase64, logoBase64 string) error {
-	entry := EmpresaEntry{
-		SOLUser:     solUser,
-		SOLPass:     solPass,
-		Certificate: ruc + "-cert.pem",
-		Logo:        ruc + "-logo.png",
-	}
-	empresas := map[string]EmpresaEntry{ruc: entry}
-	jsonBytes, err := json.Marshal(empresas)
-	if err != nil {
-		return fmt.Errorf("empresas.json: %w", err)
-	}
-	companiesB64 := base64.StdEncoding.EncodeToString(jsonBytes)
-	body := map[string]string{"companies": companiesB64}
-	if certificateBase64 != "" {
-		body["certificate"] = certificateBase64
-	}
-	if logoBase64 != "" {
-		body["logo"] = logoBase64
-	}
-	bodyBytes, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", c.addToken("/configuration/"), bytes.NewReader(bodyBytes))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		msg := string(b)
-		if resp.StatusCode == http.StatusForbidden {
-			return fmt.Errorf("facturador rechazó el token (403): verifica que FACTURADOR_TOKEN en este backend sea exactamente igual a CLIENT_TOKEN en el servidor Lycet")
-		}
-		return fmt.Errorf("facturador respondió %d: %s", resp.StatusCode, msg)
-	}
-	return nil
-}
-
-// InvoicePayload es el body para POST /invoice/send (Lycet). Estructura según PAYLOAD-FACTURA-BOLETA.md.
+// InvoicePayload es el body para POST /invoice/send (facturador). Estructura según PAYLOAD-FACTURA-BOLETA.md.
 // Campos obligatorios: tipoOperacion (Cat.51), tipoDoc (Cat.01), serie, correlativo, fechaEmision,
 // company (ruc, razonSocial, nombreComercial, address), client (tipoDoc Cat.06, numDoc, rznSocial, address),
 // tipoMoneda, formaPago, details, legends, totales (mtoOperGravadas, mtoIGV, totalImpuestos, valorVenta, subTotal, mtoImpVenta).
@@ -346,7 +220,7 @@ type InvoicePayload struct {
 	Serie           string             `json:"serie"`
 	Correlativo     string             `json:"correlativo"`
 	FechaEmision    string             `json:"fechaEmision"`
-	FecVencimiento  string             `json:"fecVencimiento,omitempty"` // Solo factura (01). ISO 8601. Si no se envía, Lycet no genera cbc:DueDate.
+	FecVencimiento  string             `json:"fecVencimiento,omitempty"` // Solo factura (01). ISO 8601 con zona (Y-m-d\TH:i:sP).
 	FormaPago       *InvoiceFormaPago  `json:"formaPago,omitempty"`
 	Company         InvoiceCompany     `json:"company"`
 	Client          InvoiceClient      `json:"client"`
@@ -1152,42 +1026,244 @@ func PEMToBase64(pemContent string) string {
 	return base64.StdEncoding.EncodeToString([]byte(pemContent))
 }
 
-// BuildCombinedPEMBase64 construye el PEM que Lycet necesita: primero clave privada, luego certificado.
-// Si subes el mismo archivo .pem en ambos campos, se extraen los bloques y se ordenan (clave + cert).
+// PrepareGreenterCertificateBase64 convierte PFX o PEM al formato que Greenter setCertificate() espera:
+// PEM con clave privada + certificado(s), normalizado para multi-tenant.
+func PrepareGreenterCertificateBase64(pfxBase64, password, privateKeyBase64, certificateBase64 string) (string, error) {
+	if strings.TrimSpace(pfxBase64) != "" {
+		return PfxToCombinedPEMBase64(pfxBase64, password)
+	}
+	if strings.TrimSpace(privateKeyBase64) != "" || strings.TrimSpace(certificateBase64) != "" {
+		return BuildCombinedPEMBase64(privateKeyBase64, certificateBase64)
+	}
+	return "", nil
+}
+
+// BuildCombinedPEMBase64 construye el PEM que Greenter/Lycet necesita: clave privada + certificado.
+// Acepta: dos archivos PEM, un solo PEM combinado, o el mismo contenido en ambos campos.
 func BuildCombinedPEMBase64(privateKeyBase64, certificateBase64 string) (string, error) {
-	keyBytes, err := base64.StdEncoding.DecodeString(privateKeyBase64)
+	var chunks []string
+	for _, b64 := range []string{privateKeyBase64, certificateBase64} {
+		b64 = strings.TrimSpace(b64)
+		if b64 == "" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return "", fmt.Errorf("PEM inválido (base64): %w", err)
+		}
+		if s := strings.TrimSpace(string(raw)); s != "" {
+			chunks = append(chunks, s)
+		}
+	}
+	if len(chunks) == 0 {
+		return "", fmt.Errorf("se requiere certificado PEM (PFX, archivo combinado o clave + certificado)")
+	}
+	full := normalizePEMWithBagAttributes([]byte(strings.Join(chunks, "\n")))
+	return encodeGreenterCombinedPEM(full)
+}
+
+// PfxToCombinedPEMBase64 convierte certificado .pfx/.p12 (base64) a PEM combinado para Lycet.
+func PfxToCombinedPEMBase64(pfxBase64, password string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pfxBase64))
 	if err != nil {
-		return "", fmt.Errorf("private_key_base64 inválido: %w", err)
+		return "", fmt.Errorf("pfx_base64 inválido: %w", err)
 	}
-	certBytes, err := base64.StdEncoding.DecodeString(certificateBase64)
+	blocks, err := pkcs12.ToPEM(raw, password)
 	if err != nil {
-		return "", fmt.Errorf("certificate_base64 inválido: %w", err)
+		return "", fmt.Errorf("no se pudo abrir el PFX (revise la contraseña): %w", err)
 	}
-	keyTrim := strings.TrimSpace(string(keyBytes))
-	certTrim := strings.TrimSpace(string(certBytes))
-	if keyTrim == "" && certTrim == "" {
-		return "", fmt.Errorf("clave privada y certificado son requeridos para combinar")
+	var keyParts []string
+	var certParts []string
+	for _, block := range blocks {
+		if block == nil {
+			continue
+		}
+		part := strings.TrimSpace(string(pem.EncodeToMemory(block)))
+		if part == "" {
+			continue
+		}
+		switch block.Type {
+		case "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY":
+			if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err != nil {
+				if pkcs1, err2 := x509.ParsePKCS1PrivateKey(block.Bytes); err2 == nil {
+					block = &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(pkcs1)}
+				}
+			}
+			part := strings.TrimSpace(string(pem.EncodeToMemory(block)))
+			if part != "" {
+				keyParts = append(keyParts, part)
+			}
+		case "ENCRYPTED PRIVATE KEY":
+			dec, err := x509.DecryptPEMBlock(block, []byte(password))
+			if err != nil {
+				return "", fmt.Errorf("no se pudo desencriptar la clave del PFX (revise la contraseña): %w", err)
+			}
+			keyParts = append(keyParts, strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{
+				Type:  "PRIVATE KEY",
+				Bytes: dec,
+			}))))
+		case "CERTIFICATE":
+			certParts = append(certParts, part)
+		}
 	}
-	full := keyTrim
-	if certTrim != "" && certTrim != keyTrim {
-		full = keyTrim + "\n" + certTrim
-	} else if certTrim != "" {
-		full = certTrim
+	if len(keyParts) == 0 {
+		return "", fmt.Errorf("el PFX no contiene clave privada")
 	}
-	keyBlock := extractPEMBlock(full, "PRIVATE KEY")
-	if keyBlock == "" {
-		keyBlock = extractPEMBlock(full, "RSA PRIVATE KEY")
+	if len(certParts) == 0 {
+		return "", fmt.Errorf("el PFX no contiene certificado")
 	}
-	certBlock := extractPEMBlock(full, "CERTIFICATE")
-	if keyBlock != "" && certBlock != "" {
-		combined := strings.TrimSpace(keyBlock) + "\n" + strings.TrimSpace(certBlock)
-		return base64.StdEncoding.EncodeToString([]byte(combined)), nil
+	combined := strings.Join(keyParts, "\n") + "\n" + strings.Join(certParts, "\n")
+	return encodeGreenterCombinedPEM([]byte(combined))
+}
+
+func encodeGreenterCombinedPEM(raw []byte) (string, error) {
+	raw = normalizePEMWithBagAttributes(raw)
+	var keyParts, certParts []string
+	rest := raw
+	for {
+		block, rem := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		part := strings.TrimSpace(string(pem.EncodeToMemory(block)))
+		switch block.Type {
+		case "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY":
+			if block.Type == "PRIVATE KEY" {
+				if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err != nil {
+					if pkcs1, err2 := x509.ParsePKCS1PrivateKey(block.Bytes); err2 == nil {
+						part = strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{
+							Type:  "RSA PRIVATE KEY",
+							Bytes: x509.MarshalPKCS1PrivateKey(pkcs1),
+						})))
+					}
+				}
+			}
+			if part != "" {
+				keyParts = append(keyParts, part)
+			}
+		case "ENCRYPTED PRIVATE KEY":
+			return "", fmt.Errorf("la clave privada está encriptada; use PFX con contraseña desde el panel central")
+		case "CERTIFICATE":
+			if part != "" {
+				certParts = append(certParts, part)
+			}
+		}
+		rest = rem
 	}
-	if keyTrim != "" && certTrim != "" {
-		combined := keyTrim + "\n" + certTrim
-		return base64.StdEncoding.EncodeToString([]byte(combined)), nil
+	if len(keyParts) == 0 {
+		return "", fmt.Errorf("el certificado no contiene clave privada usable para Greenter")
 	}
-	return base64.StdEncoding.EncodeToString([]byte(full)), nil
+	if len(certParts) == 0 {
+		return "", fmt.Errorf("el certificado no contiene bloque CERTIFICATE")
+	}
+	combined := strings.Join(keyParts, "\n") + "\n" + strings.Join(certParts, "\n")
+	if err := ValidateCombinedPEM([]byte(combined)); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString([]byte(combined)), nil
+}
+
+// ValidateCombinedPEMBase64 valida que el PEM incluya certificado y clave privada usable.
+func ValidateCombinedPEMBase64(b64 string) error {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return fmt.Errorf("certificate_base64 inválido: %w", err)
+	}
+	return ValidateCombinedPEM(raw)
+}
+
+// ValidateCombinedPEM valida bloques PEM para firma SUNAT directa.
+func ValidateCombinedPEM(raw []byte) error {
+	raw = normalizePEMWithBagAttributes(raw)
+	var hasKey, hasCert bool
+	rest := raw
+	for {
+		block, rem := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		switch block.Type {
+		case "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY":
+			if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err != nil {
+				if _, err2 := x509.ParsePKCS1PrivateKey(block.Bytes); err2 != nil {
+					if _, err3 := x509.ParseECPrivateKey(block.Bytes); err3 != nil {
+						return fmt.Errorf("clave privada no usable para firmar XML")
+					}
+				}
+			}
+			hasKey = true
+		case "ENCRYPTED PRIVATE KEY":
+			return fmt.Errorf("la clave privada está encriptada; suba el PFX con contraseña")
+		case "CERTIFICATE":
+			if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+				return fmt.Errorf("certificado inválido: %w", err)
+			}
+			hasCert = true
+		}
+		rest = rem
+	}
+	if !hasCert {
+		return fmt.Errorf("falta bloque CERTIFICATE en el PEM")
+	}
+	if !hasKey {
+		return fmt.Errorf("falta clave privada en el PEM")
+	}
+	return nil
+}
+
+var pemBeginRE = regexp.MustCompile(`-----BEGIN ([A-Z0-9 ]+)-----`)
+
+// normalizePEMWithBagAttributes elimina friendlyName/localKeyId embebidos en bloques PEM.
+func normalizePEMWithBagAttributes(raw []byte) []byte {
+	pemText := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	var out []string
+	offset := 0
+	for {
+		loc := pemBeginRE.FindStringSubmatchIndex(pemText[offset:])
+		if loc == nil {
+			break
+		}
+		absStart := offset + loc[0]
+		typeName := pemText[offset+loc[2] : offset+loc[3]]
+		begin := "-----BEGIN " + typeName + "-----"
+		end := "-----END " + typeName + "-----"
+		endIdx := strings.Index(pemText[absStart:], end)
+		if endIdx < 0 {
+			break
+		}
+		endIdx += absStart
+		body := pemText[absStart+len(begin) : endIdx]
+		var b64 strings.Builder
+		for _, line := range strings.Split(body, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.Contains(line, ":") {
+				continue
+			}
+			b64.WriteString(line)
+		}
+		if b64.Len() > 0 {
+			decoded, err := base64.StdEncoding.DecodeString(b64.String())
+			if err == nil {
+				blockType := typeName
+				blockBytes := decoded
+				if typeName == "PRIVATE KEY" {
+					if _, err := x509.ParsePKCS8PrivateKey(decoded); err != nil {
+						if pkcs1, err2 := x509.ParsePKCS1PrivateKey(decoded); err2 == nil {
+							blockType = "RSA PRIVATE KEY"
+							blockBytes = x509.MarshalPKCS1PrivateKey(pkcs1)
+						}
+					}
+				}
+				block := &pem.Block{Type: blockType, Bytes: blockBytes}
+				out = append(out, strings.TrimSpace(string(pem.EncodeToMemory(block))))
+			}
+		}
+		offset = endIdx + len(end)
+	}
+	if len(out) == 0 {
+		return raw
+	}
+	return []byte(strings.Join(out, "\n"))
 }
 
 func extractPEMBlock(content, blockType string) string {

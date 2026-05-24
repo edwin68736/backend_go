@@ -9,6 +9,7 @@ import (
 
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
@@ -180,14 +181,11 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			}
 		}
 
-		unit := strings.TrimSpace(item.Unit)
-		if unit == "" {
-			unit = "NIU"
-		}
 		catalogType := strings.TrimSpace(strings.ToLower(item.CatalogType))
 		if catalogType == "" {
 			catalogType = "product"
 		}
+		unit := sunat.NormalizeUnit(item.Unit, catalogType)
 
 		input := ProductInput{
 			CategoryID:         catID,

@@ -10,6 +10,11 @@ var TenantMigrations = []TenantMigration{
 	V036StaffDefinitive{},
 	V037StaffSchemaRepair{},
 	V038CashSessionsPerUser{},
+	V039FiscalLegacyCleanup{},
+	V040FiscalMetadataColumns{},
+	V041AutomaticSend{},
+	V042DespatchSaleLink{},
+	V043FiscalSaleLinks{},
 }
 
 // ByVersion mapa versión → migración.

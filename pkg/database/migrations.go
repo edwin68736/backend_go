@@ -472,18 +472,17 @@ type TenantCompanyConfig struct {
 	TaxRate        float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"` // IGV vigente de la empresa
 	IgvRegime      string  `gorm:"size:30;default:'standard'" json:"igv_regime"`    // standard | reduced | exonerated
 	TaxBenefitZone bool    `gorm:"default:false" json:"tax_benefit_zone"`           // zona amazónica / selva
-	// Facturación electrónica SUNAT
-	SunatEnabled     bool      `gorm:"default:false" json:"sunat_enabled"`
-	SunatSOLUser     string    `gorm:"size:100" json:"sunat_sol_user"`
-	SunatSOLPass     string    `gorm:"size:255" json:"-"`
-	SunatCertificate string    `gorm:"type:text" json:"-"`
-	SunatEnvMode     string    `gorm:"size:20;default:'demo'" json:"sunat_env_mode"`
-	InvoicingMode    string    `gorm:"size:30;default:'legacy_backend'" json:"invoicing_mode"`
-	PSEBaseURL       string    `gorm:"size:255" json:"pse_base_url"`
-	PSEToken         string    `gorm:"size:500" json:"-"`
-	PSEConfigJSON    string    `gorm:"type:text" json:"-"`
-	TukifacToken     string    `gorm:"size:500" json:"-"`
-	ColorTheme       string    `gorm:"size:30;default:'green'" json:"color_theme"`
+	// Facturación electrónica — solo metadatos en ERP (secretos en facturador SSOT)
+	SunatEnabled           bool       `gorm:"default:false" json:"sunat_enabled"`
+	SunatEnvMode           string     `gorm:"size:20;default:'demo'" json:"sunat_env_mode"`
+	SendMode               string     `gorm:"size:30;default:'sunat_direct'" json:"send_mode"`
+	FiscalProvider         string     `gorm:"size:50" json:"fiscal_provider"`
+	FiscalConnectionType   string     `gorm:"size:20;default:'bearer'" json:"fiscal_connection_type"`
+	FiscalConnectionStatus string     `gorm:"size:30" json:"fiscal_connection_status"`
+	FiscalLastSyncAt       *time.Time `json:"fiscal_last_sync_at"`
+	SunatConnected         bool       `gorm:"default:false" json:"sunat_connected"`
+	AutomaticSend          bool       `gorm:"default:true" json:"automatic_send"`
+	ColorTheme             string     `gorm:"size:30;default:'green'" json:"color_theme"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -781,6 +780,7 @@ type TenantSunatVoided struct {
 // TenantDespatch guía de remisión enviada a SUNAT (remitente o transportista).
 type TenantDespatch struct {
 	ID                uint      `gorm:"primaryKey" json:"id"`
+	SaleID            *uint     `gorm:"index" json:"sale_id,omitempty"`
 	BranchID          uint      `gorm:"not null;index" json:"branch_id"`
 	SeriesID          uint      `gorm:"not null;index" json:"series_id"`
 	Series            string    `gorm:"size:20;not null" json:"series"`
@@ -802,6 +802,7 @@ type TenantDespatch struct {
 // TenantRetention comprobante de retención enviado a SUNAT.
 type TenantRetention struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
+	SaleID         *uint     `gorm:"index" json:"sale_id,omitempty"`
 	Series         string    `gorm:"size:20;not null" json:"series"`
 	Correlative    string    `gorm:"size:20;not null" json:"correlative"`
 	FechaEmision   time.Time `gorm:"not null;index" json:"fecha_emision"`
@@ -824,6 +825,7 @@ type TenantRetention struct {
 // TenantPerception comprobante de percepción enviado a SUNAT.
 type TenantPerception struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
+	SaleID         *uint     `gorm:"index" json:"sale_id,omitempty"`
 	Series         string    `gorm:"size:20;not null" json:"series"`
 	Correlative    string    `gorm:"size:20;not null" json:"correlative"`
 	FechaEmision   time.Time `gorm:"not null;index" json:"fecha_emision"`
