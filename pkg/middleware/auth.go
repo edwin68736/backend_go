@@ -103,6 +103,9 @@ func TenantAuthAPI() fiber.Handler {
 		if tokenStr == "" {
 			tokenStr = c.Cookies("token")
 		}
+		if tokenStr == "" {
+			tokenStr = strings.TrimSpace(c.Query("access_token")) // SSE EventSource (?access_token=)
+		}
 
 		if tokenStr == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token no proporcionado"})
