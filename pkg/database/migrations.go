@@ -587,10 +587,24 @@ type TenantProductSerial struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-// TenantModifierGroup define un grupo de variantes (ej: Color, Talla).
+// TenantProductPresentation: tamaño/envase propio de cada producto (reemplaza precio base en POS).
+type TenantProductPresentation struct {
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	ProductID uint           `gorm:"not null;index" json:"product_id"`
+	Name      string         `gorm:"size:120;not null" json:"name"`
+	SalePrice float64        `gorm:"type:decimal(15,2);not null" json:"sale_price"`
+	SortOrder int            `gorm:"default:0" json:"sort_order"`
+	Active    bool           `gorm:"default:true" json:"active"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantModifierGroup: extras reutilizables entre productos (suman al precio).
 type TenantModifierGroup struct {
 	ID          uint           `gorm:"primaryKey" json:"id"`
 	Name        string         `gorm:"size:100;not null" json:"name"`
+	Kind        string         `gorm:"size:20;default:extra" json:"kind"` // presentation | extra
 	Required    bool           `gorm:"default:false" json:"required"`
 	MultiSelect bool           `gorm:"default:false" json:"multi_select"`
 	Active      bool           `gorm:"default:true" json:"active"`
@@ -1247,6 +1261,7 @@ func MigrateTenant(db *gorm.DB) error {
 		&TenantStockMovement{},
 		&TenantTransfer{},
 		&TenantTransferLog{},
+		&TenantProductPresentation{},
 		&TenantModifierGroup{},
 		&TenantModifierOption{},
 		&TenantProductModifierGroup{},

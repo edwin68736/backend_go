@@ -10,6 +10,7 @@ import (
 
 type modifierGroupBody struct {
 	Name        string          `json:"name"`
+	Kind        string          `json:"kind"` // presentation | extra
 	Required    bool            `json:"required"`
 	MultiSelect bool            `json:"multi_select"`
 	Options     json.RawMessage `json:"options"`

@@ -7,6 +7,7 @@ import (
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/gormutil"
+	"tukifac/pkg/modifierkind"
 	"tukifac/pkg/money"
 	"tukifac/pkg/sunat"
 
@@ -300,6 +301,15 @@ type ProductInput struct {
 	ActiveSet          bool // si true, Update actualiza el campo active
 	// nil = no tocar vínculos (update parcial); no-nil = reemplazar asignación (puede ser slice vacío).
 	ModifierGroupIDs *[]uint
+	// nil = no tocar presentaciones; no-nil = reemplazar lista del producto.
+	Presentations *[]ProductPresentationInput
+}
+
+// ProductPresentationInput fila de presentación propia del producto (no es grupo global).
+type ProductPresentationInput struct {
+	Name      string
+	SalePrice float64
+	SortOrder int
 }
 
 func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, error) {
@@ -370,6 +380,11 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 
 	if input.ModifierGroupIDs != nil {
 		s.syncModifierGroups(p.ID, *input.ModifierGroupIDs)
+	}
+	if input.Presentations != nil {
+		if err := s.syncPresentations(p.ID, *input.Presentations); err != nil {
+			return nil, err
+		}
 	}
 
 	return p, nil
@@ -471,17 +486,76 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		}
 		s.syncModifierGroups(id, modIDs)
 	}
+	if input.Presentations != nil {
+		if err := s.syncPresentations(id, *input.Presentations); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (s *ProductService) syncModifierGroups(productID uint, groupIDs []uint) {
+	filtered := s.filterExtraModifierGroupIDs(groupIDs)
 	s.db.Where("product_id = ?", productID).Delete(&database.TenantProductModifierGroup{})
-	for _, gid := range groupIDs {
+	for _, gid := range filtered {
 		s.db.Create(&database.TenantProductModifierGroup{ProductID: productID, GroupID: gid})
 	}
 }
 
+func (s *ProductService) filterExtraModifierGroupIDs(groupIDs []uint) []uint {
+	if len(groupIDs) == 0 {
+		return groupIDs
+	}
+	var groups []database.TenantModifierGroup
+	s.db.Where("id IN ? AND active = ?", groupIDs, true).Find(&groups)
+	out := make([]uint, 0, len(groups))
+	for _, g := range groups {
+		if modifierkind.IsExtra(g.Kind, g.Required, g.MultiSelect) {
+			out = append(out, g.ID)
+		}
+	}
+	return out
+}
+
+func (s *ProductService) syncPresentations(productID uint, inputs []ProductPresentationInput) error {
+	if err := s.db.Where("product_id = ?", productID).Delete(&database.TenantProductPresentation{}).Error; err != nil {
+		return err
+	}
+	sortOrder := 0
+	for _, in := range inputs {
+		name := strings.TrimSpace(in.Name)
+		if name == "" {
+			continue
+		}
+		row := database.TenantProductPresentation{
+			ProductID: productID,
+			Name:      name,
+			SalePrice: money.RoundDisplay(in.SalePrice),
+			SortOrder: sortOrder,
+			Active:    true,
+		}
+		if in.SortOrder > 0 {
+			row.SortOrder = in.SortOrder
+		}
+		if err := s.db.Create(&row).Error; err != nil {
+			return err
+		}
+		sortOrder++
+	}
+	hasVariants := sortOrder > 0
+	return s.db.Model(&database.TenantProduct{}).Where("id = ?", productID).Update("has_variants", hasVariants).Error
+}
+
+func (s *ProductService) ListProductPresentations(productID uint) ([]database.TenantProductPresentation, error) {
+	var rows []database.TenantProductPresentation
+	err := s.db.Where("product_id = ? AND active = ?", productID, true).
+		Order("sort_order ASC, id ASC").
+		Find(&rows).Error
+	return rows, err
+}
+
 func (s *ProductService) Delete(id uint) error {
+	s.db.Where("product_id = ?", id).Delete(&database.TenantProductPresentation{})
 	return s.db.Delete(&database.TenantProduct{}, id).Error
 }
 
@@ -531,6 +605,9 @@ func (s *ProductService) ListModifierGroups() ([]ModifierGroupWithOptions, error
 	}
 	result := make([]ModifierGroupWithOptions, 0, len(groups))
 	for _, g := range groups {
+		if !modifierkind.IsExtra(g.Kind, g.Required, g.MultiSelect) {
+			continue
+		}
 		var opts []database.TenantModifierOption
 		s.db.Where("group_id = ? AND active = ?", g.ID, true).Order("name ASC").Find(&opts)
 		result = append(result, ModifierGroupWithOptions{TenantModifierGroup: g, Options: opts})
@@ -554,11 +631,12 @@ type ModifierOptionInput struct {
 	ExtraPrice float64
 }
 
-func (s *ProductService) CreateModifierGroup(name string, required, multiSelect bool, options []ModifierOptionInput) (*ModifierGroupWithOptions, error) {
+func (s *ProductService) CreateModifierGroup(name, kind string, required, multiSelect bool, options []ModifierOptionInput) (*ModifierGroupWithOptions, error) {
 	if name == "" {
 		return nil, errors.New("nombre del grupo requerido")
 	}
-	g := &database.TenantModifierGroup{Name: name, Required: required, MultiSelect: multiSelect, Active: true}
+	_ = kind
+	g := &database.TenantModifierGroup{Name: name, Kind: modifierkind.Extra, Required: required, MultiSelect: multiSelect, Active: true}
 	if err := s.db.Create(g).Error; err != nil {
 		return nil, err
 	}
@@ -566,7 +644,7 @@ func (s *ProductService) CreateModifierGroup(name string, required, multiSelect 
 	return &ModifierGroupWithOptions{TenantModifierGroup: *g, Options: opts}, nil
 }
 
-func (s *ProductService) UpdateModifierGroup(id uint, name string, required, multiSelect bool, options []ModifierOptionInput) (*ModifierGroupWithOptions, error) {
+func (s *ProductService) UpdateModifierGroup(id uint, name, kind string, required, multiSelect bool, options []ModifierOptionInput) (*ModifierGroupWithOptions, error) {
 	if name == "" {
 		return nil, errors.New("nombre del grupo requerido")
 	}
@@ -574,8 +652,10 @@ func (s *ProductService) UpdateModifierGroup(id uint, name string, required, mul
 	if err := s.db.First(&g, id).Error; err != nil {
 		return nil, errors.New("grupo no encontrado")
 	}
+	_ = kind
 	if err := s.db.Model(&g).Updates(map[string]interface{}{
 		"name":         name,
+		"kind":         modifierkind.Extra,
 		"required":     required,
 		"multi_select": multiSelect,
 	}).Error; err != nil {
@@ -586,6 +666,7 @@ func (s *ProductService) UpdateModifierGroup(id uint, name string, required, mul
 	}
 	opts := s.createModifierOptions(id, options)
 	g.Name = name
+	g.Kind = modifierkind.Extra
 	g.Required = required
 	g.MultiSelect = multiSelect
 	return &ModifierGroupWithOptions{TenantModifierGroup: g, Options: opts}, nil

@@ -188,7 +188,11 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		PreparationArea    string  `json:"preparation_area"`
 		ImageURL           string  `json:"image_url"`
 		ModifierGroupIDs   []uint  `json:"modifier_group_ids"`
-		InitialStock       float64 `json:"initial_stock"`
+		Presentations      []struct {
+			Name      string  `json:"name"`
+			SalePrice float64 `json:"sale_price"`
+		} `json:"presentations"`
+		InitialStock float64 `json:"initial_stock"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -229,7 +233,23 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		PreparationArea:    body.PreparationArea,
 		ImageURL:           body.ImageURL,
 		Active:             true,
-		ModifierGroupIDs:   &body.ModifierGroupIDs,
+		ModifierGroupIDs: &body.ModifierGroupIDs,
+	}
+	if len(body.Presentations) > 0 {
+		pres := make([]service.ProductPresentationInput, 0, len(body.Presentations))
+		for _, row := range body.Presentations {
+			if strings.TrimSpace(row.Name) == "" {
+				continue
+			}
+			pres = append(pres, service.ProductPresentationInput{
+				Name:      strings.TrimSpace(row.Name),
+				SalePrice: row.SalePrice,
+			})
+		}
+		if len(pres) > 0 {
+			input.Presentations = &pres
+			input.HasVariants = true
+		}
 	}
 	p, err := service.NewProductService(db(c)).Create(input)
 	if err != nil {
@@ -300,7 +320,11 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		PreparationArea    string  `json:"preparation_area"`
 		ImageURL           string  `json:"image_url"`
 		Active             *bool   `json:"active"`
-		ModifierGroupIDs   *[]uint `json:"modifier_group_ids"`
+		ModifierGroupIDs *[]uint `json:"modifier_group_ids"`
+		Presentations    *[]struct {
+			Name      string  `json:"name"`
+			SalePrice float64 `json:"sale_price"`
+		} `json:"presentations"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -335,6 +359,22 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	if body.Active != nil {
 		input.Active = *body.Active
 		input.ActiveSet = true
+	}
+	if body.Presentations != nil {
+		pres := make([]service.ProductPresentationInput, 0, len(*body.Presentations))
+		for _, row := range *body.Presentations {
+			if strings.TrimSpace(row.Name) == "" {
+				continue
+			}
+			pres = append(pres, service.ProductPresentationInput{
+				Name:      strings.TrimSpace(row.Name),
+				SalePrice: row.SalePrice,
+			})
+		}
+		input.Presentations = &pres
+		if len(pres) > 0 {
+			input.HasVariants = true
+		}
 	}
 	if err := service.NewProductService(db(c)).Update(uint(id), input); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -439,7 +479,12 @@ func (h *ProductHandler) GetAPI(c fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
 	modIds := svc.GetProductModifierGroupIDs(p.ID)
-	return c.JSON(fiber.Map{"data": p, "modifier_group_ids": modIds})
+	presentations, _ := svc.ListProductPresentations(p.ID)
+	return c.JSON(fiber.Map{
+		"data":               p,
+		"modifier_group_ids": modIds,
+		"presentations":      presentations,
+	})
 }
 
 // ProductSerialsAPI devuelve los números de serie del producto (todas las sucursales) para el detalle.
@@ -547,7 +592,7 @@ func (h *ProductHandler) ModifierGroupCreateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	g, err := service.NewProductService(db(c)).CreateModifierGroup(body.Name, body.Required, body.MultiSelect, opts)
+	g, err := service.NewProductService(db(c)).CreateModifierGroup(body.Name, body.Kind, body.Required, body.MultiSelect, opts)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -568,7 +613,7 @@ func (h *ProductHandler) ModifierGroupUpdateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	g, err := service.NewProductService(db(c)).UpdateModifierGroup(uint(id), body.Name, body.Required, body.MultiSelect, opts)
+	g, err := service.NewProductService(db(c)).UpdateModifierGroup(uint(id), body.Name, body.Kind, body.Required, body.MultiSelect, opts)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
