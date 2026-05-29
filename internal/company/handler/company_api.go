@@ -221,12 +221,20 @@ func (h *CompanyHandler) ListSeriesAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	// Filtro opcional por categoría
-	category := c.Query("category")
+	// Filtro opcional por categoría (vacío en BD = venta para series 00/01/03)
+	category := strings.TrimSpace(strings.ToLower(c.Query("category")))
 	if category != "" {
 		filtered := series[:0]
 		for _, s := range series {
-			if s.Category == category {
+			cat := strings.TrimSpace(strings.ToLower(s.Category))
+			if cat == "" {
+				code := strings.TrimSpace(s.SunatCode)
+				if category == "venta" && (code == "" || code == "00" || code == "01" || code == "03") {
+					filtered = append(filtered, s)
+				}
+				continue
+			}
+			if cat == category {
 				filtered = append(filtered, s)
 			}
 		}

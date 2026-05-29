@@ -237,12 +237,21 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 		}
 	}
 
-	activeBranchID, err := branch.ResolveHomeBranchID(tenantDB, user)
+	activeBranchID, err := branch.ResolveUserSessionBranchID(tenantDB, user)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	canSwitch := branch.CanSwitchBranch(role.Name, user)
+	canSwitch := branch.UserCanSwitchBranch(tenantDB, role.Name, user)
 	activeBrief, _ := branch.GetBranchBrief(tenantDB, activeBranchID)
+	allowedBranches, _ := branch.ListUserBranchBriefs(tenantDB, user.ID)
+	if branch.IsTenantAdmin(role.Name) {
+		var all []database.TenantBranch
+		tenantDB.Where("active = ?", true).Order("is_main DESC, name ASC").Find(&all)
+		allowedBranches = make([]branch.BranchBrief, 0, len(all))
+		for _, b := range all {
+			allowedBranches = append(allowedBranches, branch.BranchBrief{ID: b.ID, Name: b.Name, IsMain: b.IsMain})
+		}
+	}
 
 	sessionVersion := uint(0)
 	if !legacyBranch {
@@ -300,6 +309,7 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 		},
 		"active_branch":         activeBrief,
 		"can_switch_branch":     canSwitch,
+		"allowed_branches":      allowedBranches,
 		"modules":               enabledModules,
 		"permissions":            permissionKeys,
 		"restaurant_permissions": restPerms,

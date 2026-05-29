@@ -22,7 +22,7 @@ func (h *CashBankHandler) ListSessionsAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"data": sessions})
+	return c.JSON(fiber.Map{"data": filterSessionsForCaller(c, sessions)})
 }
 
 // GET /api/cashbank/sessions/open/list?branch_id= — cajas abiertas en sucursal (solo lectura).
@@ -113,9 +113,13 @@ func (h *CashBankHandler) GetSessionAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	session, err := service.NewCashBankService(db(c)).GetSessionByID(uint(id))
+	svc := service.NewCashBankService(db(c))
+	session, err := svc.GetSessionByID(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !canAccessCashSession(c, session) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede ver esta sesión de caja"})
 	}
 	return c.JSON(fiber.Map{"data": session})
 }
@@ -148,7 +152,15 @@ func (h *CashBankHandler) GetMovementsAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	movements, err := service.NewCashBankService(db(c)).GetMovements(uint(id))
+	svc := service.NewCashBankService(db(c))
+	sess, err := svc.GetSessionByID(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !canAccessCashSession(c, sess) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede ver movimientos de esta sesión"})
+	}
+	movements, err := svc.GetMovements(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -194,7 +206,15 @@ func (h *CashBankHandler) GetSessionReportAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	report, err := service.NewCashBankService(db(c)).GetSessionReport(uint(id))
+	svc := service.NewCashBankService(db(c))
+	sess, err := svc.GetSessionByID(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !canAccessCashSession(c, sess) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede ver el reporte de esta sesión"})
+	}
+	report, err := svc.GetSessionReport(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -207,7 +227,15 @@ func (h *CashBankHandler) GetSessionProductsReportAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	rows, err := service.NewCashBankService(db(c)).GetSessionProductsReport(uint(id))
+	svc := service.NewCashBankService(db(c))
+	sess, err := svc.GetSessionByID(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !canAccessCashSession(c, sess) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede ver el reporte de esta sesión"})
+	}
+	rows, err := svc.GetSessionProductsReport(uint(id))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -223,7 +251,9 @@ func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
 	} else {
 		f.BranchID = branch.ActiveBranchID(c)
 	}
-	if v, err := strconv.ParseUint(c.Query("user_id"), 10, 32); err == nil {
+	if scoped := callerUserIDOrZero(c); scoped > 0 {
+		f.UserID = scoped
+	} else if v, err := strconv.ParseUint(c.Query("user_id"), 10, 32); err == nil {
 		f.UserID = uint(v)
 	}
 	if v, err := strconv.ParseUint(c.Query("session_id"), 10, 32); err == nil {

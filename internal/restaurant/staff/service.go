@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/restaurantperm"
 
@@ -210,6 +211,7 @@ type CreateStaffUserInput struct {
 	Pin          string
 	StaffCode    string
 	DisplayName  string
+	BranchIDs    []uint
 }
 
 func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem, error) {
@@ -228,11 +230,10 @@ func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem
 	if err := ValidatePINFormat(in.Pin); err != nil {
 		return nil, err
 	}
-
-	var existing database.TenantUser
-	if err := s.db.Where("email = ?", email).First(&existing).Error; err == nil {
-		return nil, errors.New("el email ya está registrado")
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.validatePINUnique(in.Pin, 0); err != nil {
+		return nil, err
+	}
+	if err := s.ensureEmailAvailable(email); err != nil {
 		return nil, err
 	}
 
@@ -240,33 +241,56 @@ func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem
 	if err != nil {
 		return nil, err
 	}
-	homeBranchID, err := s.mainBranchID()
+	branchIDs := in.BranchIDs
+	if len(branchIDs) == 0 {
+		mainID, err := s.mainBranchID()
+		if err != nil {
+			return nil, err
+		}
+		branchIDs = []uint{mainID}
+	}
+	if branch.UserBranchesReady(s.db) {
+		if err := branch.ValidateBranchIDsExist(s.db, branchIDs); err != nil {
+			return nil, err
+		}
+	}
+	homeBranchID := branchIDs[0]
+
+	var createdUserID uint
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		txSvc := &Service{db: tx}
+		user := &database.TenantUser{
+			RoleID:          roleID,
+			HomeBranchID:    &homeBranchID,
+			BranchID:        &homeBranchID,
+			Name:            name,
+			Email:           email,
+			Phone:           strings.TrimSpace(in.Phone),
+			Active:          true,
+			CanSwitchBranch: len(branchIDs) > 1,
+		}
+		if err := user.SetPassword(randomOperativePassword()); err != nil {
+			return err
+		}
+		if err := tx.Create(user).Error; err != nil {
+			return fmt.Errorf("creando usuario: %w", err)
+		}
+		createdUserID = user.ID
+		if branch.UserBranchesReady(tx) {
+			if err := branch.SetUserAssignedBranches(tx, user.ID, branchIDs, false); err != nil {
+				return err
+			}
+		}
+		flags := UpsertFlags{
+			DisplayName: strings.TrimSpace(in.DisplayName),
+			StaffCode:   strings.TrimSpace(in.StaffCode),
+		}
+		if err := txSvc.UpsertStaffForUser(user.ID, employeeType, in.Pin, flags); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-
-	user := &database.TenantUser{
-		RoleID:       roleID,
-		HomeBranchID: &homeBranchID,
-		BranchID:     &homeBranchID,
-		Name:         name,
-		Email:        email,
-		Phone:        strings.TrimSpace(in.Phone),
-		Active:       true,
-	}
-	if err := user.SetPassword(randomOperativePassword()); err != nil {
-		return nil, err
-	}
-	if err := s.db.Create(user).Error; err != nil {
-		return nil, fmt.Errorf("creando usuario: %w", err)
-	}
-
-	flags := UpsertFlags{
-		DisplayName: strings.TrimSpace(in.DisplayName),
-		StaffCode:   strings.TrimSpace(in.StaffCode),
-	}
-	if err := s.UpsertStaffForUser(user.ID, employeeType, in.Pin, flags); err != nil {
-		_ = s.db.Delete(&database.TenantUser{}, user.ID).Error
 		return nil, err
 	}
 
@@ -275,13 +299,13 @@ func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem
 		return nil, err
 	}
 	for _, item := range items {
-		if item.UserID == user.ID {
+		if item.UserID == createdUserID {
 			return &item, nil
 		}
 	}
 	return &StaffManagementItem{
-		UserID: user.ID, Name: user.Name, Email: user.Email, Active: user.Active,
-		EmployeeType: employeeType, HasPin: true, StaffActive: true,
+		UserID: createdUserID, Name: name, Email: email, Active: true,
+		EmployeeType: employeeType, HasPin: true, StaffActive: true, ProfileComplete: true,
 	}, nil
 }
 
@@ -353,16 +377,19 @@ type StaffListItem struct {
 
 // StaffManagementItem usuario tenant con perfil restaurante opcional (pantalla Ajustes Tukichef).
 type StaffManagementItem struct {
-	UserID       uint   `json:"user_id"`
-	Name         string `json:"name"`
-	Email        string `json:"email"`
-	Active       bool   `json:"active"`
-	StaffID      uint   `json:"staff_id,omitempty"`
-	EmployeeType string `json:"employee_type"`
-	DisplayName  string `json:"display_name"`
-	StaffCode    string `json:"staff_code"`
-	HasPin       bool   `json:"has_pin"`
-	StaffActive  bool   `json:"staff_active"`
+	UserID       uint     `json:"user_id"`
+	Name         string   `json:"name"`
+	Email        string   `json:"email"`
+	Active       bool     `json:"active"`
+	StaffID      uint     `json:"staff_id,omitempty"`
+	EmployeeType string   `json:"employee_type"`
+	DisplayName  string   `json:"display_name"`
+	StaffCode    string   `json:"staff_code"`
+	HasPin            bool     `json:"has_pin"`
+	StaffActive       bool     `json:"staff_active"`
+	ProfileComplete   bool     `json:"profile_complete"`
+	BranchIDs         []uint   `json:"branch_ids,omitempty"`
+	BranchNames       []string `json:"branch_names,omitempty"`
 }
 
 func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
@@ -393,10 +420,31 @@ func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
 			item.StaffCode = st.StaffCode
 			item.HasPin = strings.TrimSpace(st.PinHash) != ""
 			item.StaffActive = st.IsActive
+			item.ProfileComplete = st.IsActive && strings.TrimSpace(st.EmployeeType) != ""
+		}
+		if branch.UserBranchesReady(s.db) {
+			ids, _ := branch.GetUserAssignedBranchIDs(s.db, u.ID)
+			item.BranchIDs = ids
+			for _, bid := range ids {
+				if b, err := branch.GetBranchBrief(s.db, bid); err == nil {
+					item.BranchNames = append(item.BranchNames, b.Name)
+				}
+			}
 		}
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+// AssignUserBranches actualiza sucursales asignadas a un usuario operativo.
+func (s *Service) AssignUserBranches(userID uint, branchIDs []uint) error {
+	if userID == 0 {
+		return errors.New("usuario inválido")
+	}
+	if !branch.UserBranchesReady(s.db) {
+		return errors.New("migración de sucursales por usuario pendiente")
+	}
+	return branch.SetUserAssignedBranches(s.db, userID, branchIDs, true)
 }
 
 func (s *Service) ListStaff() ([]StaffListItem, error) {
@@ -447,6 +495,40 @@ func (s *Service) StaffDisplayName(st *database.TenantRestaurantStaff) string {
 		return u.Name
 	}
 	return ""
+}
+
+// ensureEmailAvailable rechaza emails en uso; elimina restos de altas fallidas (soft delete).
+func (s *Service) ensureEmailAvailable(email string) error {
+	var existing database.TenantUser
+	err := s.db.Unscoped().Where("email = ?", email).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if existing.DeletedAt.Valid {
+		s.purgeStaffUser(existing.ID)
+		return nil
+	}
+	var st database.TenantRestaurantStaff
+	if err := s.db.Where("user_id = ?", existing.ID).First(&st).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		s.purgeStaffUser(existing.ID)
+		return nil
+	}
+	return errors.New("el email ya está registrado")
+}
+
+// purgeStaffUser elimina por completo un usuario y su perfil (alta fallida o limpieza).
+func (s *Service) purgeStaffUser(userID uint) {
+	if userID == 0 {
+		return
+	}
+	_ = s.db.Where("user_id = ?", userID).Delete(&database.TenantRestaurantStaff{}).Error
+	if branch.UserBranchesReady(s.db) {
+		_ = s.db.Where("user_id = ?", userID).Delete(&database.TenantUserBranch{}).Error
+	}
+	_ = s.db.Unscoped().Delete(&database.TenantUser{}, userID).Error
 }
 
 // validatePINUnique impide dos staff activos con el mismo PIN (login Tukichef).

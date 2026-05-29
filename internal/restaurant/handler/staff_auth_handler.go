@@ -80,11 +80,12 @@ func (h *RestaurantHandler) PinLogin(c fiber.Ctx) error {
 	}
 
 	permVer, _ := staffSvc.GetPermCacheVersion()
-	activeBranchID, err := branch.ResolveHomeBranchID(tenantDB, &user)
+	activeBranchID, err := branch.ResolveUserSessionBranchID(tenantDB, &user)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	canSwitch := branch.CanSwitchBranch(role.Name, &user)
+	canSwitch := branch.UserCanSwitchBranch(tenantDB, role.Name, &user)
+	allowedBranches, _ := branch.ListUserBranchBriefs(tenantDB, user.ID)
 	sessionVersion := user.BranchSessionVersion
 
 	claims := &middleware.TenantClaims{
@@ -132,6 +133,7 @@ func (h *RestaurantHandler) PinLogin(c fiber.Ctx) error {
 		},
 		"active_branch":          activeBrief,
 		"can_switch_branch":      canSwitch,
+		"allowed_branches":       allowedBranches,
 		"modules":                enabledModules,
 		"restaurant_permissions": keys,
 	})

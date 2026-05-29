@@ -39,7 +39,11 @@ func RequireCashbankAccess(action string) fiber.Handler {
 			}
 		}
 		if claims.AuthMethod == "pin" || claims.EmployeeType != "" {
-			if HasRestaurantPerm(c, restaurantperm.CashView) {
+			if action == "manage" {
+				if HasRestaurantPerm(c, restaurantperm.SettingsManage) {
+					return c.Next()
+				}
+			} else if HasRestaurantPerm(c, restaurantperm.CashView) {
 				return c.Next()
 			}
 			if claims.RoleName == "Administrador" {

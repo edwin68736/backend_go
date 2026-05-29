@@ -52,15 +52,26 @@ func (h *SessionHandler) GetContext(c fiber.Ctx) error {
 	user, _, _ := database.LoadTenantUserForBranch(tdb, claims.UserID)
 	canSwitch := false
 	sessionVer := uint(0)
+	allowedBranches := []branch.BranchBrief(nil)
 	if user != nil {
-		canSwitch = branch.CanSwitchBranch(claims.RoleName, user)
+		canSwitch = branch.UserCanSwitchBranch(tdb, claims.RoleName, user)
 		if database.TenantBranchSessionVersionReady(tdb) {
 			sessionVer = user.BranchSessionVersion
+		}
+		if branch.IsTenantAdmin(claims.RoleName) {
+			var all []database.TenantBranch
+			tdb.Where("active = ?", true).Order("is_main DESC, name ASC").Find(&all)
+			for _, b := range all {
+				allowedBranches = append(allowedBranches, branch.BranchBrief{ID: b.ID, Name: b.Name, IsMain: b.IsMain})
+			}
+		} else {
+			allowedBranches, _ = branch.ListUserBranchBriefs(tdb, user.ID)
 		}
 	}
 	return c.JSON(fiber.Map{
 		"active_branch":          brief,
 		"can_switch_branch":      canSwitch,
+		"allowed_branches":       allowedBranches,
 		"branch_session_version": sessionVer,
 	})
 }
@@ -89,7 +100,7 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 			"message": "Ejecute migrate en el tenant antes de cambiar sucursal",
 		})
 	}
-	if !branch.CanSwitchBranch(claims.RoleName, user) {
+	if !branch.UserCanSwitchBranch(tdb, claims.RoleName, user) {
 		return c.Status(403).JSON(fiber.Map{"error": "No tiene permiso para cambiar de sucursal"})
 	}
 
@@ -97,15 +108,34 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 	if err := tdb.Where("id = ? AND active = ?", body.BranchID, true).First(&b).Error; err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Sucursal no válida"})
 	}
+	if !branch.IsTenantAdmin(claims.RoleName) {
+		ok, err := branch.UserHasBranchAccess(tdb, user.ID, body.BranchID)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		if !ok {
+			return c.Status(403).JSON(fiber.Map{"error": "No tiene acceso a esta sucursal"})
+		}
+	}
 
 	tokenString, brief, err := issueTokenWithBranch(tdb, claims, user, b.ID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
+	allowed, _ := branch.ListUserBranchBriefs(tdb, user.ID)
+	if branch.IsTenantAdmin(claims.RoleName) {
+		var all []database.TenantBranch
+		tdb.Where("active = ?", true).Order("is_main DESC, name ASC").Find(&all)
+		allowed = make([]branch.BranchBrief, 0, len(all))
+		for _, br := range all {
+			allowed = append(allowed, branch.BranchBrief{ID: br.ID, Name: br.Name, IsMain: br.IsMain})
+		}
+	}
 	return c.JSON(fiber.Map{
 		"token":             tokenString,
 		"active_branch":     brief,
-		"can_switch_branch": true,
+		"can_switch_branch": branch.UserCanSwitchBranch(tdb, claims.RoleName, user),
+		"allowed_branches":  allowed,
 	})
 }
 

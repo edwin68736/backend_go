@@ -36,6 +36,7 @@ func (h *RestaurantHandler) CreateStaffUser(c fiber.Ctx) error {
 		Pin          string `json:"pin"`
 		StaffCode    string `json:"staff_code"`
 		DisplayName  string `json:"display_name"`
+		BranchIDs    []uint `json:"branch_ids"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "JSON inválido"})
@@ -49,6 +50,7 @@ func (h *RestaurantHandler) CreateStaffUser(c fiber.Ctx) error {
 		Name: body.Name, Email: body.Email, Phone: body.Phone,
 		EmployeeType: body.EmployeeType, Pin: body.Pin,
 		StaffCode: body.StaffCode, DisplayName: body.DisplayName,
+		BranchIDs: body.BranchIDs,
 	})
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -73,6 +75,7 @@ func (h *RestaurantHandler) UpsertUserStaff(c fiber.Ctx) error {
 		CanOpenTable   bool   `json:"can_open_table"`
 		KitchenAccess  bool   `json:"kitchen_access"`
 		DeliveryAccess bool   `json:"delivery_access"`
+		BranchIDs      []uint `json:"branch_ids"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "JSON inválido"})
@@ -91,6 +94,11 @@ func (h *RestaurantHandler) UpsertUserStaff(c fiber.Ctx) error {
 	svc := staff.New(db(c))
 	if err := svc.UpsertStaffForUser(id, body.EmployeeType, body.Pin, flags); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if len(body.BranchIDs) > 0 {
+		if err := svc.AssignUserBranches(id, body.BranchIDs); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	hasPin := false
 	if st, err := svc.GetStaffByUserID(id); err == nil && st != nil {

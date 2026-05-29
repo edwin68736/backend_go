@@ -442,6 +442,14 @@ func (u *TenantUser) CheckPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password)) == nil
 }
 
+// TenantUserBranch asignación usuario ↔ sucursal (N:N).
+type TenantUserBranch struct {
+	UserID   uint `gorm:"primaryKey" json:"user_id"`
+	BranchID uint `gorm:"primaryKey;index" json:"branch_id"`
+}
+
+func (TenantUserBranch) TableName() string { return "tenant_user_branches" }
+
 type TenantBranch struct {
 	ID                   uint           `gorm:"primaryKey" json:"id"`
 	Name                 string         `gorm:"size:255;not null" json:"name"`
