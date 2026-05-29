@@ -52,7 +52,7 @@ func (s *BillingService) PostFiscalAcceptSideEffects(saleID uint, pipeline strin
 	}
 
 	saleSvc := salesvc.NewSaleService(s.db)
-	if err := saleSvc.Cancel(origID); err != nil {
+	if err := saleSvc.Cancel(origID, 0, "Anulado por nota de crédito aceptada por SUNAT"); err != nil {
 		logger.L.Warn("nc_void_original_failed",
 			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
 			slog.Uint64("nc_sale_id", uint64(saleID)),

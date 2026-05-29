@@ -443,11 +443,12 @@ func (u *TenantUser) CheckPassword(password string) bool {
 }
 
 type TenantBranch struct {
-	ID        uint           `gorm:"primaryKey" json:"id"`
-	Name      string         `gorm:"size:255;not null" json:"name"`
-	Address   string         `gorm:"size:255" json:"address"`
-	Phone     string         `gorm:"size:50" json:"phone"`
-	IsMain    bool           `gorm:"default:false" json:"is_main"`
+	ID                   uint           `gorm:"primaryKey" json:"id"`
+	Name                 string         `gorm:"size:255;not null" json:"name"`
+	Address              string         `gorm:"size:255" json:"address"`
+	Phone                string         `gorm:"size:50" json:"phone"`
+	FiscalDomicileCode   string         `gorm:"size:20" json:"fiscal_domicile_code"`
+	IsMain               bool           `gorm:"default:false" json:"is_main"`
 	Active    bool           `gorm:"default:true" json:"active"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -484,6 +485,7 @@ type TenantCompanyConfig struct {
 	SunatConnected         bool       `gorm:"default:false" json:"sunat_connected"`
 	AutomaticSend          bool       `gorm:"default:true" json:"automatic_send"`
 	ColorTheme             string     `gorm:"size:30;default:'green'" json:"color_theme"`
+	AdditionalNotes        string     `gorm:"type:text" json:"additional_notes"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

@@ -65,8 +65,9 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 		"email":      input.Email,
 		"website":    input.Website,
 		"logo_url":   input.LogoURL,
-		"currency":   input.Currency,
-		"tax_rate":   input.TaxRate,
+		"currency":         input.Currency,
+		"tax_rate":         input.TaxRate,
+		"additional_notes": strings.TrimSpace(input.AdditionalNotes),
 	}
 	// color_theme solo desde panel tenant; Tukichef y otros clientes no deben vaciarlo.
 	if strings.TrimSpace(input.ColorTheme) != "" {
@@ -155,27 +156,35 @@ func (s *CompanyService) GetBranch(id uint) (*database.TenantBranch, error) {
 	return &b, err
 }
 
-func (s *CompanyService) CreateBranch(name, address, phone string, isMain bool) (*database.TenantBranch, error) {
+func (s *CompanyService) CreateBranch(name, address, phone, fiscalDomicileCode string, isMain bool) (*database.TenantBranch, error) {
 	if name == "" {
 		return nil, errors.New("el nombre de la sucursal es requerido")
 	}
 	if isMain {
 		s.db.Model(&database.TenantBranch{}).Update("is_main", false)
 	}
-	b := &database.TenantBranch{Name: name, Address: address, Phone: phone, IsMain: isMain, Active: true}
+	b := &database.TenantBranch{
+		Name:               name,
+		Address:            address,
+		Phone:              phone,
+		FiscalDomicileCode: strings.TrimSpace(fiscalDomicileCode),
+		IsMain:             isMain,
+		Active:             true,
+	}
 	err := s.db.Create(b).Error
 	return b, err
 }
 
-func (s *CompanyService) UpdateBranch(id uint, name, address, phone string, isMain bool) error {
+func (s *CompanyService) UpdateBranch(id uint, name, address, phone, fiscalDomicileCode string, isMain bool) error {
 	if isMain {
 		s.db.Model(&database.TenantBranch{}).Where("id != ?", id).Update("is_main", false)
 	}
 	return s.db.Model(&database.TenantBranch{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"name":    name,
-		"address": address,
-		"phone":   phone,
-		"is_main": isMain,
+		"name":                 name,
+		"address":              address,
+		"phone":                phone,
+		"fiscal_domicile_code": strings.TrimSpace(fiscalDomicileCode),
+		"is_main":              isMain,
 	}).Error
 }
 
@@ -238,7 +247,93 @@ func (s *CompanyService) CreateSeries(branchID uint, docType, sunatCode, categor
 	}).Error
 }
 
+func (s *CompanyService) seriesUsage(id uint) (salesCount int64, ser *database.TenantDocumentSeries, err error) {
+	var row database.TenantDocumentSeries
+	if err = s.db.First(&row, id).Error; err != nil {
+		return 0, nil, err
+	}
+	if err = s.db.Model(&database.TenantSale{}).Where("series_id = ?", id).Count(&salesCount).Error; err != nil {
+		return 0, nil, err
+	}
+	return salesCount, &row, nil
+}
+
+func (s *CompanyService) isSeriesLocked(id uint) (bool, int64, error) {
+	salesCount, ser, err := s.seriesUsage(id)
+	if err != nil {
+		return false, 0, err
+	}
+	return ser.Correlative > 1 || salesCount > 0, salesCount, nil
+}
+
+// SeriesListItem enriquece la serie con metadatos de uso documentario.
+type SeriesListItem struct {
+	database.TenantDocumentSeries
+	Locked     bool  `json:"locked"`
+	SalesCount int64 `json:"sales_count"`
+	CanDelete  bool  `json:"can_delete"`
+}
+
+func (s *CompanyService) ListSeriesEnriched(branchID uint) ([]SeriesListItem, error) {
+	series, err := s.ListSeries(branchID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SeriesListItem, 0, len(series))
+	for _, row := range series {
+		var salesCount int64
+		_ = s.db.Model(&database.TenantSale{}).Where("series_id = ?", row.ID).Count(&salesCount).Error
+		locked := row.Correlative > 1 || salesCount > 0
+		out = append(out, SeriesListItem{
+			TenantDocumentSeries: row,
+			Locked:               locked,
+			SalesCount:           salesCount,
+			CanDelete:            !locked,
+		})
+	}
+	return out, nil
+}
+
+func (s *CompanyService) DeleteSeries(id uint) error {
+	locked, salesCount, err := s.isSeriesLocked(id)
+	if err != nil {
+		return err
+	}
+	if locked || salesCount > 0 {
+		return errors.New("no se puede eliminar una serie con documentos emitidos o numeración iniciada")
+	}
+	return s.db.Delete(&database.TenantDocumentSeries{}, id).Error
+}
+
 func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, docType, sunatCode, category string, correlative *uint) error {
+	locked, _, err := s.isSeriesLocked(id)
+	if err != nil {
+		return err
+	}
+	if locked {
+		var existing database.TenantDocumentSeries
+		if err := s.db.First(&existing, id).Error; err != nil {
+			return err
+		}
+		// Solo permitir cambiar estado activo cuando la serie ya tiene uso.
+		if seriesName != "" && docseries.NormalizeSeriesCode(seriesName) != existing.Series {
+			return errors.New("no se puede modificar la serie: ya tiene documentos emitidos o numeración iniciada")
+		}
+		if docType != "" && docType != existing.DocType {
+			return errors.New("no se puede modificar el tipo de documento: la serie ya está en uso")
+		}
+		if sunatCode != "" && sunatCode != existing.SunatCode {
+			return errors.New("no se puede modificar el código SUNAT: la serie ya está en uso")
+		}
+		if category != "" && category != existing.Category {
+			return errors.New("no se puede modificar la categoría: la serie ya está en uso")
+		}
+		if correlative != nil && *correlative != existing.Correlative {
+			return errors.New("no se puede modificar el correlativo: la serie ya está en uso")
+		}
+		return s.db.Model(&database.TenantDocumentSeries{}).Where("id = ?", id).Update("active", active).Error
+	}
+
 	seriesName = docseries.NormalizeSeriesCode(seriesName)
 	if seriesName != "" {
 		if err := s.assertSeriesCodeUnique(seriesName, id); err != nil {

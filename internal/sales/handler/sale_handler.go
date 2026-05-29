@@ -243,10 +243,28 @@ func (h *SaleHandler) CancelForm(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString("ID inválido")
 	}
-	if err := service.NewSaleService(db(c)).Cancel(uint(id)); err != nil {
+	if err := service.NewSaleService(db(c)).CancelNotaVenta(uint(id), userID(c), "Anulación desde panel web"); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(err.Error())
 	}
 	return c.Redirect().To("/sales?success=cancelled")
+}
+
+// CancelAPI POST /api/sales/:id/cancel — anula nota de venta (revierte caja, stock y totales).
+func (h *SaleHandler) CancelAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	if err := service.NewSaleService(db(c)).CancelNotaVenta(uint(id), userID(c), strings.TrimSpace(body.Reason)); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "message": "Venta anulada correctamente"})
 }
 
 // GET /api/sales?q=&from=&to=&doc_type=&billing_status=&sunat_code=00|01,03&contact_id=

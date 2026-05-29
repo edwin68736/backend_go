@@ -163,15 +163,16 @@ func (h *CompanyHandler) ListBranchesAPI(c fiber.Ctx) error {
 // POST /api/company/branches
 func (h *CompanyHandler) CreateBranchAPI(c fiber.Ctx) error {
 	var body struct {
-		Name    string `json:"name"`
-		Address string `json:"address"`
-		Phone   string `json:"phone"`
-		IsMain  bool   `json:"is_main"`
+		Name               string `json:"name"`
+		Address            string `json:"address"`
+		Phone              string `json:"phone"`
+		FiscalDomicileCode string `json:"fiscal_domicile_code"`
+		IsMain             bool   `json:"is_main"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	b, err := service.NewCompanyService(db(c)).CreateBranch(body.Name, body.Address, body.Phone, body.IsMain)
+	b, err := service.NewCompanyService(db(c)).CreateBranch(body.Name, body.Address, body.Phone, body.FiscalDomicileCode, body.IsMain)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -185,15 +186,16 @@ func (h *CompanyHandler) UpdateBranchAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	var body struct {
-		Name    string `json:"name"`
-		Address string `json:"address"`
-		Phone   string `json:"phone"`
-		IsMain  bool   `json:"is_main"`
+		Name               string `json:"name"`
+		Address            string `json:"address"`
+		Phone              string `json:"phone"`
+		FiscalDomicileCode string `json:"fiscal_domicile_code"`
+		IsMain             bool   `json:"is_main"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if err := service.NewCompanyService(db(c)).UpdateBranch(uint(id), body.Name, body.Address, body.Phone, body.IsMain); err != nil {
+	if err := service.NewCompanyService(db(c)).UpdateBranch(uint(id), body.Name, body.Address, body.Phone, body.FiscalDomicileCode, body.IsMain); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
@@ -215,7 +217,7 @@ func (h *CompanyHandler) DeleteBranchAPI(c fiber.Ctx) error {
 func (h *CompanyHandler) ListSeriesAPI(c fiber.Ctx) error {
 	svc := service.NewCompanyService(db(c))
 	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
-	series, err := svc.ListSeries(uint(branchID))
+	series, err := svc.ListSeriesEnriched(uint(branchID))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -275,6 +277,18 @@ func (h *CompanyHandler) UpdateSeriesAPI(c fiber.Ctx) error {
 		corr = body.Correlative
 	}
 	if err := service.NewCompanyService(db(c)).UpdateSeries(uint(id), body.Series, body.Active, body.DocType, body.SunatCode, body.Category, corr); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// DELETE /api/company/series/:id
+func (h *CompanyHandler) DeleteSeriesAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := service.NewCompanyService(db(c)).DeleteSeries(uint(id)); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

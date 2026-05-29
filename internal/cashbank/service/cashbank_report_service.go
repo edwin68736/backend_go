@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"tukifac/pkg/database"
@@ -11,11 +12,12 @@ import (
 
 // SessionReport es el reporte de cierre/resumen de una sesión de caja.
 type SessionReport struct {
-	Session        SessionReportHeader  `json:"session"`
-	IncomeDetail   []IncomeDetailRow     `json:"income_detail"`
-	ExpenseDetail  []ExpenseDetailRow   `json:"expense_detail"`
-	TotalsByMethod TotalsByMethodReport `json:"totals_by_method"`
-	Totals         SessionTotals        `json:"totals"`
+	Session              SessionReportHeader   `json:"session"`
+	IncomeDetail         []IncomeDetailRow      `json:"income_detail"`
+	ExpenseDetail        []ExpenseDetailRow     `json:"expense_detail"`
+	CancelledSalesDetail []CancelledSaleRow     `json:"cancelled_sales_detail"`
+	TotalsByMethod       TotalsByMethodReport   `json:"totals_by_method"`
+	Totals               SessionTotals          `json:"totals"`
 }
 
 type SessionReportHeader struct {
@@ -48,6 +50,15 @@ type ExpenseDetailRow struct {
 	Reference      string    `json:"reference"`
 	Amount         float64   `json:"amount"`
 	PaymentMethod  string    `json:"payment_method"`
+}
+
+// CancelledSaleRow venta anulada vinculada a la sesión (reversión en caja).
+type CancelledSaleRow struct {
+	Date          time.Time `json:"date"`
+	DocNumber     string    `json:"doc_number"`
+	Amount        float64   `json:"amount"`
+	PaymentMethod string    `json:"payment_method"`
+	Reason        string    `json:"reason"`
 }
 
 type TotalsByMethodReport struct {
@@ -102,6 +113,7 @@ type MovementReportFilters struct {
 	DateTo        *time.Time
 	SessionID     uint
 	MovementType  string
+	PaymentMethod string
 	Limit         int
 	Offset        int
 }
@@ -122,6 +134,13 @@ func (s *CashBankService) movementReportFilteredDB(f MovementReportFilters) *gor
 	}
 	if f.MovementType != "" {
 		q = q.Where("tenant_cash_movements.type = ?", f.MovementType)
+	}
+	if f.PaymentMethod != "" {
+		method := NormalizePaymentMethod(f.PaymentMethod)
+		q = q.Where(
+			"LOWER(TRIM(tenant_cash_movements.payment_method)) IN (?, ?) OR tenant_cash_movements.payment_method = ?",
+			method, strings.ToLower(strings.TrimSpace(f.PaymentMethod)), f.PaymentMethod,
+		)
 	}
 	if f.DateFrom != nil {
 		q = q.Where("tenant_cash_movements.created_at >= ?", f.DateFrom)
@@ -273,6 +292,33 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 	for k, v := range manualExpenseByMethod {
 		report.TotalsByMethod.Movements = append(report.TotalsByMethod.Movements, MethodTotal{Method: k, Total: -v})
 	}
+
+	var voidMovements []database.TenantCashMovement
+	s.db.Where("cash_session_id = ? AND type = ? AND category = ?", sessionID, "expense", "Anulación venta").
+		Order("created_at ASC").
+		Find(&voidMovements)
+	for _, m := range voidMovements {
+		row := CancelledSaleRow{
+			Date:          m.CreatedAt,
+			Amount:        m.Amount,
+			PaymentMethod: normalizeMethod(m.PaymentMethod),
+			Reason:        strings.TrimSpace(m.Notes),
+		}
+		if m.SaleID != nil {
+			var sale database.TenantSale
+			if s.db.First(&sale, *m.SaleID).Error == nil {
+				row.DocNumber = sale.Number
+				if row.Reason == "" && strings.Contains(sale.Notes, "ANULADA:") {
+					row.Reason = sale.Notes
+				}
+			}
+		}
+		if row.DocNumber == "" {
+			row.DocNumber = m.Reference
+		}
+		report.CancelledSalesDetail = append(report.CancelledSalesDetail, row)
+	}
+
 	return report, nil
 }
 
@@ -449,7 +495,11 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) ([]Moveme
 		}
 
 		if m.SaleID != nil {
-			row.Type = "venta"
+			if m.Type == "expense" {
+				row.Type = "anulacion_venta"
+			} else {
+				row.Type = "venta"
+			}
 			if sale, ok := sales[*m.SaleID]; ok {
 				row.DocNumber = sale.Number
 				row.ContactName = contactsBySale[*m.SaleID]
@@ -477,6 +527,36 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) ([]Moveme
 		rows = append(rows, row)
 	}
 	return rows, total, summary, nil
+}
+
+// SessionProductSoldRow producto vendido agregado por sesión de caja.
+type SessionProductSoldRow struct {
+	ProductID   *uint   `json:"product_id"`
+	Code        string  `json:"code"`
+	Description string  `json:"description"`
+	Quantity    float64 `json:"quantity"`
+	Total       float64 `json:"total"`
+}
+
+// GetSessionProductsReport agrega ítems vendidos vinculados a una sesión de caja.
+func (s *CashBankService) GetSessionProductsReport(sessionID uint) ([]SessionProductSoldRow, error) {
+	var session database.TenantCashSession
+	if err := s.db.First(&session, sessionID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("sesión de caja no encontrada")
+		}
+		return nil, err
+	}
+	var rows []SessionProductSoldRow
+	err := s.db.Table("tenant_sale_items").
+		Select(`tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description,
+			SUM(tenant_sale_items.quantity) AS quantity, SUM(tenant_sale_items.total) AS total`).
+		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id").
+		Where("tenant_sales.cash_session_id = ? AND tenant_sales.status NOT IN ?", sessionID, []string{"cancelled", "draft"}).
+		Group("tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description").
+		Order("tenant_sale_items.description ASC").
+		Scan(&rows).Error
+	return rows, err
 }
 
 func keysUint(m map[uint]struct{}) []uint {

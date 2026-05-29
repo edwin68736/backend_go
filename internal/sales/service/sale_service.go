@@ -160,6 +160,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 	// Validaciones SUNAT: Factura 01 solo con RUC de 11 dígitos; doc. tipo 0 máximo S/ 700 en boleta/nota de venta
 	sunatCode := strings.TrimSpace(series.SunatCode)
+	if sunatCode == "01" || sunatCode == "03" {
+		var companyCfg database.TenantCompanyConfig
+		if err := s.db.Select("sunat_enabled").First(&companyCfg).Error; err != nil || !companyCfg.SunatEnabled {
+			return nil, errors.New("la facturación electrónica no está habilitada para este tenant; solo puede emitir notas de venta (SUNAT 00)")
+		}
+	}
 	var contact *database.TenantContact
 	if input.ContactID != nil && *input.ContactID > 0 {
 		var c database.TenantContact
@@ -898,13 +904,37 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 	return out, summary, nil
 }
 
-func (s *SaleService) Cancel(id uint) error {
+func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error {
 	var sale database.TenantSale
 	if err := s.db.First(&sale, id).Error; err != nil {
 		return err
 	}
 	if sale.Status == "cancelled" {
 		return errors.New("la venta ya está cancelada")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return errors.New("indique el motivo de anulación")
+	}
+
+	var saleSeries database.TenantDocumentSeries
+	if err := s.db.First(&saleSeries, sale.SeriesID).Error; err != nil {
+		return errors.New("serie del comprobante no encontrada")
+	}
+	sunatCode := strings.TrimSpace(saleSeries.SunatCode)
+	docType := strings.ToUpper(strings.TrimSpace(sale.DocType))
+	if sunatCode != "00" && docType != "NOTA_VENTA" && !strings.Contains(docType, "NOTA") {
+		return errors.New("solo se pueden anular notas de venta desde esta operación; para facturas o boletas use nota de crédito")
+	}
+	if sale.DocType == "FACTURA" || sale.DocType == "BOLETA" || sunatCode == "01" || sunatCode == "03" {
+		return errors.New("para anular facturas o boletas debe usar nota de crédito electrónica")
+	}
+	var electronicChild int64
+	if err := s.db.Model(&database.TenantSale{}).Where("issued_from_nota_sale_id = ?", id).Count(&electronicChild).Error; err != nil {
+		return err
+	}
+	if electronicChild > 0 {
+		return errors.New("no se puede anular: esta nota ya tiene factura o boleta electrónica emitida")
 	}
 
 	items, err := s.GetItems(id)
@@ -913,8 +943,94 @@ func (s *SaleService) Cancel(id uint) error {
 	}
 
 	ref := "ANULACION VENTA/" + sale.Number
+	cashSvc := cashbanksvc.NewCashBankService(s.db)
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var incomeMovements []database.TenantCashMovement
+		if err := tx.Where("sale_id = ? AND type = ?", id, "income").Find(&incomeMovements).Error; err != nil {
+			return err
+		}
+		for _, m := range incomeMovements {
+			uid := userID
+			if uid == 0 {
+				uid = m.UserID
+			}
+			if err := tx.Create(&database.TenantCashMovement{
+				CashSessionID: m.CashSessionID,
+				Type:          "expense",
+				Amount:        m.Amount,
+				PaymentMethod: m.PaymentMethod,
+				Category:      "Anulación venta",
+				Reference:     ref,
+				SaleID:        &id,
+				Notes:         reason,
+				UserID:        uid,
+				CreatedAt:     time.Now(),
+			}).Error; err != nil {
+				return err
+			}
+		}
+		if len(incomeMovements) == 0 && sale.Total > 0 {
+			// Ventas sin movimiento de caja indexado: revertir pagos registrados en sesión original.
+			var payments []database.TenantSalePayment
+			tx.Where("sale_id = ?", id).Find(&payments)
+			sessionID := sale.CashSessionID
+			for _, p := range payments {
+				if p.Amount <= 0 {
+					continue
+				}
+				pm, _ := cashSvc.GetPaymentMethodByCode(p.Method)
+				if pm != nil && pm.DestinationType == "cash" && sessionID != nil && *sessionID > 0 {
+					uid := userID
+					if uid == 0 {
+						uid = sale.UserID
+					}
+					if err := tx.Create(&database.TenantCashMovement{
+						CashSessionID: *sessionID,
+						Type:          "expense",
+						Amount:        p.Amount,
+						PaymentMethod: p.Method,
+						Category:      "Anulación venta",
+						Reference:     ref,
+						SaleID:        &id,
+						Notes:         reason,
+						UserID:        uid,
+						CreatedAt:     time.Now(),
+					}).Error; err != nil {
+						return err
+					}
+				}
+			}
+		}
+		var bankCredits []database.TenantBankMovement
+		if err := tx.Where("reference = ? AND type = ?", sale.Number, "credit").Find(&bankCredits).Error; err != nil {
+			return err
+		}
+		for _, bm := range bankCredits {
+			uid := userID
+			if uid == 0 {
+				uid = bm.UserID
+			}
+			desc := "Anulación venta " + sale.Number + ": " + reason
+			if err := tx.Create(&database.TenantBankMovement{
+				BankAccountID: bm.BankAccountID,
+				Type:          "debit",
+				Amount:        bm.Amount,
+				Description:   desc,
+				Reference:     ref,
+				Date:          time.Now(),
+				UserID:        uid,
+				CreatedAt:     time.Now(),
+			}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&database.TenantBankAccount{}).
+				Where("id = ?", bm.BankAccountID).
+				Update("balance", gorm.Expr("balance - ?", bm.Amount)).Error; err != nil {
+				return err
+			}
+		}
+
 		for _, item := range items {
 			if item.ProductID == nil {
 				continue
@@ -976,7 +1092,104 @@ func (s *SaleService) Cancel(id uint) error {
 			}
 		}
 
-		return tx.Model(&sale).Update("status", "cancelled").Error
+		cancelNotes := strings.TrimSpace(sale.Notes)
+		if cancelNotes != "" {
+			cancelNotes = cancelNotes + " | ANULADA: " + reason
+		} else {
+			cancelNotes = "ANULADA: " + reason
+		}
+		return tx.Model(&sale).Updates(map[string]interface{}{
+			"status": "cancelled",
+			"notes":  cancelNotes,
+		}).Error
+	})
+}
+
+// Cancel marca la venta como anulada y revierte stock (uso interno: NC aceptada, panel legacy).
+// No revierte caja ni valida tipo de comprobante.
+func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
+	var sale database.TenantSale
+	if err := s.db.First(&sale, id).Error; err != nil {
+		return err
+	}
+	if sale.Status == "cancelled" {
+		return errors.New("la venta ya está cancelada")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "Anulación de venta"
+	}
+	items, err := s.GetItems(id)
+	if err != nil {
+		return err
+	}
+	ref := "ANULACION VENTA/" + sale.Number
+	_ = userID
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		for _, item := range items {
+			if item.ProductID == nil {
+				continue
+			}
+			var product database.TenantProduct
+			if tx.First(&product, *item.ProductID).Error != nil {
+				continue
+			}
+			if !product.ManageStock || productIsCatalogService(&product) {
+				continue
+			}
+			var stock database.TenantProductStock
+			tx.Where("product_id = ? AND branch_id = ?", *item.ProductID, sale.BranchID).First(&stock)
+			newQty := stock.Quantity + item.Quantity
+			if stock.ID == 0 {
+				if err := tx.Create(&database.TenantProductStock{
+					ProductID: *item.ProductID,
+					BranchID:  sale.BranchID,
+					Quantity:  newQty,
+				}).Error; err != nil {
+					return err
+				}
+			} else {
+				if err := tx.Model(&stock).Updates(map[string]interface{}{
+					"quantity":   newQty,
+					"updated_at": time.Now(),
+				}).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Create(&database.TenantStockMovement{
+				ProductID: *item.ProductID,
+				BranchID:  sale.BranchID,
+				Type:      "in",
+				Quantity:  item.Quantity,
+				Balance:   newQty,
+				Reference: ref,
+				UserID:    sale.UserID,
+				CreatedAt: time.Now(),
+			}).Error; err != nil {
+				return err
+			}
+			if product.ManageSeries && !productIsCatalogService(&product) {
+				if err := tx.Model(&database.TenantProductSerial{}).
+					Where("sale_item_id = ?", item.ID).
+					Updates(map[string]interface{}{
+						"status":       "available",
+						"sale_item_id": nil,
+						"updated_at":   time.Now(),
+					}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		cancelNotes := strings.TrimSpace(sale.Notes)
+		if cancelNotes != "" {
+			cancelNotes = cancelNotes + " | ANULADA: " + reason
+		} else {
+			cancelNotes = "ANULADA: " + reason
+		}
+		return tx.Model(&sale).Updates(map[string]interface{}{
+			"status": "cancelled",
+			"notes":  cancelNotes,
+		}).Error
 	})
 }
 
@@ -1033,6 +1246,10 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 	code := strings.TrimSpace(target.SunatCode)
 	if code != "01" && code != "03" {
 		return nil, errors.New("la serie destino debe ser factura (01) o boleta (03)")
+	}
+	var companyCfg database.TenantCompanyConfig
+	if err := s.db.Select("sunat_enabled").First(&companyCfg).Error; err != nil || !companyCfg.SunatEnabled {
+		return nil, errors.New("la facturación electrónica no está habilitada para este tenant")
 	}
 	if target.BranchID != nota.BranchID {
 		return nil, errors.New("la serie debe pertenecer a la misma sucursal que la nota de venta")

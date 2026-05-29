@@ -74,6 +74,9 @@ func Setup(app *fiber.App) {
 
 	middleware.ApplyRateLimits(app)
 
+	// Liveness bajo /api para clientes POS (nginx proxy /api; CORS para Capacitor/Tauri).
+	app.Get("/api/health/live", health.Liveness)
+
 	// Consulta DNI/RUC (público): valida tenant_ruc en central antes de llamar a apiperu
 	consultaH := consultaHandler.NewConsultaHandler()
 	app.Post("/api/consulta/dni", consultaH.PublicConsultaDNIAPI)

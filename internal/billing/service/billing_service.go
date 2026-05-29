@@ -392,7 +392,7 @@ func (s *BillingService) ResendToSUNAT(saleID uint) (*database.TenantInvoice, er
 
 // CreateCreditNoteAndVoidSale genera una nota de crédito para anular la venta y la envía a SUNAT; luego anula la venta original.
 // La venta debe ser factura o boleta ya aceptada por SUNAT.
-func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint) (*database.TenantSale, *database.TenantInvoice, error) {
+func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string) (*database.TenantSale, *database.TenantInvoice, error) {
 	if !s.facturadorConfigured() {
 		return nil, nil, errors.New("la anulación con nota de crédito requiere facturador configurado")
 	}
@@ -412,6 +412,10 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint) (*data
 	}
 	if orig.BillingStatus != "accepted" {
 		return nil, nil, errors.New("el comprobante debe estar aceptado por SUNAT antes de anularlo con nota de crédito")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, nil, errors.New("indique el motivo de anulación")
 	}
 	if orig.ContactID == nil {
 		return nil, nil, errors.New("para nota de crédito electrónica debe asignar un cliente con dirección y ubigeo en la venta original")
@@ -444,7 +448,7 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint) (*data
 		Total:          orig.Total,
 		Currency:       orig.Currency,
 		PaymentMethod:  orig.PaymentMethod,
-		Notes:          "Anulación de la operación",
+		Notes:          reason,
 		Status:         "paid",
 		BillingStatus:  "pending",
 		OriginalSaleID: &origIDRef,

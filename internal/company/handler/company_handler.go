@@ -117,6 +117,7 @@ func (h *CompanyHandler) CreateBranchForm(c fiber.Ctx) error {
 		c.FormValue("name"),
 		c.FormValue("address"),
 		c.FormValue("phone"),
+		c.FormValue("fiscal_domicile_code"),
 		c.FormValue("is_main") == "1",
 	)
 	if err != nil {
@@ -141,6 +142,7 @@ func (h *CompanyHandler) UpdateBranchForm(c fiber.Ctx) error {
 		c.FormValue("name"),
 		c.FormValue("address"),
 		c.FormValue("phone"),
+		c.FormValue("fiscal_domicile_code"),
 		c.FormValue("is_main") == "1",
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(err.Error())

@@ -351,6 +351,41 @@ func (s *CashBankService) ListSessions(branchID uint) ([]database.TenantCashSess
 	return sessions, err
 }
 
+// CashSessionListItem sesión enriquecida para historial operativo.
+type CashSessionListItem struct {
+	database.TenantCashSession
+	OpenedByName string  `json:"opened_by_name"`
+	ClosedByName string  `json:"closed_by_name,omitempty"`
+	TotalIncome  float64 `json:"total_income"`
+	TotalExpense float64 `json:"total_expense"`
+}
+
+func (s *CashBankService) ListSessionsEnriched(branchID uint) ([]CashSessionListItem, error) {
+	sessions, err := s.ListSessions(branchID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CashSessionListItem, 0, len(sessions))
+	for _, st := range sessions {
+		item := CashSessionListItem{TenantCashSession: st}
+		income, expense := s.sessionMovementTotals(st.ID)
+		item.TotalIncome = income
+		item.TotalExpense = expense
+		var opener database.TenantUser
+		if s.db.Select("name").First(&opener, st.OpenedBy).Error == nil {
+			item.OpenedByName = opener.Name
+		}
+		if st.ClosedBy != nil && *st.ClosedBy > 0 {
+			var closer database.TenantUser
+			if s.db.Select("name").First(&closer, *st.ClosedBy).Error == nil {
+				item.ClosedByName = closer.Name
+			}
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 // =================== BANCOS ===================
 
 // NormalizePaymentMethod normaliza el método de pago para buscar la cuenta asociada.

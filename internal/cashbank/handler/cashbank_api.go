@@ -18,7 +18,7 @@ import (
 func (h *CashBankHandler) ListSessionsAPI(c fiber.Ctx) error {
 	req, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
 	branchID := branch.ResolveReadBranchFilter(c, uint(req))
-	sessions, err := service.NewCashBankService(db(c)).ListSessions(branchID)
+	sessions, err := service.NewCashBankService(db(c)).ListSessionsEnriched(branchID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -201,7 +201,20 @@ func (h *CashBankHandler) GetSessionReportAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": report})
 }
 
-// GET /api/cashbank/reports/movements?branch_id=&user_id=&date_from=&date_to=&session_id=&type=&page=&per_page=
+// GET /api/cashbank/sessions/:id/report/products
+func (h *CashBankHandler) GetSessionProductsReportAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	rows, err := service.NewCashBankService(db(c)).GetSessionProductsReport(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// GET /api/cashbank/reports/movements?branch_id=&user_id=&date_from=&date_to=&session_id=&type=&payment_method=&page=&per_page=
 // per_page=0 u omitido: todas las filas (compatibilidad con vistas que agrupan totales).
 func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
 	var f service.MovementReportFilters
@@ -217,6 +230,7 @@ func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
 		f.SessionID = uint(v)
 	}
 	f.MovementType = c.Query("type")
+	f.PaymentMethod = c.Query("payment_method")
 	if df := c.Query("date_from"); df != "" {
 		if t, err := time.ParseInLocation("2006-01-02", df, time.Local); err == nil {
 			start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)

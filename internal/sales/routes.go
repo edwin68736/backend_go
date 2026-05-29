@@ -15,6 +15,8 @@ func RegisterRoutes(api fiber.Router) {
 	api.Get("/sales", mod, loadRest, middleware.RequireSalesAccess("view"), h.ListAPI)
 	api.Get("/sales/by-product", mod, loadRest, middleware.RequireSalesAccess("view"), h.ListByProductAPI)
 	api.Post("/sales", mod, loadRest, middleware.RequireSalesAccess("create"), h.CreateAPI)
-	api.Post("/sales/:id/issue-electronic", mod, middleware.RequireModule("billing"), loadRest, middleware.RequireSalesAccess("create"), h.IssueElectronicFromNotaAPI)
+	// Conversión NV→FE: operación operativa del restaurante (sin permiso sales.create).
+	api.Post("/sales/:id/issue-electronic", mod, middleware.RequireModule("billing"), loadRest, h.IssueElectronicFromNotaAPI)
+	api.Post("/sales/:id/cancel", mod, loadRest, h.CancelAPI)
 	api.Get("/sales/:id", mod, loadRest, middleware.RequireSalesAccess("view"), h.GetAPI)
 }

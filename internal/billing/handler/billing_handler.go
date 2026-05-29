@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"errors"
@@ -142,8 +143,12 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.Bind().Body(&body)
 	svc := billingSvc(c)
-	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID))
+	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error":   err.Error(),
