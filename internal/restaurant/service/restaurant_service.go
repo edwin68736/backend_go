@@ -413,7 +413,10 @@ func (s *RestaurantService) GetSessionDetail(sessionID uint) (*SessionDetail, er
 	detail.Orders = make([]OrderDetail, 0, len(orders))
 	for _, o := range orders {
 		var comandas []database.TenantComanda
-		s.db.Where("order_id = ?", o.ID).Order("created_at ASC").Find(&comandas)
+		s.db.Where("order_id = ? AND cancelled_at IS NULL", o.ID).Order("created_at ASC").Find(&comandas)
+		if len(comandas) == 0 {
+			continue
+		}
 		detail.Orders = append(detail.Orders, OrderDetail{TenantTableOrder: o, Comandas: comandas})
 	}
 
@@ -647,9 +650,11 @@ func (s *RestaurantService) CancelComanda(id uint, reason string, cancelledByID 
 		affType, priceIncludes := comandaIgvForCalc(tx, &c)
 		_, _, deduct := tax.CalcItem(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
 		deduct = money.RoundSunat(deduct)
-		tx.Model(&database.TenantTableSession{}).Where("id = ?", c.SessionID).
-			UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", deduct))
-		return nil
+		if err := tx.Model(&database.TenantTableSession{}).Where("id = ?", c.SessionID).
+			UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", deduct)).Error; err != nil {
+			return err
+		}
+		return s.syncSessionOrderStatus(tx, c.SessionID)
 	})
 }
 

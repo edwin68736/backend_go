@@ -494,6 +494,12 @@ type TenantCompanyConfig struct {
 	AutomaticSend          bool       `gorm:"default:true" json:"automatic_send"`
 	ColorTheme             string     `gorm:"size:30;default:'green'" json:"color_theme"`
 	AdditionalNotes        string     `gorm:"type:text" json:"additional_notes"`
+	// QR de pago Yape/Plin en comprobantes locales (PDF ticket / A4)
+	WalletProvider     string `gorm:"size:20" json:"wallet_provider"`       // yape | plin
+	WalletPhone        string `gorm:"size:30" json:"wallet_phone"`
+	WalletQrURL        string `gorm:"type:longtext" json:"wallet_qr_url"`
+	WalletShowOnA4     bool   `gorm:"default:false" json:"wallet_show_on_a4"`
+	WalletShowOnTicket bool   `gorm:"default:false" json:"wallet_show_on_ticket"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

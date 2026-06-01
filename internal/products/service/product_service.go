@@ -45,6 +45,12 @@ type BranchStockRow struct {
 	Quantity   float64 `json:"quantity"`
 }
 
+// ProductListItem producto en listados API con nombre de categoría.
+type ProductListItem struct {
+	database.TenantProduct
+	CategoryName string `json:"category_name,omitempty"`
+}
+
 // ProductReportItem extiende el producto con totales, stock por sucursal y series.
 type ProductReportItem struct {
 	database.TenantProduct
@@ -134,6 +140,50 @@ func (s *ProductService) List(params ProductListParams) ([]database.TenantProduc
 	}
 	err := q.Order("name ASC").Find(&products).Error
 	return products, total, err
+}
+
+// ListWithCategoryNames igual que List con category_name para el panel tenant.
+func (s *ProductService) ListWithCategoryNames(params ProductListParams) ([]ProductListItem, int64, error) {
+	products, total, err := s.List(params)
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.attachCategoryNames(products), total, nil
+}
+
+func (s *ProductService) attachCategoryNames(products []database.TenantProduct) []ProductListItem {
+	if len(products) == 0 {
+		return nil
+	}
+	catName := map[uint]string{}
+	seenCat := map[uint]struct{}{}
+	var catIDs []uint
+	for _, p := range products {
+		if p.CategoryID != nil {
+			cid := *p.CategoryID
+			if _, ok := seenCat[cid]; ok {
+				continue
+			}
+			seenCat[cid] = struct{}{}
+			catIDs = append(catIDs, cid)
+		}
+	}
+	if len(catIDs) > 0 {
+		var cats []database.TenantCategory
+		s.db.Where("id IN ?", catIDs).Find(&cats)
+		for _, c := range cats {
+			catName[c.ID] = c.Name
+		}
+	}
+	out := make([]ProductListItem, len(products))
+	for i, p := range products {
+		item := ProductListItem{TenantProduct: p}
+		if p.CategoryID != nil {
+			item.CategoryName = catName[*p.CategoryID]
+		}
+		out[i] = item
+	}
+	return out
 }
 
 // ListReport igual que List pero devuelve filas enriquecidas (stock por sucursal, series, categoría).

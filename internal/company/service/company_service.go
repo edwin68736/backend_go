@@ -76,6 +76,30 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 	return s.db.Model(&existing).Updates(updates).Error
 }
 
+// SaveReceiptWallet guarda QR Yape/Plin para comprobantes PDF locales.
+func (s *CompanyService) SaveReceiptWallet(provider, phone, qrURL string, showOnA4, showOnTicket bool) error {
+	var existing database.TenantCompanyConfig
+	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("configure primero los datos generales de la empresa")
+	}
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	phone = strings.TrimSpace(phone)
+	qrURL = strings.TrimSpace(qrURL)
+	if provider != "" && (phone == "" || qrURL == "") {
+		return errors.New("indique número y QR si elige Yape o Plin")
+	}
+	if provider != "" && provider != "yape" && provider != "plin" {
+		return errors.New("billetera inválida (use yape o plin)")
+	}
+	return s.db.Model(&existing).Updates(map[string]interface{}{
+		"wallet_provider":       provider,
+		"wallet_phone":          phone,
+		"wallet_qr_url":         qrURL,
+		"wallet_show_on_a4":     showOnA4,
+		"wallet_show_on_ticket": showOnTicket,
+	}).Error
+}
+
 // SaveSunatConfigTenant guarda solo los campos que el tenant puede editar: IGV, régimen, zona beneficio.
 // sunat_enabled se controla desde el panel central; el tenant no puede activar/desactivar la facturación electrónica.
 func (s *CompanyService) SaveSunatConfigTenant(taxRate float64, igvRegime string, taxBenefitZone bool) error {
@@ -101,7 +125,7 @@ func (s *CompanyService) SyncFacturadorConfig() error {
 }
 
 // SyncFacturadorConfigWithFiles envía configuración al facturador.
-// Certificados: PFX (.pfx/.p12) o PEM (combinado o clave + cert) se normalizan al formato Greenter antes del envío.
+// PFX o PEM se convierten en Go a certificate_base64 (PEM combinado) como espera Lycet.
 func (s *CompanyService) SyncFacturadorConfigWithFiles(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride, certPassword, pfxBase64 string) error {
 	return s.syncFacturador(certificateBase64, privateKeyBase64, logoBase64, solUserOverride, solPassOverride, certPassword, pfxBase64)
 }

@@ -379,6 +379,17 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	if err := service.NewProductService(db(c)).Update(uint(id), input); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
+	if body.IsRestaurant {
+		branchID, berr := branch.ResolveWriteBranchID(c, 0)
+		if berr != nil {
+			return c.Status(403).JSON(fiber.Map{"error": berr.Error(), "code": branch.CodeBranchForbidden})
+		}
+		if branchID > 0 {
+			if err := invsvc.NewInventoryService(db(c)).EnsureProductBranchLink(uint(id), branchID); err != nil {
+				return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+			}
+		}
+	}
 	return c.JSON(fiber.Map{"success": true})
 }
 
@@ -460,7 +471,10 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		}
 		return c.JSON(fiber.Map{"data": items})
 	}
-	products, total, _ := svc.List(params)
+	products, total, err := svc.ListWithCategoryNames(params)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
 	if perPage > 0 {
 		return c.JSON(fiber.Map{"data": products, "total": total})
 	}

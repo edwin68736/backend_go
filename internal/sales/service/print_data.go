@@ -53,6 +53,15 @@ type PrintData struct {
 	SellerName         string             `json:"seller_name,omitempty"`
 	PaymentCondition   string             `json:"payment_condition,omitempty"` // Contado, Crédito
 	BankAccounts       []PrintBankAccount `json:"bank_accounts,omitempty"`
+	PaymentWallet      *PrintPaymentWallet `json:"payment_wallet,omitempty"`
+}
+
+type PrintPaymentWallet struct {
+	Provider       string `json:"provider"` // yape | plin
+	Phone          string `json:"phone"`
+	QrURL          string `json:"qr_url"`
+	ShowOnA4       bool   `json:"show_on_a4"`
+	ShowOnTicket   bool   `json:"show_on_ticket"`
 }
 
 type PrintClient struct {
@@ -170,6 +179,18 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			Email:        strings.TrimSpace(company.Email),
 			Website:      strings.TrimSpace(company.Website),
 			LogoURL:      company.LogoURL,
+		}
+		provider := strings.TrimSpace(strings.ToLower(company.WalletProvider))
+		phone := strings.TrimSpace(company.WalletPhone)
+		qrURL := strings.TrimSpace(company.WalletQrURL)
+		if provider != "" && phone != "" && qrURL != "" {
+			pd.PaymentWallet = &PrintPaymentWallet{
+				Provider:     provider,
+				Phone:        phone,
+				QrURL:        qrURL,
+				ShowOnA4:     company.WalletShowOnA4,
+				ShowOnTicket: company.WalletShowOnTicket,
+			}
 		}
 	}
 

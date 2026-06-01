@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"software.sslmate.com/src/go-pkcs12"
 )
 
 // Client es el cliente para el API del facturador Lycet.
@@ -1064,13 +1063,16 @@ func BuildCombinedPEMBase64(privateKeyBase64, certificateBase64 string) (string,
 
 // PfxToCombinedPEMBase64 convierte certificado .pfx/.p12 (base64) a PEM combinado para Lycet.
 func PfxToCombinedPEMBase64(pfxBase64, password string) (string, error) {
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pfxBase64))
+	raw, err := decodeBase64Flexible(pfxBase64)
 	if err != nil {
-		return "", fmt.Errorf("pfx_base64 inválido: %w", err)
+		return "", err
 	}
-	blocks, err := pkcs12.ToPEM(raw, password)
+	if len(raw) == 0 {
+		return "", fmt.Errorf("archivo PFX vacío")
+	}
+	blocks, err := pfxToPEMBlocks(raw, password)
 	if err != nil {
-		return "", fmt.Errorf("no se pudo abrir el PFX (revise la contraseña): %w", err)
+		return "", err
 	}
 	var keyParts []string
 	var certParts []string
