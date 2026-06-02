@@ -286,10 +286,11 @@ type InvoiceLegend struct {
 	Value string `json:"value"`
 }
 
-// NoteRelDoc documento afectado por la nota de crédito/débito (relDocs).
+// NoteRelDoc otros documentos relacionados (relDocs → AdditionalDocumentReference, catálogo SUNAT 12).
+// No usar para la factura/boleta anulada: esa va en tipDocAfectado + numDocfectado (BillingReference, cat. 01).
 type NoteRelDoc struct {
-	TipoDoc string `json:"tipoDoc"` // "01" Factura, "03" Boleta
-	NroDoc  string `json:"nroDoc"`  // Serie-número ej. "F001-1", "B001-25"
+	TipoDoc string `json:"tipoDoc"`
+	NroDoc  string `json:"nroDoc"`
 }
 
 // NotePayload es el body para POST /note/send (Lycet). Nota de crédito (07) o débito (08).
@@ -306,7 +307,10 @@ type NotePayload struct {
 	TipoMoneda      string             `json:"tipoMoneda"`
 	CodMotivo       string             `json:"codMotivo"`       // Catálogo SUNAT ej. "01" Anulación de la operación
 	DesMotivo       string             `json:"desMotivo"`       // Descripción del motivo
-	RelDocs         []NoteRelDoc       `json:"relDocs"`         // Documentos afectados (al menos uno)
+	// Greenter/Lycet: BillingReference/InvoiceDocumentReference (obligatorio en XML SUNAT).
+	TipDocAfectado string `json:"tipDocAfectado,omitempty"` // "01" factura, "03" boleta afectada
+	NumDocfectado  string `json:"numDocfectado,omitempty"`  // serie-número afectado (typo histórico Greenter)
+	RelDocs         []NoteRelDoc       `json:"relDocs,omitempty"` // solo otros docs (cat. 12); no duplicar el afectado
 	MtoOperGravadas float64            `json:"mtoOperGravadas"`
 	MtoOperExoneradas float64          `json:"mtoOperExoneradas,omitempty"`
 	MtoOperInafectas float64           `json:"mtoOperInafectas,omitempty"`

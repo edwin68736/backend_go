@@ -2,14 +2,16 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
 
-	"tukifac/internal/sales/service"
 	billingSvc "tukifac/internal/billing/service"
+	"tukifac/internal/sales/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
 
 	"github.com/gofiber/fiber/v3"
@@ -149,24 +151,29 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 
 	taxCfg := tax.LoadFromDB(db(c))
 	svc := service.NewSaleService(db(c))
+	var centralTenantID uint
+	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
+		centralTenantID = tenant.ID
+	}
 	sale, err := svc.Create(service.CreateSaleInput{
-		BranchID:      branchID,
-		ContactID:     body.ContactID,
-		UserID:        userID(c),
-		CashSessionID: body.CashSessionID,
-		SeriesID:      body.SeriesID,
-		DocType:       body.DocType,
-		IssueDate:     issueDate,
-		DueDate:       dueDate,
-		Currency:      body.Currency,
-		PaymentMethod: body.PaymentMethod,
-		Payments:      body.Payments,
-		Notes:         body.Notes,
-		Items:         body.Items,
-		TaxConfig:     taxCfg,
+		BranchID:        branchID,
+		ContactID:       body.ContactID,
+		UserID:          userID(c),
+		CashSessionID:   body.CashSessionID,
+		SeriesID:        body.SeriesID,
+		DocType:         body.DocType,
+		IssueDate:       issueDate,
+		DueDate:         dueDate,
+		Currency:        body.Currency,
+		PaymentMethod:   body.PaymentMethod,
+		Payments:        body.Payments,
+		Notes:           body.Notes,
+		Items:           body.Items,
+		TaxConfig:       taxCfg,
+		CentralTenantID: centralTenantID,
 	})
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return saleCreateErrorResponse(c, err)
 	}
 
 	triggerAutoFiscalEnqueue(c, sale)
@@ -435,12 +442,26 @@ func (h *SaleHandler) IssueElectronicFromNotaAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "series_id es obligatorio"})
 	}
 	svc := service.NewSaleService(db(c))
-	sale, err := svc.IssueElectronicFromNota(uint(id), body.SeriesID, userID(c), body.IssueDate)
+	var centralTenantID uint
+	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
+		centralTenantID = tenant.ID
+	}
+	sale, err := svc.IssueElectronicFromNota(uint(id), body.SeriesID, userID(c), body.IssueDate, centralTenantID)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return saleCreateErrorResponse(c, err)
 	}
 	triggerAutoFiscalEnqueue(c, sale)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"sale": sale})
+}
+
+func saleCreateErrorResponse(c fiber.Ctx, err error) error {
+	st := fiber.StatusBadRequest
+	payload := fiber.Map{"error": err.Error()}
+	if errors.Is(err, docusage.ErrQuotaExceeded) {
+		st = fiber.StatusPaymentRequired
+		payload["code"] = "DOCUMENT_QUOTA_EXCEEDED"
+	}
+	return c.Status(st).JSON(payload)
 }
 
 func triggerAutoFiscalEnqueue(c fiber.Ctx, sale *database.TenantSale) {

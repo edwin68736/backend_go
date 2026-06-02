@@ -11,6 +11,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/money"
+	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
@@ -80,6 +81,7 @@ type CreateSaleInput struct {
 	SkipInventory             bool
 	SkipPaymentDistribution   bool
 	IssuedFromNotaSaleID      *uint // ID de la NV origen; se guarda en la nueva venta 01/03
+	CentralTenantID           uint  // tenant SaaS (cupo de documentos electrónicos)
 }
 
 // NextCorrelative retorna el siguiente correlativo para una serie y lo incrementa (transacción con bloqueo de fila).
@@ -97,6 +99,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 	series, err := docseries.ValidateForBranch(s.db, input.SeriesID, input.BranchID)
 	if err != nil {
+		return nil, err
+	}
+	if err := docusage.GuardCountableSunatQuota(input.CentralTenantID, series.SunatCode); err != nil {
 		return nil, err
 	}
 
@@ -512,7 +517,21 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 		q = q.Where("tenant_sales.status = ?", params.Status)
 	}
 	if params.BillingStatus != "" {
-		q = q.Where("tenant_sales.billing_status = ?", params.BillingStatus)
+		bs := strings.TrimSpace(params.BillingStatus)
+		if strings.Contains(bs, ",") {
+			parts := make([]string, 0, 4)
+			for _, p := range strings.Split(bs, ",") {
+				p = strings.TrimSpace(strings.ToLower(p))
+				if p != "" {
+					parts = append(parts, p)
+				}
+			}
+			if len(parts) > 0 {
+				q = q.Where("tenant_sales.billing_status IN ?", parts)
+			}
+		} else {
+			q = q.Where("tenant_sales.billing_status = ?", bs)
+		}
 	}
 	if params.PaymentMethod != "" {
 		m := strings.ToLower(strings.TrimSpace(params.PaymentMethod))
@@ -1217,7 +1236,7 @@ func (s *SaleService) GetPayments(saleID uint) ([]database.TenantSalePayment, er
 
 // IssueElectronicFromNota crea el registro de factura/boleta (01/03) para SUNAT copiando líneas y pagos de la NV (00).
 // No es una “segunda venta” en contabilidad de inventario: IssuedFromNotaSaleID fuerza omitir stock, seriales y caja/bancos.
-func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID uint, userID uint, issueYMD string) (*database.TenantSale, error) {
+func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID uint, userID uint, issueYMD string, centralTenantID uint) (*database.TenantSale, error) {
 	var nota database.TenantSale
 	if err := s.db.First(&nota, notaSaleID).Error; err != nil {
 		return nil, errors.New("nota de venta no encontrada")
@@ -1317,6 +1336,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		SkipInventory:           true,
 		SkipPaymentDistribution: true,
 		IssuedFromNotaSaleID:    &nvID,
+		CentralTenantID:         centralTenantID,
 	})
 }
 

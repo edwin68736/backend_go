@@ -1,12 +1,16 @@
 package handler
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"tukifac/internal/company/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tenantstorage"
+	"tukifac/pkg/uploadlimits"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -71,6 +75,46 @@ func (h *CompanyHandler) UpdateReceiptWalletAPI(c fiber.Ctx) error {
 	}
 	cfg, _ := svc.GetConfig()
 	return c.JSON(fiber.Map{"success": true, "data": cfg})
+}
+
+// UploadReceiptWalletQRAPI POST /api/company/receipt-wallet/qr — imagen en uploads/tenants/{RUC}/receipts/.
+func (h *CompanyHandler) UploadReceiptWalletQRAPI(c fiber.Ctx) error {
+	ruc, err := tenantstorage.ResolveTenantRUC(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	file, err := c.FormFile("image")
+	if err != nil || file == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "envía un archivo en el campo 'image'"})
+	}
+	if file.Size > uploadlimits.MaxFileBytes {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "la imagen no debe superar 10 MB"})
+	}
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true}
+	if !allowed[ext] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "formato no permitido. Usa JPG, PNG o WebP"})
+	}
+
+	dir := tenantstorage.TenantUploadDir(ruc, "receipts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("no se pudo crear carpeta %s: %v", dir, err),
+		})
+	}
+	filename := "wallet-qr" + ext
+	savePath := filepath.Join(dir, filename)
+	if err := c.SaveFile(file, savePath); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("error guardando QR en %s: %v", savePath, err),
+		})
+	}
+	imageURL := tenantstorage.TenantUploadPublicURL(ruc, "receipts", filename)
+	svc := service.NewCompanyService(db(c))
+	if err := svc.UpdateWalletQrURL(imageURL); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "wallet_qr_url": imageURL})
 }
 
 // extractBase64FromDataURL obtiene el payload base64 de un data URL (ej. "data:image/png;base64,iVBORw...").

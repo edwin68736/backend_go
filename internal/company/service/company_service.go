@@ -91,6 +91,10 @@ func (s *CompanyService) SaveReceiptWallet(provider, phone, qrURL string, showOn
 	if provider != "" && provider != "yape" && provider != "plin" {
 		return errors.New("billetera inválida (use yape o plin)")
 	}
+	const maxInlineDataURL = 120_000
+	if strings.HasPrefix(qrURL, "data:") && len(qrURL) > maxInlineDataURL {
+		return errors.New("el QR es demasiado grande: use el botón Subir QR (se guardará como archivo en el servidor)")
+	}
 	return s.db.Model(&existing).Updates(map[string]interface{}{
 		"wallet_provider":       provider,
 		"wallet_phone":          phone,
@@ -98,6 +102,15 @@ func (s *CompanyService) SaveReceiptWallet(provider, phone, qrURL string, showOn
 		"wallet_show_on_a4":     showOnA4,
 		"wallet_show_on_ticket": showOnTicket,
 	}).Error
+}
+
+// UpdateWalletQrURL persiste solo la ruta pública del QR (/uploads/tenants/{RUC}/receipts/...).
+func (s *CompanyService) UpdateWalletQrURL(url string) error {
+	var existing database.TenantCompanyConfig
+	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("configure primero los datos generales de la empresa")
+	}
+	return s.db.Model(&existing).Update("wallet_qr_url", strings.TrimSpace(url)).Error
 }
 
 // SaveSunatConfigTenant guarda solo los campos que el tenant puede editar: IGV, régimen, zona beneficio.
@@ -257,6 +270,9 @@ func (s *CompanyService) CreateSeries(branchID uint, docType, sunatCode, categor
 		sunatCode = "01"
 	}
 	seriesName = docseries.NormalizeSeriesCode(seriesName)
+	if err := docseries.ValidateSeriesConfig(category, sunatCode, seriesName); err != nil {
+		return err
+	}
 	if err := s.assertSeriesCodeUnique(seriesName, 0); err != nil {
 		return err
 	}
@@ -364,7 +380,29 @@ func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, d
 			return err
 		}
 	}
-	updates := map[string]interface{}{"series": seriesName, "active": active}
+	var existing database.TenantDocumentSeries
+	if err := s.db.First(&existing, id).Error; err != nil {
+		return err
+	}
+	finalName := existing.Series
+	if seriesName != "" {
+		finalName = seriesName
+	}
+	finalCat := existing.Category
+	if category != "" {
+		finalCat = category
+	}
+	finalSunat := existing.SunatCode
+	if sunatCode != "" {
+		finalSunat = sunatCode
+	}
+	if err := docseries.ValidateSeriesConfig(finalCat, finalSunat, finalName); err != nil {
+		return err
+	}
+	updates := map[string]interface{}{"active": active}
+	if seriesName != "" {
+		updates["series"] = seriesName
+	}
 	if docType != "" {
 		updates["doc_type"] = docType
 	}

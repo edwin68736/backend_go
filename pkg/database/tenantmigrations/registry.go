@@ -32,6 +32,8 @@ var TenantMigrations = []TenantMigration{
 	V058CompanyAdditionalNotes{},
 	V059UserBranches{},
 	V060ReceiptPaymentWallet{},
+	V061ProductBranchID{},
+	V062CreditNoteBCSeries{},
 }
 
 // ByVersion mapa versión → migración.

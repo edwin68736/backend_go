@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
 )
 
@@ -167,13 +168,25 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 		return nil, err
 	}
 
-	var relDocs []facturador.NoteRelDoc
+	var tipDocAfectado, numDocAfectado string
 	if hasOrig {
-		tipoDocAfectado := "03"
-		if orig.DocType == "FACTURA" || getSeriesSunatCode(s.db, orig.SeriesID) == "01" {
-			tipoDocAfectado = "01"
+		tipDocAfectado = affectedDocumentSunatType(&orig, getSeriesSunatCode(s.db, orig.SeriesID))
+		numDocAfectado = formatAffectedDocumentNumber(&orig)
+	}
+	if tipoDoc == "07" && (!hasOrig || tipDocAfectado == "" || numDocAfectado == "") {
+		return nil, errors.New("la nota de crédito debe referenciar la factura o boleta que anula (tipDocAfectado y numDocfectado)")
+	}
+	if tipoDoc == "07" && hasOrig {
+		wantPrefix := docseries.CreditNoteSeriesPrefixForAffected(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID))
+		if !docseries.SeriesMatchesCreditNotePrefix(noteSale.Series, wantPrefix) {
+			return nil, fmt.Errorf(
+				"la serie %s no anula %ss: use %s## (ej. %s01) según SUNAT",
+				noteSale.Series,
+				docseries.AffectedDocLabel(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID)),
+				wantPrefix,
+				wantPrefix,
+			)
 		}
-		relDocs = []facturador.NoteRelDoc{{TipoDoc: tipoDocAfectado, NroDoc: fmt.Sprintf("%s-%d", orig.Series, orig.Correlative)}}
 	}
 
 	var items []database.TenantSaleItem
@@ -272,15 +285,18 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 		TipoDoc:           tipoDoc,
 		Serie:             noteSale.Series,
 		Correlativo:       fmt.Sprintf("%d", noteSale.Correlative),
-		FechaEmision:      facturador.FormatFiscalDateTime(noteSale.IssueDate),
-		FormaPago:         &facturador.InvoiceFormaPago{Tipo: "Contado"},
-		Company:           facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
+		FechaEmision: facturador.FormatFiscalDateTime(noteSale.IssueDate),
+		// Sin formaPago: SUNAT 3246 rechaza PaymentTerms/PaymentMeansID "Contado" en NC/ND (07/08).
+		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
 		Client:            facturador.InvoiceClient{TipoDoc: clientTipoDoc, NumDoc: clientNumDoc, RznSocial: clientRazon, Address: clientAddr},
 		TipoMoneda:        tipoMoneda,
 		CodMotivo:         codMotivo,
 		DesMotivo:         desMotivo,
-		RelDocs:           relDocs,
-		MtoOperGravadas:   mtoOperGravadas,
+		TipDocAfectado:  tipDocAfectado,
+		NumDocfectado:   numDocAfectado,
+		// Sin relDocs duplicando el comprobante afectado: va a AdditionalDocumentReference (cat. 12)
+		// y SUNAT observa 4009 si se repite 01/03 del cat. 01 ya presente en BillingReference.
+		MtoOperGravadas: mtoOperGravadas,
 		MtoOperExoneradas: mtoOperExoneradas,
 		MtoOperInafectas:  mtoOperInafectas,
 		MtoIGV:            mtoIGV,
@@ -296,6 +312,38 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 // buildCreditNotePayload compatibilidad interna.
 func (s *BillingService) buildCreditNotePayload(ncSaleID uint) (*facturador.NotePayload, error) {
 	return s.buildNotePayload(ncSaleID)
+}
+
+// affectedDocumentSunatType tipo SUNAT del comprobante que corrige la nota: 01 factura, 03 boleta.
+func affectedDocumentSunatType(orig *database.TenantSale, seriesSunatCode string) string {
+	sc := strings.TrimSpace(seriesSunatCode)
+	switch sc {
+	case "01":
+		return "01"
+	case "03":
+		return "03"
+	}
+	dt := strings.ToUpper(strings.TrimSpace(orig.DocType))
+	if dt == "FACTURA" || strings.Contains(dt, "FACTURA") {
+		return "01"
+	}
+	return "03"
+}
+
+// formatAffectedDocumentNumber serie-correlativo para Greenter (B001-4, no B001-00000004).
+func formatAffectedDocumentNumber(orig *database.TenantSale) string {
+	nro := strings.TrimSpace(orig.Number)
+	if nro == "" {
+		return fmt.Sprintf("%s-%d", strings.TrimSpace(orig.Series), orig.Correlative)
+	}
+	if i := strings.LastIndex(nro, "-"); i > 0 {
+		suf := strings.TrimLeft(nro[i+1:], "0")
+		if suf == "" {
+			suf = "0"
+		}
+		return nro[:i+1] + suf
+	}
+	return nro
 }
 
 func (s *BillingService) resolveInvoiceClient(contact *database.TenantContact) (tipoDoc, numDoc, rzn string, addr facturador.InvoiceAddress, err error) {

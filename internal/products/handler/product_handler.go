@@ -251,11 +251,17 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 			input.HasVariants = true
 		}
 	}
+	branchID, berr := branch.ResolveWriteBranchID(c, 0)
+	if body.IsRestaurant {
+		if berr != nil {
+			return c.Status(403).JSON(fiber.Map{"error": berr.Error(), "code": branch.CodeBranchRequired})
+		}
+		input.BranchID = branchID
+	}
 	p, err := service.NewProductService(db(c)).Create(input)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	branchID, berr := branch.ResolveWriteBranchID(c, 0)
 	if body.IsRestaurant && berr == nil && branchID > 0 {
 		inv := invsvc.NewInventoryService(db(c))
 		if body.InitialStock > 0 {
@@ -329,6 +335,14 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
+	svc := service.NewProductService(db(c))
+	existing, err := svc.GetByID(uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
+	}
+	if msg, denied := h.productBranchDenied(c, existing); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg})
+	}
 	taxCfg := tax.LoadFromDB(db(c))
 	igvType := body.IgvAffectationType
 	if igvType == "" {
@@ -376,10 +390,10 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 			input.HasVariants = true
 		}
 	}
-	if err := service.NewProductService(db(c)).Update(uint(id), input); err != nil {
+	if err := svc.Update(uint(id), input); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	if body.IsRestaurant {
+	if body.IsRestaurant || existing.IsRestaurant {
 		branchID, berr := branch.ResolveWriteBranchID(c, 0)
 		if berr != nil {
 			return c.Status(403).JSON(fiber.Map{"error": berr.Error(), "code": branch.CodeBranchForbidden})
@@ -404,6 +418,9 @@ func (h *ProductHandler) ToggleAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
+	if msg, denied := h.productBranchDenied(c, p); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg})
+	}
 	if err := db(c).Model(p).Update("active", !p.Active).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -416,7 +433,15 @@ func (h *ProductHandler) DeleteAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	if err := service.NewProductService(db(c)).Delete(uint(id)); err != nil {
+	svc := service.NewProductService(db(c))
+	p, err := svc.GetByID(uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
+	}
+	if msg, denied := h.productBranchDenied(c, p); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg})
+	}
+	if err := svc.Delete(uint(id)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
@@ -425,8 +450,11 @@ func (h *ProductHandler) DeleteAPI(c fiber.Ctx) error {
 func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 	svc := service.NewProductService(db(c))
 	catID, _ := strconv.ParseUint(c.Query("category_id"), 10, 32)
+	inactiveOnly := c.Query("inactive_only") == "true" || c.Query("inactive_only") == "1"
 	activeOnly := c.Query("active_only")
-	if activeOnly == "" {
+	if inactiveOnly {
+		activeOnly = "false"
+	} else if activeOnly == "" {
 		activeOnly = "true"
 	}
 	perPage, _ := strconv.Atoi(c.Query("per_page"))
@@ -439,7 +467,8 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		Query:           c.Query("q"),
 		CategoryID:      uint(catID),
 		Type:            c.Query("type"),
-		ActiveOnly:      activeOnly == "true" || activeOnly == "1",
+		ActiveOnly:      !inactiveOnly && (activeOnly == "true" || activeOnly == "1"),
+		InactiveOnly:    inactiveOnly,
 		ManageStockOnly: c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1",
 		RestaurantOnly:  c.Query("restaurant_only") == "true" || c.Query("restaurant_only") == "1",
 		PreparationArea: c.Query("preparation_area"),
@@ -492,6 +521,9 @@ func (h *ProductHandler) GetAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
+	if msg, denied := h.productBranchDenied(c, p); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg})
+	}
 	modIds := svc.GetProductModifierGroupIDs(p.ID)
 	presentations, _ := svc.ListProductPresentations(p.ID)
 	return c.JSON(fiber.Map{
@@ -531,6 +563,9 @@ func (h *ProductHandler) UploadImageAPI(c fiber.Ctx) error {
 	p, err := svc.GetByID(uint(id))
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
+	}
+	if msg, denied := h.productBranchDenied(c, p); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg})
 	}
 
 	file, err := c.FormFile("image")
@@ -646,6 +681,17 @@ func (h *ProductHandler) ModifierGroupDeleteAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+func (h *ProductHandler) productBranchDenied(c fiber.Ctx, p *database.TenantProduct) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	bid := branch.ResolveReadBranchFilter(c, 0)
+	if err := service.NewProductService(db(c)).EnsureRestaurantBranchAccess(p, bid); err != nil {
+		return err.Error(), true
+	}
+	return "", false
+}
+
 func buildProductInput(c fiber.Ctx, taxCfg tax.Config) service.ProductInput {
 	salePrice, _ := strconv.ParseFloat(c.FormValue("sale_price"), 64)
 	purchasePrice, _ := strconv.ParseFloat(c.FormValue("purchase_price"), 64)
@@ -679,9 +725,9 @@ func buildProductInput(c fiber.Ctx, taxCfg tax.Config) service.ProductInput {
 	}
 
 	return service.ProductInput{
-		CategoryID:         catID,
-		Code:               c.FormValue("code"),
-		Name:               c.FormValue("name"),
+		CategoryID: catID,
+		Code:       c.FormValue("code"),
+		Name:       c.FormValue("name"),
 		Description:        c.FormValue("description"),
 		Type:               c.FormValue("type"),
 		Unit:               c.FormValue("unit"),

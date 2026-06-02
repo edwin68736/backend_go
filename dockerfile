@@ -39,7 +39,7 @@ COPY --from=builder --chmod=755 /out/tukifac-api ./tukifac-api
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 RUN chmod 755 /app/docker-entrypoint.sh \
-    && mkdir -p uploads storage/invoices \
+    && mkdir -p uploads storage/invoices storage/saas \
     && chown -R app:app /app
 
 USER app

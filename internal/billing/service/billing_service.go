@@ -16,6 +16,7 @@ import (
 	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
+	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tenantstorage"
@@ -420,9 +421,9 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	if orig.ContactID == nil {
 		return nil, nil, errors.New("para nota de crédito electrónica debe asignar un cliente con dirección y ubigeo en la venta original")
 	}
-	var ncSeries database.TenantDocumentSeries
-	if err := s.db.Where("branch_id = ? AND category = ? AND active = ?", orig.BranchID, "nota_credito", true).First(&ncSeries).Error; err != nil {
-		return nil, nil, errors.New("no hay serie de nota de crédito configurada para esta sucursal — configure una serie con categoría Nota de crédito")
+	ncSeries, err := s.resolveCreditNoteSeries(orig.BranchID, &orig)
+	if err != nil {
+		return nil, nil, err
 	}
 	saleSvc := salesvc.NewSaleService(s.db)
 	nextCorr, err := saleSvc.NextCorrelative(ncSeries.ID)
@@ -484,11 +485,11 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 		return nil, nil, err
 	}
 	notePayloadJSON, _ := json.Marshal(notePayload)
+	// DRAFT + payload: EnqueueSendToSUNAT pasa a PENDING_QUEUE y encola el job (no marcar PENDING_QUEUE aquí).
 	inv := database.TenantInvoice{
 		SaleID:          ncSale.ID,
 		NotePayloadJSON: string(notePayloadJSON),
-		PipelineStatus:  billingstate.PENDING_QUEUE,
-		JobStatus:       "pending",
+		PipelineStatus:  billingstate.DRAFT,
 		SunatStatus:     "pending",
 	}
 	if err := s.db.Create(&inv).Error; err != nil {
@@ -496,7 +497,7 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	}
 
 	tenantDB := s.lookupTenantDBName(s.centralTenantID)
-	inv2, err := s.EnqueueSendToSUNAT(ncSale.ID, s.centralTenantID, s.tenantSlug, tenantDB, FiscalSourceManual)
+	inv2, err := s.EnqueueSendToSUNAT(ncSale.ID, s.centralTenantID, s.tenantSlug, tenantDB, FiscalSourceQueue)
 	if err != nil {
 		return &ncSale, inv2, err
 	}
@@ -594,15 +595,14 @@ func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint) (*database.
 	inv := database.TenantInvoice{
 		SaleID:          ndSale.ID,
 		NotePayloadJSON: string(notePayloadJSON),
-		PipelineStatus:  billingstate.PENDING_QUEUE,
-		JobStatus:       "pending",
+		PipelineStatus:  billingstate.DRAFT,
 		SunatStatus:     "pending",
 	}
 	if err := s.db.Create(&inv).Error; err != nil {
 		return nil, nil, fmt.Errorf("crear registro fiscal ND: %w", err)
 	}
 	tenantDB := s.lookupTenantDBName(s.centralTenantID)
-	inv2, err := s.EnqueueSendToSUNAT(ndSale.ID, s.centralTenantID, s.tenantSlug, tenantDB, FiscalSourceManual)
+	inv2, err := s.EnqueueSendToSUNAT(ndSale.ID, s.centralTenantID, s.tenantSlug, tenantDB, FiscalSourceQueue)
 	if err != nil {
 		return &ndSale, inv2, err
 	}
@@ -618,6 +618,36 @@ func getSeriesSunatCode(db *gorm.DB, seriesID uint) string {
 		return ""
 	}
 	return ser.SunatCode
+}
+
+// resolveCreditNoteSeries elige la serie NC (SUNAT 07) según el comprobante a anular: FC## factura, BC## boleta.
+func (s *BillingService) resolveCreditNoteSeries(branchID uint, orig *database.TenantSale) (database.TenantDocumentSeries, error) {
+	if orig == nil {
+		return database.TenantDocumentSeries{}, errors.New("venta original no indicada")
+	}
+	prefix := docseries.CreditNoteSeriesPrefixForAffected(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID))
+	var rows []database.TenantDocumentSeries
+	err := s.db.Where("branch_id = ? AND category = ? AND active = ? AND TRIM(sunat_code) = ?",
+		branchID, "nota_credito", true, "07").Order("id ASC").Find(&rows).Error
+	if err != nil {
+		return database.TenantDocumentSeries{}, err
+	}
+	for _, row := range rows {
+		if docseries.SeriesMatchesCreditNotePrefix(row.Series, prefix) {
+			return row, nil
+		}
+	}
+	docLabel := docseries.AffectedDocLabel(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID))
+	if len(rows) == 0 {
+		return database.TenantDocumentSeries{}, fmt.Errorf(
+			"no hay serie de nota de crédito en esta sucursal — cree una serie %s## activa (categoría Nota de crédito, SUNAT 07) para anular %ss",
+			prefix, docLabel,
+		)
+	}
+	return database.TenantDocumentSeries{}, fmt.Errorf(
+		"ninguna serie de nota de crédito coincide con %s: configure serie %s## (ej. %s01) para anular %ss; las series FC## son solo para facturas y BC## solo para boletas",
+		docLabel, prefix, prefix, docLabel,
+	)
 }
 
 func normUnit(u string) string {
@@ -882,7 +912,8 @@ func (s *BillingService) ListSummaries() ([]database.TenantSunatSummary, error) 
 // No usa fallbacks "-": SUNAT exige dirección completa y nombres reales de departamento/provincia/distrito.
 func (s *BillingService) getCompanyConfigAndAddress() (*database.TenantCompanyConfig, facturador.InvoiceAddress, error) {
 	var cfg database.TenantCompanyConfig
-	if err := s.db.Select("id", "ruc", "business_name", "trade_name", "address", "ubigeo").First(&cfg).Error; err != nil {
+	// tax_rate: obligatorio al armar NC/ND (buildNotePayload); facturas ya cargan cfg completa vía First().
+	if err := s.db.Select("id", "ruc", "business_name", "trade_name", "address", "ubigeo", "tax_rate").First(&cfg).Error; err != nil {
 		return nil, facturador.InvoiceAddress{}, err
 	}
 	ubigueo := strings.TrimSpace(cfg.Ubigeo)

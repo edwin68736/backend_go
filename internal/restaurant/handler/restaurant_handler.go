@@ -14,6 +14,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/restaurantperm"
+	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
 
 	"github.com/gofiber/fiber/v3"
@@ -491,22 +492,33 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 	if claims, ok := c.Locals("tenant_claims").(*middleware.TenantClaims); ok && claims != nil {
 		et = claims.EmployeeType
 	}
+	var centralTenantID uint
+	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
+		centralTenantID = tenant.ID
+	}
 	sale, err := svc(c).BillTable(service.BillInput{
-		SessionID:      sessionID,
-		UserID:         uid(c),
-		EmployeeType:   et,
-		SeriesID:       body.SeriesID,
-		DocType:        body.DocType,
-		IssueDate:      issueDate,
-		Currency:       body.Currency,
-		ContactID:      body.ContactID,
-		Payments:       body.Payments,
-		CashSessionID:  body.CashSessionID,
-		CloseSession:   closeSession,
-		DiscountAmount: body.DiscountAmount,
+		SessionID:       sessionID,
+		UserID:          uid(c),
+		EmployeeType:    et,
+		SeriesID:        body.SeriesID,
+		DocType:         body.DocType,
+		IssueDate:       issueDate,
+		Currency:        body.Currency,
+		ContactID:       body.ContactID,
+		Payments:        body.Payments,
+		CashSessionID:   body.CashSessionID,
+		CloseSession:    closeSession,
+		DiscountAmount:  body.DiscountAmount,
+		CentralTenantID: centralTenantID,
 	}, taxCfg)
 	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		st := fiber.StatusBadRequest
+		payload := fiber.Map{"error": err.Error()}
+		if errors.Is(err, docusage.ErrQuotaExceeded) {
+			st = fiber.StatusPaymentRequired
+			payload["code"] = "DOCUMENT_QUOTA_EXCEEDED"
+		}
+		return c.Status(st).JSON(payload)
 	}
 	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
 		_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(db(c), tenant, sale.ID)

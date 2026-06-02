@@ -138,14 +138,22 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 		var existing database.TenantProduct
 		hasExisting := false
 		if !autoCode {
-			err := s.db.Where("code = ?", code).First(&existing).Error
-			if err == nil {
-				hasExisting = true
-			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			var found *database.TenantProduct
+			var err error
+			if (item.IsRestaurant || opts.ForceRestaurant) && opts.BranchID > 0 {
+				found, err = s.GetByCodeInBranch(code, opts.BranchID)
+			} else {
+				found, err = s.GetByCode(code)
+			}
+			if err != nil {
 				result.Failed = append(result.Failed, BulkImportFail{
 					Row: item.RowNumber, Name: item.Name, Error: err.Error(),
 				})
 				continue
+			}
+			if found != nil {
+				existing = *found
+				hasExisting = true
 			}
 		}
 
@@ -209,6 +217,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			PriceIncludesIgv:   item.PriceIncludesIgv,
 			ManageStock:        manageStock,
 			IsRestaurant:       isRestaurant,
+			BranchID:           branchIDForImport(isRestaurant, opts.BranchID),
 			PreparationArea:    prepArea,
 			Active:             true,
 			TaxRate:            taxCfg.EffectiveRate(igvType),
@@ -269,6 +278,13 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 	}
 
 	return result, nil
+}
+
+func branchIDForImport(isRestaurant bool, branchID uint) uint {
+	if isRestaurant && branchID > 0 {
+		return branchID
+	}
+	return 0
 }
 
 func (s *ProductService) resolveCategoryIDByName(name string, cache map[string]uint) (uint, error) {

@@ -10,9 +10,14 @@ echo "==> Creando estructura en ${BASE}"
 
 mkdir -p "${BASE}/data/uploads" \
          "${BASE}/data/storage/invoices" \
+         "${BASE}/data/storage/saas" \
          "${BASE}/.deploy"
 
 chmod -R 755 "${BASE}/data"
+# Contenedor corre como UID 10001 (usuario app)
+if command -v chown >/dev/null 2>&1; then
+  chown -R 10001:10001 "${BASE}/data" 2>/dev/null || true
+fi
 touch "${BASE}/.deploy/previous-image" "${BASE}/.deploy/current-image" 2>/dev/null || true
 
 if [[ "$(id -u)" -eq 0 ]] && [[ -n "${DEPLOY_USER}" ]] && [[ "${DEPLOY_USER}" != "root" ]]; then
@@ -32,7 +37,8 @@ ${BASE}/
 └── data/
     ├── uploads/                    → /app/uploads
     └── storage/
-        └── invoices/               → /app/storage/invoices
+        ├── invoices/               → /app/storage/invoices
+        └── saas/                   → QR Yape/Plin (upload-qr)
 
 Siguiente paso:
   1. Copiar docker-compose.production.yml y crear .env

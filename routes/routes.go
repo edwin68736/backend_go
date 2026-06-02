@@ -2,6 +2,7 @@ package routes
 
 import (
 	"log/slog"
+	"os"
 	"strings"
 
 	"tukifac/config"
@@ -31,6 +32,7 @@ import (
 	"tukifac/pkg/domains"
 	"tukifac/pkg/health"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/storagepaths"
 	"tukifac/pkg/tenantstorage"
 
 	"github.com/gofiber/fiber/v3"
@@ -89,7 +91,14 @@ func Setup(app *fiber.App) {
 		if p == "" {
 			return c.Status(fiber.StatusNotFound).SendString("not found")
 		}
-		return c.SendFile("./storage/" + p)
+		path := storagepaths.FilePath(p)
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "archivo no encontrado"})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.SendFile(path)
 	})
 
 	// Middleware global de resolución de tenant por subdominio / header

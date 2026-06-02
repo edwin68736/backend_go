@@ -11,6 +11,7 @@ import (
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/money"
+	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
 
@@ -849,8 +850,9 @@ type BillInput struct {
 	ContactID      *uint
 	Payments       []PaymentInput
 	CashSessionID  *uint
-	CloseSession   bool // si es false, genera la venta pero no cierra la mesa (cliente puede seguir consumiendo)
-	DiscountAmount float64 // descuento global en moneda (se reparte proporcionalmente entre ítems)
+	CloseSession      bool // si es false, genera la venta pero no cierra la mesa (cliente puede seguir consumiendo)
+	DiscountAmount    float64 // descuento global en moneda (se reparte proporcionalmente entre ítems)
+	CentralTenantID   uint    // tenant SaaS (cupo documentos electrónicos)
 }
 
 type PaymentInput struct {
@@ -891,7 +893,11 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	}
 	input.CashSessionID = resolvedCash
 
-	if _, err := docseries.ValidateForBranch(s.db, input.SeriesID, sess.BranchID); err != nil {
+	seriesRow, err := docseries.ValidateForBranch(s.db, input.SeriesID, sess.BranchID)
+	if err != nil {
+		return nil, err
+	}
+	if err := docusage.GuardCountableSunatQuota(input.CentralTenantID, seriesRow.SunatCode); err != nil {
 		return nil, err
 	}
 
@@ -1001,7 +1007,6 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	}
 
 	var sale *database.TenantSale
-	var seriesRow database.TenantDocumentSeries
 	var correlative uint
 	var saleNumber string
 

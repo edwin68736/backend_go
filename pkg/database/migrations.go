@@ -581,6 +581,7 @@ type TenantProduct struct {
 	HasVariants        bool           `gorm:"default:false" json:"has_variants"`
 	HasModifiers       bool           `gorm:"default:false" json:"has_modifiers"`
 	IsRestaurant       bool           `gorm:"default:false" json:"is_restaurant"`
+	BranchID           uint           `gorm:"index" json:"branch_id"` // platos Tukichef: sucursal dueña del catálogo
 	PreparationArea    string         `gorm:"size:50" json:"preparation_area"` // solo restaurante: cocina, bar, barra, etc.
 	MinStock           float64        `gorm:"type:decimal(15,3);default:0" json:"min_stock"`
 	ImageURL           string         `gorm:"size:255" json:"image_url"`
