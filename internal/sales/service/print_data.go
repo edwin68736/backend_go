@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -72,14 +73,15 @@ type PrintClient struct {
 }
 
 type PrintCompany struct {
-	RUC          string `json:"ruc"`
-	BusinessName string `json:"business_name"`
-	TradeName    string `json:"trade_name,omitempty"`
-	Address      string `json:"address,omitempty"`
-	Phone        string `json:"phone,omitempty"`
-	Email        string `json:"email,omitempty"`
-	Website      string `json:"website,omitempty"`
-	LogoURL      string `json:"logo_url,omitempty"`
+	RUC              string `json:"ruc"`
+	BusinessName     string `json:"business_name"`
+	TradeName        string `json:"trade_name,omitempty"`
+	Address          string `json:"address,omitempty"`
+	Phone            string `json:"phone,omitempty"`
+	Email            string `json:"email,omitempty"`
+	Website          string `json:"website,omitempty"`
+	LogoURL          string `json:"logo_url,omitempty"`
+	AdditionalNotes  string `json:"additional_notes,omitempty"`
 }
 
 type PrintBankAccount struct {
@@ -169,16 +171,21 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 
 	// Empresa
 	var company database.TenantCompanyConfig
-	if db.First(&company).Error == nil {
+	companyOK := db.First(&company).Error == nil
+	var receiptBankIDs []uint
+	var receiptBanksConfigured bool
+	if companyOK {
+		receiptBankIDs, receiptBanksConfigured = decodeReceiptBankAccountIDs(company.ReceiptBankAccountIDs)
 		pd.Company = PrintCompany{
-			RUC:          company.RUC,
-			BusinessName: company.BusinessName,
-			TradeName:    company.TradeName,
-			Address:      company.Address,
-			Phone:        strings.TrimSpace(company.Phone),
-			Email:        strings.TrimSpace(company.Email),
-			Website:      strings.TrimSpace(company.Website),
-			LogoURL:      company.LogoURL,
+			RUC:             company.RUC,
+			BusinessName:    company.BusinessName,
+			TradeName:       company.TradeName,
+			Address:         company.Address,
+			Phone:           strings.TrimSpace(company.Phone),
+			Email:           strings.TrimSpace(company.Email),
+			Website:         strings.TrimSpace(company.Website),
+			LogoURL:         company.LogoURL,
+			AdditionalNotes: strings.TrimSpace(company.AdditionalNotes),
 		}
 		provider := strings.TrimSpace(strings.ToLower(company.WalletProvider))
 		phone := strings.TrimSpace(company.WalletPhone)
@@ -198,6 +205,9 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	if db.Where("active = ?", true).Order("id ASC").Find(&bankAccounts).Error == nil {
 		for _, ba := range bankAccounts {
 			if strings.TrimSpace(ba.AccountNumber) == "" && strings.TrimSpace(ba.BankName) == "" {
+				continue
+			}
+			if receiptBanksConfigured && !receiptBankAccountAllowed(ba.ID, receiptBankIDs) {
 				continue
 			}
 			pd.BankAccounts = append(pd.BankAccounts, PrintBankAccount{
@@ -352,4 +362,25 @@ func (p *PrintData) buildQRData() string {
 	return fmt.Sprintf("%s|%s|%s|%s|%.2f|%.2f|%s|%s|%s|%s",
 		ruc, p.SunatCode, p.Series, numero,
 		p.TaxAmount, p.Total, p.IssueDate, clienteTipo, clienteNumero, hash)
+}
+
+func decodeReceiptBankAccountIDs(raw string) (ids []uint, configured bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil, false
+	}
+	var out []uint
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func receiptBankAccountAllowed(id uint, selected []uint) bool {
+	for _, sid := range selected {
+		if sid == id {
+			return true
+		}
+	}
+	return false
 }

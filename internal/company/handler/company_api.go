@@ -60,17 +60,22 @@ func (h *CompanyHandler) UpdateConfigAPI(c fiber.Ctx) error {
 // PUT /api/company/receipt-wallet — QR Yape/Plin en comprobantes locales.
 func (h *CompanyHandler) UpdateReceiptWalletAPI(c fiber.Ctx) error {
 	var body struct {
-		WalletProvider     string `json:"wallet_provider"`
-		WalletPhone        string `json:"wallet_phone"`
-		WalletQrURL        string `json:"wallet_qr_url"`
-		WalletShowOnA4     bool   `json:"wallet_show_on_a4"`
-		WalletShowOnTicket bool   `json:"wallet_show_on_ticket"`
+		WalletProvider        string `json:"wallet_provider"`
+		WalletPhone           string `json:"wallet_phone"`
+		WalletQrURL           string `json:"wallet_qr_url"`
+		WalletShowOnA4        bool   `json:"wallet_show_on_a4"`
+		WalletShowOnTicket    bool   `json:"wallet_show_on_ticket"`
+		ReceiptBankAccountIDs []uint `json:"receipt_bank_account_ids"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
 	svc := service.NewCompanyService(db(c))
-	if err := svc.SaveReceiptWallet(body.WalletProvider, body.WalletPhone, body.WalletQrURL, body.WalletShowOnA4, body.WalletShowOnTicket); err != nil {
+	if err := svc.SaveReceiptWallet(
+		body.WalletProvider, body.WalletPhone, body.WalletQrURL,
+		body.WalletShowOnA4, body.WalletShowOnTicket,
+		body.ReceiptBankAccountIDs,
+	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	cfg, _ := svc.GetConfig()

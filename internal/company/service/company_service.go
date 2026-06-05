@@ -76,8 +76,8 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 	return s.db.Model(&existing).Updates(updates).Error
 }
 
-// SaveReceiptWallet guarda QR Yape/Plin para comprobantes PDF locales.
-func (s *CompanyService) SaveReceiptWallet(provider, phone, qrURL string, showOnA4, showOnTicket bool) error {
+// SaveReceiptWallet guarda QR Yape/Plin y cuentas bancarias visibles en comprobantes.
+func (s *CompanyService) SaveReceiptWallet(provider, phone, qrURL string, showOnA4, showOnTicket bool, bankAccountIDs []uint) error {
 	var existing database.TenantCompanyConfig
 	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("configure primero los datos generales de la empresa")
@@ -96,11 +96,12 @@ func (s *CompanyService) SaveReceiptWallet(provider, phone, qrURL string, showOn
 		return errors.New("el QR es demasiado grande: use el botón Subir QR (se guardará como archivo en el servidor)")
 	}
 	return s.db.Model(&existing).Updates(map[string]interface{}{
-		"wallet_provider":       provider,
-		"wallet_phone":          phone,
-		"wallet_qr_url":         qrURL,
-		"wallet_show_on_a4":     showOnA4,
-		"wallet_show_on_ticket": showOnTicket,
+		"wallet_provider":            provider,
+		"wallet_phone":               phone,
+		"wallet_qr_url":              qrURL,
+		"wallet_show_on_a4":          showOnA4,
+		"wallet_show_on_ticket":      showOnTicket,
+		"receipt_bank_account_ids":   EncodeReceiptBankAccountIDs(bankAccountIDs),
 	}).Error
 }
 
@@ -120,7 +121,9 @@ func (s *CompanyService) SaveSunatConfigTenant(taxRate float64, igvRegime string
 	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return errors.New("configure primero los datos generales de la empresa")
 	}
-	if taxRate <= 0 {
+	switch taxRate {
+	case 18, 10.5:
+	default:
 		taxRate = 18
 	}
 	if igvRegime == "" {

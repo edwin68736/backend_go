@@ -500,7 +500,9 @@ type TenantCompanyConfig struct {
 	WalletQrURL        string `gorm:"type:longtext" json:"wallet_qr_url"`
 	WalletShowOnA4     bool   `gorm:"default:false" json:"wallet_show_on_a4"`
 	WalletShowOnTicket bool   `gorm:"default:false" json:"wallet_show_on_ticket"`
-	CreatedAt        time.Time `json:"created_at"`
+	// JSON array de IDs (tenant_bank_accounts). Vacío sin configurar = todas las activas; "[]" = ninguna.
+	ReceiptBankAccountIDs string `gorm:"type:text" json:"receipt_bank_account_ids"`
+	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 

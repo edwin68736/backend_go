@@ -187,6 +187,15 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 	return out
 }
 
+// ProductListItemFrom devuelve un ítem de listado con category_name para un solo producto.
+func (s *ProductService) ProductListItemFrom(p database.TenantProduct) ProductListItem {
+	items := s.attachCategoryNames([]database.TenantProduct{p})
+	if len(items) == 0 {
+		return ProductListItem{TenantProduct: p}
+	}
+	return items[0]
+}
+
 // ListReport igual que List pero devuelve filas enriquecidas (stock por sucursal, series, categoría).
 func (s *ProductService) ListReport(params ProductListParams) ([]ProductReportItem, int64, error) {
 	var products []database.TenantProduct

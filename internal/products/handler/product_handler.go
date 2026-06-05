@@ -510,6 +510,32 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": products})
 }
 
+// LookupByCodeAPI — búsqueda exacta por código de barras (POS / cámara). GET /api/products/lookup-by-code?code=
+func (h *ProductHandler) LookupByCodeAPI(c fiber.Ctx) error {
+	code := strings.TrimSpace(c.Query("code"))
+	if code == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "código requerido"})
+	}
+	svc := service.NewProductService(db(c))
+	var branchID uint
+	if reqB, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil && reqB > 0 {
+		branchID = branch.ResolveReadBranchFilter(c, uint(reqB))
+	} else if branch.ActiveBranchID(c) > 0 {
+		branchID = branch.ActiveBranchID(c)
+	}
+	p, err := svc.FindRestaurantProductByBarcode(code, branchID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if p == nil {
+		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
+	}
+	if msg, denied := h.productBranchDenied(c, p); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg})
+	}
+	return c.JSON(fiber.Map{"data": svc.ProductListItemFrom(*p)})
+}
+
 // GetAPI devuelve un producto por ID con modifier_group_ids (para edición y panel avanzado).
 func (h *ProductHandler) GetAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
