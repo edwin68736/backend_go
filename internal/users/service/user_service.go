@@ -98,7 +98,7 @@ func (s *UserService) Create(input CreateUserInput) (*database.TenantUser, error
 	if len(branchIDs) == 0 && input.BranchID != nil && *input.BranchID > 0 {
 		branchIDs = []uint{*input.BranchID}
 	}
-	if len(branchIDs) > 0 && branch.UserBranchesReady(s.db) {
+	if len(branchIDs) > 0 {
 		if err := branch.SetUserAssignedBranches(s.db, user.ID, branchIDs, false); err != nil {
 			return nil, err
 		}
@@ -143,7 +143,7 @@ func (s *UserService) Update(id uint, input UpdateUserInput) error {
 	if len(branchIDs) == 0 && input.BranchID != nil && *input.BranchID > 0 {
 		branchIDs = []uint{*input.BranchID}
 	}
-	if len(branchIDs) > 0 && branch.UserBranchesReady(s.db) {
+	if len(branchIDs) > 0 {
 		if err := branch.SetUserAssignedBranches(s.db, id, branchIDs, true); err != nil {
 			return err
 		}

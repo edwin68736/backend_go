@@ -1,7 +1,8 @@
 package tenantmigrations
 
-// TenantMigrations migraciones ordenadas (> baseline V30). Solo versiones nuevas.
+// TenantMigrations migraciones ordenadas. V001 = esquema base; V031+ = incrementales históricos.
 var TenantMigrations = []TenantMigration{
+	V001BaselineSchema{},
 	V031MultiBranch{},
 	V032RestaurantOrders{},
 	V033DeliveryDriversTimestamps{},

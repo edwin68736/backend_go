@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -1261,78 +1262,9 @@ type TenantMembershipInvoice struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// MigrateTenant aplica todas las migraciones al DB de un tenant.
+// MigrateTenant está deprecado: el esquema se aplica solo vía tenantmigrations (V001+).
 func MigrateTenant(db *gorm.DB) error {
-	if err := db.AutoMigrate(
-		&TenantRole{},
-		&TenantPermission{},
-		&TenantRolePermission{},
-		&TenantUser{},
-		&TenantBranch{},
-		&TenantCompanyConfig{},
-		&TenantDocumentSeries{},
-		&TenantContact{},
-		&TenantContactPerson{},
-		&TenantCategory{},
-		&TenantProduct{},
-		&TenantProductStock{},
-		&TenantProductSerial{},
-		&TenantStockMovement{},
-		&TenantTransfer{},
-		&TenantTransferLog{},
-		&TenantProductPresentation{},
-		&TenantModifierGroup{},
-		&TenantModifierOption{},
-		&TenantProductModifierGroup{},
-		&TenantSale{},
-		&TenantSaleItem{},
-		&TenantInvoice{},
-		&TenantSunatSummary{},
-		&TenantSunatVoided{},
-		&TenantDespatch{},
-		&TenantRetention{},
-		&TenantPerception{},
-		&TenantSunatReversion{},
-		&TenantPurchase{},
-		&TenantPurchaseItem{},
-		&TenantCashSession{},
-		&TenantCashMovement{},
-		&TenantPaymentMethod{},
-		&TenantBankAccount{},
-		&TenantBankMovement{},
-		&TenantExternalModule{},
-		// Módulo Restaurante
-		&TenantRestaurantFloor{},
-		&TenantRestaurantTable{},
-		&TenantWaiter{},
-		&TenantTableSession{},
-		&TenantTableOrder{},
-		&TenantComanda{},
-		&TenantDeliveryCompany{},
-		&TenantDeliveryDriver{},
-		&TenantRestaurantSetting{},
-		&TenantRestaurantStaff{},
-		&TenantUserRestaurantRole{},
-		&TenantSalePayment{},
-		&TenantMembership{},
-		&TenantMembershipInvoice{},
-		&UbiRegion{},
-		&UbiProvincia{},
-		&UbiDistrito{},
-		&TenantSchemaPatch{},
-		&TenantMigrationHistory{},
-	); err != nil {
-		return err
-	}
-	// Asegurar columnas añadidas después en TenantDocumentSeries (BD antiguas sin sunat_code/category)
-	if err := ensureDocumentSeriesColumns(db); err != nil {
-		return err
-	}
-	if err := ensureServiceProductsNoStock(db); err != nil {
-		return err
-	}
-	// Multi-sucursal DDL: V031 en migrate-fleet (tenantmigrations). Bootstrap nuevos tenants vía AutoMigrate structs.
-	return EnsureMembershipModulePermissions(db)
+	return fmt.Errorf("MigrateTenant deprecado: use migrate-fleet o ProvisionTenantDB (migraciones versionadas)")
 }
 
 // ensureServiceProductsNoStock corrige filas type=service que quedaron con manage_stock por datos legacy o bugs.

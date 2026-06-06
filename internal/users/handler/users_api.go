@@ -51,7 +51,7 @@ func (h *UserHandler) ListAPI(c fiber.Ctx) error {
 		if u.BranchID != nil {
 			ro.BranchName = branchNames[*u.BranchID]
 		}
-		if ids, err := branch.GetUserAssignedBranchIDs(db, u.ID); err == nil && len(ids) > 0 {
+		if ids, err := branch.ResolveDisplayBranchIDs(db, u.ID, u.HomeBranchID, u.BranchID); err == nil && len(ids) > 0 {
 			ro.BranchIDs = ids
 			names := make([]string, 0, len(ids))
 			for _, id := range ids {
@@ -80,7 +80,7 @@ func (h *UserHandler) GetAPI(c fiber.Ctx) error {
 		"id": u.ID, "name": u.Name, "email": u.Email,
 		"role_id": u.RoleID, "branch_id": u.BranchID, "active": u.Active,
 	}
-	if ids, err := branch.GetUserAssignedBranchIDs(tenantDB(c), u.ID); err == nil && len(ids) > 0 {
+	if ids, err := branch.ResolveDisplayBranchIDs(tenantDB(c), u.ID, u.HomeBranchID, u.BranchID); err == nil && len(ids) > 0 {
 		data["branch_ids"] = ids
 	}
 	return c.JSON(fiber.Map{"data": data})

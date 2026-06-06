@@ -624,7 +624,7 @@ func (s *RestaurantService) UpdateComandaStatus(id uint, status string, userID u
 	return s.syncSessionOrderStatus(s.db, c.SessionID)
 }
 
-// CancelComanda anula una comanda (solo admin).
+// CancelComanda anula una comanda (permiso o.cx / s.m + PIN de operaciones).
 func (s *RestaurantService) CancelComanda(id uint, reason string, cancelledByID uint) error {
 	var c database.TenantComanda
 	if err := s.db.First(&c, id).Error; err != nil {
@@ -887,7 +887,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		return nil, errors.New("no hay ítems para facturar en esta sesión")
 	}
 
-	resolvedCash, err := s.resolveCashSessionForPayments(sess.BranchID, input.UserID, input.EmployeeType, input.CashSessionID, input.Payments)
+	resolvedCash, err := s.resolveCashSessionForSale(sess.BranchID, input.UserID, input.EmployeeType, input.CashSessionID, input.Payments)
 	if err != nil {
 		return nil, err
 	}
@@ -1256,7 +1256,7 @@ func (s *RestaurantService) GetSalePayments(saleID uint) ([]database.TenantSaleP
 
 // ============================= HELPERS =============================
 
-func (s *RestaurantService) resolveCashSessionForPayments(
+func (s *RestaurantService) resolveCashSessionForSale(
 	branchID, userID uint,
 	employeeType string,
 	cashSessionID *uint,
@@ -1264,43 +1264,26 @@ func (s *RestaurantService) resolveCashSessionForPayments(
 ) (*uint, error) {
 	cbSvc := cashbanksvc.NewCashBankService(s.db)
 	needsCash := false
+	payLines := make([]cashbanksvc.PaymentLineInput, 0, len(payments))
 	for _, p := range payments {
 		if p.Amount <= 0 {
 			continue
 		}
+		payLines = append(payLines, cashbanksvc.PaymentLineInput{Method: p.Method, Amount: p.Amount})
 		pm, err := cbSvc.GetPaymentMethodByCode(p.Method)
 		if err == nil && pm != nil && pm.DestinationType == "cash" {
 			needsCash = true
-			break
 		}
 		if strings.EqualFold(strings.TrimSpace(p.Method), "cash") || strings.EqualFold(strings.TrimSpace(p.Method), "efectivo") {
 			needsCash = true
-			break
 		}
 	}
-	if !needsCash {
-		return cashSessionID, nil
-	}
-	et := strings.ToLower(strings.TrimSpace(employeeType))
-	if et == "waiter" || et == "mozo" {
-		return nil, errors.New("los mozos no pueden cobrar en efectivo; use otro método de pago o un cajero")
-	}
-	var sid uint
-	if cashSessionID != nil && *cashSessionID > 0 {
-		sid = *cashSessionID
-	} else {
-		sess, err := cbSvc.GetOpenSession(branchID, userID)
-		if err != nil {
-			return nil, err
+	if needsCash {
+		et := strings.ToLower(strings.TrimSpace(employeeType))
+		if et == "waiter" || et == "mozo" {
+			return nil, errors.New("los mozos no pueden cobrar en efectivo; use otro método de pago o un cajero")
 		}
-		if sess == nil {
-			return nil, errors.New("debe abrir su caja para cobrar en efectivo")
-		}
-		sid = sess.ID
 	}
-	if _, err := cbSvc.ValidateCashSessionForUser(sid, userID, branchID); err != nil {
-		return nil, err
-	}
-	return &sid, nil
+	return cbSvc.ResolveCashSessionForSale(branchID, userID, cashSessionID, payLines)
 }
 

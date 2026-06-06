@@ -80,7 +80,7 @@ func (s *Service) computePermissionKeys(userID uint) ([]string, error) {
 		CanOpenTable: f.CanOpenTable, KitchenAccess: f.KitchenAccess,
 		DeliveryAccess: f.DeliveryAccess,
 	}
-	return restaurantperm.EmployeeTypeToKeys(normalizeType(st.EmployeeType), flags), nil
+	return restaurantperm.EmployeeTypeToKeys(normalizeEmployeeType(st.EmployeeType), flags), nil
 }
 
 func (s *Service) HasPermission(tenantSlug string, tenantID, userID, permVer uint, perm string) (bool, error) {
@@ -128,7 +128,7 @@ func (s *Service) AuthenticatePIN(pin, station string) (userID, staffID uint, em
 	if matched == nil {
 		return 0, 0, "", errors.New("PIN incorrecto o sin acceso a esta estación")
 	}
-	return matched.UserID, matched.ID, normalizeType(matched.EmployeeType), nil
+	return matched.UserID, matched.ID, normalizeEmployeeType(matched.EmployeeType), nil
 }
 
 func (s *Service) UpsertStaffForUser(userID uint, employeeType string, pin string, flags UpsertFlags) error {
@@ -249,10 +249,8 @@ func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem
 		}
 		branchIDs = []uint{mainID}
 	}
-	if branch.UserBranchesReady(s.db) {
-		if err := branch.ValidateBranchIDsExist(s.db, branchIDs); err != nil {
-			return nil, err
-		}
+	if err := branch.ValidateBranchIDsExist(s.db, branchIDs); err != nil {
+		return nil, err
 	}
 	homeBranchID := branchIDs[0]
 
@@ -276,10 +274,8 @@ func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem
 			return fmt.Errorf("creando usuario: %w", err)
 		}
 		createdUserID = user.ID
-		if branch.UserBranchesReady(tx) {
-			if err := branch.SetUserAssignedBranches(tx, user.ID, branchIDs, false); err != nil {
-				return err
-			}
+		if err := branch.SetUserAssignedBranches(tx, user.ID, branchIDs, false); err != nil {
+			return err
 		}
 		flags := UpsertFlags{
 			DisplayName: strings.TrimSpace(in.DisplayName),
@@ -353,7 +349,7 @@ func randomOperativePassword() string {
 func normalizeEmployeeType(et string) string {
 	et = strings.TrimSpace(strings.ToLower(et))
 	switch et {
-	case "vendedor":
+	case "vendedor", "cajero":
 		return "cashier"
 	case "mozo":
 		return "waiter"
@@ -422,13 +418,11 @@ func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
 			item.StaffActive = st.IsActive
 			item.ProfileComplete = st.IsActive && strings.TrimSpace(st.EmployeeType) != ""
 		}
-		if branch.UserBranchesReady(s.db) {
-			ids, _ := branch.GetUserAssignedBranchIDs(s.db, u.ID)
-			item.BranchIDs = ids
-			for _, bid := range ids {
-				if b, err := branch.GetBranchBrief(s.db, bid); err == nil {
-					item.BranchNames = append(item.BranchNames, b.Name)
-				}
+		ids, _ := branch.ResolveDisplayBranchIDs(s.db, u.ID, u.HomeBranchID, u.BranchID)
+		item.BranchIDs = ids
+		for _, bid := range ids {
+			if b, err := branch.GetBranchBrief(s.db, bid); err == nil {
+				item.BranchNames = append(item.BranchNames, b.Name)
 			}
 		}
 		out = append(out, item)
@@ -440,9 +434,6 @@ func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
 func (s *Service) AssignUserBranches(userID uint, branchIDs []uint) error {
 	if userID == 0 {
 		return errors.New("usuario inválido")
-	}
-	if !branch.UserBranchesReady(s.db) {
-		return errors.New("migración de sucursales por usuario pendiente")
 	}
 	return branch.SetUserAssignedBranches(s.db, userID, branchIDs, true)
 }

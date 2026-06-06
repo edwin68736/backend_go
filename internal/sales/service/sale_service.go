@@ -318,7 +318,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				}
 				payLines = append(payLines, cashbanksvc.PaymentLineInput{Method: p.Method, Amount: p.Amount})
 			}
-			resolvedCash, err := cbSvc.ResolveCashSessionForPayments(input.BranchID, input.UserID, input.CashSessionID, payLines)
+			resolvedCash, err := cbSvc.ResolveCashSessionForSale(input.BranchID, input.UserID, input.CashSessionID, payLines)
 			if err != nil {
 				return err
 			}

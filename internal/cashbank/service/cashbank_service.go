@@ -620,6 +620,37 @@ type PaymentLineInput struct {
 	Amount float64
 }
 
+// ResolveCashSessionForSale vincula la venta a la sesión del cajero.
+// Exige sesión abierta si hay efectivo; si el pago es solo digital, usa la sesión abierta del usuario (reportes de caja).
+func (s *CashBankService) ResolveCashSessionForSale(
+	branchID, userID uint,
+	cashSessionID *uint,
+	payments []PaymentLineInput,
+) (*uint, error) {
+	resolved, err := s.ResolveCashSessionForPayments(branchID, userID, cashSessionID, payments)
+	if err != nil {
+		return nil, err
+	}
+	if resolved != nil && *resolved > 0 {
+		return resolved, nil
+	}
+	if cashSessionID != nil && *cashSessionID > 0 {
+		if _, err := s.ValidateCashSessionForUser(*cashSessionID, userID, branchID); err != nil {
+			return nil, err
+		}
+		return cashSessionID, nil
+	}
+	sess, err := s.GetOpenSession(branchID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, nil
+	}
+	sid := sess.ID
+	return &sid, nil
+}
+
 // ResolveCashSessionForPayments asigna la sesión de caja del usuario si hay pagos a destino efectivo.
 func (s *CashBankService) ResolveCashSessionForPayments(
 	branchID, userID uint,
