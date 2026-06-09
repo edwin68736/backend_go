@@ -197,10 +197,10 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 	if len(items) == 0 {
 		return nil, errors.New("la nota no tiene ítems")
 	}
-	if companyCfg.TaxRate <= 0 {
-		return nil, fmt.Errorf("configure el porcentaje de IGV en Configuración de la empresa (SUNAT)")
+	companyTaxRate, err := s.resolveCompanyTaxRate()
+	if err != nil {
+		return nil, err
 	}
-	companyTaxRate := companyCfg.TaxRate
 	details := make([]facturador.InvoiceDetail, len(items))
 	for i, it := range items {
 		aff := strings.TrimSpace(it.IgvAffectationType)

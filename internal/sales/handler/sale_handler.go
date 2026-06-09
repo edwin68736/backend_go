@@ -434,6 +434,7 @@ func (h *SaleHandler) IssueElectronicFromNotaAPI(c fiber.Ctx) error {
 	var body struct {
 		SeriesID  uint   `json:"series_id"`
 		IssueDate string `json:"issue_date"`
+		ContactID *uint  `json:"contact_id"`
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
@@ -446,7 +447,7 @@ func (h *SaleHandler) IssueElectronicFromNotaAPI(c fiber.Ctx) error {
 	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
 		centralTenantID = tenant.ID
 	}
-	sale, err := svc.IssueElectronicFromNota(uint(id), body.SeriesID, userID(c), body.IssueDate, centralTenantID)
+	sale, err := svc.IssueElectronicFromNota(uint(id), body.SeriesID, userID(c), body.IssueDate, centralTenantID, body.ContactID)
 	if err != nil {
 		return saleCreateErrorResponse(c, err)
 	}

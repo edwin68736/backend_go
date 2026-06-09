@@ -19,6 +19,7 @@ import (
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/sunat"
+	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
 
 	"gorm.io/gorm"
@@ -237,11 +238,10 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		// Cliente genérico (sin contacto): SUNAT exige dirección real; no se acepta "-"
 		return nil, errors.New("para facturación electrónica debe asignar un cliente con dirección y ubigeo completos en la venta")
 	}
-	// Sin fallbacks: el porcentaje IGV debe estar configurado en la empresa (Configuración → SUNAT/IGV).
-	if companyCfg.TaxRate <= 0 {
-		return nil, fmt.Errorf("configure el porcentaje de IGV en Configuración de la empresa (SUNAT); no se usan valores por defecto")
+	companyTaxRate, err := s.resolveCompanyTaxRate()
+	if err != nil {
+		return nil, err
 	}
-	companyTaxRate := companyCfg.TaxRate
 	details := make([]facturador.InvoiceDetail, len(items))
 	for i, item := range items {
 		aff := strings.TrimSpace(item.IgvAffectationType)
@@ -906,6 +906,15 @@ func (s *BillingService) ListSummaries() ([]database.TenantSunatSummary, error) 
 	var list []database.TenantSunatSummary
 	err := s.db.Order("fec_resumen DESC, created_at DESC").Find(&list).Error
 	return list, err
+}
+
+// resolveCompanyTaxRate alinea la emisión fiscal con tax.LoadFromDB (misma fuente que las ventas).
+func (s *BillingService) resolveCompanyTaxRate() (float64, error) {
+	rate := tax.LoadFromDB(s.db).TaxRate
+	if rate <= 0 {
+		return 0, fmt.Errorf("configure el porcentaje de IGV en Configuración de la empresa (SUNAT)")
+	}
+	return rate, nil
 }
 
 // getCompanyConfigAndAddress obtiene la configuración de la empresa y la dirección para payloads SUNAT (resumen, voided).

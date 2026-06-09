@@ -3,6 +3,7 @@ package routes
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"tukifac/config"
@@ -97,6 +98,11 @@ func Setup(app *fiber.App) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "archivo no encontrado"})
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		// QR SaaS y assets editables: no cachear agresivamente (reemplazo mantiene misma ruta legacy).
+		if strings.HasPrefix(filepath.ToSlash(p), "saas/") {
+			c.Set("Cache-Control", "no-store, no-cache, must-revalidate")
+			c.Set("Pragma", "no-cache")
 		}
 		return c.SendFile(path)
 	})

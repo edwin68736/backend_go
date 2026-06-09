@@ -241,6 +241,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 	}
 
+	emitFromNV := input.IssuedFromNotaSaleID != nil && *input.IssuedFromNotaSaleID > 0
+
 	// Construir lista de pagos: si Payments está vacío, usar PaymentMethod como pago único
 	payments := input.Payments
 	if len(payments) == 0 && input.PaymentMethod != "" {
@@ -248,6 +250,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	if total > 0 && len(payments) == 0 {
 		return nil, errors.New("debe indicar al menos un método de pago para registrar la venta")
+	}
+	if emitFromNV && total > 0 && len(payments) > 0 {
+		var sumPayments float64
+		for _, p := range payments {
+			sumPayments += p.Amount
+		}
+		if money.RoundDisplay(sumPayments) != money.RoundDisplay(total) {
+			payments = alignPaymentsToSaleTotal(payments, total)
+		}
 	}
 	if len(payments) > 0 {
 		var sumPayments float64
@@ -284,7 +295,6 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		IssuedFromNotaSaleID: input.IssuedFromNotaSaleID,
 	}
 
-	emitFromNV := input.IssuedFromNotaSaleID != nil && *input.IssuedFromNotaSaleID > 0
 	// Emisión electrónica desde NV: misma operación comercial; nunca repetir stock/seriales ni caja/bancos.
 	skipInv := input.SkipInventory || emitFromNV
 	skipPay := input.SkipPaymentDistribution || emitFromNV
@@ -1234,9 +1244,62 @@ func (s *SaleService) GetPayments(saleID uint) ([]database.TenantSalePayment, er
 	return rows, err
 }
 
+func alignPaymentsToSaleTotal(pays []PaymentInput, total float64) []PaymentInput {
+	roundedTotal := money.RoundSunat(total)
+	if len(pays) == 0 {
+		return []PaymentInput{{Method: "cash", Amount: roundedTotal}}
+	}
+	if len(pays) == 1 {
+		return []PaymentInput{{Method: pays[0].Method, Amount: roundedTotal}}
+	}
+	var sum float64
+	for _, p := range pays {
+		sum += p.Amount
+	}
+	if sum <= 0 {
+		return []PaymentInput{{Method: pays[0].Method, Amount: roundedTotal}}
+	}
+	out := make([]PaymentInput, 0, len(pays))
+	var allocated float64
+	for i, p := range pays {
+		amt := money.RoundSunat(p.Amount * roundedTotal / sum)
+		if i == len(pays)-1 {
+			amt = money.RoundSunat(roundedTotal - allocated)
+		}
+		out = append(out, PaymentInput{Method: p.Method, Amount: amt})
+		allocated += amt
+	}
+	return out
+}
+
+// inferPriceIncludesIgvFromSaleItem deduce si el precio unitario de la línea ya incluye IGV,
+// comparando el total almacenado con el recálculo tributario (evita desfase al emitir boleta/factura desde NV).
+func inferPriceIncludesIgvFromSaleItem(db *gorm.DB, it database.TenantSaleItem, taxCfg tax.Config) bool {
+	affType := strings.TrimSpace(it.IgvAffectationType)
+	if affType == "" {
+		affType = "10"
+	}
+	storedTotal := money.RoundSunat(it.Total)
+	_, _, withTrue := tax.CalcItem(it.UnitPrice, it.Quantity, it.Discount, affType, true, taxCfg)
+	if money.RoundSunat(withTrue) == storedTotal {
+		return true
+	}
+	_, _, withFalse := tax.CalcItem(it.UnitPrice, it.Quantity, it.Discount, affType, false, taxCfg)
+	if money.RoundSunat(withFalse) == storedTotal {
+		return false
+	}
+	if it.ProductID != nil && *it.ProductID > 0 {
+		var p database.TenantProduct
+		if db.Select("price_includes_igv").First(&p, *it.ProductID).Error == nil {
+			return p.PriceIncludesIgv
+		}
+	}
+	return true
+}
+
 // IssueElectronicFromNota crea el registro de factura/boleta (01/03) para SUNAT copiando líneas y pagos de la NV (00).
 // No es una “segunda venta” en contabilidad de inventario: IssuedFromNotaSaleID fuerza omitir stock, seriales y caja/bancos.
-func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID uint, userID uint, issueYMD string, centralTenantID uint) (*database.TenantSale, error) {
+func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID uint, userID uint, issueYMD string, centralTenantID uint, overrideContactID *uint) (*database.TenantSale, error) {
 	var nota database.TenantSale
 	if err := s.db.First(&nota, notaSaleID).Error; err != nil {
 		return nil, errors.New("nota de venta no encontrada")
@@ -1283,6 +1346,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 	if len(items) == 0 {
 		return nil, errors.New("la nota de venta no tiene líneas")
 	}
+	taxCfg := tax.LoadFromDB(s.db)
 	var inputs []SaleItemInput
 	for _, it := range items {
 		inputs = append(inputs, SaleItemInput{
@@ -1294,7 +1358,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 			UnitPrice:          it.UnitPrice,
 			Discount:           it.Discount,
 			IgvAffectationType: it.IgvAffectationType,
-			PriceIncludesIgv:   false,
+			PriceIncludesIgv:   inferPriceIncludesIgvFromSaleItem(s.db, it, taxCfg),
 			ModifiersJSON:      it.ModifiersJSON,
 		})
 	}
@@ -1308,7 +1372,13 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 			pays = append(pays, PaymentInput{Method: p.Method, Amount: p.Amount})
 		}
 	}
-	taxCfg := tax.LoadFromDB(s.db)
+	if len(pays) == 0 && nota.Total > 0 {
+		method := strings.TrimSpace(nota.PaymentMethod)
+		if method == "" {
+			method = "cash"
+		}
+		pays = []PaymentInput{{Method: method, Amount: nota.Total}}
+	}
 	issueAt := parseIssueDateForSale(issueYMD, nota.IssueDate)
 	nvRef := strings.TrimSpace(nota.Series) + "-" + strings.TrimSpace(nota.Number)
 	notes := strings.TrimSpace(nota.Notes)
@@ -1317,10 +1387,26 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 	} else {
 		notes = "Referencia NV " + nvRef + "."
 	}
+	contactID := nota.ContactID
+	if overrideContactID != nil && *overrideContactID > 0 {
+		var c database.TenantContact
+		if err := s.db.First(&c, *overrideContactID).Error; err != nil {
+			return nil, errors.New("cliente no encontrado")
+		}
+		if !c.Active {
+			return nil, errors.New("el cliente seleccionado no está activo")
+		}
+		ct := strings.ToLower(strings.TrimSpace(c.Type))
+		if ct != "customer" && ct != "both" {
+			return nil, errors.New("el contacto seleccionado no es un cliente válido")
+		}
+		cid := *overrideContactID
+		contactID = &cid
+	}
 	nvID := notaSaleID
 	return s.Create(CreateSaleInput{
 		BranchID:                nota.BranchID,
-		ContactID:               nota.ContactID,
+		ContactID:               contactID,
 		UserID:                  userID,
 		CashSessionID:           nil,
 		SeriesID:                targetSeriesID,
