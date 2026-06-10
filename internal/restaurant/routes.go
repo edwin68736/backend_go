@@ -66,6 +66,16 @@ func RegisterRoutes(api fiber.Router) {
 	r.Delete("/comandas/:id", middleware.RequireAnyRestaurantPerm(restaurantperm.SettingsManage, restaurantperm.OrdersCancel), h.CancelComanda)
 
 	r.Get("/kitchen", middleware.RequireRestaurantPerm(restaurantperm.KitchenView), h.KitchenView)
+
+	r.Get("/dashboard",
+		middleware.RequireAnyRestaurantPerm(
+			restaurantperm.OrdersCharge,
+			restaurantperm.CashView,
+			restaurantperm.SettingsManage,
+			restaurantperm.TablesView,
+		),
+		h.Dashboard,
+	)
 }
 
 // RegisterSalePaymentRoutes registra los endpoints de pagos bajo /api/sales

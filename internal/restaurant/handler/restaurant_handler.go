@@ -756,9 +756,60 @@ func (h *RestaurantHandler) DeleteDeliveryDriver(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// GET /api/restaurant/dashboard?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&top_n=10
+func (h *RestaurantHandler) Dashboard(c fiber.Ctx) error {
+	tdb := db(c)
+	if tdb == nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sin contexto de empresa"})
+	}
+	branchID, err := activeBranch(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	from, toExclusive, err := parseDashboardDateRange(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	topN, _ := strconv.Atoi(c.Query("top_n"))
+	if topN <= 0 {
+		topN = 10
+	}
+	data, err := service.NewDashboardService(tdb).GetDashboard(branchID, from, toExclusive, topN)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": data})
+}
+
 // ================================================================
 // HELPERS
 // ================================================================
+
+func parseDashboardDateRange(c fiber.Ctx) (from, toExclusive time.Time, err error) {
+	start := strings.TrimSpace(c.Query("start_date"))
+	end := strings.TrimSpace(c.Query("end_date"))
+	now := time.Now()
+	if start == "" && end == "" {
+		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+		toExclusive = from.AddDate(0, 0, 1)
+		return from, toExclusive, nil
+	}
+	if start == "" || end == "" {
+		return time.Time{}, time.Time{}, errors.New("start_date y end_date son requeridos (YYYY-MM-DD)")
+	}
+	f, e1 := time.ParseInLocation("2006-01-02", start, time.Local)
+	t, e2 := time.ParseInLocation("2006-01-02", end, time.Local)
+	if e1 != nil || e2 != nil {
+		return time.Time{}, time.Time{}, errors.New("fechas inválidas (use YYYY-MM-DD)")
+	}
+	from = time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, time.Local)
+	endDay := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+	toExclusive = endDay.AddDate(0, 0, 1)
+	if !toExclusive.After(from) {
+		return time.Time{}, time.Time{}, errors.New("end_date debe ser >= start_date")
+	}
+	return from, toExclusive, nil
+}
 
 func parseID(c fiber.Ctx) (uint, error) {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
