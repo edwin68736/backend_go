@@ -851,7 +851,9 @@ type BillInput struct {
 	Payments       []PaymentInput
 	CashSessionID  *uint
 	CloseSession      bool // si es false, genera la venta pero no cierra la mesa (cliente puede seguir consumiendo)
-	DiscountAmount    float64 // descuento global en moneda (se reparte proporcionalmente entre ítems)
+	DiscountAmount    float64 // descuento global en moneda sobre base imponible (subtotal)
+	DiscountMode      string  // "percent" | "amount" (opcional; recalcula descuento en servidor)
+	DiscountValue     float64 // valor del descuento (% o monto según DiscountMode)
 	CentralTenantID   uint    // tenant SaaS (cupo documentos electrónicos)
 }
 
@@ -860,6 +862,27 @@ type PaymentInput struct {
 	Amount    float64 `json:"amount"`
 	Reference string  `json:"reference"`
 	Notes     string  `json:"notes"`
+}
+
+func resolveBillDiscountAmount(subtotalBase float64, input BillInput) float64 {
+	subtotalBase = money.RoundSunat(subtotalBase)
+	var amount float64
+	if input.DiscountValue > 0 {
+		mode := strings.TrimSpace(strings.ToLower(input.DiscountMode))
+		if mode == "" {
+			mode = "amount"
+		}
+		amount = money.CalcCheckoutDiscountAmount(subtotalBase, mode, input.DiscountValue)
+	} else {
+		amount = money.RoundSunat(input.DiscountAmount)
+	}
+	if amount < 0 {
+		amount = 0
+	}
+	if amount > subtotalBase {
+		amount = subtotalBase
+	}
+	return money.RoundSunat(amount)
 }
 
 // BillTable cierra la sesión, genera una venta formal y registra los pagos.
@@ -936,45 +959,53 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		}
 	}
 
-	// Calcular totales (con descuento global repartido proporcionalmente)
+	// Calcular totales (descuento global sobre base imponible / subtotal, luego IGV)
 	type pricedLine struct {
-		data  *saleItemData
-		gross float64
+		data    *saleItemData
+		baseSub float64
+		baseTax float64
 	}
 	var lines []pricedLine
-	var grossTotal float64
+	var subtotalBase float64
 	for _, item := range itemMap {
-		_, _, iTotal := tax.CalcItem(item.UnitPrice, item.Quantity, 0, item.IgvAffectationType, item.PriceIncludesIgv, taxCfg)
-		lines = append(lines, pricedLine{data: item, gross: iTotal})
-		grossTotal += iTotal
+		iSub, iTax, _ := tax.CalcItem(item.UnitPrice, item.Quantity, 0, item.IgvAffectationType, item.PriceIncludesIgv, taxCfg)
+		iSub = money.RoundSunat(iSub)
+		lines = append(lines, pricedLine{data: item, baseSub: iSub, baseTax: money.RoundSunat(iTax)})
+		subtotalBase = money.RoundSunat(subtotalBase + iSub)
 	}
-	discountAmount := money.RoundSunat(input.DiscountAmount)
-	if discountAmount < 0 {
-		discountAmount = 0
-	}
-	grossTotal = money.RoundSunat(grossTotal)
-	if discountAmount > grossTotal {
-		discountAmount = grossTotal
-	}
+	discountAmount := resolveBillDiscountAmount(subtotalBase, input)
 
 	var subtotal, taxAmount, total float64
 	var saleItems []database.TenantSaleItem
 	remainingDisc := discountAmount
 	for i, ln := range lines {
 		itemDisc := 0.0
-		if discountAmount > 0 && grossTotal > 0 {
+		if discountAmount > 0 && subtotalBase > 0 {
 			if i == len(lines)-1 {
 				itemDisc = remainingDisc
 			} else {
-				itemDisc = money.RoundSunat(discountAmount * (ln.gross / grossTotal))
+				itemDisc = money.RoundSunat(discountAmount * (ln.baseSub / subtotalBase))
 				remainingDisc = money.RoundSunat(remainingDisc - itemDisc)
 			}
 		}
 		item := ln.data
-		iSub, iTax, iTotal := tax.CalcItem(item.UnitPrice, item.Quantity, itemDisc, item.IgvAffectationType, item.PriceIncludesIgv, taxCfg)
-		subtotal = money.RoundSunat(subtotal + iSub)
-		taxAmount = money.RoundSunat(taxAmount + iTax)
-		total = money.RoundSunat(total + iTotal)
+		newSub := money.RoundSunat(ln.baseSub - itemDisc)
+		if newSub < 0 {
+			newSub = 0
+		}
+		var newTax, newTotal float64
+		rate := taxCfg.EffectiveRate(item.IgvAffectationType)
+		if rate == 0 || ln.baseSub <= 0 {
+			newTax = 0
+			newTotal = newSub
+		} else {
+			effRate := ln.baseTax / ln.baseSub
+			newTax = money.RoundSunat(newSub * effRate)
+			newTotal = money.RoundSunat(newSub + newTax)
+		}
+		subtotal = money.RoundSunat(subtotal + newSub)
+		taxAmount = money.RoundSunat(taxAmount + newTax)
+		total = money.RoundSunat(total + newTotal)
 		itemDisc = money.RoundSunat(itemDisc)
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:          item.ProductID,
@@ -986,9 +1017,9 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			Discount:           itemDisc,
 			TaxRate:            item.TaxRate,
 			IgvAffectationType: item.IgvAffectationType,
-			Subtotal:           iSub,
-			TaxAmount:          iTax,
-			Total:              iTotal,
+			Subtotal:           newSub,
+			TaxAmount:          newTax,
+			Total:              newTotal,
 			ModifiersJSON:      item.ModifiersJSON,
 		})
 	}

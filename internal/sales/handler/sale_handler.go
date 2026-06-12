@@ -11,6 +11,7 @@ import (
 	"tukifac/internal/sales/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	emailpkg "tukifac/pkg/email"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
 
@@ -423,6 +424,35 @@ func (h *SaleHandler) GetAPI(c fiber.Ctx) error {
 		out["print_data"] = printData
 	}
 	return c.JSON(out)
+}
+
+// EmailReceiptAPI POST /api/sales/:id/email-receipt — envía PDF ticket al correo del cliente.
+func (h *SaleHandler) EmailReceiptAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Email     string `json:"email"`
+		PdfBase64 string `json:"pdf_base64"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	svc := service.NewSaleService(db(c))
+	if err := svc.EmailReceipt(uint(id), service.EmailReceiptInput{
+		Email:     body.Email,
+		PdfBase64: body.PdfBase64,
+	}); err != nil {
+		if errors.Is(err, emailpkg.ErrNotConfigured) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"error": "El envío por correo no está configurado (SMTP_HOST)",
+				"code":  "SMTP_NOT_CONFIGURED",
+			})
+		}
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
 }
 
 // IssueElectronicFromNotaAPI POST /api/sales/:id/issue-electronic — factura/boleta desde nota de venta (00).

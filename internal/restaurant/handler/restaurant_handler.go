@@ -465,6 +465,8 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		CloseSession   *bool                  `json:"close_session"` // true = cerrar mesa tras cobrar; false = solo generar venta, mesa sigue abierta
 		Payments       []service.PaymentInput `json:"payments"`
 		DiscountAmount float64                `json:"discount_amount"`
+		DiscountMode   string                 `json:"discount_mode"`
+		DiscountValue  float64                `json:"discount_value"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -509,6 +511,8 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		CashSessionID:   body.CashSessionID,
 		CloseSession:    closeSession,
 		DiscountAmount:  body.DiscountAmount,
+		DiscountMode:    body.DiscountMode,
+		DiscountValue:   body.DiscountValue,
 		CentralTenantID: centralTenantID,
 	}, taxCfg)
 	if err != nil {
