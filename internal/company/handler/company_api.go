@@ -41,14 +41,17 @@ func (h *CompanyHandler) UpdateConfigAPI(c fiber.Ctx) error {
 			c.Locals("tenant_ruc", ruc)
 		}
 	}
-	// Si el tenant tiene SUNAT conectado, sincronizar logo con Lycet y actualizar BD central
+	// Solo sincronizar logo con Lycet cuando el usuario envió un logo (acción explícita).
+	// Guardar dirección/teléfono/etc. no debe tocar credenciales ni metadatos fiscales en el facturador.
 	if svc.IsSunatEnabled() {
 		logoBase64 := extractBase64FromDataURL(input.LogoURL)
-		syncSvc := svc
-		if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
-			syncSvc = svc.WithSaaSContext(t.ID, t.Slug)
+		if logoBase64 != "" {
+			syncSvc := svc
+			if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+				syncSvc = svc.WithSaaSContext(t.ID, t.Slug)
+			}
+			_ = syncSvc.SyncFacturadorConfigWithFiles("", "", logoBase64, "", "", "", "")
 		}
-		_ = syncSvc.SyncFacturadorConfigWithFiles("", "", logoBase64, "", "", "", "")
 		if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
 			_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", input.LogoURL).Error
 		}
