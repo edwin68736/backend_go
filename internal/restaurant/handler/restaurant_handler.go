@@ -14,6 +14,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/restaurantperm"
+	"tukifac/pkg/saas"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
 
@@ -482,10 +483,10 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		closeSession = *body.CloseSession
 	}
 
-	issueDate := time.Now()
+	issueDate := saas.NowLima()
 	if body.IssueDate != "" {
-		if t, parseErr := time.Parse("2006-01-02", body.IssueDate); parseErr == nil {
-			issueDate = t
+		if t, parseErr := time.ParseInLocation("2006-01-02", body.IssueDate, saas.LimaLocation()); parseErr == nil {
+			issueDate = time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, saas.LimaLocation())
 		}
 	}
 

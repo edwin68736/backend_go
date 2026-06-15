@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas"
 
 	"gorm.io/gorm"
 )
@@ -125,15 +126,27 @@ func (s *DashboardService) GetDashboard(branchID uint, from, toExclusive time.Ti
 	return out, nil
 }
 
+// restaurantSalesScope: ventas de la sucursal en el rango (mismo criterio que /api/sales).
+// No exige restaurant_session_id: NV/FE, ventas legacy y emisiones sin sesión también cuentan.
 func restaurantSalesScope(db *gorm.DB, branchID uint, from, toExclusive time.Time) *gorm.DB {
 	q := db.Model(&database.TenantSale{}).
-		Where("restaurant_session_id IS NOT NULL").
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status != ?", "cancelled")
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)
 	}
 	return q
+}
+
+func dashboardDayKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.IndexByte(raw, 'T'); i >= 0 {
+		raw = raw[:i]
+	}
+	if len(raw) >= 10 {
+		return raw[:10]
+	}
+	return raw
 }
 
 func restaurantSessionsScope(db *gorm.DB, branchID uint, from, toExclusive time.Time) *gorm.DB {
@@ -167,7 +180,6 @@ func (s *DashboardService) loadSummary(branchID uint, from, toExclusive time.Tim
 	err = s.db.Table("tenant_sale_items si").
 		Select("COALESCE(SUM(si.quantity), 0)").
 		Joins("INNER JOIN tenant_sales s ON s.id = si.sale_id").
-		Where("s.restaurant_session_id IS NOT NULL").
 		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
 		Where("s.status != ?", "cancelled").
 		Scopes(branchScopeSales(branchID)).
@@ -292,8 +304,7 @@ func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive t
 				1 AS cnt
 			FROM tenant_sale_payments tsp
 			INNER JOIN tenant_sales s ON s.id = tsp.sale_id
-			WHERE s.restaurant_session_id IS NOT NULL
-				AND s.issue_date >= ? AND s.issue_date < ?
+			WHERE s.issue_date >= ? AND s.issue_date < ?
 				AND s.status != 'cancelled'` + branchClause + `
 			UNION ALL
 			SELECT
@@ -308,8 +319,7 @@ func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive t
 				s.total AS amount,
 				1 AS cnt
 			FROM tenant_sales s
-			WHERE s.restaurant_session_id IS NOT NULL
-				AND s.issue_date >= ? AND s.issue_date < ?
+			WHERE s.issue_date >= ? AND s.issue_date < ?
 				AND s.status != 'cancelled'
 				AND NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = s.id)` + branchClause + `
 		) AS combined
@@ -353,8 +363,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 		SELECT COALESCE(SUM(si.total), 0)
 		FROM tenant_sale_items si
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
-		WHERE s.restaurant_session_id IS NOT NULL
-			AND s.issue_date >= ? AND s.issue_date < ?
+		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'` + branchClause
 	if err := s.db.Raw(totalSQL, args...).Scan(&totalAmountAll).Error; err != nil {
 		return err
@@ -375,8 +384,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 		FROM tenant_sale_items si
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
 		LEFT JOIN tenant_products p ON p.id = si.product_id
-		WHERE s.restaurant_session_id IS NOT NULL
-			AND s.issue_date >= ? AND s.issue_date < ?
+		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'` + branchClause + `
 		GROUP BY COALESCE(si.product_id, 0), product_name
 		ORDER BY quantity_sold DESC
@@ -430,8 +438,7 @@ func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive ti
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
 		LEFT JOIN tenant_products p ON p.id = si.product_id
 		LEFT JOIN tenant_categories pc ON pc.id = p.category_id
-		WHERE s.restaurant_session_id IS NOT NULL
-			AND s.issue_date >= ? AND s.issue_date < ?
+		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'` + branchClause + `
 		GROUP BY category_name
 		ORDER BY total_amount DESC
@@ -453,8 +460,8 @@ func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive ti
 }
 
 func (s *DashboardService) loadSalesLast30Days(branchID uint, out *DashboardData) error {
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	now := saas.NowLima()
+	todayStart := saas.CalendarDateLima(now)
 	from30 := todayStart.AddDate(0, 0, -29)
 	toExclusive := todayStart.AddDate(0, 0, 1)
 
@@ -463,23 +470,19 @@ func (s *DashboardService) loadSalesLast30Days(branchID uint, out *DashboardData
 		Total float64 `gorm:"column:total"`
 		Count int64   `gorm:"column:count"`
 	}
-	q := s.db.Model(&database.TenantSale{}).
-		Select("DATE(issue_date) AS day, COALESCE(SUM(total), 0) AS total, COUNT(*) AS count").
-		Where("restaurant_session_id IS NOT NULL").
-		Where("issue_date >= ? AND issue_date < ?", from30, toExclusive).
-		Where("status != ?", "cancelled")
-	if branchID > 0 {
-		q = q.Where("branch_id = ?", branchID)
-	}
+	q := restaurantSalesScope(s.db, branchID, from30, toExclusive).
+		Select("DATE_FORMAT(issue_date, '%Y-%m-%d') AS day, COALESCE(SUM(total), 0) AS total, COUNT(*) AS count").
+		Group("DATE_FORMAT(issue_date, '%Y-%m-%d')").
+		Order("day")
 	var rows []dayRow
-	if err := q.Group("DATE(issue_date)").Order("day").Scan(&rows).Error; err != nil {
+	if err := q.Scan(&rows).Error; err != nil {
 		return err
 	}
 
 	// Rellenar días sin ventas para gráfico continuo
 	byDay := make(map[string]dayRow, len(rows))
 	for _, r := range rows {
-		byDay[r.Day] = r
+		byDay[dashboardDayKey(r.Day)] = r
 	}
 	out.SalesLast30Days = make([]DashboardDayRow, 0, 30)
 	for d := from30; d.Before(toExclusive); d = d.AddDate(0, 0, 1) {

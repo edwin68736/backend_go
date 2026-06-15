@@ -201,47 +201,49 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 	}
 
-	// Validar stock y series antes de la transacción
-	for _, item := range input.Items {
-		if item.ProductID == nil {
-			continue
-		}
-		var product database.TenantProduct
-		if s.db.First(&product, *item.ProductID).Error != nil {
-			continue
-		}
-		if product.ManageStock && !productIsCatalogService(&product) {
-			var stock database.TenantProductStock
-			s.db.Where("product_id = ? AND branch_id = ?", *item.ProductID, input.BranchID).First(&stock)
-			if stock.Quantity < item.Quantity {
-				return nil, fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f", item.Description, item.Quantity, stock.Quantity)
+	// Validar stock y series antes de la transacción (omitir si la NV ya descontó inventario).
+	emitFromNV := input.IssuedFromNotaSaleID != nil && *input.IssuedFromNotaSaleID > 0
+	skipStockCheck := input.SkipInventory || emitFromNV
+	if !skipStockCheck {
+		for _, item := range input.Items {
+			if item.ProductID == nil {
+				continue
 			}
-		}
-		if product.ManageSeries && !productIsCatalogService(&product) {
-			n := int(item.Quantity)
-			if n > 0 {
-				if len(item.Serials) >= n {
-					for _, serial := range item.Serials[:n] {
-						var ps database.TenantProductSerial
-						if err := s.db.Where("product_id = ? AND branch_id = ? AND serial = ? AND status = ?",
-							*item.ProductID, input.BranchID, serial, "available").First(&ps).Error; err != nil {
-							return nil, fmt.Errorf("el serial '%s' no está disponible o no pertenece al producto", serial)
+			var product database.TenantProduct
+			if s.db.First(&product, *item.ProductID).Error != nil {
+				continue
+			}
+			if product.ManageStock && !productIsCatalogService(&product) {
+				var stock database.TenantProductStock
+				s.db.Where("product_id = ? AND branch_id = ?", *item.ProductID, input.BranchID).First(&stock)
+				if stock.Quantity < item.Quantity {
+					return nil, fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f", item.Description, item.Quantity, stock.Quantity)
+				}
+			}
+			if product.ManageSeries && !productIsCatalogService(&product) {
+				n := int(item.Quantity)
+				if n > 0 {
+					if len(item.Serials) >= n {
+						for _, serial := range item.Serials[:n] {
+							var ps database.TenantProductSerial
+							if err := s.db.Where("product_id = ? AND branch_id = ? AND serial = ? AND status = ?",
+								*item.ProductID, input.BranchID, serial, "available").First(&ps).Error; err != nil {
+								return nil, fmt.Errorf("el serial '%s' no está disponible o no pertenece al producto", serial)
+							}
 						}
-					}
-				} else {
-					var count int64
-					s.db.Model(&database.TenantProductSerial{}).
-						Where("product_id = ? AND branch_id = ? AND status = ?", *item.ProductID, input.BranchID, "available").
-						Count(&count)
-					if count < int64(n) {
-						return nil, fmt.Errorf("no hay suficientes seriales disponibles para %s (requiere %d, hay %d)", item.Description, n, count)
+					} else {
+						var count int64
+						s.db.Model(&database.TenantProductSerial{}).
+							Where("product_id = ? AND branch_id = ? AND status = ?", *item.ProductID, input.BranchID, "available").
+							Count(&count)
+						if count < int64(n) {
+							return nil, fmt.Errorf("no hay suficientes seriales disponibles para %s (requiere %d, hay %d)", item.Description, n, count)
+						}
 					}
 				}
 			}
 		}
 	}
-
-	emitFromNV := input.IssuedFromNotaSaleID != nil && *input.IssuedFromNotaSaleID > 0
 
 	// Construir lista de pagos: si Payments está vacío, usar PaymentMethod como pago único
 	payments := input.Payments
@@ -251,6 +253,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	if total > 0 && len(payments) == 0 {
 		return nil, errors.New("debe indicar al menos un método de pago para registrar la venta")
 	}
+
 	if emitFromNV && total > 0 && len(payments) > 0 {
 		var sumPayments float64
 		for _, p := range payments {

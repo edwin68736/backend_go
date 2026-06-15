@@ -51,6 +51,9 @@ type PrintData struct {
 	// Pagos
 	Payments []PrintPayment `json:"payments"`
 
+	// Vuelto cuando el cliente pagó de más (p. ej. efectivo).
+	ChangeAmount float64 `json:"change_amount,omitempty"`
+
 	SellerName         string             `json:"seller_name,omitempty"`
 	PaymentCondition   string             `json:"payment_condition,omitempty"` // Contado, Crédito
 	BankAccounts       []PrintBankAccount `json:"bank_accounts,omitempty"`
@@ -280,8 +283,13 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 
 	// Pagos
 	pd.Payments = make([]PrintPayment, len(payments))
+	var paidSum float64
 	for i, p := range payments {
 		pd.Payments[i] = PrintPayment{Method: p.Method, Amount: p.Amount, Reference: p.Reference}
+		paidSum += p.Amount
+	}
+	if paidSum > sale.Total+0.001 {
+		pd.ChangeAmount = money.RoundDisplay(paidSum - sale.Total)
 	}
 
 	pd.QRData = pd.buildQRData()
