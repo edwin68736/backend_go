@@ -482,7 +482,11 @@ func (h *SaleHandler) IssueElectronicFromNotaAPI(c fiber.Ctx) error {
 		return saleCreateErrorResponse(c, err)
 	}
 	triggerAutoFiscalEnqueue(c, sale)
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"sale": sale})
+	out := fiber.Map{"sale": sale}
+	if printData, err := service.BuildPrintDataForSale(db(c), sale.ID); err == nil {
+		out["print_data"] = printData
+	}
+	return c.Status(fiber.StatusCreated).JSON(out)
 }
 
 func saleCreateErrorResponse(c fiber.Ctx, err error) error {
