@@ -4,7 +4,7 @@ package database
 // 0 = BD vacía; la primera migración registrada es V001 (baseline_schema).
 const TenantSchemaBaselineVersion = 0
 
-var tenantSchemaTargetVersion = 63
+var tenantSchemaTargetVersion = 64
 
 // SetTenantSchemaTargetVersion sincroniza el objetivo con tenantmigrations.MaxVersion() al arranque.
 func SetTenantSchemaTargetVersion(v int) {

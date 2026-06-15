@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type RestaurantService struct {
@@ -192,7 +194,12 @@ func (s *RestaurantService) ListTables(branchID, floorID uint) ([]TableWithSessi
 	q := s.db.Table("tenant_restaurant_tables t").
 		Select("t.*, f.name AS floor_name, ts.id AS session_id, COALESCE(ts.total_amount,0) AS total_amount, COALESCE(NULLIF(st.display_name,''), u.name, '') AS waiter_name").
 		Joins("JOIN tenant_restaurant_floors f ON f.id = t.floor_id").
-		Joins("LEFT JOIN tenant_table_sessions ts ON ts.table_id = t.id AND ts.status = 'open'").
+		Joins(`LEFT JOIN tenant_table_sessions ts ON ts.id = (
+			SELECT s2.id FROM tenant_table_sessions s2
+			WHERE s2.table_id = t.id AND s2.status = 'open'
+			ORDER BY s2.opened_at DESC, s2.id DESC
+			LIMIT 1
+		)`).
 		Joins("LEFT JOIN tenant_restaurant_staff st ON st.id = ts.staff_id").
 		Joins("LEFT JOIN tenant_users u ON u.id = st.user_id").
 		Where("t.active = ? AND t.deleted_at IS NULL", true)
@@ -206,8 +213,11 @@ func (s *RestaurantService) ListTables(branchID, floorID uint) ([]TableWithSessi
 
 	result := make([]TableWithSession, len(rows))
 	for i, r := range rows {
+		displayStatus := resolveTableDisplayStatus(r.Status, r.SessionID)
+		tbl := r.TenantRestaurantTable
+		tbl.Status = displayStatus
 		result[i] = TableWithSession{
-			TenantRestaurantTable: r.TenantRestaurantTable,
+			TenantRestaurantTable: tbl,
 			FloorName:             r.FloorName,
 			SessionID:             r.SessionID,
 			TotalAmount:           r.TotalAmount,
@@ -425,8 +435,20 @@ func (s *RestaurantService) GetSessionDetail(sessionID uint) (*SessionDetail, er
 }
 
 func (s *RestaurantService) GetActiveSessionByTable(tableID uint) (*database.TenantTableSession, error) {
+	var count int64
+	if err := s.db.Model(&database.TenantTableSession{}).
+		Where("table_id = ? AND status = ?", tableID, sessionStatusOpen).
+		Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if count > 1 {
+		log.Printf("[restaurant] ADVERTENCIA: mesa id=%d tiene %d sesiones open; usando la más reciente", tableID, count)
+	}
+
 	var sess database.TenantTableSession
-	err := s.db.Where("table_id = ? AND status = 'open'", tableID).First(&sess).Error
+	err := s.db.Where("table_id = ? AND status = ?", tableID, sessionStatusOpen).
+		Order("opened_at DESC, id DESC").
+		First(&sess).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -470,41 +492,46 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 	if len(items) == 0 {
 		return nil, errors.New("el pedido debe tener al menos un ítem")
 	}
-	var sess database.TenantTableSession
-	if err := s.db.First(&sess, sessionID).Error; err != nil {
-		return nil, errors.New("sesión no encontrada")
-	}
-	if sess.Status != "open" {
-		return nil, errors.New("la sesión ya está cerrada")
-	}
 
-	// Siguiente número de pedido
-	var lastOrder database.TenantTableOrder
-	var nextNum int = 1
-	if s.db.Where("session_id = ?", sessionID).Order("order_number DESC").First(&lastOrder).Error == nil {
-		nextNum = lastOrder.OrderNumber + 1
-	}
-
-	if staffID == nil && sess.StaffID != nil {
-		staffID = sess.StaffID
-	}
-
-	order := &database.TenantTableOrder{
-		SessionID:   sessionID,
-		StaffID:     staffID,
-		UserID:      userID,
-		OrderNumber: nextNum,
-		Notes:       notes,
-		Status:      "active",
-	}
-
+	var order database.TenantTableOrder
 	var comandas []database.TenantComanda
-	var sessionTotal float64
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(order).Error; err != nil {
+		var sess database.TenantTableSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&sess, sessionID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("sesión no encontrada")
+			}
 			return err
 		}
+		if sess.Status != sessionStatusOpen {
+			return errors.New("la sesión ya está cerrada")
+		}
+
+		resolvedStaff := staffID
+		if resolvedStaff == nil && sess.StaffID != nil {
+			resolvedStaff = sess.StaffID
+		}
+
+		var lastOrder database.TenantTableOrder
+		nextNum := 1
+		if tx.Where("session_id = ?", sessionID).Order("order_number DESC").First(&lastOrder).Error == nil {
+			nextNum = lastOrder.OrderNumber + 1
+		}
+
+		order = database.TenantTableOrder{
+			SessionID:   sessionID,
+			StaffID:     resolvedStaff,
+			UserID:      userID,
+			OrderNumber: nextNum,
+			Notes:       notes,
+			Status:      "active",
+		}
+		if err := tx.Create(&order).Error; err != nil {
+			return err
+		}
+
+		var sessionTotal float64
 		taxCfg := tax.LoadFromDB(tx)
 		for i := range items {
 			item := &items[i]
@@ -512,7 +539,6 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 				return err
 			}
 			prepArea := resolveProductPreparationArea(tx, item.ProductID)
-			// Cada ítem es una fila de comanda; la ronda (TenantTableOrder) es el ticket de cocina.
 			affType := strings.TrimSpace(item.IgvAffectationType)
 			if affType == "" {
 				affType = "10"
@@ -520,22 +546,21 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 			c := database.TenantComanda{
 				OrderID:            order.ID,
 				SessionID:          sessionID,
-				ProductID:            item.ProductID,
-				ProductCode:          item.ProductCode,
-				ProductName:          item.ProductName,
-				PreparationArea:      prepArea,
-				Quantity:             item.Quantity,
-				UnitPrice:            item.UnitPrice,
-				Notes:                item.Notes,
-				ModifiersJSON:        strings.TrimSpace(item.ModifiersJSON),
+				ProductID:          item.ProductID,
+				ProductCode:        item.ProductCode,
+				ProductName:        item.ProductName,
+				PreparationArea:    prepArea,
+				Quantity:           item.Quantity,
+				UnitPrice:          item.UnitPrice,
+				Notes:              item.Notes,
+				ModifiersJSON:      strings.TrimSpace(item.ModifiersJSON),
 				IgvAffectationType:   affType,
-				PriceIncludesIgv:     item.PriceIncludesIgv,
+				PriceIncludesIgv:   item.PriceIncludesIgv,
 				Status:               "pendiente",
 			}
 			if err := tx.Create(&c).Error; err != nil {
 				return err
 			}
-			// price_includes_igv=false debe persistirse explícitamente (GORM + default:true en columna).
 			if err := gormutil.PersistBoolWithDefault(tx, &c, "price_includes_igv", item.PriceIncludesIgv); err != nil {
 				return err
 			}
@@ -545,7 +570,6 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 			sessionTotal += money.RoundSunat(lineTotal)
 		}
 
-		// Actualizar total acumulado de la sesión
 		tx.Model(&database.TenantTableSession{}).Where("id = ?", sessionID).
 			UpdateColumn("total_amount", gorm.Expr("total_amount + ?", sessionTotal))
 
@@ -566,8 +590,7 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 	if err != nil {
 		return nil, err
 	}
-
-	return &OrderDetail{TenantTableOrder: *order, Comandas: comandas}, nil
+	return &OrderDetail{TenantTableOrder: order, Comandas: comandas}, nil
 }
 
 func comandaStatusRank(status string) int {
@@ -1061,6 +1084,17 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 	now := time.Now()
 	return sale, s.db.Transaction(func(tx *gorm.DB) error {
+		var lockedSess database.TenantTableSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedSess, input.SessionID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("sesión no encontrada")
+			}
+			return err
+		}
+		if lockedSess.Status != sessionStatusOpen {
+			return errors.New("la sesión ya está cerrada o facturada")
+		}
+
 		var err error
 		correlative, seriesRow, err = docseries.ReserveNext(tx, input.SeriesID)
 		if err != nil {
@@ -1133,19 +1167,20 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 		if input.CloseSession {
 			// Cerrar sesión y liberar mesa
-			tx.Model(&sess).Updates(map[string]interface{}{
+			tx.Model(&lockedSess).Updates(map[string]interface{}{
 				"status": "billed", "closed_at": now, "sale_id": sale.ID,
 				"order_status": OrderStatusPaid, "paid_at": now,
 			})
-			if sess.TableID != nil {
-				tx.Model(&database.TenantRestaurantTable{}).Where("id = ?", *sess.TableID).
-					Update("status", "libre")
+			if lockedSess.TableID != nil {
+				if err := s.syncTableStatusFromOpenSession(tx, *lockedSess.TableID); err != nil {
+					return err
+				}
 			}
 			// Eliminar comandas de la sesión cerrada (ya facturadas en la venta; no aparecen en cocina)
 			tx.Where("session_id = ?", input.SessionID).Delete(&database.TenantComanda{})
 		} else {
 			// Generar venta pero mantener mesa abierta: descontar lo facturado del total de la sesión
-			tx.Model(&sess).UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", total))
+			tx.Model(&lockedSess).UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", total))
 			// Marcar solo las comandas facturadas en este cobro (evita doble facturación en cobros parciales)
 			billedIDs := make([]uint, 0, len(comandas))
 			for _, c := range comandas {
@@ -1205,8 +1240,9 @@ func (s *RestaurantService) CancelSession(sessionID uint, pin, reason string, us
 			return err
 		}
 		if sess.TableID != nil {
-			tx.Model(&database.TenantRestaurantTable{}).Where("id = ?", *sess.TableID).
-				Update("status", "libre")
+			if err := s.syncTableStatusFromOpenSession(tx, *sess.TableID); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1227,8 +1263,9 @@ func (s *RestaurantService) CloseSessionOnly(sessionID uint) error {
 			"status": "closed", "closed_at": now,
 		})
 		if sess.TableID != nil {
-			tx.Model(&database.TenantRestaurantTable{}).Where("id = ?", *sess.TableID).
-				Update("status", "libre")
+			if err := s.syncTableStatusFromOpenSession(tx, *sess.TableID); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
