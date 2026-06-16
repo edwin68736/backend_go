@@ -51,6 +51,11 @@ type PrintData struct {
 	// Pagos
 	Payments []PrintPayment `json:"payments"`
 
+	// Nota de crédito/débito (07/08): documento afectado según SUNAT (misma info que Lycet).
+	AffectedDocSunatCode string `json:"affected_doc_sunat_code,omitempty"` // 01 factura, 03 boleta
+	AffectedDocNumber    string `json:"affected_doc_number,omitempty"`   // ej. B001-4
+	CreditNoteReason     string `json:"credit_note_reason,omitempty"`    // desMotivo
+
 	// Vuelto cuando el cliente pagó de más (p. ej. efectivo).
 	ChangeAmount float64 `json:"change_amount,omitempty"`
 
@@ -293,6 +298,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	}
 
 	pd.QRData = pd.buildQRData()
+	enrichCreditNotePrintData(db, sale, pd)
 	return pd, nil
 }
 
@@ -391,4 +397,88 @@ func receiptBankAccountAllowed(id uint, selected []uint) bool {
 		}
 	}
 	return false
+}
+
+func isCreditOrDebitNotePrint(sunatCode, docType string) bool {
+	sc := strings.TrimSpace(sunatCode)
+	if sc == "07" || sc == "08" {
+		return true
+	}
+	dt := strings.ToUpper(strings.TrimSpace(docType))
+	return dt == "NOTA_CREDITO" || dt == "NOTA_DEBITO"
+}
+
+func printAffectedDocSunatType(orig *database.TenantSale, seriesSunatCode string) string {
+	sc := strings.TrimSpace(seriesSunatCode)
+	switch sc {
+	case "01":
+		return "01"
+	case "03":
+		return "03"
+	}
+	dt := strings.ToUpper(strings.TrimSpace(orig.DocType))
+	if dt == "FACTURA" || strings.Contains(dt, "FACTURA") {
+		return "01"
+	}
+	return "03"
+}
+
+func printAffectedDocNumber(orig *database.TenantSale) string {
+	nro := strings.TrimSpace(orig.Number)
+	if nro == "" {
+		return fmt.Sprintf("%s-%d", strings.TrimSpace(orig.Series), orig.Correlative)
+	}
+	if i := strings.LastIndex(nro, "-"); i > 0 {
+		suf := strings.TrimLeft(nro[i+1:], "0")
+		if suf == "" {
+			suf = "0"
+		}
+		return nro[:i+1] + suf
+	}
+	return nro
+}
+
+func enrichCreditNotePrintData(db *gorm.DB, sale *database.TenantSale, pd *PrintData) {
+	if pd == nil || sale == nil || !isCreditOrDebitNotePrint(pd.SunatCode, sale.DocType) {
+		return
+	}
+	if reason := strings.TrimSpace(sale.Notes); reason != "" {
+		pd.CreditNoteReason = reason
+	}
+	if sale.OriginalSaleID != nil && *sale.OriginalSaleID > 0 {
+		var orig database.TenantSale
+		if err := db.First(&orig, *sale.OriginalSaleID).Error; err == nil {
+			origSunat := ""
+			var origSeries database.TenantDocumentSeries
+			if err := db.First(&origSeries, orig.SeriesID).Error; err == nil {
+				origSunat = origSeries.SunatCode
+			}
+			pd.AffectedDocSunatCode = printAffectedDocSunatType(&orig, origSunat)
+			pd.AffectedDocNumber = printAffectedDocNumber(&orig)
+		}
+	}
+	if pd.AffectedDocNumber != "" {
+		return
+	}
+	var inv database.TenantInvoice
+	if err := db.Where("sale_id = ?", sale.ID).First(&inv).Error; err != nil || strings.TrimSpace(inv.NotePayloadJSON) == "" {
+		return
+	}
+	var note struct {
+		TipDocAfectado string `json:"tipDocAfectado"`
+		NumDocfectado  string `json:"numDocfectado"`
+		DesMotivo      string `json:"desMotivo"`
+	}
+	if err := json.Unmarshal([]byte(inv.NotePayloadJSON), &note); err != nil {
+		return
+	}
+	if strings.TrimSpace(note.TipDocAfectado) != "" {
+		pd.AffectedDocSunatCode = strings.TrimSpace(note.TipDocAfectado)
+	}
+	if strings.TrimSpace(note.NumDocfectado) != "" {
+		pd.AffectedDocNumber = strings.TrimSpace(note.NumDocfectado)
+	}
+	if pd.CreditNoteReason == "" && strings.TrimSpace(note.DesMotivo) != "" {
+		pd.CreditNoteReason = strings.TrimSpace(note.DesMotivo)
+	}
 }

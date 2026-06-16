@@ -21,6 +21,9 @@ const (
 	BulkImportBatchSize   = 50
 )
 
+// ErrInitialStockWithoutManageStock conflicto control_stock=no con stock_inicial>0 (alias legible).
+const ErrInitialStockWithoutManageStock = InitialStockRequiresManageStock
+
 // BulkImportItem fila normalizada para importación masiva.
 type BulkImportItem struct {
 	RowNumber          int     `json:"row_number"`
@@ -157,10 +160,15 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			}
 		}
 
-		manageStock := item.ManageStock
-		if item.InitialStock > 0 {
-			manageStock = true
+		if !item.ManageStock && item.InitialStock > 0 {
+			result.Failed = append(result.Failed, BulkImportFail{
+				Row:   item.RowNumber,
+				Name:  item.Name,
+				Error: InitialStockRequiresManageStock,
+			})
+			continue
 		}
+		manageStock := item.ManageStock
 		isRestaurant := item.IsRestaurant
 		if opts.ForceRestaurant {
 			isRestaurant = true

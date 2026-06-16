@@ -19,6 +19,9 @@ import (
 // ErrPINDuplicate se devuelve al asignar un PIN ya usado por otro staff activo.
 var ErrPINDuplicate = errors.New("este PIN ya está asignado a otro usuario del restaurante")
 
+// ErrTenantOwnerRoleLocked el usuario maestro del tenant no puede cambiar su rol de administrador.
+var ErrTenantOwnerRoleLocked = errors.New("no se puede cambiar el rol del usuario principal del sistema")
+
 type Service struct {
 	db *gorm.DB
 }
@@ -131,8 +134,38 @@ func (s *Service) AuthenticatePIN(pin, station string) (userID, staffID uint, em
 	return matched.UserID, matched.ID, normalizeEmployeeType(matched.EmployeeType), nil
 }
 
+func (s *Service) RestaurantRoleEditLocked(userID uint, currentEmployeeType string) (bool, error) {
+	isOwner, err := database.IsTenantOwnerUser(s.db, userID)
+	if err != nil || !isOwner {
+		return false, err
+	}
+	return normalizeEmployeeType(currentEmployeeType) == "admin", nil
+}
+
+func (s *Service) guardTenantOwnerRestaurantRoleChange(userID uint, newEmployeeType string) error {
+	var current database.TenantRestaurantStaff
+	err := s.db.Where("user_id = ?", userID).First(&current).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	locked, err := s.RestaurantRoleEditLocked(userID, current.EmployeeType)
+	if err != nil || !locked {
+		return err
+	}
+	if normalizeEmployeeType(newEmployeeType) != "admin" {
+		return ErrTenantOwnerRoleLocked
+	}
+	return nil
+}
+
 func (s *Service) UpsertStaffForUser(userID uint, employeeType string, pin string, flags UpsertFlags) error {
 	employeeType = normalizeEmployeeType(employeeType)
+	if err := s.guardTenantOwnerRestaurantRoleChange(userID, employeeType); err != nil {
+		return err
+	}
 	if employeeType == "" {
 		if err := s.db.Where("user_id = ?", userID).Delete(&database.TenantRestaurantStaff{}).Error; err != nil {
 			return err
@@ -386,6 +419,7 @@ type StaffManagementItem struct {
 	ProfileComplete   bool     `json:"profile_complete"`
 	BranchIDs         []uint   `json:"branch_ids,omitempty"`
 	BranchNames       []string `json:"branch_names,omitempty"`
+	RoleEditLocked    bool     `json:"role_edit_locked"`
 }
 
 func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
@@ -417,6 +451,9 @@ func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
 			item.HasPin = strings.TrimSpace(st.PinHash) != ""
 			item.StaffActive = st.IsActive
 			item.ProfileComplete = st.IsActive && strings.TrimSpace(st.EmployeeType) != ""
+			if locked, err := s.RestaurantRoleEditLocked(u.ID, st.EmployeeType); err == nil {
+				item.RoleEditLocked = locked
+			}
 		}
 		ids, _ := branch.ResolveDisplayBranchIDs(s.db, u.ID, u.HomeBranchID, u.BranchID)
 		item.BranchIDs = ids

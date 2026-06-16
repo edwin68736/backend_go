@@ -321,6 +321,27 @@ func (h *RestaurantHandler) CancelSession(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// POST /api/restaurant/sessions/:id/cancel-comandas
+func (h *RestaurantHandler) CancelAllComandas(c fiber.Ctx) error {
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		Reason  string `json:"reason"`
+		Pin     string `json:"pin"`
+		OrderID *uint  `json:"order_id"`
+	}
+	if err := c.Bind().JSON(&body); err != nil || body.Reason == "" || strings.TrimSpace(body.Pin) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "se requiere motivo de anulación y PIN"})
+	}
+	res, err := svc(c).CancelAllComandas(id, body.OrderID, body.Pin, body.Reason, uid(c))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": res})
+}
+
 // ================================================================
 // PEDIDOS
 // ================================================================

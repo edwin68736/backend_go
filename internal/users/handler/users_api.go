@@ -33,21 +33,25 @@ func (h *UserHandler) ListAPI(c fiber.Ctx) error {
 		}
 	}
 	type UserOut struct {
-		ID          uint     `json:"id"`
-		Name        string   `json:"name"`
-		Email       string   `json:"email"`
-		RoleID      uint     `json:"role_id"`
-		RoleName    string   `json:"role_name"`
-		BranchID    *uint    `json:"branch_id"`
-		BranchName  string   `json:"branch_name"`
-		BranchIDs   []uint   `json:"branch_ids,omitempty"`
-		BranchNames []string `json:"branch_names,omitempty"`
-		Active      bool     `json:"active"`
+		ID             uint     `json:"id"`
+		Name           string   `json:"name"`
+		Email          string   `json:"email"`
+		RoleID         uint     `json:"role_id"`
+		RoleName       string   `json:"role_name"`
+		BranchID       *uint    `json:"branch_id"`
+		BranchName     string   `json:"branch_name"`
+		BranchIDs      []uint   `json:"branch_ids,omitempty"`
+		BranchNames    []string `json:"branch_names,omitempty"`
+		Active         bool     `json:"active"`
+		RoleEditLocked bool     `json:"role_edit_locked"`
 	}
 	out := make([]UserOut, 0, len(users))
 	for _, u := range users {
 		ro := UserOut{ID: u.ID, Name: u.Name, Email: u.Email, RoleID: u.RoleID, BranchID: u.BranchID, Active: u.Active}
 		ro.RoleName = roleNames[u.RoleID]
+		if locked, err := svc.TenantRoleEditLocked(u.ID, u.RoleID); err == nil {
+			ro.RoleEditLocked = locked
+		}
 		if u.BranchID != nil {
 			ro.BranchName = branchNames[*u.BranchID]
 		}
@@ -79,6 +83,9 @@ func (h *UserHandler) GetAPI(c fiber.Ctx) error {
 	data := fiber.Map{
 		"id": u.ID, "name": u.Name, "email": u.Email,
 		"role_id": u.RoleID, "branch_id": u.BranchID, "active": u.Active,
+	}
+	if locked, err := service.NewUserService(tenantDB(c)).TenantRoleEditLocked(u.ID, u.RoleID); err == nil {
+		data["role_edit_locked"] = locked
 	}
 	if ids, err := branch.ResolveDisplayBranchIDs(tenantDB(c), u.ID, u.HomeBranchID, u.BranchID); err == nil && len(ids) > 0 {
 		data["branch_ids"] = ids

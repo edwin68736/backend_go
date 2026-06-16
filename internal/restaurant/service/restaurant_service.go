@@ -653,6 +653,12 @@ func (s *RestaurantService) CancelComanda(id uint, reason string, cancelledByID 
 	if err := s.db.First(&c, id).Error; err != nil {
 		return errors.New("comanda no encontrada")
 	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		return s.cancelComandaTx(tx, &c, reason, cancelledByID)
+	})
+}
+
+func (s *RestaurantService) cancelComandaTx(tx *gorm.DB, c *database.TenantComanda, reason string, cancelledByID uint) error {
 	if c.CancelledAt != nil {
 		return errors.New("la comanda ya fue anulada")
 	}
@@ -660,26 +666,81 @@ func (s *RestaurantService) CancelComanda(id uint, reason string, cancelledByID 
 		return errors.New("no se puede anular una comanda ya entregada")
 	}
 	now := time.Now()
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&c).Updates(map[string]interface{}{
-			"cancelled_at":    now,
-			"cancelled_by_id": cancelledByID,
-			"cancel_reason":   reason,
-			"status":          "entregada", // marca como procesada para que no aparezca en cocina
-		}).Error; err != nil {
-			return err
+	if err := tx.Model(c).Updates(map[string]interface{}{
+		"cancelled_at":    now,
+		"cancelled_by_id": cancelledByID,
+		"cancel_reason":   reason,
+		"status":          "entregada",
+	}).Error; err != nil {
+		return err
+	}
+	taxCfg := tax.LoadFromDB(tx)
+	affType, priceIncludes := comandaIgvForCalc(tx, c)
+	_, _, deduct := tax.CalcItem(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
+	deduct = money.RoundSunat(deduct)
+	if err := tx.Model(&database.TenantTableSession{}).Where("id = ?", c.SessionID).
+		UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", deduct)).Error; err != nil {
+		return err
+	}
+	return s.syncSessionOrderStatus(tx, c.SessionID)
+}
+
+// CancelAllComandasResult resultado de anulación masiva de comandas.
+type CancelAllComandasResult struct {
+	CancelledCount int `json:"cancelled_count"`
+}
+
+// CancelAllComandas anula todas las comandas cancelables de una sesión (opcionalmente solo una ronda/order_id).
+func (s *RestaurantService) CancelAllComandas(sessionID uint, orderID *uint, pin, reason string, userID uint) (*CancelAllComandasResult, error) {
+	if err := s.VerifyDeletionPin(pin); err != nil {
+		return nil, err
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, errors.New("indique el motivo de anulación")
+	}
+
+	var sess database.TenantTableSession
+	if err := s.db.First(&sess, sessionID).Error; err != nil {
+		return nil, errors.New("pedido no encontrado")
+	}
+	if sess.Status != "open" {
+		return nil, errors.New("solo se pueden anular comandas de pedidos abiertos")
+	}
+	if sess.SaleID != nil {
+		return nil, errors.New("no se puede anular: el pedido ya fue facturado")
+	}
+
+	q := s.db.Where(
+		"session_id = ? AND cancelled_at IS NULL AND status != ?",
+		sessionID, "entregada",
+	)
+	if orderID != nil && *orderID > 0 {
+		q = q.Where("order_id = ?", *orderID)
+	}
+	var comandas []database.TenantComanda
+	if err := q.Order("id ASC").Find(&comandas).Error; err != nil {
+		return nil, err
+	}
+	if len(comandas) == 0 {
+		return nil, errors.New("no hay comandas que se puedan anular")
+	}
+
+	result := &CancelAllComandasResult{}
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		for i := range comandas {
+			c := comandas[i]
+			if err := s.cancelComandaTx(tx, &c, reason, userID); err != nil {
+				return err
+			}
+			result.CancelledCount++
 		}
-		// Restar del total de la sesión (mismo criterio tributario que al agregar la comanda)
-		taxCfg := tax.LoadFromDB(tx)
-		affType, priceIncludes := comandaIgvForCalc(tx, &c)
-		_, _, deduct := tax.CalcItem(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
-		deduct = money.RoundSunat(deduct)
-		if err := tx.Model(&database.TenantTableSession{}).Where("id = ?", c.SessionID).
-			UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", deduct)).Error; err != nil {
-			return err
-		}
-		return s.syncSessionOrderStatus(tx, c.SessionID)
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func resolveProductPreparationArea(tx *gorm.DB, productID *uint) string {

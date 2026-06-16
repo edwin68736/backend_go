@@ -203,10 +203,10 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	if body.InitialStock < 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "initial_stock no puede ser negativo"})
 	}
-	manageStock := body.ManageStock
-	if body.InitialStock > 0 {
-		manageStock = true
+	if body.InitialStock > 0 && !body.ManageStock {
+		return c.Status(400).JSON(fiber.Map{"error": service.InitialStockRequiresManageStock})
 	}
+	manageStock := body.ManageStock
 	taxCfg := tax.LoadFromDB(db(c))
 	igvType := body.IgvAffectationType
 	if igvType == "" {
@@ -267,7 +267,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		if body.InitialStock > 0 {
 			if !p.ManageStock {
 				_ = service.NewProductService(db(c)).Delete(p.ID)
-				return c.Status(400).JSON(fiber.Map{"error": "stock inicial requiere control de inventario activo"})
+				return c.Status(400).JSON(fiber.Map{"error": service.InitialStockRequiresManageStock})
 			}
 			uid, _ := c.Locals("user_id").(uint)
 			if err := inv.RecordInitialStock(
@@ -283,7 +283,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	} else if body.InitialStock > 0 {
 		if !p.ManageStock {
 			_ = service.NewProductService(db(c)).Delete(p.ID)
-			return c.Status(400).JSON(fiber.Map{"error": "stock inicial requiere control de inventario activo"})
+			return c.Status(400).JSON(fiber.Map{"error": service.InitialStockRequiresManageStock})
 		}
 		if berr != nil {
 			_ = service.NewProductService(db(c)).Delete(p.ID)
@@ -469,8 +469,9 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		Type:            c.Query("type"),
 		ActiveOnly:      !inactiveOnly && (activeOnly == "true" || activeOnly == "1"),
 		InactiveOnly:    inactiveOnly,
-		ManageStockOnly: c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1",
-		RestaurantOnly:  c.Query("restaurant_only") == "true" || c.Query("restaurant_only") == "1",
+		ManageStockOnly:    c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1",
+		NoManageStockOnly:  c.Query("no_manage_stock_only") == "true" || c.Query("no_manage_stock_only") == "1",
+		RestaurantOnly:     c.Query("restaurant_only") == "true" || c.Query("restaurant_only") == "1",
 		PreparationArea: c.Query("preparation_area"),
 	}
 	if v := strings.TrimSpace(c.Query("stock_less_than")); v != "" {

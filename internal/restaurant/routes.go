@@ -59,6 +59,7 @@ func RegisterRoutes(api fiber.Router) {
 	r.Post("/sessions/:id/bill", middleware.RequireRestaurantPerm(restaurantperm.OrdersCharge), h.BillSession)
 	r.Post("/sessions/:id/close", middleware.RequireRestaurantPerm(restaurantperm.OrdersCharge), h.CloseSession)
 	r.Post("/sessions/:id/cancel", middleware.RequireAnyRestaurantPerm(restaurantperm.OrdersCharge, restaurantperm.OrdersCancel, restaurantperm.SettingsManage), h.CancelSession)
+	r.Post("/sessions/:id/cancel-comandas", middleware.RequireAnyRestaurantPerm(restaurantperm.SettingsManage, restaurantperm.OrdersCancel), h.CancelAllComandas)
 
 	r.Patch("/comandas/:id/notes", middleware.RequireAnyRestaurantPerm(restaurantperm.TablesOpen, restaurantperm.OrdersCreate, restaurantperm.POSUse), h.UpdateComandaNotes)
 	r.Put("/comandas/:id/status", middleware.RequireRestaurantPerm(restaurantperm.KitchenUpdate), h.UpdateComandaStatus)

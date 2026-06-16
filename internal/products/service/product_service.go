@@ -28,8 +28,9 @@ type ProductListParams struct {
 	Type             string
 	ActiveOnly       bool
 	InactiveOnly     bool // solo productos inactivos (panel restaurante)
-	ManageStockOnly  bool   // solo productos con manage_stock (para transferencias/inventario)
-	RestaurantOnly   bool   // solo productos con is_restaurant (para panel restaurante)
+	ManageStockOnly    bool // solo productos con manage_stock (para transferencias/inventario)
+	NoManageStockOnly  bool // solo productos sin control de stock (reporte restaurante)
+	RestaurantOnly     bool // solo productos con is_restaurant (para panel restaurante)
 	PreparationArea  string // filtrar por área de preparación (cocina, bar, etc.)
 	StockLessThan    *float64
 	BranchID         uint // >0: restaurante → tenant_products.branch_id; inventario ERP → stock en sucursal
@@ -90,6 +91,8 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	}
 	if params.ManageStockOnly {
 		q = q.Where("manage_stock = ?", true)
+	} else if params.NoManageStockOnly {
+		q = q.Where("manage_stock = ?", false)
 	}
 	if params.RestaurantOnly {
 		q = q.Where("is_restaurant = ?", true)
@@ -474,6 +477,10 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 		return nil, err
 	}
 	p.PriceIncludesIgv = input.PriceIncludesIgv
+	if err := gormutil.PersistBoolWithDefault(s.db, p, "manage_stock", input.ManageStock); err != nil {
+		return nil, err
+	}
+	p.ManageStock = input.ManageStock
 
 	if input.ModifierGroupIDs != nil {
 		s.syncModifierGroups(p.ID, *input.ModifierGroupIDs)
