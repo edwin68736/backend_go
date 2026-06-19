@@ -354,6 +354,35 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	var openCashSessions int64
 	tdb.Model(&database.TenantCashSession{}).Where("status = ?", "open").Count(&openCashSessions)
 
+	type detPeriodAgg struct {
+		SumDetraccion   float64 `gorm:"column:sum_detraccion"`
+		SumNetPayable   float64 `gorm:"column:sum_net_payable"`
+		CountDetraccion int64   `gorm:"column:count_detraccion"`
+	}
+	var detPeriod detPeriodAgg
+	tdb.Table("tenant_sale_detraccion d").
+		Select(`
+			COALESCE(SUM(d.detraction_amount_pen), 0) AS sum_detraccion,
+			COALESCE(SUM(d.net_payable_pen), 0) AS sum_net_payable,
+			COUNT(*) AS count_detraccion
+		`).
+		Joins("JOIN tenant_sales s ON s.id = d.sale_id").
+		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
+		Where("s.status != ?", "cancelled").
+		Scopes(func(db *gorm.DB) *gorm.DB {
+			if branchID > 0 {
+				return db.Where("s.branch_id = ?", branchID)
+			}
+			return db
+		}).
+		Scopes(func(db *gorm.DB) *gorm.DB {
+			if restrictUser && userID != 0 {
+				return db.Where("s.user_id = ?", userID)
+			}
+			return db
+		}).
+		Scan(&detPeriod)
+
 	return c.JSON(fiber.Map{
 		"period": fiber.Map{
 			"date_from":       from.Format("2006-01-02"),
@@ -384,6 +413,9 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 			"cash_expense":          cashExpense,
 			"cash_net":              cashIncome - cashExpense,
 			"open_cash_sessions":    openCashSessions,
+			"sum_detraccion":        detPeriod.SumDetraccion,
+			"sum_net_payable":       detPeriod.SumNetPayable,
+			"count_detraccion":      detPeriod.CountDetraccion,
 		},
 		"timeseries_daily": daily,
 		"sales_by_branch":    byBranch,

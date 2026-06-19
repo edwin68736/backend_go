@@ -14,6 +14,8 @@ import (
 
 	"tukifac/config"
 	salesvc "tukifac/internal/sales/service"
+	detraccionsvc "tukifac/internal/detraccion"
+	"tukifac/internal/fiscal/salecontext"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
@@ -180,7 +182,10 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		Urbanizacion: "",
 		Direccion:    direccionEmpresa,
 	}
-	tipoOperacion := "0101"
+	tipoOperacion := strings.TrimSpace(sale.OperationTypeCode)
+	if tipoOperacion == "" {
+		tipoOperacion = salecontext.DefaultOperationType
+	}
 	// Cliente: tipoDoc catálogo 06 (1=DNI, 6=RUC, 4=CE…); numDoc obligatorio
 	clientTipoDoc := "6"
 	clientNumDoc := "00000000000"
@@ -364,6 +369,12 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		MtoImpVenta:       mtoImpVenta,
 		Details:           details,
 		Legends:           legends,
+	}
+	if fiscalEnrich, err := salecontext.LoadInvoiceEnrichment(s.db, saleID, sale.Total); err == nil && fiscalEnrich != nil {
+		salecontext.ApplyToInvoicePayload(payload, fiscalEnrich)
+	}
+	if det, err := detraccionsvc.NewService(s.db).LoadBySaleID(saleID); err == nil && det != nil {
+		detraccionsvc.ApplyToInvoicePayload(payload, det)
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	payloadJSON := string(payloadBytes)
@@ -814,13 +825,14 @@ func (s *BillingService) GetInvoicePDFContent(saleID uint) ([]byte, error) {
 	if s.db.Select("doc_type").First(&sale, saleID).Error != nil {
 		return nil, errors.New("venta no encontrada")
 	}
-	if sale.DocType == "NOTA_CREDITO" && invoice.NotePayloadJSON != "" && s.facturadorConfigured() {
-		var payload facturador.NotePayload
-		if err := json.Unmarshal([]byte(invoice.NotePayloadJSON), &payload); err != nil {
-			return nil, fmt.Errorf("payload nota inválido: %w", err)
+	if isNoteSaleDocType(sale.DocType) {
+		pdfBytes, err := s.getNoteDocumentPDF(invoice)
+		if err != nil {
+			return nil, err
 		}
-		client := facturador.Shared()
-		return client.GetNotePDF(&payload)
+		if len(pdfBytes) > 0 {
+			return pdfBytes, nil
+		}
 	}
 	// Obtener PDF del endpoint del facturador (no generar en este backend).
 	if s.facturadorConfigured() && invoice.PayloadJSON != "" {
@@ -859,13 +871,14 @@ func (s *BillingService) GetInvoiceXMLGeneratedContent(saleID uint) ([]byte, err
 		return nil, nil
 	}
 	var sale database.TenantSale
-	if s.db.Select("doc_type").First(&sale, saleID).Error == nil && sale.DocType == "NOTA_CREDITO" && invoice.NotePayloadJSON != "" && s.facturadorConfigured() {
-		var payload facturador.NotePayload
-		if err := json.Unmarshal([]byte(invoice.NotePayloadJSON), &payload); err != nil {
-			return nil, fmt.Errorf("payload nota inválido: %w", err)
+	if s.db.Select("doc_type").First(&sale, saleID).Error == nil && isNoteSaleDocType(sale.DocType) {
+		xmlBytes, err := s.getNoteDocumentXMLGenerated(invoice)
+		if err != nil {
+			return nil, err
 		}
-		client := facturador.Shared()
-		return client.GetNoteXML(&payload)
+		if len(xmlBytes) > 0 {
+			return xmlBytes, nil
+		}
 	}
 	if !s.facturadorConfigured() || invoice.PayloadJSON == "" {
 		return nil, nil

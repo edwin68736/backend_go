@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"strings"
 
+	"tukifac/internal/fiscal/salecontext"
+	detraccionsvc "tukifac/internal/detraccion"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/numeroletras"
+	detraccionpkg "tukifac/pkg/sunat/detraccion"
 
 	"gorm.io/gorm"
 )
@@ -22,6 +25,8 @@ type PrintData struct {
 	IssueDate string `json:"issue_date"`
 	IssueTime string `json:"issue_time,omitempty"` // HH:mm:ss
 	Currency  string `json:"currency"`
+	ExchangeRate *float64 `json:"exchange_rate,omitempty"`
+	OperationTypeCode string `json:"operation_type_code,omitempty"`
 	SunatHash string `json:"sunat_hash,omitempty"` // Hash firma XML (cuando ya enviado a SUNAT)
 	QRData    string `json:"qr_data"`              // String para generar QR según SUNAT
 
@@ -63,6 +68,35 @@ type PrintData struct {
 	PaymentCondition   string             `json:"payment_condition,omitempty"` // Contado, Crédito
 	BankAccounts       []PrintBankAccount `json:"bank_accounts,omitempty"`
 	PaymentWallet      *PrintPaymentWallet `json:"payment_wallet,omitempty"`
+
+	// Información adicional fiscal (retención operativa, O/C, guías — no altera total SUNAT del XML).
+	Fiscal *PrintFiscalContext `json:"fiscal,omitempty"`
+}
+
+// PrintFiscalContext datos adicionales para impresión/PDF.
+type PrintFiscalContext struct {
+	PurchaseOrderNumber string         `json:"purchase_order_number,omitempty"`
+	FiscalObservations  string         `json:"fiscal_observations,omitempty"`
+	Guias               []PrintGuiaRef `json:"guias,omitempty"`
+	HasIgvRetention     bool           `json:"has_igv_retention,omitempty"`
+	IgvRetentionAmount  float64        `json:"igv_retention_amount,omitempty"`
+	NetCollectible      float64        `json:"net_collectible,omitempty"`
+	RetentionApplied    bool           `json:"retention_applied,omitempty"`
+	HasDetraccion       bool           `json:"has_detraccion,omitempty"`
+	DetraccionGoodCode  string         `json:"detraccion_good_code,omitempty"`
+	DetraccionGoodLabel string         `json:"detraccion_good_label,omitempty"`
+	DetraccionRatePercent float64      `json:"detraccion_rate_percent,omitempty"`
+	DetraccionAmount    float64        `json:"detraccion_amount,omitempty"`
+	DetraccionBankAccount string       `json:"detraccion_bank_account,omitempty"`
+	DetraccionPaymentMethodCode string `json:"detraccion_payment_method_code,omitempty"`
+	DetraccionNetPayable float64       `json:"detraccion_net_payable,omitempty"`
+	ShowTermsConditions bool           `json:"show_terms_conditions,omitempty"`
+	TermsText           string         `json:"terms_text,omitempty"`
+}
+
+type PrintGuiaRef struct {
+	Kind   string `json:"kind,omitempty"`
+	Number string `json:"number"`
 }
 
 type PrintPaymentWallet struct {
@@ -140,6 +174,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		IssueDate: sale.IssueDate.Format("02/01/2006"),
 		IssueTime: sale.IssueDate.Format("15:04:05"),
 		Currency:  sale.Currency,
+		ExchangeRate: sale.ExchangeRate,
+		OperationTypeCode: sale.OperationTypeCode,
 		Subtotal:  sale.Subtotal,
 		TaxAmount: sale.TaxAmount,
 		Total:     sale.Total,
@@ -233,6 +269,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			pd.SellerName = strings.TrimSpace(user.Name)
 		}
 	}
+
+	enrichFiscalPrintData(db, sale.ID, sale.Total, pd)
 
 	// Sucursal: en comprobantes impresos/PDF la dirección es la de la sucursal de la venta.
 	var branch database.TenantBranch
@@ -436,6 +474,68 @@ func printAffectedDocNumber(orig *database.TenantSale) string {
 		return nro[:i+1] + suf
 	}
 	return nro
+}
+
+func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *PrintData) {
+	if pd == nil {
+		return
+	}
+	var fc *PrintFiscalContext
+	enrich, err := salecontext.LoadInvoiceEnrichment(db, saleID, saleTotal)
+	if err == nil && enrich != nil {
+		fc = &PrintFiscalContext{
+			PurchaseOrderNumber: enrich.PurchaseOrderNumber,
+			FiscalObservations:  enrich.FiscalObservations,
+			HasIgvRetention:     enrich.HasIgvRetention,
+			IgvRetentionAmount:  money.RoundSunat(enrich.RetentionAmount),
+			NetCollectible:      money.RoundSunat(enrich.NetCollectible),
+			RetentionApplied:    enrich.RetentionApplied,
+			ShowTermsConditions: enrich.ShowTermsConditions,
+		}
+		for _, g := range enrich.Guias {
+			fc.Guias = append(fc.Guias, PrintGuiaRef{Kind: g.Kind, Number: g.NroDoc})
+		}
+		if enrich.ShowTermsConditions {
+			var company database.TenantCompanyConfig
+			if db.First(&company).Error == nil {
+				fc.TermsText = strings.TrimSpace(company.AdditionalNotes)
+			}
+		}
+		if enrich.SellerUserID != nil && *enrich.SellerUserID > 0 {
+			var seller database.TenantUser
+			if db.Select("name").First(&seller, *enrich.SellerUserID).Error == nil {
+				if name := strings.TrimSpace(seller.Name); name != "" {
+					pd.SellerName = name
+				}
+			}
+		}
+	}
+
+	if det, err := detraccionsvc.NewService(db).LoadBySaleID(saleID); err == nil && det != nil {
+		if fc == nil {
+			fc = &PrintFiscalContext{}
+		}
+		cat, _ := detraccionpkg.DefaultCatalog()
+		label := det.GoodCode
+		if cat != nil {
+			if g, ok := cat.GoodByCode(det.GoodCode); ok {
+				label = g.Description
+			}
+		}
+		fc.HasDetraccion = true
+		fc.DetraccionGoodCode = det.GoodCode
+		fc.DetraccionGoodLabel = label
+		fc.DetraccionRatePercent = det.RatePercent
+		fc.DetraccionAmount = money.RoundSunat(det.DetractionAmountPen)
+		fc.DetraccionBankAccount = det.BankAccount
+		fc.DetraccionPaymentMethodCode = det.PaymentMethodCode
+		fc.DetraccionNetPayable = money.RoundSunat(det.NetPayablePen)
+	}
+
+	if fc != nil && (fc.PurchaseOrderNumber != "" || fc.FiscalObservations != "" || len(fc.Guias) > 0 ||
+		fc.RetentionApplied || fc.HasIgvRetention || fc.ShowTermsConditions || fc.HasDetraccion) {
+		pd.Fiscal = fc
+	}
 }
 
 func enrichCreditNotePrintData(db *gorm.DB, sale *database.TenantSale, pd *PrintData) {

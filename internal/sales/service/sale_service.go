@@ -11,10 +11,15 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/money"
+	"tukifac/pkg/paymentmethod"
 	"tukifac/pkg/saas/docusage"
+	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/sunat"
+	detraccionpkg "tukifac/pkg/sunat/detraccion"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
+	detraccionsvc "tukifac/internal/detraccion"
+	salecontext "tukifac/internal/fiscal/salecontext"
 
 	"gorm.io/gorm"
 )
@@ -71,8 +76,10 @@ type CreateSaleInput struct {
 	DocType       string
 	IssueDate     time.Time
 	DueDate       *time.Time
-	Currency      string
-	PaymentMethod string   // legacy: si Payments vacío, se usa para el total
+	Currency          string
+	OperationTypeCode string
+	ExchangeRate      *float64
+	PaymentMethod     string   // legacy: si Payments vacío, se usa para el total
 	Payments      []PaymentInput `json:"payments"` // múltiples métodos de pago
 	Notes         string
 	Items         []SaleItemInput
@@ -82,6 +89,8 @@ type CreateSaleInput struct {
 	SkipPaymentDistribution   bool
 	IssuedFromNotaSaleID      *uint // ID de la NV origen; se guarda en la nueva venta 01/03
 	CentralTenantID           uint  // tenant SaaS (cupo de documentos electrónicos)
+	FiscalContext             *salecontext.FiscalContextInput
+	Detraccion                *detraccionsvc.SaleInput
 }
 
 // NextCorrelative retorna el siguiente correlativo para una serie y lo incrementa (transacción con bloqueo de fila).
@@ -158,13 +167,39 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		})
 	}
 
-	currency := input.Currency
-	if currency == "" {
-		currency = "PEN"
+	currency, err := salecurrency.NormalizeCurrency(input.Currency)
+	if err != nil {
+		return nil, err
+	}
+	opCode, err := salecurrency.NormalizeOperationType(input.OperationTypeCode)
+	if err != nil {
+		return nil, err
+	}
+	exchangeRate, err := salecurrency.NormalizeExchangeRate(currency, input.ExchangeRate)
+	if err != nil {
+		return nil, err
+	}
+
+	sunatCode := strings.TrimSpace(series.SunatCode)
+	if opCode == salecurrency.OpDetraccion {
+		if sunatCode != "01" {
+			return nil, errors.New("la operación sujeta a detracción (1001) solo aplica a facturas (01)")
+		}
+		if currency != salecurrency.CurrencyPEN {
+			return nil, errors.New("la detracción requiere moneda PEN en la factura")
+		}
+		if input.Detraccion == nil || strings.TrimSpace(input.Detraccion.GoodCode) == "" {
+			return nil, errors.New("seleccione el bien o servicio sujeto a detracción")
+		}
+		if input.FiscalContext != nil && input.FiscalContext.HasIgvRetention != nil && *input.FiscalContext.HasIgvRetention {
+			return nil, errors.New("no se puede combinar detracción con retención IGV en la misma factura")
+		}
+	}
+	if opCode != salecurrency.OpDetraccion && input.Detraccion != nil {
+		return nil, errors.New("datos de detracción solo aplican con tipo de operación 1001")
 	}
 
 	// Validaciones SUNAT: Factura 01 solo con RUC de 11 dígitos; doc. tipo 0 máximo S/ 700 en boleta/nota de venta
-	sunatCode := strings.TrimSpace(series.SunatCode)
 	if sunatCode == "01" || sunatCode == "03" {
 		var companyCfg database.TenantCompanyConfig
 		if err := s.db.Select("sunat_enabled").First(&companyCfg).Error; err != nil || !companyCfg.SunatEnabled {
@@ -177,6 +212,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		if s.db.First(&c, *input.ContactID).Error == nil {
 			contact = &c
 		}
+	}
+	if opCode == salecurrency.OpDetraccion && contact != nil && contact.EsAgenteDePercepcion {
+		return nil, errors.New("no se permite detracción con cliente agente de percepción")
 	}
 	if sunatCode == "01" {
 		if contact == nil {
@@ -251,9 +289,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		payments = []PaymentInput{{Method: input.PaymentMethod, Amount: total}}
 	}
 	if total > 0 && len(payments) == 0 {
-		return nil, errors.New("debe indicar al menos un método de pago para registrar la venta")
+		if input.DueDate == nil {
+			return nil, errors.New("debe indicar al menos un método de pago para registrar la venta")
+		}
 	}
 
+	isCreditSale := false
 	if emitFromNV && total > 0 && len(payments) > 0 {
 		var sumPayments float64
 		for _, p := range payments {
@@ -263,19 +304,49 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			payments = alignPaymentsToSaleTotal(payments, total)
 		}
 	}
-	if len(payments) > 0 {
+	if opCode == salecurrency.OpDetraccion && total > 0 {
+		eval, err := s.evaluateDetractionForCreate(input, &series, total, saleItems, contact)
+		if err != nil {
+			return nil, err
+		}
+		if len(payments) > 0 || input.DueDate != nil {
+			var credit bool
+			payments, credit, err = PrepareDetractionSalePaymentsAllowCredit(payments, total, eval)
+			if err != nil {
+				return nil, err
+			}
+			isCreditSale = credit
+		} else {
+			return nil, errors.New("debe indicar pagos o fecha de vencimiento para la venta con detracción")
+		}
+	} else if len(payments) > 0 {
 		var sumPayments float64
 		for _, p := range payments {
+			if paymentmethod.IsReceivableCode(p.Method) {
+				continue
+			}
 			sumPayments += p.Amount
 		}
-		if !money.PaidCoversTotal(sumPayments, total) ||
-			money.RoundDisplay(sumPayments) > money.RoundDisplay(total)+money.PaymentTolerance {
-			return nil, fmt.Errorf("la suma de pagos (%.2f) no coincide con el total (%.2f)", money.RoundDisplay(sumPayments), money.RoundDisplay(total))
+		if money.RoundDisplay(sumPayments) > money.RoundDisplay(total)+money.PaymentTolerance {
+			return nil, fmt.Errorf("la suma de pagos (%.2f) supera el total (%.2f)", money.RoundDisplay(sumPayments), money.RoundDisplay(total))
 		}
+		if !money.PaidCoversTotal(sumPayments, total) {
+			if input.DueDate == nil {
+				return nil, fmt.Errorf("la suma de pagos (%.2f) no coincide con el total (%.2f)", money.RoundDisplay(sumPayments), money.RoundDisplay(total))
+			}
+			isCreditSale = true
+		}
+	} else if total > 0 && input.DueDate != nil {
+		isCreditSale = true
 	}
-	primaryMethod := input.PaymentMethod
-	if len(payments) > 0 {
-		primaryMethod = payments[0].Method
+	primaryMethod := PrimaryDirectPaymentMethod(payments, input.PaymentMethod)
+	if isCreditSale && primaryMethod == "" {
+		primaryMethod = paymentmethod.CodeCredito
+	}
+
+	saleStatus := "paid"
+	if isCreditSale {
+		saleStatus = "credit"
 	}
 
 	sale := &database.TenantSale{
@@ -291,9 +362,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		TaxAmount:            money.RoundSunat(taxAmount),
 		Total:                money.RoundSunat(total),
 		Currency:             currency,
+		OperationTypeCode:    opCode,
+		ExchangeRate:         exchangeRate,
 		PaymentMethod:        primaryMethod,
 		Notes:                input.Notes,
-		Status:               "paid",
+		Status:               saleStatus,
 		BillingStatus:        "pending",
 		IssuedFromNotaSaleID: input.IssuedFromNotaSaleID,
 	}
@@ -362,6 +435,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 
 		if skipInv {
+			if err := s.persistFiscalContextTx(tx, sale, input, seriesLocked); err != nil {
+				return err
+			}
+			if err := s.persistDetraccionTx(tx, sale, input, seriesLocked, saleItems); err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -449,8 +528,149 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				}
 			}
 		}
+		if err := s.persistFiscalContextTx(tx, sale, input, seriesLocked); err != nil {
+			return err
+		}
+		if err := s.persistDetraccionTx(tx, sale, input, seriesLocked, saleItems); err != nil {
+			return err
+		}
 		return nil
 	})
+}
+
+func (s *SaleService) persistFiscalContextTx(tx *gorm.DB, sale *database.TenantSale, input CreateSaleInput, series database.TenantDocumentSeries) error {
+	if input.FiscalContext == nil {
+		return nil
+	}
+	var contactSnap *salecontext.ContactSnapshot
+	if input.ContactID != nil {
+		var c database.TenantContact
+		if tx.First(&c, *input.ContactID).Error == nil {
+			contactSnap = salecontext.ContactFromModel(&c)
+		}
+	}
+	currency := strings.TrimSpace(input.Currency)
+	if currency == "" {
+		currency = "PEN"
+	}
+	_, err := salecontext.NewService(tx).Persist(salecontext.PersistInput{
+		SaleID:        sale.ID,
+		UserID:        input.UserID,
+		SunatDocCode:  salecontext.SunatCodeFromSeries(&series, input.DocType),
+		SaleTotal:     sale.Total,
+		Currency:      currency,
+		ExchangeRate:  sale.ExchangeRate,
+		Contact:       contactSnap,
+		FiscalContext: input.FiscalContext,
+	})
+	return err
+}
+
+func (s *SaleService) persistDetraccionTx(
+	tx *gorm.DB,
+	sale *database.TenantSale,
+	input CreateSaleInput,
+	series database.TenantDocumentSeries,
+	saleItems []database.TenantSaleItem,
+) error {
+	if strings.TrimSpace(input.OperationTypeCode) != salecurrency.OpDetraccion {
+		return nil
+	}
+	var companyCfg database.TenantCompanyConfig
+	if err := tx.First(&companyCfg).Error; err != nil {
+		return errors.New("configure los datos de la empresa antes de emitir con detracción")
+	}
+	paymentMethod := strings.TrimSpace(companyCfg.DetractionDefaultPaymentMethod)
+	if paymentMethod == "" {
+		paymentMethod = "001"
+	}
+	var contactEsPercepcion bool
+	if input.ContactID != nil {
+		var c database.TenantContact
+		if tx.First(&c, *input.ContactID).Error == nil {
+			contactEsPercepcion = c.EsAgenteDePercepcion
+		}
+	}
+	affItems := make([]detraccionpkg.ItemAffectation, 0, len(saleItems))
+	for _, it := range saleItems {
+		affItems = append(affItems, detraccionpkg.ItemAffectation{
+			IgvAffectationType: it.IgvAffectationType,
+			Total:              it.Total,
+		})
+	}
+	gravadoTotal := detraccionpkg.GravadoTotalFromItems(affItems)
+	_, err := detraccionsvc.NewService(tx).Persist(detraccionsvc.PersistInput{
+		SaleID:              sale.ID,
+		OperationTypeCode:   input.OperationTypeCode,
+		SunatDocCode:        salecontext.SunatCodeFromSeries(&series, input.DocType),
+		Currency:            sale.Currency,
+		ExchangeRate:        sale.ExchangeRate,
+		SaleTotal:           sale.Total,
+		GravadoTotal:        gravadoTotal,
+		BankAccount:         companyCfg.DetractionBNAccount,
+		PaymentMethodCode:   paymentMethod,
+		Detraccion:          input.Detraccion,
+		ContactEsPercepcion: contactEsPercepcion,
+	})
+	return err
+}
+
+func (s *SaleService) evaluateDetractionForCreate(
+	input CreateSaleInput,
+	series *database.TenantDocumentSeries,
+	total float64,
+	saleItems []database.TenantSaleItem,
+	contact *database.TenantContact,
+) (detraccionpkg.CalcResult, error) {
+	var companyCfg database.TenantCompanyConfig
+	if err := s.db.First(&companyCfg).Error; err != nil {
+		return detraccionpkg.CalcResult{}, errors.New("configure los datos de la empresa antes de emitir con detracción")
+	}
+	paymentMethod := strings.TrimSpace(companyCfg.DetractionDefaultPaymentMethod)
+	if paymentMethod == "" {
+		paymentMethod = "001"
+	}
+	var contactEsPercepcion bool
+	if contact != nil {
+		contactEsPercepcion = contact.EsAgenteDePercepcion
+	}
+	affItems := make([]detraccionpkg.ItemAffectation, 0, len(saleItems))
+	for _, it := range saleItems {
+		affItems = append(affItems, detraccionpkg.ItemAffectation{
+			IgvAffectationType: it.IgvAffectationType,
+			Total:              it.Total,
+		})
+	}
+	gravadoTotal := detraccionpkg.GravadoTotalFromItems(affItems)
+	currency := strings.TrimSpace(input.Currency)
+	if currency == "" {
+		currency = salecurrency.CurrencyPEN
+	}
+	return detraccionsvc.NewService(s.db).Evaluate(detraccionsvc.PersistInput{
+		OperationTypeCode:   input.OperationTypeCode,
+		SunatDocCode:        salecontext.SunatCodeFromSeries(series, input.DocType),
+		Currency:            currency,
+		ExchangeRate:        input.ExchangeRate,
+		SaleTotal:           total,
+		GravadoTotal:        gravadoTotal,
+		BankAccount:         companyCfg.DetractionBNAccount,
+		PaymentMethodCode:   paymentMethod,
+		Detraccion:          input.Detraccion,
+		ContactEsPercepcion: contactEsPercepcion,
+	})
+}
+
+// GetFiscalContext carga información adicional fiscal de una venta.
+func (s *SaleService) GetFiscalContext(saleID uint) (*salecontext.FiscalContextOutput, error) {
+	sale, err := s.GetByID(saleID)
+	if err != nil {
+		return nil, err
+	}
+	out, err := salecontext.NewService(s.db).Load(saleID, sale.Total)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return out, err
 }
 
 func (s *SaleService) GetByID(id uint) (*database.TenantSale, error) {
@@ -496,6 +716,10 @@ type SaleListSummary struct {
 	SumActive      float64 `json:"sum_active"`
 	CountCancelled int64   `json:"count_cancelled"`
 	CountActive    int64   `json:"count_active"`
+	SumDetraccion  float64 `json:"sum_detraccion"`
+	SumNetPayable  float64 `json:"sum_net_payable"`
+	CountDetraccion int64  `json:"count_detraccion"`
+	SpotTotal      float64 `json:"spot_total"`
 	PaymentTotals  []struct {
 		Method string  `json:"method"`
 		Total  float64 `json:"total"`
@@ -670,6 +894,7 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 			}
 		}
 	}
+	s.enrichSalesWithDetraccion(sales)
 
 	// Normalizar issue_date como fecha de negocio Perú al mediodía para evitar corrimientos de día
 	// por parsing/serialización (MySQL DATETIME + loc=Local + clientes en UTC).
@@ -727,12 +952,35 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	out.CountCancelled = row.CountCancelled
 	out.CountActive = row.CountActive
 
+	type detAggRow struct {
+		SumDetraccion   float64 `gorm:"column:sum_detraccion"`
+		SumNetPayable   float64 `gorm:"column:sum_net_payable"`
+		CountDetraccion int64   `gorm:"column:count_detraccion"`
+	}
+	var detRow detAggRow
+	if err := s.db.Table("tenant_sale_detraccion d").
+		Select(`
+			COALESCE(SUM(d.detraction_amount_pen), 0) AS sum_detraccion,
+			COALESCE(SUM(d.net_payable_pen), 0) AS sum_net_payable,
+			COUNT(*) AS count_detraccion
+		`).
+		Joins("JOIN tenant_sales ts ON ts.id = d.sale_id").
+		Where("ts.id IN (?)", idSub).
+		Where("ts.status != ?", "cancelled").
+		Scan(&detRow).Error; err != nil {
+		return out, err
+	}
+	out.SumDetraccion = detRow.SumDetraccion
+	out.SumNetPayable = detRow.SumNetPayable
+	out.CountDetraccion = detRow.CountDetraccion
+
 	// Totales por método: si hay filas en tenant_sale_pagos, usar montos por línea; si no, el campo cabecera payment_method.
 	type payRow struct {
 		Method string  `gorm:"column:method"`
 		Total  float64 `gorm:"column:total"`
 	}
 	byMethod := make(map[string]float64)
+	var spotTotal float64
 
 	var fromPayments []payRow
 	err = s.db.Table("tenant_sale_payments tsp").
@@ -746,6 +994,10 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		return out, err
 	}
 	for _, p := range fromPayments {
+		if paymentmethod.IsDetractionCode(p.Method) {
+			spotTotal += p.Total
+			continue
+		}
 		m := strings.TrimSpace(p.Method)
 		if m == "" {
 			m = "sin_definir"
@@ -789,6 +1041,13 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 			Method string  `json:"method"`
 			Total  float64 `json:"total"`
 		}{Method: p.method, Total: p.total})
+	}
+	if spotTotal > 0 {
+		out.SpotTotal = spotTotal
+		out.PaymentTotals = append(out.PaymentTotals, struct {
+			Method string  `json:"method"`
+			Total  float64 `json:"total"`
+		}{Method: paymentmethod.CodeDetraccionBN, Total: spotTotal})
 	}
 	return out, nil
 }

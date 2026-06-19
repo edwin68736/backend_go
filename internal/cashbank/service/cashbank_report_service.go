@@ -21,6 +21,13 @@ type SessionReport struct {
 	Totals               SessionTotals          `json:"totals"`
 	CashPhysical         SessionCashPhysical    `json:"cash_physical"`
 	Electronic           SessionElectronic      `json:"electronic"`
+	Detraction           SessionDetraction      `json:"detraction"`
+}
+
+// SessionDetraction ventas con detracción BN (SPOT): informativo, sin impacto en arqueo.
+type SessionDetraction struct {
+	TotalSPOT float64           `json:"total_spot"`
+	Sales     []IncomeDetailRow `json:"sales"`
 }
 
 // SessionCashPhysical resumen y detalle de caja física (solo efectivo).
@@ -95,11 +102,14 @@ type MethodTotal struct {
 }
 
 type SessionTotals struct {
-	TotalIncome    float64 `json:"total_income"`
-	TotalExpense   float64 `json:"total_expense"`
-	TotalSales     float64 `json:"total_sales"`
-	TotalPurchases float64 `json:"total_purchases"`
-	FinalBalance   float64 `json:"final_balance"`
+	TotalIncome          float64 `json:"total_income"`
+	TotalExpense         float64 `json:"total_expense"`
+	TotalSales           float64 `json:"total_sales"` // cobrado directo (sin SPOT)
+	TotalSalesDirect     float64 `json:"total_sales_direct"`
+	TotalDetractionSpot  float64 `json:"total_detraccion_spot"`
+	TotalSalesCommercial float64 `json:"total_sales_commercial"` // directo + SPOT
+	TotalPurchases       float64 `json:"total_purchases"`
+	FinalBalance         float64 `json:"final_balance"`
 }
 
 // MovementReportRow es una fila del reporte de movimientos.
@@ -137,10 +147,11 @@ type MovementChannelBlock struct {
 	Summary MovementChannelSummary `json:"summary"`
 }
 
-// MovementsReportSplit respuesta separada: caja física vs medios electrónicos.
+// MovementsReportSplit respuesta separada: caja física, electrónico y detracción SPOT.
 type MovementsReportSplit struct {
 	Cash       MovementChannelBlock `json:"cash"`
 	Electronic MovementChannelBlock `json:"electronic"`
+	Detraction MovementChannelBlock `json:"detraction"`
 }
 
 // MovementReportFilters filtros para el reporte de movimientos.
@@ -256,10 +267,26 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		paidBySale := make(map[uint]float64)
 		for _, p := range payments {
 			meth := normalizeReportMethod(p.Method)
+			sale := salesMap[p.SaleID]
+			if IsDetractionPaymentMethod(meth) || IsDetractionPaymentMethod(p.Method) {
+				report.Totals.TotalDetractionSpot += p.Amount
+				report.Totals.TotalSalesCommercial += p.Amount
+				report.Detraction.TotalSPOT += p.Amount
+				report.Detraction.Sales = append(report.Detraction.Sales, IncomeDetailRow{
+					Date:          p.CreatedAt,
+					Type:          "detraccion_spot",
+					DocNumber:     sale.Number,
+					Reference:     p.Reference,
+					Amount:        p.Amount,
+					PaymentMethod: meth,
+				})
+				continue
+			}
 			salesByMethod[meth] += p.Amount
 			report.Totals.TotalSales += p.Amount
+			report.Totals.TotalSalesDirect += p.Amount
+			report.Totals.TotalSalesCommercial += p.Amount
 			paidBySale[p.SaleID] += p.Amount
-			sale := salesMap[p.SaleID]
 			report.IncomeDetail = append(report.IncomeDetail, IncomeDetailRow{
 				Date:          p.CreatedAt,
 				Type:          "venta",
@@ -272,8 +299,13 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		for _, sale := range sessionSales {
 			if paidBySale[sale.ID] == 0 && sale.Total != 0 {
 				meth := normalizeReportMethod(sale.PaymentMethod)
+				if IsDetractionPaymentMethod(meth) {
+					continue
+				}
 				salesByMethod[meth] += sale.Total
 				report.Totals.TotalSales += sale.Total
+				report.Totals.TotalSalesDirect += sale.Total
+				report.Totals.TotalSalesCommercial += sale.Total
 				report.IncomeDetail = append(report.IncomeDetail, IncomeDetailRow{
 					Date:          sale.CreatedAt,
 					Type:          "venta",
@@ -377,6 +409,9 @@ func populateSessionReportSections(r *SessionReport) {
 	for _, row := range r.IncomeDetail {
 		switch row.Type {
 		case "venta":
+			if IsDetractionPaymentMethod(row.PaymentMethod) {
+				continue
+			}
 			if IsCashPaymentMethod(row.PaymentMethod) {
 				cashSales = append(cashSales, row)
 				cashSalesTotal += row.Amount
@@ -431,11 +466,15 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 	all := append(saleRows, cashRows...)
 	sortMovementRowsDesc(all)
 
-	var cashChannel, electronicChannel []MovementReportRow
+	var cashChannel, electronicChannel, detractionChannel []MovementReportRow
 	for _, row := range all {
-		if movementRowChannel(row) == "electronic" {
+		ch := movementRowChannel(row)
+		switch ch {
+		case "detraction":
+			detractionChannel = append(detractionChannel, row)
+		case "electronic":
 			electronicChannel = append(electronicChannel, row)
-		} else {
+		default:
 			cashChannel = append(cashChannel, row)
 		}
 	}
@@ -454,6 +493,7 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 	return MovementsReportSplit{
 		Cash:       buildMovementChannelBlock(cashChannel, 0, 0, opening),
 		Electronic: buildMovementChannelBlock(electronicChannel, 0, 0, nil),
+		Detraction: buildMovementChannelBlock(detractionChannel, 0, 0, nil),
 	}, nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"tukifac/pkg/paymentmethod"
+
 	"gorm.io/gorm"
 )
 
@@ -21,6 +23,8 @@ func normalizeReportMethod(m string) string {
 		return "tarjeta"
 	case "transferencia":
 		return "transferencia"
+	case "detraccion_bn":
+		return "detraccion_bn"
 	default:
 		if m == "" {
 			return "efectivo"
@@ -64,13 +68,21 @@ func salePaymentMovementID(paymentID uint) uint {
 	return 1_000_000_000 + paymentID
 }
 
+// IsDetractionPaymentMethod indica método interno SPOT (sin impacto en caja/banco).
+func IsDetractionPaymentMethod(method string) bool {
+	return paymentmethod.IsDetractionCode(method)
+}
+
 // IsCashPaymentMethod indica si el método representa dinero físico en caja.
 func IsCashPaymentMethod(method string) bool {
 	return normalizeReportMethod(method) == "efectivo"
 }
 
-// movementRowChannel clasifica una fila de movimientos: "cash" (caja física) o "electronic".
+// movementRowChannel clasifica una fila de movimientos: "cash", "electronic" o "detraction".
 func movementRowChannel(row MovementReportRow) string {
+	if row.Type == "venta" && IsDetractionPaymentMethod(row.PaymentMethod) {
+		return "detraction"
+	}
 	if row.Type == "venta" && !IsCashPaymentMethod(row.PaymentMethod) {
 		return "electronic"
 	}

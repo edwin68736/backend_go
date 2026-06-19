@@ -15,6 +15,7 @@ import (
 	"tukifac/internal/cashbank"
 	"tukifac/internal/company"
 	consultaHandler "tukifac/internal/consulta/handler"
+	catalogs "tukifac/internal/catalogs"
 	"tukifac/internal/contacts"
 	"tukifac/internal/dashboard"
 	"tukifac/internal/inventory"
@@ -22,6 +23,7 @@ import (
 	"tukifac/internal/modules"
 	"tukifac/internal/products"
 	"tukifac/internal/purchases"
+	"tukifac/internal/receivables"
 	"tukifac/internal/restaurant"
 	"tukifac/internal/sales"
 	"tukifac/internal/tenantportal"
@@ -202,6 +204,9 @@ func Setup(app *fiber.App) {
 	tenantAPI.Get("/ubigeo/provincias", ubigeoTenant.ProvinciasAPI)
 	tenantAPI.Get("/ubigeo/distritos", ubigeoTenant.DistritosAPI)
 
+	tenantAPI.Get("/consulta/tipo-cambio", consultaH.TipoCambioAPI)
+	catalogs.RegisterRoutes(tenantAPI)
+
 	tenantportal.RegisterRoutes(tenantAPI)
 	dashboard.RegisterRoutes(tenantAPI)
 	company.RegisterRoutes(tenantAPI)
@@ -214,6 +219,7 @@ func Setup(app *fiber.App) {
 	billing.RegisterRoutes(tenantAPI)
 	purchases.RegisterRoutes(tenantAPI)
 	cashbank.RegisterRoutes(tenantAPI)
+	receivables.RegisterRoutes(tenantAPI)
 	restaurant.RegisterRoutes(tenantAPI)
 	restaurant.RegisterSalePaymentRoutes(tenantAPI)
 	modules.RegisterRoutes(tenantAPI)

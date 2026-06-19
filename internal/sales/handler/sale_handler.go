@@ -8,6 +8,8 @@ import (
 	"time"
 
 	billingSvc "tukifac/internal/billing/service"
+	detraccionsvc "tukifac/internal/detraccion"
+	salecontext "tukifac/internal/fiscal/salecontext"
 	"tukifac/internal/sales/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
@@ -112,11 +114,15 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		DocType       string                   `json:"doc_type"`
 		IssueDate     string                   `json:"issue_date"`
 		DueDate       string                   `json:"due_date"`
-		Currency      string                   `json:"currency"`
-		PaymentMethod string                   `json:"payment_method"`
+		Currency          string                   `json:"currency"`
+		OperationTypeCode string                   `json:"operation_type_code"`
+		ExchangeRate      *float64                 `json:"exchange_rate"`
+		PaymentMethod     string                   `json:"payment_method"`
 		Payments      []service.PaymentInput   `json:"payments"`
 		Notes         string                   `json:"notes"`
 		Items         []service.SaleItemInput  `json:"items"`
+		FiscalContext *salecontext.FiscalContextInput `json:"fiscal_context"`
+		Detraccion    *detraccionsvc.SaleInput        `json:"detraccion"`
 	}
 
 	if err := c.Bind().Body(&body); err != nil {
@@ -165,13 +171,17 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		DocType:         body.DocType,
 		IssueDate:       issueDate,
 		DueDate:         dueDate,
-		Currency:        body.Currency,
-		PaymentMethod:   body.PaymentMethod,
+		Currency:          body.Currency,
+		OperationTypeCode: body.OperationTypeCode,
+		ExchangeRate:      body.ExchangeRate,
+		PaymentMethod:     body.PaymentMethod,
 		Payments:        body.Payments,
 		Notes:           body.Notes,
 		Items:           body.Items,
 		TaxConfig:       taxCfg,
 		CentralTenantID: centralTenantID,
+		FiscalContext:   body.FiscalContext,
+		Detraccion:      body.Detraccion,
 	})
 	if err != nil {
 		return saleCreateErrorResponse(c, err)
@@ -191,11 +201,17 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 	}
 	printData, _ := service.BuildPrintData(db(c), sale, items, printPayments, "")
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+	resp := fiber.Map{
 		"success":    true,
 		"sale":       sale,
 		"print_data": printData,
-	})
+	}
+	if body.FiscalContext != nil {
+		if fiscalCtx, err := svc.GetFiscalContext(sale.ID); err == nil && fiscalCtx != nil {
+			resp["fiscal_context"] = fiscalCtx
+		}
+	}
+	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
 func (h *SaleHandler) DetailPage(c fiber.Ctx) error {
@@ -422,6 +438,12 @@ func (h *SaleHandler) GetAPI(c fiber.Ctx) error {
 	}
 	if printData, err := service.BuildPrintDataForSale(db(c), sale.ID); err == nil {
 		out["print_data"] = printData
+	}
+	if fiscalCtx, err := svc.GetFiscalContext(sale.ID); err == nil && fiscalCtx != nil {
+		out["fiscal_context"] = fiscalCtx
+	}
+	if det, err := detraccionsvc.NewService(db(c)).LoadBySaleID(sale.ID); err == nil && det != nil {
+		out["detraccion"] = det
 	}
 	return c.JSON(out)
 }

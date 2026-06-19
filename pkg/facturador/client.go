@@ -235,6 +235,24 @@ type InvoicePayload struct {
 	Details         []InvoiceDetail    `json:"details"`
 	Observacion     string             `json:"observacion,omitempty"` // Leyenda en letras sin languageLocaleID (ver SetSUNATLegendViaObservacion)
 	Legends         []InvoiceLegend    `json:"legends,omitempty"`
+	Compra          string             `json:"compra,omitempty"` // Orden de compra (O/C)
+	Guias           []InvoiceRelatedDoc `json:"guias,omitempty"` // Guías relacionadas (tipoDoc + nroDoc)
+	Detraccion      *InvoiceDetraction  `json:"detraccion,omitempty"`
+}
+
+// InvoiceDetraction bloque detracción SUNAT (cat. 54, 59, cuenta BN).
+type InvoiceDetraction struct {
+	Percent           float64 `json:"percent"`
+	Mount             float64 `json:"mount"`
+	CtaBanco          string  `json:"ctaBanco"`
+	CodMedioPago      string  `json:"codMedioPago"`
+	CodBienDetraccion string  `json:"codBienDetraccion"`
+}
+
+// InvoiceRelatedDoc documento relacionado en factura/boleta (guías, etc.).
+type InvoiceRelatedDoc struct {
+	TipoDoc string `json:"tipoDoc"`
+	NroDoc  string `json:"nroDoc"`
 }
 
 // InvoiceFormaPago según doc: al menos "tipo" (ej. "Contado").

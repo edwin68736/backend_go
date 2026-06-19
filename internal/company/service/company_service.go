@@ -68,12 +68,22 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 		"currency":         input.Currency,
 		"tax_rate":         input.TaxRate,
 		"additional_notes": strings.TrimSpace(input.AdditionalNotes),
+		"detraction_bn_account":            strings.TrimSpace(input.DetractionBNAccount),
+		"detraction_default_payment_method": normalizeDetractionPaymentMethod(input.DetractionDefaultPaymentMethod),
 	}
 	// color_theme solo desde panel tenant; Tukichef y otros clientes no deben vaciarlo.
 	if strings.TrimSpace(input.ColorTheme) != "" {
 		updates["color_theme"] = input.ColorTheme
 	}
 	return s.db.Model(&existing).Updates(updates).Error
+}
+
+func normalizeDetractionPaymentMethod(raw string) string {
+	code := strings.TrimSpace(raw)
+	if code == "" {
+		return "001"
+	}
+	return code
 }
 
 // SaveReceiptWallet guarda QR Yape/Plin y cuentas bancarias visibles en comprobantes.

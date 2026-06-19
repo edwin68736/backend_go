@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/paymentmethod"
 
 	"gorm.io/gorm"
 )
@@ -543,11 +544,14 @@ func (s *CashBankService) CreatePaymentMethod(name, code, destinationType string
 	if name == "" || code == "" {
 		return nil, errors.New("nombre y código son requeridos")
 	}
-	if destinationType != "cash" && destinationType != "bank_account" {
-		return nil, errors.New("destination_type debe ser cash o bank_account")
+	if destinationType != "cash" && destinationType != "bank_account" && destinationType != "detraction" && destinationType != paymentmethod.DestinationReceivable {
+		return nil, errors.New("destination_type debe ser cash, bank_account, detraction o receivable")
 	}
 	if destinationType == "bank_account" && (bankAccountID == nil || *bankAccountID == 0) {
 		return nil, errors.New("debe indicar la cuenta bancaria cuando el destino es bank_account")
+	}
+	if destinationType == "detraction" || destinationType == paymentmethod.DestinationReceivable {
+		return nil, errors.New("el destino detracción/crédito es un método interno del sistema")
 	}
 	code = NormalizePaymentMethodCode(code)
 	// Evitar duplicados de código
@@ -575,8 +579,14 @@ func (s *CashBankService) UpdatePaymentMethod(id uint, name, code, destinationTy
 	if err := s.db.First(&pm, id).Error; err != nil {
 		return err
 	}
-	if pm.IsSystem && code != "" && NormalizePaymentMethodCode(code) != "cash" {
-		return errors.New("no se puede cambiar el código del método efectivo (sistema)")
+	if pm.IsSystem {
+		sysCode := NormalizePaymentMethodCode(pm.Code)
+		if code != "" && NormalizePaymentMethodCode(code) != sysCode {
+			return errors.New("no se puede cambiar el código de un método de sistema")
+		}
+		if destinationType != "" && destinationType != pm.DestinationType {
+			return errors.New("no se puede cambiar el destino de un método de sistema")
+		}
 	}
 	if name != "" {
 		pm.Name = name
@@ -584,9 +594,9 @@ func (s *CashBankService) UpdatePaymentMethod(id uint, name, code, destinationTy
 	if code != "" && !pm.IsSystem {
 		pm.Code = NormalizePaymentMethodCode(code)
 	}
-	if destinationType != "" {
-		if destinationType != "cash" && destinationType != "bank_account" {
-			return errors.New("destination_type debe ser cash o bank_account")
+	if destinationType != "" && !pm.IsSystem {
+		if destinationType != "cash" && destinationType != "bank_account" && destinationType != "detraction" && destinationType != paymentmethod.DestinationReceivable {
+			return errors.New("destination_type debe ser cash, bank_account, detraction o receivable")
 		}
 		pm.DestinationType = destinationType
 		if destinationType == "bank_account" && (bankAccountID == nil || *bankAccountID == 0) {
@@ -594,7 +604,7 @@ func (s *CashBankService) UpdatePaymentMethod(id uint, name, code, destinationTy
 		}
 		if destinationType == "cash" {
 			pm.BankAccountID = nil
-		} else {
+		} else if destinationType == "bank_account" {
 			pm.BankAccountID = bankAccountID
 		}
 	}
@@ -609,7 +619,7 @@ func (s *CashBankService) DeletePaymentMethod(id uint) error {
 		return err
 	}
 	if pm.IsSystem {
-		return errors.New("no se puede eliminar el método efectivo (es obligatorio)")
+		return errors.New("no se puede eliminar un método de pago del sistema")
 	}
 	return s.db.Delete(&pm).Error
 }
@@ -662,6 +672,9 @@ func (s *CashBankService) ResolveCashSessionForPayments(
 		if p.Amount <= 0 {
 			continue
 		}
+		if paymentmethod.IsDetractionCode(p.Method) || paymentmethod.IsReceivableCode(p.Method) {
+			continue
+		}
 		pm, err := s.GetPaymentMethodByCode(p.Method)
 		if err == nil && pm != nil && pm.DestinationType == "cash" {
 			needsCash = true
@@ -700,6 +713,9 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 	if amount <= 0 {
 		return nil
 	}
+	if paymentmethod.IsDetractionCode(paymentMethodCode) || paymentmethod.IsReceivableCode(paymentMethodCode) {
+		return nil
+	}
 	exec := s.db
 	if tx != nil {
 		exec = tx
@@ -710,6 +726,8 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 		return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID)
 	}
 	switch pm.DestinationType {
+	case paymentmethod.DestinationDetraction, paymentmethod.DestinationReceivable:
+		return nil
 	case "cash":
 		if cashSessionID == nil || *cashSessionID == 0 {
 			return errors.New("se requiere sesión de caja abierta del usuario para pagos en efectivo")

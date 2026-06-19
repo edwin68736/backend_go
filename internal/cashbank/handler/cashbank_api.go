@@ -322,6 +322,7 @@ func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"cash":       split.Cash,
 		"electronic": split.Electronic,
+		"detraction": split.Detraction,
 		"data":       legacyData,
 		"total":      legacyTotal,
 		"summary":    legacySummary,

@@ -61,7 +61,7 @@ func (s *BillingService) saleSunatCodeByID(saleID uint) string {
 func (s *BillingService) emitNoteDocument(saleID uint, companyCfg *database.TenantCompanyConfig) (*database.TenantInvoice, error) {
 	var inv database.TenantInvoice
 	_ = s.db.Where("sale_id = ?", saleID).First(&inv).Error
-	if strings.TrimSpace(inv.NotePayloadJSON) != "" {
+	if strings.TrimSpace(inv.NotePayloadJSON) != "" && !shouldRegenerateNotePayload(&inv) {
 		tipo := s.saleSunatCodeByID(saleID)
 		if tipo == "" {
 			tipo = "07"
@@ -69,6 +69,11 @@ func (s *BillingService) emitNoteDocument(saleID uint, companyCfg *database.Tena
 		payload := enrichFiscalPayloadJSON(inv.NotePayloadJSON, tipo, "note")
 		return s.enqueueFiscalMicroservice(saleID, companyCfg, nil, payload)
 	}
+	return s.buildAndPersistNotePayload(saleID, companyCfg)
+}
+
+// buildAndPersistNotePayload reconstruye NC/ND desde la venta y persiste note_payload_json.
+func (s *BillingService) buildAndPersistNotePayload(saleID uint, companyCfg *database.TenantCompanyConfig) (*database.TenantInvoice, error) {
 	payload, err := s.buildNotePayload(saleID)
 	if err != nil {
 		return nil, err
