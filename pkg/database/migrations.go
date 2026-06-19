@@ -735,8 +735,10 @@ type TenantSale struct {
 	RestaurantSessionID *uint     `gorm:"index" json:"restaurant_session_id,omitempty"` // pedido restaurante que originó la venta
 	OriginalSaleID *uint          `gorm:"index" json:"original_sale_id"`                   // Si es NOTA_CREDITO: venta que se anuló
 	// Si esta venta es factura/boleta (01/03) generada desde una nota de venta (00), apunta al ID de esa NV.
-	IssuedFromNotaSaleID *uint          `gorm:"index" json:"issued_from_nota_sale_id,omitempty"`
-	CreatedAt            time.Time      `json:"created_at"`
+	IssuedFromNotaSaleID *uint `gorm:"index" json:"issued_from_nota_sale_id,omitempty"`
+	// Venta generada desde una cotización (pre venta).
+	IssuedFromQuotationID *uint `gorm:"index" json:"issued_from_quotation_id,omitempty"`
+	CreatedAt             time.Time      `json:"created_at"`
 	UpdatedAt              time.Time      `json:"updated_at"`
 	DeletedAt              gorm.DeletedAt `gorm:"index" json:"-"`
 
@@ -843,6 +845,56 @@ type TenantSaleDetraccion struct {
 }
 
 func (TenantSaleDetraccion) TableName() string { return "tenant_sale_detraccion" }
+
+// TenantQuotation — cotización comercial (pre venta); no afecta inventario ni caja.
+type TenantQuotation struct {
+	ID                uint       `gorm:"primaryKey" json:"id"`
+	BranchID          uint       `gorm:"not null;index" json:"branch_id"`
+	ContactID         *uint      `gorm:"index" json:"contact_id"`
+	UserID            uint       `gorm:"not null;index" json:"user_id"`
+	SeriesID          uint       `gorm:"not null;index" json:"series_id"`
+	Series            string     `gorm:"size:10;not null" json:"series"`
+	Correlative       uint       `gorm:"not null" json:"correlative"`
+	Number            string     `gorm:"size:20;not null;index" json:"number"`
+	IssueDate         time.Time  `gorm:"not null;index" json:"issue_date"`
+	ValidUntil        *time.Time `json:"valid_until,omitempty"`
+	Subtotal          float64    `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount         float64    `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total             float64    `gorm:"type:decimal(15,2);not null" json:"total"`
+	Currency          string     `gorm:"size:10;default:'PEN'" json:"currency"`
+	ExchangeRate      *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
+	Notes             string     `gorm:"type:text" json:"notes"`
+	Status            string     `gorm:"size:30;default:'draft';index" json:"status"` // draft | converted
+	ConvertedSaleID   *uint      `gorm:"index" json:"converted_sale_id,omitempty"`
+	ConvertedAt       *time.Time `json:"converted_at,omitempty"`
+	ConvertedTarget   string     `gorm:"size:30" json:"converted_target,omitempty"` // nota_venta | 01 | 03
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	ContactName       string     `gorm:"-" json:"contact_name"`
+}
+
+func (TenantQuotation) TableName() string { return "tenant_quotations" }
+
+type TenantQuotationItem struct {
+	ID                 uint    `gorm:"primaryKey" json:"id"`
+	QuotationID        uint    `gorm:"not null;index" json:"quotation_id"`
+	ProductID          *uint   `gorm:"index" json:"product_id"`
+	Code               string  `gorm:"size:100" json:"code"`
+	Description        string  `gorm:"size:255;not null" json:"description"`
+	Unit               string  `gorm:"size:50" json:"unit"`
+	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitPrice          float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
+	Discount           float64 `gorm:"type:decimal(15,2);default:0" json:"discount"`
+	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
+	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
+	PriceIncludesIgv   bool    `gorm:"default:true" json:"price_includes_igv"`
+	Subtotal           float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount          float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total              float64 `gorm:"type:decimal(15,2);not null" json:"total"`
+	ModifiersJSON      string  `gorm:"type:text" json:"modifiers_json"`
+}
+
+func (TenantQuotationItem) TableName() string { return "tenant_quotation_items" }
 
 type TenantInvoice struct {
 	ID                uint       `gorm:"primaryKey" json:"id"`

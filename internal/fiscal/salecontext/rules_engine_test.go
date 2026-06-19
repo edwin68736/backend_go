@@ -9,17 +9,20 @@ func TestAutoSuggestIGVRetention(t *testing.T) {
 		EsAgenteDeRetencion: true,
 	}
 	if !AutoSuggestIGVRetention("01", contact, 800, "PEN", nil) {
-		t.Fatal("expected auto suggest for factura + agente + total > 700")
+		t.Fatal("expected auto suggest for factura + agente de retención")
 	}
 	if AutoSuggestIGVRetention("03", contact, 800, "PEN", nil) {
 		t.Fatal("boleta should not auto suggest")
 	}
-	if AutoSuggestIGVRetention("01", contact, 700, "PEN", nil) {
-		t.Fatal("total equal 700 should not auto suggest")
+	if !AutoSuggestIGVRetention("01", contact, 0, "PEN", nil) {
+		t.Fatal("auto suggest no depende del monto (umbral 700 al evaluar/guardar)")
+	}
+	if !AutoSuggestIGVRetention("01", contact, 700, "PEN", nil) {
+		t.Fatal("total igual 700 debe preseleccionar si es agente de retención")
 	}
 	rate := 3.5
 	if !AutoSuggestIGVRetention("01", contact, 201, "USD", &rate) {
-		t.Fatal("USD total above PEN threshold with rate should suggest")
+		t.Fatal("USD con agente de retención debe preseleccionar sin evaluar umbral aquí")
 	}
 	perc := &ContactSnapshot{
 		DocType:              "6",

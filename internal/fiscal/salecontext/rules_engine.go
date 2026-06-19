@@ -8,13 +8,9 @@ import (
 	"tukifac/pkg/salecurrency"
 )
 
-// AutoSuggestIGVRetention indica si las reglas SUNAT sugieren activar retención.
-func AutoSuggestIGVRetention(sunatDocCode string, contact *ContactSnapshot, saleTotal float64, currency string, exchangeRate *float64) bool {
+// AutoSuggestIGVRetention indica si las reglas SUNAT sugieren activar retención (sin umbral S/ 700; eso se valida al guardar).
+func AutoSuggestIGVRetention(sunatDocCode string, contact *ContactSnapshot, _saleTotal float64, _currency string, _exchangeRate *float64) bool {
 	if sunatDocCode != "01" {
-		return false
-	}
-	totalPEN := salecurrency.TotalInPEN(currency, saleTotal, exchangeRate)
-	if totalPEN <= IGVRetentionThreshold {
 		return false
 	}
 	if contact == nil {

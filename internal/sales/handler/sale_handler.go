@@ -10,6 +10,7 @@ import (
 	billingSvc "tukifac/internal/billing/service"
 	detraccionsvc "tukifac/internal/detraccion"
 	salecontext "tukifac/internal/fiscal/salecontext"
+	quotationsvc "tukifac/internal/quotations/service"
 	"tukifac/internal/sales/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
@@ -123,6 +124,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Items         []service.SaleItemInput  `json:"items"`
 		FiscalContext *salecontext.FiscalContextInput `json:"fiscal_context"`
 		Detraccion    *detraccionsvc.SaleInput        `json:"detraccion"`
+		FromQuotationID *uint                         `json:"from_quotation_id"`
 	}
 
 	if err := c.Bind().Body(&body); err != nil {
@@ -162,6 +164,15 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
 		centralTenantID = tenant.ID
 	}
+	var issuedFromQuotationID *uint
+	if body.FromQuotationID != nil && *body.FromQuotationID > 0 {
+		qSvc := quotationsvc.NewQuotationService(db(c))
+		if _, err := qSvc.EnsureCanLinkToSale(*body.FromQuotationID); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		qid := *body.FromQuotationID
+		issuedFromQuotationID = &qid
+	}
 	sale, err := svc.Create(service.CreateSaleInput{
 		BranchID:        branchID,
 		ContactID:       body.ContactID,
@@ -180,11 +191,23 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Items:           body.Items,
 		TaxConfig:       taxCfg,
 		CentralTenantID: centralTenantID,
-		FiscalContext:   body.FiscalContext,
-		Detraccion:      body.Detraccion,
+		FiscalContext:           body.FiscalContext,
+		Detraccion:              body.Detraccion,
+		IssuedFromQuotationID:   issuedFromQuotationID,
 	})
 	if err != nil {
 		return saleCreateErrorResponse(c, err)
+	}
+	if body.FromQuotationID != nil && *body.FromQuotationID > 0 {
+		target := "nota_venta"
+		var ser database.TenantDocumentSeries
+		if db(c).First(&ser, sale.SeriesID).Error == nil {
+			code := strings.TrimSpace(ser.SunatCode)
+			if code == "01" || code == "03" {
+				target = code
+			}
+		}
+		_ = quotationsvc.NewQuotationService(db(c)).MarkConverted(*body.FromQuotationID, sale.ID, target)
 	}
 
 	triggerAutoFiscalEnqueue(c, sale)

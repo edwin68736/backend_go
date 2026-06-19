@@ -71,6 +71,10 @@ type PrintData struct {
 
 	// Información adicional fiscal (retención operativa, O/C, guías — no altera total SUNAT del XML).
 	Fiscal *PrintFiscalContext `json:"fiscal,omitempty"`
+
+	// Cotización (pre venta): vigencia y observaciones comerciales.
+	ValidUntil string `json:"valid_until,omitempty"`
+	Notes      string `json:"notes,omitempty"`
 }
 
 // PrintFiscalContext datos adicionales para impresión/PDF.
@@ -112,6 +116,7 @@ type PrintClient struct {
 	DocNumber    string `json:"doc_number"`
 	BusinessName string `json:"business_name"`
 	Address      string `json:"address,omitempty"`
+	Email        string `json:"email,omitempty"`
 }
 
 type PrintCompany struct {
@@ -206,6 +211,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 				DocNumber:    contact.DocNumber,
 				BusinessName: contact.BusinessName,
 				Address:      addr,
+				Email:        strings.TrimSpace(contact.Email),
 			}
 		}
 	}
@@ -390,7 +396,8 @@ func BuildPrintDataForSale(db *gorm.DB, saleID uint) (*PrintData, error) {
 // buildQRData genera el string para el código QR según SUNAT (llamado internamente).
 // Las notas de venta (SUNAT 00) no llevan QR; solo comprobantes electrónicos (p. ej. 01, 03, 07).
 func (p *PrintData) buildQRData() string {
-	if strings.TrimSpace(p.SunatCode) == "00" {
+	code := strings.TrimSpace(p.SunatCode)
+	if code == "00" || code == "QT" {
 		return ""
 	}
 	clienteTipo := "0"

@@ -238,6 +238,7 @@ type InvoicePayload struct {
 	Compra          string             `json:"compra,omitempty"` // Orden de compra (O/C)
 	Guias           []InvoiceRelatedDoc `json:"guias,omitempty"` // Guías relacionadas (tipoDoc + nroDoc)
 	Detraccion      *InvoiceDetraction  `json:"detraccion,omitempty"`
+	Parameters      *InvoicePDFParameters `json:"parameters,omitempty"` // Solo PDF Lycet; no afecta XML SUNAT.
 }
 
 // InvoiceDetraction bloque detracción SUNAT (cat. 54, 59, cuenta BN).
@@ -481,12 +482,33 @@ func (c *Client) SendInvoice(payload *InvoicePayload) (*SunatResponse, error) {
 	return &out, nil
 }
 
+// InvoicePDFExtra fila de información adicional en el PDF Lycet (parameters.user.extras).
+type InvoicePDFExtra struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// InvoicePDFUserParameters bloque user dentro de parameters (POST /invoice/pdf).
+type InvoicePDFUserParameters struct {
+	Extras []InvoicePDFExtra `json:"extras,omitempty"`
+}
+
+// InvoicePDFParameters parámetros de representación impresa; Lycet los ignora en /send y /xml.
+type InvoicePDFParameters struct {
+	User InvoicePDFUserParameters `json:"user"`
+}
+
+// InvoicePDFOptions parámetros opcionales adicionales para POST /invoice/pdf.
+type InvoicePDFOptions struct {
+	Extras []InvoicePDFExtra `json:"extras,omitempty"`
+}
+
 // GetInvoicePDF obtiene el PDF del comprobante sin enviar a SUNAT (POST /invoice/pdf).
 // Útil para guardar el PDF tras un send exitoso.
-func (c *Client) GetInvoicePDF(payload *InvoicePayload) ([]byte, error) {
-	bodyBytes, err := json.Marshal(payload)
+func (c *Client) GetInvoicePDF(payload *InvoicePayload, opts *InvoicePDFOptions) ([]byte, error) {
+	bodyBytes, err := marshalInvoicePDFBody(payload, opts)
 	if err != nil {
-		return nil, fmt.Errorf("payload: %w", err)
+		return nil, err
 	}
 	req, err := http.NewRequest("POST", c.addToken("/invoice/pdf"), bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -503,6 +525,58 @@ func (c *Client) GetInvoicePDF(payload *InvoicePayload) ([]byte, error) {
 		return nil, fmt.Errorf("facturador PDF respondió %d: %s", resp.StatusCode, string(b))
 	}
 	return io.ReadAll(resp.Body)
+}
+
+func marshalInvoicePDFBody(payload *InvoicePayload, opts *InvoicePDFOptions) ([]byte, error) {
+	if payload == nil {
+		return nil, fmt.Errorf("payload: nil")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("payload: %w", err)
+	}
+	extras := collectInvoicePDFExtras(payload, opts)
+	if len(extras) == 0 {
+		return raw, nil
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("payload map: %w", err)
+	}
+	body["parameters"] = map[string]any{
+		"user": map[string]any{
+			"extras": extras,
+		},
+	}
+	return json.Marshal(body)
+}
+
+func collectInvoicePDFExtras(payload *InvoicePayload, opts *InvoicePDFOptions) []map[string]string {
+	seen := make(map[string]struct{})
+	var out []map[string]string
+	appendExtra := func(name, value string) {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, map[string]string{"name": name, "value": value})
+	}
+	if payload != nil && payload.Parameters != nil {
+		for _, e := range payload.Parameters.User.Extras {
+			appendExtra(e.Name, e.Value)
+		}
+	}
+	if opts != nil {
+		for _, e := range opts.Extras {
+			appendExtra(e.Name, e.Value)
+		}
+	}
+	return out
 }
 
 // GetInvoiceXML obtiene el XML firmado del comprobante sin enviarlo a SUNAT (POST /invoice/xml).

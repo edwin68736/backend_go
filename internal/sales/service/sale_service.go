@@ -88,6 +88,7 @@ type CreateSaleInput struct {
 	SkipInventory             bool
 	SkipPaymentDistribution   bool
 	IssuedFromNotaSaleID      *uint // ID de la NV origen; se guarda en la nueva venta 01/03
+	IssuedFromQuotationID     *uint // ID de la cotización origen
 	CentralTenantID           uint  // tenant SaaS (cupo de documentos electrónicos)
 	FiscalContext             *salecontext.FiscalContextInput
 	Detraccion                *detraccionsvc.SaleInput
@@ -368,7 +369,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		Notes:                input.Notes,
 		Status:               saleStatus,
 		BillingStatus:        "pending",
-		IssuedFromNotaSaleID: input.IssuedFromNotaSaleID,
+		IssuedFromNotaSaleID:    input.IssuedFromNotaSaleID,
+		IssuedFromQuotationID:   input.IssuedFromQuotationID,
 	}
 
 	// Emisión electrónica desde NV: misma operación comercial; nunca repetir stock/seriales ni caja/bancos.

@@ -2,6 +2,7 @@ package salecontext
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"tukifac/pkg/database"
@@ -101,10 +102,13 @@ func TestPersistLoadRoundtrip_withRetention(t *testing.T) {
 	}
 
 	enrich := EnrichmentFromOutput(loaded)
-	payload := &facturador.InvoicePayload{TipoOperacion: "0101"}
+	payload := &facturador.InvoicePayload{TipoOperacion: "0101", TipoMoneda: "PEN"}
 	ApplyToInvoicePayload(payload, enrich)
-	if payload.Compra != "OC-100" || payload.Observacion != "Entrega programada" {
-		t.Fatalf("lycet map: compra=%q obs=%q", payload.Compra, payload.Observacion)
+	if payload.Compra != "OC-100" {
+		t.Fatalf("lycet map compra=%q", payload.Compra)
+	}
+	if !strings.Contains(payload.Observacion, "Entrega programada") || !strings.Contains(payload.Observacion, "Retención IGV (3%)") {
+		t.Fatalf("lycet map obs=%q", payload.Observacion)
 	}
 	if len(payload.Guias) != 1 || payload.Guias[0].NroDoc != "T001-00000001" {
 		t.Fatalf("guias: %+v", payload.Guias)

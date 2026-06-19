@@ -840,8 +840,16 @@ func (s *BillingService) GetInvoicePDFContent(saleID uint) ([]byte, error) {
 		if err := json.Unmarshal([]byte(invoice.PayloadJSON), &payload); err != nil {
 			return nil, fmt.Errorf("payload inválido: %w", err)
 		}
+		var saleTotal float64
+		if s.db.Model(&database.TenantSale{}).Where("id = ?", saleID).Pluck("total", &saleTotal).Error != nil {
+			saleTotal = payload.MtoImpVenta
+		}
+		var pdfOpts *facturador.InvoicePDFOptions
+		if enrich, err := salecontext.LoadInvoiceEnrichment(s.db, saleID, saleTotal); err == nil && enrich != nil {
+			salecontext.ApplyToInvoicePayload(&payload, enrich)
+		}
 		client := facturador.Shared()
-		pdfBytes, err := client.GetInvoicePDF(&payload)
+		pdfBytes, err := client.GetInvoicePDF(&payload, pdfOpts)
 		if err != nil {
 			return nil, err
 		}

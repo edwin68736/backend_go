@@ -17,13 +17,17 @@ const MinTenantJWTVersion uint = 1
 // Caso C — Dev localhost: X-Tenant-Slug o subdominio .localhost.
 //
 // Hosts centrales (api, app): sin tenant salvo rutas de bootstrap (login legacy con header).
-func resolveTenantSlug(host, headerSlug, cookieSlug, path string, cfg *config.Config) (slug string, blockReason string) {
+func resolveTenantSlug(host, headerSlug, cookieSlug, querySlug, path string, cfg *config.Config) (slug string, blockReason string) {
 	headerSlug = strings.TrimSpace(headerSlug)
+	querySlug = strings.TrimSpace(querySlug)
 	subdomainSlug := utils.ExtractSubdomain(host, cfg.AppDomain)
 
 	if isLocalDevHost(host) {
 		if headerSlug != "" {
 			return headerSlug, ""
+		}
+		if querySlug != "" && !cfg.IsReservedSubdomain(querySlug) {
+			return querySlug, ""
 		}
 		if subdomainSlug != "" && !cfg.IsReservedSubdomain(subdomainSlug) {
 			return subdomainSlug, ""
