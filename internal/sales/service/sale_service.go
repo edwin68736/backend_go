@@ -11,15 +11,18 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/money"
-	"tukifac/pkg/paymentmethod"
+	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/taxpayment"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/salecurrency"
+	"tukifac/pkg/salescope"
 	"tukifac/pkg/sunat"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
 	detraccionsvc "tukifac/internal/detraccion"
 	salecontext "tukifac/internal/fiscal/salecontext"
+	"tukifac/internal/sales/nvdisplay"
 
 	"gorm.io/gorm"
 )
@@ -323,7 +326,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	} else if len(payments) > 0 {
 		var sumPayments float64
 		for _, p := range payments {
-			if paymentmethod.IsReceivableCode(p.Method) {
+			if paymentcondition.IsCreditCode(p.Method) {
 				continue
 			}
 			sumPayments += p.Amount
@@ -342,7 +345,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	primaryMethod := PrimaryDirectPaymentMethod(payments, input.PaymentMethod)
 	if isCreditSale && primaryMethod == "" {
-		primaryMethod = paymentmethod.CodeCredito
+		primaryMethod = paymentcondition.CodeCredit
+	}
+
+	saleOrigin := salescope.SaleOriginDirect
+	if emitFromNV {
+		saleOrigin = salescope.SaleOriginConvertedFromNota
 	}
 
 	saleStatus := "paid"
@@ -366,6 +374,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		OperationTypeCode:    opCode,
 		ExchangeRate:         exchangeRate,
 		PaymentMethod:        primaryMethod,
+		SaleOrigin:           saleOrigin,
 		Notes:                input.Notes,
 		Status:               saleStatus,
 		BillingStatus:        "pending",
@@ -875,28 +884,8 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 			}
 		}
 	}
-	onlyNV := len(params.SunatCodes) == 1 && strings.TrimSpace(params.SunatCodes[0]) == "00"
-	if onlyNV && len(sales) > 0 {
-		parentIDs := make([]uint, len(sales))
-		for i := range sales {
-			parentIDs[i] = sales[i].ID
-		}
-		var children []database.TenantSale
-		if err := s.db.Select("id", "issued_from_nota_sale_id").Where("issued_from_nota_sale_id IN ?", parentIDs).Find(&children).Error; err == nil {
-			byParent := make(map[uint]uint, len(children))
-			for _, ch := range children {
-				if ch.IssuedFromNotaSaleID != nil {
-					byParent[*ch.IssuedFromNotaSaleID] = ch.ID
-				}
-			}
-			for i := range sales {
-				if id, ok := byParent[sales[i].ID]; ok {
-					sales[i].ElectronicIssueSaleID = &id
-				}
-			}
-		}
-	}
 	s.enrichSalesWithDetraccion(sales)
+	nvdisplay.EnrichSales(s.db, sales)
 
 	// Normalizar issue_date como fecha de negocio Perú al mediodía para evitar corrimientos de día
 	// por parsing/serialización (MySQL DATETIME + loc=Local + clientes en UTC).
@@ -931,7 +920,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		CountActive    int64   `gorm:"column:count_active"`
 	}
 	var row aggRow
-	err := s.db.Model(&database.TenantSale{}).
+	err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
 		Where("tenant_sales.id IN (?)", idSub).
 		Select(`
 			COALESCE(SUM(tenant_sales.total), 0) AS sum_total,
@@ -967,6 +956,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 			COUNT(*) AS count_detraccion
 		`).
 		Joins("JOIN tenant_sales ts ON ts.id = d.sale_id").
+		Scopes(salescope.ScopeCommercial("ts")).
 		Where("ts.id IN (?)", idSub).
 		Where("ts.status != ?", "cancelled").
 		Scan(&detRow).Error; err != nil {
@@ -988,6 +978,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	err = s.db.Table("tenant_sale_payments tsp").
 		Select("LOWER(TRIM(tsp.method)) AS method, COALESCE(SUM(tsp.amount), 0) AS total").
 		Joins("JOIN tenant_sales ts ON ts.id = tsp.sale_id").
+		Scopes(salescope.ScopeCommercial("ts")).
 		Where("ts.id IN (?)", idSub).
 		Where("ts.status != ?", "cancelled").
 		Group("LOWER(TRIM(tsp.method))").
@@ -996,7 +987,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		return out, err
 	}
 	for _, p := range fromPayments {
-		if paymentmethod.IsDetractionCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) {
 			spotTotal += p.Total
 			continue
 		}
@@ -1008,7 +999,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	}
 
 	var fromHeader []payRow
-	err = s.db.Model(&database.TenantSale{}).
+	err = salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
 		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, COALESCE(SUM(tenant_sales.total), 0) AS total`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
@@ -1049,7 +1040,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		out.PaymentTotals = append(out.PaymentTotals, struct {
 			Method string  `json:"method"`
 			Total  float64 `json:"total"`
-		}{Method: paymentmethod.CodeDetraccionBN, Total: spotTotal})
+		}{Method: taxpayment.CodeDetraccionBN, Total: spotTotal})
 	}
 	return out, nil
 }
@@ -1090,7 +1081,8 @@ func (s *SaleService) salesByProductBaseQuery(params SalesByProductParams) *gorm
 	q := s.db.Table("tenant_sale_items").
 		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
 		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").
-		Joins("LEFT JOIN tenant_categories c ON c.id = p.category_id")
+		Joins("LEFT JOIN tenant_categories c ON c.id = p.category_id").
+		Scopes(salescope.ScopeCommercial("tenant_sales"))
 	if params.DateFrom != nil {
 		q = q.Where("tenant_sales.issue_date >= ?", params.DateFrom)
 	}
@@ -1692,7 +1684,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 
 // SummaryStats retorna estadísticas resumidas de ventas.
 func (s *SaleService) SummaryStats(branchID uint, from, to time.Time) map[string]interface{} {
-	q := s.db.Model(&database.TenantSale{}).
+	q := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date <= ? AND status != ?", from, to, "cancelled")
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)

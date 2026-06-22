@@ -46,6 +46,8 @@ func Execute(args []string) int {
 		return RunMigrateBackfillBranch()
 	case "repair-tenant-migrations":
 		return RunRepairTenantMigrations(args[1:])
+	case "payment":
+		return RunPayment(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return 0
@@ -72,6 +74,7 @@ func printUsage() {
   migrate-tenants            LEGACY migrate-all bootstrap (no producción)
   migrate-backfill-branch    Alias backfill V31 fleet
   repair-tenant-migrations   Reconciliar drift [--slug=] [--limit=50] [--dry-run] [--reconcile-only]
+  payment audit|repair|verify [--slug=tenant]  Dominio financiero (métodos/condiciones/tributario)
 
 Deploy producción:
   ./tukifac-api migrate

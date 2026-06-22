@@ -10,7 +10,8 @@ import (
 	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
-	"tukifac/pkg/paymentmethod"
+	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/taxpayment"
 
 	"gorm.io/gorm"
 )
@@ -237,7 +238,7 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 		if p.Amount <= 0 || p.Method == "" {
 			continue
 		}
-		if paymentmethod.IsDetractionCode(p.Method) || paymentmethod.IsReceivableCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 			return errors.New("use métodos de pago directos (efectivo, banco, etc.) para cobrar")
 		}
 		newDirect += p.Amount
@@ -388,7 +389,7 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 			SaleID:      sale.ID,
 		})
 		for _, p := range payments {
-			if paymentmethod.IsDetractionCode(p.Method) || paymentmethod.IsReceivableCode(p.Method) {
+			if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 				continue
 			}
 			running -= p.Amount

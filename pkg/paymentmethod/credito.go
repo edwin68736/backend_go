@@ -1,15 +1,11 @@
 package paymentmethod
 
-import "strings"
+import "tukifac/pkg/paymentcondition"
 
 const (
-	CodeCredito            = "credito"
-	NameCredito            = "Crédito"
-	DestinationReceivable  = "receivable"
+	CodeCredito           = paymentcondition.CodeCredit
+	NameCredito           = paymentcondition.NameCredit
+	DestinationReceivable = "receivable"
 )
 
-// IsReceivableCode indica método interno de crédito / CxC (sin movimiento de caja).
-func IsReceivableCode(code string) bool {
-	c := strings.TrimSpace(strings.ToLower(code))
-	return c == CodeCredito || c == "credit"
-}
+func IsReceivableCode(code string) bool { return paymentcondition.IsCreditCode(code) }

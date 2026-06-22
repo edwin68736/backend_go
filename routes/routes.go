@@ -21,6 +21,7 @@ import (
 	"tukifac/internal/inventory"
 	"tukifac/internal/memberships"
 	"tukifac/internal/modules"
+	"tukifac/internal/paymentcatalog"
 	"tukifac/internal/products"
 	"tukifac/internal/purchases"
 	"tukifac/internal/quotations"
@@ -221,6 +222,7 @@ func Setup(app *fiber.App) {
 	billing.RegisterRoutes(tenantAPI)
 	purchases.RegisterRoutes(tenantAPI)
 	cashbank.RegisterRoutes(tenantAPI)
+	paymentcatalog.RegisterRoutes(tenantAPI)
 	receivables.RegisterRoutes(tenantAPI)
 	restaurant.RegisterRoutes(tenantAPI)
 	restaurant.RegisterSalePaymentRoutes(tenantAPI)

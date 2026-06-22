@@ -23,8 +23,8 @@ func (V070ReceivablesP3) Up(db *gorm.DB) error {
 		Update("bn_confirmation_status", "pending").Error; err != nil {
 		return fmt.Errorf("backfill bn status: %w", err)
 	}
-	if err := database.EnsureCreditPaymentMethod(db); err != nil {
-		return fmt.Errorf("credit payment method: %w", err)
+	if err := database.EnsureCreditPaymentCondition(db); err != nil {
+		return fmt.Errorf("credit payment condition: %w", err)
 	}
 	return nil
 }

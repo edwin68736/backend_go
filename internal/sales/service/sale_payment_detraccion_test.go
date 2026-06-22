@@ -6,7 +6,7 @@ import (
 
 	cashbanksvc "tukifac/internal/cashbank/service"
 	"tukifac/pkg/database"
-	"tukifac/pkg/paymentmethod"
+	"tukifac/pkg/taxpayment"
 	"tukifac/pkg/salecurrency"
 	sunatdet "tukifac/pkg/sunat/detraccion"
 
@@ -52,7 +52,7 @@ func TestPrepareDetractionSalePayments_cashContado1180(t *testing.T) {
 	if out[0].Method != "cash" || out[0].Amount != 1132.80 {
 		t.Fatalf("direct: %+v", out[0])
 	}
-	if out[1].Method != paymentmethod.CodeDetraccionBN || out[1].Amount != 47.2 {
+	if out[1].Method != taxpayment.CodeDetraccionBN || out[1].Amount != 47.2 {
 		t.Fatalf("detraction: %+v", out[1])
 	}
 }
@@ -97,7 +97,7 @@ func TestPrepareDetractionSalePayments_mixedDirectMethods(t *testing.T) {
 	if len(out) != 3 {
 		t.Fatalf("expected 3 lines, got %d: %+v", len(out), out)
 	}
-	if out[2].Method != paymentmethod.CodeDetraccionBN {
+	if out[2].Method != taxpayment.CodeDetraccionBN {
 		t.Fatalf("last line should be detraction: %+v", out[2])
 	}
 }
@@ -107,7 +107,7 @@ func TestPrepareDetractionSalePayments_stripsClientDetractionLine(t *testing.T) 
 	out, err := PrepareDetractionSalePayments(
 		[]PaymentInput{
 			{Method: "cash", Amount: 1132.80},
-			{Method: paymentmethod.CodeDetraccionBN, Amount: 99},
+			{Method: taxpayment.CodeDetraccionBN, Amount: 99},
 		},
 		1180,
 		eval,
@@ -117,7 +117,7 @@ func TestPrepareDetractionSalePayments_stripsClientDetractionLine(t *testing.T) 
 	}
 	var detCount int
 	for _, p := range out {
-		if paymentmethod.IsDetractionCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) {
 			detCount++
 			if p.Amount != 47.2 {
 				t.Fatalf("expected server calc 47.20, got %v", p.Amount)
@@ -131,7 +131,7 @@ func TestPrepareDetractionSalePayments_stripsClientDetractionLine(t *testing.T) 
 
 func TestPrimaryDirectPaymentMethod_skipsDetraction(t *testing.T) {
 	got := PrimaryDirectPaymentMethod([]PaymentInput{
-		{Method: paymentmethod.CodeDetraccionBN, Amount: 47.2},
+		{Method: taxpayment.CodeDetraccionBN, Amount: 47.2},
 		{Method: "yape", Amount: 1132.80},
 	}, "cash")
 	if got != "yape" {
@@ -148,6 +148,7 @@ func setupDetractionPaymentTestDB(t *testing.T) *gorm.DB {
 	}
 	for _, m := range []interface{}{
 		&database.TenantPaymentMethod{},
+		&database.TenantTaxPaymentType{},
 		&database.TenantCashSession{},
 		&database.TenantCashMovement{},
 		&database.TenantBankMovement{},
@@ -157,7 +158,7 @@ func setupDetractionPaymentTestDB(t *testing.T) *gorm.DB {
 			t.Fatal(err)
 		}
 	}
-	if err := database.EnsureDetractionPaymentMethod(db); err != nil {
+	if err := database.EnsureDetractionTaxPaymentType(db); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&database.TenantPaymentMethod{
@@ -177,27 +178,27 @@ func TestPrepareDetractionSalePaymentsAllowCredit_fullCreditSpotOnly(t *testing.
 	if !isCredit {
 		t.Fatal("expected credit")
 	}
-	if len(out) != 1 || out[0].Method != paymentmethod.CodeDetraccionBN {
+	if len(out) != 1 || out[0].Method != taxpayment.CodeDetraccionBN {
 		t.Fatalf("expected spot only: %+v", out)
 	}
 }
 
-func TestEnsureDetractionPaymentMethod_idempotent(t *testing.T) {
+func TestEnsureDetractionTaxPaymentType_idempotent(t *testing.T) {
 	db := setupDetractionPaymentTestDB(t)
-	if err := database.EnsureDetractionPaymentMethod(db); err != nil {
+	if err := database.EnsureDetractionTaxPaymentType(db); err != nil {
 		t.Fatal(err)
 	}
 	var count int64
-	db.Model(&database.TenantPaymentMethod{}).Where("code = ?", paymentmethod.CodeDetraccionBN).Count(&count)
+	db.Model(&database.TenantTaxPaymentType{}).Where("code = ?", taxpayment.CodeDetraccionBN).Count(&count)
 	if count != 1 {
 		t.Fatalf("expected 1 row, got %d", count)
 	}
-	var pm database.TenantPaymentMethod
-	if err := db.Where("code = ?", paymentmethod.CodeDetraccionBN).First(&pm).Error; err != nil {
+	var row database.TenantTaxPaymentType
+	if err := db.Where("code = ?", taxpayment.CodeDetraccionBN).First(&row).Error; err != nil {
 		t.Fatal(err)
 	}
-	if pm.Name != paymentmethod.NameDetraccionBN || pm.DestinationType != paymentmethod.DestinationDetraction || !pm.IsSystem {
-		t.Fatalf("unexpected method: %+v", pm)
+	if row.Name != taxpayment.NameDetraccionBN {
+		t.Fatalf("unexpected: %+v", row)
 	}
 }
 
@@ -209,7 +210,7 @@ func TestRecordPayment_skipsDetractionBN(t *testing.T) {
 	}
 	sid := sess.ID
 	svc := cashbanksvc.NewCashBankService(db)
-	if err := svc.RecordPayment(nil, paymentmethod.CodeDetraccionBN, 47.2, &sid, "F001-1", "Venta", nil, 1); err != nil {
+	if err := svc.RecordPayment(nil, taxpayment.CodeDetraccionBN, 47.2, &sid, "F001-1", "Venta", nil, 1); err != nil {
 		t.Fatal(err)
 	}
 	var cashCount int64

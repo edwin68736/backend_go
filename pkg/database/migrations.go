@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"tukifac/pkg/paymentmethod"
-
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -736,6 +734,8 @@ type TenantSale struct {
 	OriginalSaleID *uint          `gorm:"index" json:"original_sale_id"`                   // Si es NOTA_CREDITO: venta que se anuló
 	// Si esta venta es factura/boleta (01/03) generada desde una nota de venta (00), apunta al ID de esa NV.
 	IssuedFromNotaSaleID *uint `gorm:"index" json:"issued_from_nota_sale_id,omitempty"`
+	// Origen comercial: direct | converted_from_nota | api | migration | legacy
+	SaleOrigin string `gorm:"size:30;default:direct;index" json:"sale_origin"`
 	// Venta generada desde una cotización (pre venta).
 	IssuedFromQuotationID *uint `gorm:"index" json:"issued_from_quotation_id,omitempty"`
 	CreatedAt             time.Time      `json:"created_at"`
@@ -746,6 +746,16 @@ type TenantSale struct {
 	ContactName string `gorm:"-" json:"contact_name"`
 	// ID de la venta electrónica (01/03) emitida desde esta NV; solo listados NV.
 	ElectronicIssueSaleID *uint `gorm:"-" json:"electronic_issue_sale_id,omitempty"`
+	ElectronicIssueDocType string `gorm:"-" json:"electronic_issue_doc_type,omitempty"`
+	ElectronicIssueSeries  string `gorm:"-" json:"electronic_issue_series,omitempty"`
+	ElectronicIssueNumber  string `gorm:"-" json:"electronic_issue_number,omitempty"`
+	// Estado NV: registrado | convertida | anulada (solo comprobantes NV).
+	NvStatus string `gorm:"-" json:"nv_status,omitempty"`
+	// Documento comercial vigente para reportes (hijo FE si NV convertida).
+	DisplaySaleID   *uint  `gorm:"-" json:"display_sale_id,omitempty"`
+	DisplayDocType  string `gorm:"-" json:"display_doc_type,omitempty"`
+	DisplaySeries   string `gorm:"-" json:"display_series,omitempty"`
+	DisplayNumber   string `gorm:"-" json:"display_number,omitempty"`
 	// Detracción 1001 (join tenant_sale_detraccion); no es columna en BD.
 	HasDetraccion          bool    `gorm:"-" json:"has_detraccion,omitempty"`
 	DetraccionAmount       float64 `gorm:"-" json:"detraccion_amount,omitempty"`
@@ -1114,21 +1124,43 @@ type TenantCashMovement struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// TenantPaymentMethod métodos de pago del tenant (efectivo, Yape, etc.).
-// destination_type: cash = caja (TenantCashMovement), bank_account = cuenta bancaria.
-// is_system=true (ej. cash) no se puede eliminar.
+// TenantPaymentMethod medios reales de cobro (efectivo, Yape, Plin, etc.).
+// Solo códigos operativos: cash, yape, plin, transferencia, tarjeta.
 type TenantPaymentMethod struct {
-	ID              uint           `gorm:"primaryKey" json:"id"`
-	Name            string         `gorm:"size:100;not null" json:"name"`
-	Code            string         `gorm:"size:50;not null;uniqueIndex" json:"code"` // cash, yape, plin, transferencia, tarjeta
-	DestinationType string         `gorm:"size:20;not null" json:"destination_type"` // cash | bank_account | detraction
-	BankAccountID   *uint          `gorm:"index" json:"bank_account_id"`             // cuando destination_type=bank_account
-	IsSystem        bool           `gorm:"default:false" json:"is_system"`           // true = no se puede eliminar (cash)
-	SortOrder       int            `gorm:"default:0" json:"sort_order"`
-	Active          bool           `gorm:"default:true" json:"active"`
+	ID            uint           `gorm:"primaryKey" json:"id"`
+	Code          string         `gorm:"size:50;not null;uniqueIndex" json:"code"`
+	Name          string         `gorm:"size:100;not null" json:"name"`
+	BankAccountID *uint          `gorm:"index" json:"bank_account_id"`
+	IsSystem      bool           `gorm:"default:false" json:"is_system"`
+	SortOrder     int            `gorm:"default:0" json:"sort_order"`
+	Active        bool           `gorm:"default:true" json:"active"`
+	// Legacy column — se elimina en v075; GORM lo omite en BD nueva sin la columna.
+	DestinationType string `gorm:"size:20" json:"destination_type,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantPaymentCondition condición comercial de la venta (contado / crédito).
+type TenantPaymentCondition struct {
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	Code      string         `gorm:"size:50;not null;uniqueIndex" json:"code"`
+	Name      string         `gorm:"size:100;not null" json:"name"`
+	Active    bool           `gorm:"default:true" json:"active"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantTaxPaymentType concepto tributario en pagos (SPOT detracción, retenciones futuras).
+type TenantTaxPaymentType struct {
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	Code      string         `gorm:"size:50;not null;uniqueIndex" json:"code"`
+	Name      string         `gorm:"size:100;not null" json:"name"`
+	Active    bool           `gorm:"default:true" json:"active"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type TenantBankAccount struct {
@@ -1506,130 +1538,4 @@ func SeedTenant(db *gorm.DB, adminEmail, adminPassword, companyName, ruc, addres
 	return nil
 }
 
-// SeedPaymentMethodsIfEmpty siembra métodos de pago y cuentas bancarias/billeteras por defecto.
-// Yape/Plin → billetera (wallet); transferencia/tarjeta → banco (bank); efectivo → caja.
-// Se ejecuta desde MigrateTenantSchema (CLI / alta de tenant), no en requests HTTP.
-func SeedPaymentMethodsIfEmpty(db *gorm.DB) error {
-	var pmCount int64
-	if err := db.Model(&TenantPaymentMethod{}).Count(&pmCount).Error; err != nil {
-		return nil // tabla puede no existir aún
-	}
-	var baCount int64
-	if err := db.Model(&TenantBankAccount{}).Count(&baCount).Error; err != nil {
-		return nil
-	}
-	if pmCount > 0 && baCount > 0 {
-		return nil
-	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		if pmCount == 0 {
-			return seedDefaultPaymentMethodsAndAccounts(tx)
-		}
-		if baCount == 0 {
-			return backfillBankAccountsForPaymentMethods(tx)
-		}
-		return nil
-	})
-}
-
-func seedDefaultPaymentMethodsAndAccounts(db *gorm.DB) error {
-	accounts := []TenantBankAccount{
-		{Name: "Billetera Yape", Type: "wallet", PaymentMethod: "yape", Currency: "PEN", Active: true},
-		{Name: "Billetera Plin", Type: "wallet", PaymentMethod: "plin", Currency: "PEN", Active: true},
-		{Name: "Cuenta bancaria", Type: "bank", PaymentMethod: "transferencia", Currency: "PEN", Active: true},
-		{Name: "Terminal tarjetas", Type: "bank", PaymentMethod: "tarjeta", Currency: "PEN", Active: true},
-	}
-	if err := db.Create(&accounts).Error; err != nil {
-		return err
-	}
-	yapeID := accounts[0].ID
-	plinID := accounts[1].ID
-	transferID := accounts[2].ID
-	tarjetaID := accounts[3].ID
-	paymentMethods := []TenantPaymentMethod{
-		{Name: "Efectivo", Code: "cash", DestinationType: "cash", IsSystem: true, SortOrder: 0, Active: true},
-		{Name: "Yape", Code: "yape", DestinationType: "bank_account", BankAccountID: &yapeID, IsSystem: false, SortOrder: 1, Active: true},
-		{Name: "Plin", Code: "plin", DestinationType: "bank_account", BankAccountID: &plinID, IsSystem: false, SortOrder: 2, Active: true},
-		{Name: "Transferencia", Code: "transferencia", DestinationType: "bank_account", BankAccountID: &transferID, IsSystem: false, SortOrder: 3, Active: true},
-		{Name: "Tarjeta", Code: "tarjeta", DestinationType: "bank_account", BankAccountID: &tarjetaID, IsSystem: false, SortOrder: 4, Active: true},
-		{Name: paymentmethod.NameDetraccionBN, Code: paymentmethod.CodeDetraccionBN, DestinationType: paymentmethod.DestinationDetraction, IsSystem: true, SortOrder: 5, Active: true},
-	}
-	return db.Create(&paymentMethods).Error
-}
-
-// EnsureDetractionPaymentMethod garantiza el método interno detraccion_bn en tenants existentes.
-func EnsureDetractionPaymentMethod(db *gorm.DB) error {
-	var count int64
-	if err := db.Model(&TenantPaymentMethod{}).Where("code = ?", paymentmethod.CodeDetraccionBN).Count(&count).Error; err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	var maxOrder int
-	db.Model(&TenantPaymentMethod{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder)
-	return db.Create(&TenantPaymentMethod{
-		Name:            paymentmethod.NameDetraccionBN,
-		Code:            paymentmethod.CodeDetraccionBN,
-		DestinationType: paymentmethod.DestinationDetraction,
-		IsSystem:        true,
-		SortOrder:       maxOrder + 1,
-		Active:          true,
-	}).Error
-}
-
-// EnsureCreditPaymentMethod garantiza el método interno credito (CxC) en tenants existentes.
-func EnsureCreditPaymentMethod(db *gorm.DB) error {
-	var count int64
-	if err := db.Model(&TenantPaymentMethod{}).Where("code = ?", paymentmethod.CodeCredito).Count(&count).Error; err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	var maxOrder int
-	db.Model(&TenantPaymentMethod{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&maxOrder)
-	return db.Create(&TenantPaymentMethod{
-		Name:            paymentmethod.NameCredito,
-		Code:            paymentmethod.CodeCredito,
-		DestinationType: paymentmethod.DestinationReceivable,
-		IsSystem:        true,
-		SortOrder:       maxOrder + 1,
-		Active:          true,
-	}).Error
-}
-
-func backfillBankAccountsForPaymentMethods(db *gorm.DB) error {
-	var methods []TenantPaymentMethod
-	if err := db.Order("sort_order asc, id asc").Find(&methods).Error; err != nil {
-		return err
-	}
-	accountByCode := map[string]TenantBankAccount{
-		"yape":          {Name: "Billetera Yape", Type: "wallet", PaymentMethod: "yape", Currency: "PEN", Active: true},
-		"plin":          {Name: "Billetera Plin", Type: "wallet", PaymentMethod: "plin", Currency: "PEN", Active: true},
-		"transferencia": {Name: "Cuenta bancaria", Type: "bank", PaymentMethod: "transferencia", Currency: "PEN", Active: true},
-		"tarjeta":       {Name: "Terminal tarjetas", Type: "bank", PaymentMethod: "tarjeta", Currency: "PEN", Active: true},
-	}
-	created := map[string]uint{}
-	for code, acc := range accountByCode {
-		row := acc
-		if err := db.Create(&row).Error; err != nil {
-			return err
-		}
-		created[code] = row.ID
-	}
-	for i := range methods {
-		m := &methods[i]
-		if m.DestinationType != "bank_account" || m.BankAccountID != nil {
-			continue
-		}
-		accID, ok := created[m.Code]
-		if !ok {
-			continue
-		}
-		if err := db.Model(m).Update("bank_account_id", accID).Error; err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// SeedPaymentMethodsIfEmpty y SeedPaymentMethodsCatalog están en payment_method_seed.go.

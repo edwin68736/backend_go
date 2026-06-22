@@ -46,6 +46,9 @@ var TenantMigrations = []TenantMigration{
 	V071SunatUnitCodes{},
 	V072CompanyFiscalDomicile{},
 	V073Quotations{},
+	V074PaymentMethodKinds{},
+	V075SplitFinancialDomains{},
+	V076SaleOrigin{},
 }
 
 // ByVersion mapa versión → migración.

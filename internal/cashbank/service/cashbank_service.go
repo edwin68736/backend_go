@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
-	"tukifac/pkg/paymentmethod"
+	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/taxpayment"
 
 	"gorm.io/gorm"
 )
@@ -468,28 +469,27 @@ func (s *CashBankService) ListBankAccounts() ([]database.TenantBankAccount, erro
 	return accounts, err
 }
 
-// ListPaymentMethods devuelve los códigos de métodos de pago (legacy). Preferir ListPaymentMethodRecords.
+// ListPaymentMethods devuelve códigos operativos de cobro (legacy). Preferir ListPaymentMethodRecords.
 func (s *CashBankService) ListPaymentMethods() []string {
-	var records []database.TenantPaymentMethod
-	if err := s.db.Where("active = ?", true).Order("sort_order ASC, id ASC").Find(&records).Error; err != nil {
-		// Fallback si la tabla no existe o está vacía
+	recs, err := s.ListPaymentMethodRecords()
+	if err != nil || len(recs) == 0 {
 		return []string{"cash", "yape", "plin", "transferencia", "tarjeta"}
 	}
-	codes := make([]string, 0, len(records))
-	for _, r := range records {
+	codes := make([]string, 0, len(recs))
+	for _, r := range recs {
 		codes = append(codes, r.Code)
 	}
 	return codes
 }
 
-// ListPaymentMethodRecords devuelve todos los métodos de pago del tenant (para gestión y ventas).
+// ListPaymentMethodRecords medios de cobro activos (solo tenant_payment_methods).
 func (s *CashBankService) ListPaymentMethodRecords() ([]database.TenantPaymentMethod, error) {
 	var list []database.TenantPaymentMethod
 	err := s.db.Where("active = ?", true).Order("sort_order ASC, id ASC").Find(&list).Error
 	return list, err
 }
 
-// ListAllPaymentMethodRecords incluye inactivos (para administración).
+// ListAllPaymentMethodRecords incluye inactivos.
 func (s *CashBankService) ListAllPaymentMethodRecords() ([]database.TenantPaymentMethod, error) {
 	var list []database.TenantPaymentMethod
 	err := s.db.Order("sort_order ASC, id ASC").Find(&list).Error
@@ -544,14 +544,11 @@ func (s *CashBankService) CreatePaymentMethod(name, code, destinationType string
 	if name == "" || code == "" {
 		return nil, errors.New("nombre y código son requeridos")
 	}
-	if destinationType != "cash" && destinationType != "bank_account" && destinationType != "detraction" && destinationType != paymentmethod.DestinationReceivable {
-		return nil, errors.New("destination_type debe ser cash, bank_account, detraction o receivable")
+	if destinationType != "cash" && destinationType != "bank_account" {
+		return nil, errors.New("destination_type debe ser cash o bank_account")
 	}
 	if destinationType == "bank_account" && (bankAccountID == nil || *bankAccountID == 0) {
 		return nil, errors.New("debe indicar la cuenta bancaria cuando el destino es bank_account")
-	}
-	if destinationType == "detraction" || destinationType == paymentmethod.DestinationReceivable {
-		return nil, errors.New("el destino detracción/crédito es un método interno del sistema")
 	}
 	code = NormalizePaymentMethodCode(code)
 	// Evitar duplicados de código
@@ -595,8 +592,8 @@ func (s *CashBankService) UpdatePaymentMethod(id uint, name, code, destinationTy
 		pm.Code = NormalizePaymentMethodCode(code)
 	}
 	if destinationType != "" && !pm.IsSystem {
-		if destinationType != "cash" && destinationType != "bank_account" && destinationType != "detraction" && destinationType != paymentmethod.DestinationReceivable {
-			return errors.New("destination_type debe ser cash, bank_account, detraction o receivable")
+		if destinationType != "cash" && destinationType != "bank_account" {
+			return errors.New("destination_type debe ser cash o bank_account")
 		}
 		pm.DestinationType = destinationType
 		if destinationType == "bank_account" && (bankAccountID == nil || *bankAccountID == 0) {
@@ -672,7 +669,7 @@ func (s *CashBankService) ResolveCashSessionForPayments(
 		if p.Amount <= 0 {
 			continue
 		}
-		if paymentmethod.IsDetractionCode(p.Method) || paymentmethod.IsReceivableCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 			continue
 		}
 		pm, err := s.GetPaymentMethodByCode(p.Method)
@@ -713,7 +710,7 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 	if amount <= 0 {
 		return nil
 	}
-	if paymentmethod.IsDetractionCode(paymentMethodCode) || paymentmethod.IsReceivableCode(paymentMethodCode) {
+	if taxpayment.IsDetractionCode(paymentMethodCode) || paymentcondition.IsCreditCode(paymentMethodCode) {
 		return nil
 	}
 	exec := s.db
@@ -726,8 +723,8 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 		return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID)
 	}
 	switch pm.DestinationType {
-	case paymentmethod.DestinationDetraction, paymentmethod.DestinationReceivable:
-		return nil
+	case "detraction", "receivable":
+		return errors.New("tipo de destino obsoleto; use tenant_payment_methods operativos")
 	case "cash":
 		if cashSessionID == nil || *cashSessionID == 0 {
 			return errors.New("se requiere sesión de caja abierta del usuario para pagos en efectivo")

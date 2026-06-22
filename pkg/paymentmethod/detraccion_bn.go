@@ -1,14 +1,11 @@
 package paymentmethod
 
-import "strings"
+import "tukifac/pkg/taxpayment"
 
 const (
-	CodeDetraccionBN      = "detraccion_bn"
-	NameDetraccionBN      = "Detracción BN (SPOT)"
+	CodeDetraccionBN      = taxpayment.CodeDetraccionBN
+	NameDetraccionBN      = taxpayment.NameDetraccionBN
 	DestinationDetraction = "detraction"
 )
 
-// IsDetractionCode indica si el código corresponde al método interno de detracción BN.
-func IsDetractionCode(code string) bool {
-	return strings.EqualFold(strings.TrimSpace(code), CodeDetraccionBN)
-}
+func IsDetractionCode(code string) bool { return taxpayment.IsDetractionCode(code) }

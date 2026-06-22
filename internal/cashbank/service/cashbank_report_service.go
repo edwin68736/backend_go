@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/internal/sales/nvdisplay"
 	"tukifac/pkg/database"
+	"tukifac/pkg/salescope"
 
 	"gorm.io/gorm"
 )
@@ -261,6 +263,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		salesMap[sale.ID] = sale
 		saleIDs = append(saleIDs, sale.ID)
 	}
+	displayDocNumbers := nvdisplay.LoadDisplayNumbersBySaleID(s.db, saleIDs)
 	if len(saleIDs) > 0 {
 		var payments []database.TenantSalePayment
 		s.db.Where("sale_id IN ?", saleIDs).Order("created_at ASC").Find(&payments)
@@ -275,7 +278,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				report.Detraction.Sales = append(report.Detraction.Sales, IncomeDetailRow{
 					Date:          p.CreatedAt,
 					Type:          "detraccion_spot",
-					DocNumber:     sale.Number,
+					DocNumber:     displayDocNumbers[sale.ID],
 					Reference:     p.Reference,
 					Amount:        p.Amount,
 					PaymentMethod: meth,
@@ -290,7 +293,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			report.IncomeDetail = append(report.IncomeDetail, IncomeDetailRow{
 				Date:          p.CreatedAt,
 				Type:          "venta",
-				DocNumber:     sale.Number,
+				DocNumber:     displayDocNumbers[sale.ID],
 				Reference:     p.Reference,
 				Amount:        p.Amount,
 				PaymentMethod: meth,
@@ -309,7 +312,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				report.IncomeDetail = append(report.IncomeDetail, IncomeDetailRow{
 					Date:          sale.CreatedAt,
 					Type:          "venta",
-					DocNumber:     sale.Number,
+					DocNumber:     displayDocNumbers[sale.ID],
 					Amount:        sale.Total,
 					PaymentMethod: meth,
 				})
@@ -573,7 +576,8 @@ func (s *CashBankService) listOrphanSalesForSession(session *database.TenantCash
 	if session == nil || session.ID == 0 {
 		return nil, nil
 	}
-	q := s.db.Where("(cash_session_id IS NULL OR cash_session_id = 0)").
+	q := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+		Where("(cash_session_id IS NULL OR cash_session_id = 0)").
 		Where("user_id = ? AND branch_id = ?", sessionOwnerID(session), session.BranchID).
 		Where("created_at >= ?", session.OpenedAt).
 		Where("status NOT IN ?", []string{"cancelled", "draft"})
@@ -598,6 +602,7 @@ func (s *CashBankService) scanOrphanSalePaymentRows(f MovementReportFilters) ([]
 			? AS branch_id`, f.SessionID, session.BranchID).
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_payments.sale_id").
 		Where("(tenant_sales.cash_session_id IS NULL OR tenant_sales.cash_session_id = 0)").
+		Scopes(salescope.ScopeCommercial("tenant_sales")).
 		Where("tenant_sales.user_id = ? AND tenant_sales.branch_id = ?", sessionOwnerID(&session), session.BranchID).
 		Where("tenant_sales.created_at >= ?", session.OpenedAt).
 		Where("tenant_sales.status NOT IN ?", []string{"cancelled", "draft"})
@@ -684,29 +689,12 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 	contacts := loadContactNamesMap(s.db, contactIDs)
 	branches := loadBranchNamesMap(s.db, branchIDs)
 
-	rows := make([]MovementReportRow, 0, len(payRows))
+	saleIDsForDisplay := make([]uint, 0, len(payRows))
 	for _, p := range payRows {
-		meth := normalizeReportMethod(p.Method)
-		contactName := ""
-		if p.ContactID != nil {
-			contactName = contacts[*p.ContactID]
-		}
-		rows = append(rows, MovementReportRow{
-			Date:          p.CreatedAt,
-			Type:          "venta",
-			DocNumber:     p.SaleNumber,
-			ContactName:   contactName,
-			UserName:      users[p.SaleUserID],
-			BranchName:    branches[p.BranchID],
-			PaymentMethod: meth,
-			Amount:        p.Amount,
-			MovementID:    salePaymentMovementID(p.PaymentID),
-			CashSessionID: p.CashSessionID,
-			Category:      "Venta",
-			CashReference: p.Reference,
-			NotesDetail:   p.Notes,
-		})
+		saleIDsForDisplay = append(saleIDsForDisplay, p.SaleID)
 	}
+
+	rows := make([]MovementReportRow, 0, len(payRows))
 
 	// Ventas legacy sin líneas en tenant_sale_payments
 	legacyQ := s.db.Model(&database.TenantSale{}).
@@ -737,6 +725,39 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		return nil, err
 	}
 	for _, sale := range legacySales {
+		saleIDsForDisplay = append(saleIDsForDisplay, sale.ID)
+	}
+	displayDocNumbers := nvdisplay.LoadDisplayNumbersBySaleID(s.db, saleIDsForDisplay)
+
+	for _, p := range payRows {
+		meth := normalizeReportMethod(p.Method)
+		contactName := ""
+		if p.ContactID != nil {
+			contactName = contacts[*p.ContactID]
+		}
+		docNum := displayDocNumbers[p.SaleID]
+		if docNum == "" {
+			docNum = p.SaleNumber
+		}
+		rows = append(rows, MovementReportRow{
+			Date:          p.CreatedAt,
+			Type:          "venta",
+			DocNumber:     docNum,
+			ContactName:   contactName,
+			UserName:      users[p.SaleUserID],
+			BranchName:    branches[p.BranchID],
+			PaymentMethod: meth,
+			Amount:        p.Amount,
+			MovementID:    salePaymentMovementID(p.PaymentID),
+			CashSessionID: p.CashSessionID,
+			Category:      "Venta",
+			CashReference: p.Reference,
+			NotesDetail:   p.Notes,
+		})
+	}
+
+	// Ventas legacy sin líneas en tenant_sale_payments
+	for _, sale := range legacySales {
 		if sale.CashSessionID == nil {
 			continue
 		}
@@ -764,7 +785,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		rows = append(rows, MovementReportRow{
 			Date:          sale.CreatedAt,
 			Type:          "venta",
-			DocNumber:     sale.Number,
+			DocNumber:     displayDocNumbers[sale.ID],
 			ContactName:   contactName,
 			UserName:      userName,
 			BranchName:    branchName,
@@ -942,6 +963,7 @@ func (s *CashBankService) GetSessionProductsReport(sessionID uint) ([]SessionPro
 		Select(`tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description,
 			SUM(tenant_sale_items.quantity) AS quantity, SUM(tenant_sale_items.total) AS total`).
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id").
+		Scopes(salescope.ScopeCommercial("tenant_sales")).
 		Where("tenant_sales.cash_session_id = ? AND tenant_sales.status NOT IN ?", sessionID, []string{"cancelled", "draft"}).
 		Group("tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description").
 		Order("tenant_sale_items.description ASC").

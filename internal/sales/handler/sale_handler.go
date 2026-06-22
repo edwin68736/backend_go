@@ -11,6 +11,7 @@ import (
 	detraccionsvc "tukifac/internal/detraccion"
 	salecontext "tukifac/internal/fiscal/salecontext"
 	quotationsvc "tukifac/internal/quotations/service"
+	"tukifac/internal/sales/nvdisplay"
 	"tukifac/internal/sales/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
@@ -429,11 +430,9 @@ func (h *SaleHandler) GetAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No encontrado"})
 	}
-	var emittedChild database.TenantSale
-	if err := db(c).Where("issued_from_nota_sale_id = ?", sale.ID).First(&emittedChild).Error; err == nil {
-		sid := emittedChild.ID
-		sale.ElectronicIssueSaleID = &sid
-	}
+	enriched := []database.TenantSale{*sale}
+	nvdisplay.EnrichSales(db(c), enriched)
+	sale = &enriched[0]
 	if sale.ContactID != nil && *sale.ContactID > 0 {
 		var contact database.TenantContact
 		if db(c).First(&contact, *sale.ContactID).Error == nil {

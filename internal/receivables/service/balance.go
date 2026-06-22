@@ -3,7 +3,8 @@ package service
 import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
-	"tukifac/pkg/paymentmethod"
+	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/taxpayment"
 )
 
 const (
@@ -16,7 +17,7 @@ const (
 func DirectPaid(payments []database.TenantSalePayment) float64 {
 	var sum float64
 	for _, p := range payments {
-		if paymentmethod.IsDetractionCode(p.Method) || paymentmethod.IsReceivableCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 			continue
 		}
 		sum += p.Amount

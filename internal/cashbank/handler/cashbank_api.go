@@ -349,23 +349,20 @@ func (h *CashBankHandler) ListBankAccountsAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": maskBankAccountBalances(c, accounts)})
 }
 
-// GET /api/cashbank/payment-methods — métodos de pago del tenant (para ventas, caja, gestión).
-// ?all=1 devuelve todos (activos e inactivos). Por defecto solo activos.
+// GET /api/cashbank/payment-methods — alias legacy; delega a tenant_payment_methods operativos.
 func (h *CashBankHandler) ListPaymentMethodsAPI(c fiber.Ctx) error {
 	svc := service.NewCashBankService(db(c))
-	var list interface{}
+	var (
+		list interface{}
+		err  error
+	)
 	if c.Query("all") == "1" {
-		recs, err := svc.ListAllPaymentMethodRecords()
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-		}
-		list = recs
+		list, err = svc.ListAllPaymentMethodRecords()
 	} else {
-		recs, err := svc.ListPaymentMethodRecords()
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-		}
-		list = recs
+		list, err = svc.ListPaymentMethodRecords()
+	}
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"data": list})
 }

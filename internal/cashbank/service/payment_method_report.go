@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"tukifac/pkg/paymentmethod"
+	"tukifac/pkg/taxpayment"
 
 	"gorm.io/gorm"
 )
@@ -70,7 +70,7 @@ func salePaymentMovementID(paymentID uint) uint {
 
 // IsDetractionPaymentMethod indica método interno SPOT (sin impacto en caja/banco).
 func IsDetractionPaymentMethod(method string) bool {
-	return paymentmethod.IsDetractionCode(method)
+	return taxpayment.IsDetractionCode(method)
 }
 
 // IsCashPaymentMethod indica si el método representa dinero físico en caja.

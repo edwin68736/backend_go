@@ -43,6 +43,8 @@ func ApplyBaselineSchema(db *gorm.DB) error {
 		&TenantCashSession{},
 		&TenantCashMovement{},
 		&TenantPaymentMethod{},
+		&TenantPaymentCondition{},
+		&TenantTaxPaymentType{},
 		&TenantBankAccount{},
 		&TenantBankMovement{},
 		&TenantExternalModule{},

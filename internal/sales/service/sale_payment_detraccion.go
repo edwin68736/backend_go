@@ -5,7 +5,8 @@ import (
 	"fmt"
 
 	"tukifac/pkg/money"
-	"tukifac/pkg/paymentmethod"
+	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/taxpayment"
 	sunatdet "tukifac/pkg/sunat/detraccion"
 )
 
@@ -42,7 +43,7 @@ func finalizeDetractionSalePayments(
 
 	direct := make([]PaymentInput, 0, len(payments))
 	for _, p := range payments {
-		if paymentmethod.IsDetractionCode(p.Method) || paymentmethod.IsReceivableCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 			continue
 		}
 		if p.Amount <= 0 || p.Method == "" {
@@ -75,7 +76,7 @@ func finalizeDetractionSalePayments(
 
 	out := append([]PaymentInput{}, direct...)
 	out = append(out, PaymentInput{
-		Method: paymentmethod.CodeDetraccionBN,
+		Method: taxpayment.CodeDetraccionBN,
 		Amount: detractionAmount,
 	})
 
@@ -102,7 +103,7 @@ func finalizeDetractionSalePayments(
 func IsCreditSaleFromPayments(payments []PaymentInput, total float64) bool {
 	var sumDirect float64
 	for _, p := range payments {
-		if paymentmethod.IsDetractionCode(p.Method) || paymentmethod.IsReceivableCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 			continue
 		}
 		if p.Amount <= 0 {
@@ -119,10 +120,10 @@ func PrimaryDirectPaymentMethod(payments []PaymentInput, fallback string) string
 		if p.Amount <= 0 || p.Method == "" {
 			continue
 		}
-		if paymentmethod.IsDetractionCode(p.Method) {
+		if taxpayment.IsDetractionCode(p.Method) {
 			continue
 		}
-		if paymentmethod.IsReceivableCode(p.Method) {
+		if paymentcondition.IsCreditCode(p.Method) {
 			continue
 		}
 		return p.Method
