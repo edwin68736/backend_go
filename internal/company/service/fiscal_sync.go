@@ -88,6 +88,9 @@ func (s *CompanyService) SyncFiscalToFacturador(input FiscalSyncInput) (*factura
 	if sendMode == "sunat_direct" {
 		provider = "sunat"
 	}
+	if sendMode == "pse" && fiscal.ResolvePSEBaseURL(provider) == "" {
+		provider = "validapse"
+	}
 
 	pseBaseURL := strings.TrimSpace(input.PSEBaseURL)
 	if sendMode == "pse" && pseBaseURL == "" {

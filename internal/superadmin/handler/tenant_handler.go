@@ -379,6 +379,9 @@ func (h *TenantHandler) UpdateSunatConfigAPI(c fiber.Ctx) error {
 		if provider == "" {
 			provider = "validapse"
 		}
+		if fiscal.ResolvePSEBaseURL(provider) == "" {
+			provider = "validapse"
+		}
 	} else {
 		connType = "bearer"
 		provider = "sunat"
