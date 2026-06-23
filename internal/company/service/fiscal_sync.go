@@ -28,6 +28,8 @@ type FiscalSyncInput struct {
 	PSEPassword    string
 	PSEToken       string
 	PSESecondary   string
+	GreClientID    string
+	GreClientSecret string
 	Enabled        bool
 }
 
@@ -71,6 +73,9 @@ func (s *CompanyService) SyncFiscalToFacturador(input FiscalSyncInput) (*factura
 		}
 	}
 	provider = fiscal.NormalizePSEProvider(provider)
+	if sendMode != "pse" && provider == "validapse" && strings.TrimSpace(input.Provider) == "" && strings.TrimSpace(cfg.FiscalProvider) == "" {
+		provider = "sunat"
+	}
 	connType := strings.TrimSpace(input.ConnectionType)
 	if sendMode == "pse" {
 		connType = "bearer"
@@ -79,6 +84,9 @@ func (s *CompanyService) SyncFiscalToFacturador(input FiscalSyncInput) (*factura
 	}
 	if connType == "" {
 		connType = "bearer"
+	}
+	if sendMode == "sunat_direct" {
+		provider = "sunat"
 	}
 
 	pseBaseURL := strings.TrimSpace(input.PSEBaseURL)
@@ -127,6 +135,10 @@ func (s *CompanyService) SyncFiscalToFacturador(input FiscalSyncInput) (*factura
 	}
 	if solPass != "" {
 		payload.SOLPass = solPass
+	}
+	if ambiente == "produccion" {
+		payload.GreClientID = strings.TrimSpace(input.GreClientID)
+		payload.GreClientSecret = strings.TrimSpace(input.GreClientSecret)
 	}
 
 	status, err := facturador.Shared().CompanySync(payload)

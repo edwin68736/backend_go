@@ -965,6 +965,55 @@ type TenantSunatVoided struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+// TenantGreCarrier transportista para guías GRE (SUNAT CarrierParty).
+type TenantGreCarrier struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	DocType       string    `gorm:"size:2;not null;default:'6'" json:"doc_type"`
+	DocNumber     string    `gorm:"size:20;not null;index" json:"doc_number"`
+	BusinessName  string    `gorm:"size:255;not null" json:"business_name"`
+	FiscalAddress string    `gorm:"size:500" json:"fiscal_address"`
+	MTCNumber     string    `gorm:"size:50" json:"mtc_number"`
+	IsDefault     bool      `gorm:"default:false;index" json:"is_default"`
+	Active        bool      `gorm:"default:true;index" json:"active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (TenantGreCarrier) TableName() string { return "tenant_gre_carriers" }
+
+// TenantGreDriver conductor para guías GRE.
+type TenantGreDriver struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	DocType       string    `gorm:"size:2;not null;default:'1'" json:"doc_type"`
+	DocNumber     string    `gorm:"size:20;not null;index" json:"doc_number"`
+	FullName      string    `gorm:"size:255;not null" json:"full_name"`
+	LicenseNumber string    `gorm:"size:50" json:"license_number"`
+	Phone         string    `gorm:"size:30" json:"phone"`
+	CarrierID     *uint     `gorm:"index" json:"carrier_id,omitempty"`
+	IsDefault     bool      `gorm:"default:false;index" json:"is_default"`
+	Active        bool      `gorm:"default:true;index" json:"active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (TenantGreDriver) TableName() string { return "tenant_gre_drivers" }
+
+// TenantGreVehicle vehículo para guías GRE.
+type TenantGreVehicle struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Plate            string    `gorm:"size:20;not null;uniqueIndex" json:"plate"`
+	Brand            string    `gorm:"size:80" json:"brand"`
+	Model            string    `gorm:"size:80" json:"model"`
+	HabilitationCert string    `gorm:"size:100" json:"habilitation_cert"`
+	CarrierID        *uint     `gorm:"index" json:"carrier_id,omitempty"`
+	IsDefault        bool      `gorm:"default:false;index" json:"is_default"`
+	Active           bool      `gorm:"default:true;index" json:"active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func (TenantGreVehicle) TableName() string { return "tenant_gre_vehicles" }
+
 // TenantDespatch guía de remisión enviada a SUNAT (remitente o transportista).
 type TenantDespatch struct {
 	ID                uint      `gorm:"primaryKey" json:"id"`

@@ -20,6 +20,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
+	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
@@ -104,7 +105,7 @@ func (s *BillingService) buildInvoiceAddressFromUbigeo(ubigeo, direccion string)
 // GetNotificationCounts devuelve cantidades de comprobantes electrónicos por estado (solo 01, 03, 07, 08).
 // Para notificaciones en el header del tenant.
 func (s *BillingService) GetNotificationCounts() (pending, errorCount, rejected int64, err error) {
-	electronicCodes := []string{"01", "03", "07", "08"}
+	electronicCodes := []string{"01", "03", "07", "08", "09", "31"}
 	for _, status := range []string{"pending", "error", "rejected"} {
 		var n int64
 		e := s.db.Model(&database.TenantSale{}).
@@ -799,6 +800,13 @@ func (s *BillingService) GetInvoiceDocumentFilename(saleID uint, kind string) (s
 				return base + "-generado.xml", nil
 			}
 		}
+		if payload, err := s.getDespatchPayloadForSale(saleID); err == nil && payload != nil {
+			base := fmt.Sprintf("%s-%s-%s", payload.TipoDoc, payload.Serie, payload.Correlativo)
+			if kind == "pdf" {
+				return base + ".pdf", nil
+			}
+			return base + "-generado.xml", nil
+		}
 	}
 	// Fallback
 	switch kind {
@@ -827,6 +835,19 @@ func (s *BillingService) GetInvoicePDFContent(saleID uint) ([]byte, error) {
 	}
 	if isNoteSaleDocType(sale.DocType) {
 		pdfBytes, err := s.getNoteDocumentPDF(invoice)
+		if err != nil {
+			return nil, err
+		}
+		if len(pdfBytes) > 0 {
+			return pdfBytes, nil
+		}
+	}
+	if isGuiaSaleDocType(sale.DocType) && s.facturadorConfigured() {
+		payload, err := s.getDespatchPayloadForSale(saleID)
+		if err != nil {
+			return nil, err
+		}
+		pdfBytes, err := facturador.Shared().GetDespatchPDF(payload)
 		if err != nil {
 			return nil, err
 		}
@@ -887,6 +908,13 @@ func (s *BillingService) GetInvoiceXMLGeneratedContent(saleID uint) ([]byte, err
 		if len(xmlBytes) > 0 {
 			return xmlBytes, nil
 		}
+	}
+	if s.db.Select("doc_type").First(&sale, saleID).Error == nil && isGuiaSaleDocType(sale.DocType) && s.facturadorConfigured() {
+		payload, err := s.getDespatchPayloadForSale(saleID)
+		if err != nil {
+			return nil, err
+		}
+		return facturador.Shared().GetDespatchXML(payload)
 	}
 	if !s.facturadorConfigured() || invoice.PayloadJSON == "" {
 		return nil, nil
@@ -1304,7 +1332,9 @@ func (s *BillingService) ConsultInvoiceStatus(tipo, serie, numero string) (*fact
 type CreateDespatchInput struct {
 	BranchID     uint                      `json:"branch_id"`
 	SeriesID     uint                      `json:"series_id"`
+	SourceSaleID *uint                     `json:"source_sale_id,omitempty"`
 	Destinatario DespatchDestinatarioInput `json:"destinatario"`
+	Remitente    DespatchDestinatarioInput `json:"remitente,omitempty"`
 	Envio        DespatchEnvioInput        `json:"envio"`
 	Details      []DespatchDetailInput     `json:"details"`
 }
@@ -1318,22 +1348,29 @@ type DespatchDestinatarioInput struct {
 }
 
 type DespatchEnvioInput struct {
-	CodTraslado        string  `json:"cod_traslado"`
-	DesTraslado        string  `json:"des_traslado"`
-	ModTraslado        string  `json:"mod_traslado"`
-	FecTraslado        string  `json:"fec_traslado"`
-	PartidaUbigueo     string  `json:"partida_ubigueo"`
-	PartidaDireccion   string  `json:"partida_direccion"`
-	LlegadaUbigueo     string  `json:"llegada_ubigueo"`
-	LlegadaDireccion   string  `json:"llegada_direccion"`
-	PesoTotal          float64 `json:"peso_total"`
-	UndPesoTotal       string  `json:"und_peso_total"`
-	NumBultos          int     `json:"num_bultos"`
-	TransportistaRUC   string  `json:"transportista_ruc,omitempty"`
-	TransportistaRazon string  `json:"transportista_razon,omitempty"`
-	TransportistaPlaca string  `json:"transportista_placa,omitempty"`
-	ChoferTipoDoc      string  `json:"chofer_tipo_doc,omitempty"`
-	ChoferDoc          string  `json:"chofer_doc,omitempty"`
+	CodTraslado              string  `json:"cod_traslado"`
+	DesTraslado              string  `json:"des_traslado"`
+	ModTraslado              string  `json:"mod_traslado"`
+	FecTraslado              string  `json:"fec_traslado"`
+	FecEntregaTransportista  string  `json:"fec_entrega_transportista,omitempty"`
+	PartidaUbigueo           string  `json:"partida_ubigueo"`
+	PartidaDireccion         string  `json:"partida_direccion"`
+	LlegadaUbigueo           string  `json:"llegada_ubigueo"`
+	LlegadaDireccion         string  `json:"llegada_direccion"`
+	PesoTotal                float64 `json:"peso_total"`
+	UndPesoTotal             string  `json:"und_peso_total"`
+	NumBultos                int     `json:"num_bultos"`
+	TransportistaRUC         string  `json:"transportista_ruc,omitempty"`
+	TransportistaRazon       string  `json:"transportista_razon,omitempty"`
+	TransportistaPlaca       string  `json:"transportista_placa,omitempty"`
+	TransportistaMTC         string  `json:"transportista_mtc,omitempty"`
+	VehiculoHabCert          string  `json:"vehiculo_hab_cert,omitempty"`
+	VehiculoCodEmisor        string  `json:"vehiculo_cod_emisor,omitempty"`
+	ChoferTipoDoc            string  `json:"chofer_tipo_doc,omitempty"`
+	ChoferDoc                string  `json:"chofer_doc,omitempty"`
+	ChoferLicencia           string  `json:"chofer_licencia,omitempty"`
+	ChoferNombres            string  `json:"chofer_nombres,omitempty"`
+	ChoferApellidos          string  `json:"chofer_apellidos,omitempty"`
 }
 
 type DespatchDetailInput struct {
@@ -1343,15 +1380,54 @@ type DespatchDetailInput struct {
 	Cantidad    float64 `json:"cantidad"`
 }
 
-func (s *BillingService) ListDespatches() ([]database.TenantDespatch, error) {
+// DespatchListItem fila de guía con estado fiscal de la venta vinculada (para listado UI).
+type DespatchListItem struct {
+	database.TenantDespatch
+	BillingStatus string `json:"billing_status,omitempty"`
+	DocType       string `json:"doc_type,omitempty"`
+}
+
+func (s *BillingService) ListDespatches() ([]DespatchListItem, error) {
 	var list []database.TenantDespatch
-	err := s.db.Order("issue_date DESC, created_at DESC").Find(&list).Error
-	return list, err
+	if err := s.db.Order("issue_date DESC, created_at DESC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	out := make([]DespatchListItem, len(list))
+	saleIDs := make([]uint, 0, len(list))
+	for _, d := range list {
+		if d.SaleID != nil && *d.SaleID > 0 {
+			saleIDs = append(saleIDs, *d.SaleID)
+		}
+	}
+	saleByID := map[uint]database.TenantSale{}
+	if len(saleIDs) > 0 {
+		var sales []database.TenantSale
+		_ = s.db.Select("id, billing_status, doc_type").Where("id IN ?", saleIDs).Find(&sales).Error
+		for _, sale := range sales {
+			saleByID[sale.ID] = sale
+		}
+	}
+	for i, d := range list {
+		item := DespatchListItem{TenantDespatch: d}
+		if d.SaleID != nil {
+			if sale, ok := saleByID[*d.SaleID]; ok {
+				item.BillingStatus = sale.BillingStatus
+				item.DocType = sale.DocType
+			}
+		}
+		out[i] = item
+	}
+	return out, nil
 }
 
 func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*database.TenantDespatch, error) {
 	if !s.facturadorConfigured() {
 		return nil, errors.New("guías de remisión requieren facturador configurado")
+	}
+	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
+		if err := s.applyDespatchPrefillFromSale(&input, *input.SourceSaleID); err != nil {
+			return nil, err
+		}
 	}
 	var cfg database.TenantCompanyConfig
 	if err := s.db.First(&cfg).Error; err != nil || !cfg.SunatEnabled {
@@ -1366,29 +1442,39 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		nombreComercial = companyCfg.BusinessName
 	}
 	var series database.TenantDocumentSeries
-	if err := s.db.First(&series, input.SeriesID).Error; err != nil {
-		return nil, fmt.Errorf("serie no encontrada: %w", err)
+	series, err = docseries.ValidateForBranch(s.db, input.SeriesID, input.BranchID)
+	if err != nil {
+		if errors.Is(err, docseries.ErrSeriesNotFound) {
+			return nil, errors.New("serie no encontrada")
+		}
+		if errors.Is(err, docseries.ErrSeriesInactive) {
+			return nil, errors.New("la serie seleccionada está inactiva; actívela en Empresa → Series")
+		}
+		if errors.Is(err, docseries.ErrSeriesWrongBranch) {
+			return nil, errors.New("la serie no pertenece a la sucursal seleccionada")
+		}
+		return nil, fmt.Errorf("serie no válida: %w", err)
 	}
 	sunatCode := strings.TrimSpace(series.SunatCode)
 	if sunatCode != "09" && sunatCode != "31" {
-		return nil, errors.New("la serie debe ser guía de remisión (09) o guía transportista (31)")
+		return nil, errors.New("Debe configurar una serie para Guía de Remisión Remitente (09) o Guía de Remisión Transportista (31) en Empresa → Series")
+	}
+	if err := validateDespatchInput(input, sunatCode); err != nil {
+		return nil, err
+	}
+	if err := validateDespatchBusinessRules(input, sunatCode, companyCfg.RUC); err != nil {
+		return nil, err
 	}
 	docType := "GUIA_REMISION"
 	reserveKind := "guide_remitter"
+	dispatchKind := "guia_remision"
 	if sunatCode == "31" {
 		docType = "GUIA_TRANSPORTISTA"
 		reserveKind = "guide_carrier"
+		dispatchKind = "guia_transportista"
 	}
-	saleSvc := salesvc.NewSaleService(s.db)
-	nextCorr, err := saleSvc.NextCorrelative(series.ID)
-	if err != nil {
+	if err := docusage.GuardCountableSunatQuota(s.centralTenantID, sunatCode); err != nil {
 		return nil, err
-	}
-	correlativoStr := strconv.FormatUint(uint64(nextCorr), 10)
-	now := time.Now()
-	fechaEmision := now.Format(time.RFC3339)
-	if input.Envio.FecTraslado != "" {
-		fechaEmision = input.Envio.FecTraslado
 	}
 	partidaUbi := strings.TrimSpace(input.Envio.PartidaUbigueo)
 	if partidaUbi == "" {
@@ -1429,33 +1515,29 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		return nil, fmt.Errorf("llegada: %w", errL)
 	}
 	llegada := facturador.DespatchDirection{Ubigueo: llegadaUbi, CodigoPais: "PE", Departamento: depL, Provincia: provL, Distrito: distL, Direccion: llegadaDir}
-	shipment := facturador.DespatchShipment{
-		CodTraslado:  input.Envio.CodTraslado,
-		DesTraslado:  input.Envio.DesTraslado,
-		ModTraslado:  input.Envio.ModTraslado,
-		FecTraslado:  input.Envio.FecTraslado,
-		Partida:      partida,
-		Llegada:      llegada,
-		PesoTotal:    input.Envio.PesoTotal,
-		UndPesoTotal: input.Envio.UndPesoTotal,
-		NumBultos:    input.Envio.NumBultos,
+	saleSvc := salesvc.NewSaleService(s.db)
+	nextCorr, err := saleSvc.NextCorrelative(series.ID)
+	if err != nil {
+		return nil, err
 	}
-	if input.Envio.UndPesoTotal == "" {
-		shipment.UndPesoTotal = "KGM"
+	correlativoStr := strconv.FormatUint(uint64(nextCorr), 10)
+	now := time.Now()
+	fechaEmision := facturador.FormatFiscalDateTime(now)
+	fecTraslado := strings.TrimSpace(input.Envio.FecTraslado)
+	if fecTraslado == "" {
+		fecTraslado = fechaEmision
+	} else {
+		fecTraslado = normalizeDespatchDateTime(fecTraslado, fechaEmision)
 	}
-	if input.Envio.TransportistaRUC != "" {
-		shipment.Transportista = &facturador.DespatchTransportist{
-			TipoDoc:       "6",
-			NumDoc:        input.Envio.TransportistaRUC,
-			RznSocial:     input.Envio.TransportistaRazon,
-			Placa:         input.Envio.TransportistaPlaca,
-			ChoferTipoDoc: input.Envio.ChoferTipoDoc,
-			ChoferDoc:     input.Envio.ChoferDoc,
-		}
-		if shipment.Transportista.ChoferTipoDoc == "" {
-			shipment.Transportista.ChoferTipoDoc = "1"
-		}
+	fecEntrega := strings.TrimSpace(input.Envio.FecEntregaTransportista)
+	if fecEntrega == "" {
+		fecEntrega = fecTraslado
+	} else {
+		fecEntrega = normalizeDespatchDateTime(fecEntrega, fecTraslado)
 	}
+	input.Envio.FecTraslado = fecTraslado
+	input.Envio.FecEntregaTransportista = fecEntrega
+	shipment := buildDespatchShipment(input, sunatCode, fechaEmision, companyCfg.RUC, companyCfg.BusinessName, partida, llegada)
 	details := make([]facturador.DespatchDetail, len(input.Details))
 	for i, d := range input.Details {
 		details[i] = facturador.DespatchDetail{Codigo: d.Codigo, Descripcion: d.Descripcion, Unidad: d.Unidad, Cantidad: d.Cantidad}
@@ -1464,7 +1546,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		}
 	}
 	payload := &facturador.DespatchPayload{
-		Version:      "2020",
+		Version:      "2022",
 		TipoDoc:      sunatCode,
 		Serie:        series.Series,
 		Correlativo:  correlativoStr,
@@ -1474,7 +1556,29 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		Envio:        shipment,
 		Details:      details,
 	}
-	payloadJSON, _ := json.Marshal(payload)
+	if sunatCode == "31" {
+		remAddr, errRem := s.buildInvoiceAddressFromUbigeo(input.Remitente.Ubigeo, input.Remitente.Address)
+		if errRem != nil {
+			return nil, fmt.Errorf("remitente: %w", errRem)
+		}
+		remTipoDoc, remNumDoc := normalizeGrePartyDoc(input.Remitente.TipoDoc, input.Remitente.NumDoc)
+		payload.Tercero = &facturador.InvoiceClient{
+			TipoDoc:   remTipoDoc,
+			NumDoc:    remNumDoc,
+			RznSocial: strings.TrimSpace(input.Remitente.RznSocial),
+			Address:   remAddr,
+		}
+	}
+	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
+		if addDoc := s.despatchAddDocFromSale(*input.SourceSaleID, companyCfg.RUC); addDoc != nil {
+			payload.AddDocs = []facturador.DespatchAdditionalDoc{*addDoc}
+		}
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("serializar payload guía: %w", err)
+	}
+	payloadJSONStr := enrichDespatchFiscalPayloadJSON(string(payloadJSON), sunatCode, dispatchKind)
 	docNum := fmt.Sprintf("%s-%s", series.Series, correlativoStr)
 	numberStr := fmt.Sprintf("%s-%08d", series.Series, nextCorr)
 
@@ -1498,13 +1602,15 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		if unit == "" {
 			unit = "NIU"
 		}
-		_ = s.db.Create(&database.TenantSaleItem{
+		if err := s.db.Create(&database.TenantSaleItem{
 			SaleID:      guiaSale.ID,
 			Code:        d.Codigo,
 			Description: d.Descripcion,
 			Unit:        unit,
 			Quantity:    d.Cantidad,
-		}).Error
+		}).Error; err != nil {
+			return nil, fmt.Errorf("crear ítem guía: %w", err)
+		}
 	}
 	if err := s.reserveGenericDocument(reserveKind, guiaSale.ID, docNum); err != nil {
 		return nil, err
@@ -1521,7 +1627,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		DestinatarioRUC:   input.Destinatario.NumDoc,
 		DestinatarioRazon: input.Destinatario.RznSocial,
 		Status:            "pending",
-		PayloadJSON:       string(payloadJSON),
+		PayloadJSON:       payloadJSONStr,
 		DetailsCount:      len(details),
 	}
 	if err := s.db.Create(rec).Error; err != nil {
@@ -1531,6 +1637,9 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 	tenantDB := s.lookupTenantDBName(s.centralTenantID)
 	if _, err := s.EnqueueSendToSUNAT(guiaSale.ID, s.centralTenantID, s.tenantSlug, tenantDB, FiscalSourceAutoCreate); err != nil {
 		return rec, err
+	}
+	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
+		s.linkDespatchFiscalReference(*input.SourceSaleID, sunatCode, docNum, guiaSale.ID)
 	}
 	return rec, nil
 }
@@ -1573,7 +1682,11 @@ func (s *BillingService) GetDespatchStatus(id uint) (*database.TenantDespatch, e
 			if ruc == "" {
 				ruc = "default"
 			}
-			cdrPath, _ := saveInvoiceFile(basePath, ruc, "lycet", "09", rec.Series, strconv.FormatUint(uint64(rec.Correlative), 10), "cdr.zip", cdrDec)
+			sunatCode := strings.TrimSpace(getSeriesSunatCode(s.db, rec.SeriesID))
+			if sunatCode != "09" && sunatCode != "31" {
+				sunatCode = "09"
+			}
+			cdrPath, _ := saveInvoiceFile(basePath, ruc, "lycet", sunatCode, rec.Series, strconv.FormatUint(uint64(rec.Correlative), 10), "cdr.zip", cdrDec)
 			rec.CDRURL = cdrPath
 		}
 		if result.CDRResponse != nil {

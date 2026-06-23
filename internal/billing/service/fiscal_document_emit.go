@@ -104,7 +104,7 @@ func (s *BillingService) emitDespatchDocument(saleID uint, companyCfg *database.
 	if tipo == "31" {
 		kind = "guia_transportista"
 	}
-	payload := enrichFiscalPayloadJSON(despatch.PayloadJSON, tipo, kind)
+	payload := enrichDespatchFiscalPayloadJSON(despatch.PayloadJSON, tipo, kind)
 	return s.enqueueFiscalMicroservice(saleID, companyCfg, nil, payload)
 }
 

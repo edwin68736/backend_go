@@ -862,18 +862,41 @@ type DespatchTransportist struct {
 	ChoferDoc     string `json:"choferDoc"`
 }
 
-// DespatchShipment datos del traslado.
+// DespatchShipment datos del traslado (Greenter Shipment / GRE 2022).
 type DespatchShipment struct {
-	CodTraslado   string                 `json:"codTraslado"`
-	DesTraslado   string                 `json:"desTraslado"`
-	ModTraslado   string                 `json:"modTraslado"`
-	FecTraslado   string                 `json:"fecTraslado"`
-	Partida       DespatchDirection      `json:"partida"`
-	Llegada       DespatchDirection      `json:"llegada"`
-	PesoTotal     float64                `json:"pesoTotal"`
-	UndPesoTotal  string                 `json:"undPesoTotal"`
-	NumBultos     int                    `json:"numBultos"`
-	Transportista *DespatchTransportist  `json:"transportista,omitempty"`
+	CodTraslado             string                `json:"codTraslado"`
+	DesTraslado             string                `json:"desTraslado"`
+	ModTraslado             string                `json:"modTraslado"`
+	FecTraslado             string                `json:"fecTraslado"`
+	FecEntregaBienes        string                `json:"fecEntregaBienes,omitempty"`
+	FecEntregaTransportista string                `json:"fecEntregaTransportista,omitempty"`
+	Partida                 DespatchDirection     `json:"partida"`
+	Llegada                 DespatchDirection     `json:"llegada"`
+	PesoTotal               float64               `json:"pesoTotal"`
+	UndPesoTotal            string                `json:"undPesoTotal"`
+	NumBultos               int                   `json:"numBultos"`
+	Indicadores             []string              `json:"indicadores,omitempty"`
+	Transportista           *DespatchTransportist `json:"transportista,omitempty"`
+	Vehiculo                *DespatchVehicle      `json:"vehiculo,omitempty"`
+	Choferes                []DespatchDriver      `json:"choferes,omitempty"`
+}
+
+// DespatchVehicle vehículo principal GRE (Greenter Vehicle).
+type DespatchVehicle struct {
+	Placa           string `json:"placa"`
+	NroCirculacion  string `json:"nroCirculacion,omitempty"`
+	NroAutorizacion string `json:"nroAutorizacion,omitempty"`
+	CodEmisor       string `json:"codEmisor,omitempty"`
+}
+
+// DespatchDriver conductor GRE.
+type DespatchDriver struct {
+	Tipo      string `json:"tipo,omitempty"`
+	TipoDoc   string `json:"tipoDoc"`
+	NroDoc    string `json:"nroDoc"`
+	Nombres   string `json:"nombres,omitempty"`
+	Apellidos string `json:"apellidos,omitempty"`
+	Licencia  string `json:"licencia,omitempty"`
 }
 
 // DespatchDetail ítem de la guía.
@@ -885,18 +908,28 @@ type DespatchDetail struct {
 	CodProdSunat  string  `json:"codProdSunat,omitempty"`
 }
 
+// DespatchAdditionalDoc documento relacionado con la guía (catálogo 61).
+type DespatchAdditionalDoc struct {
+	Tipo     string `json:"tipo,omitempty"`
+	TipoDesc string `json:"tipoDesc,omitempty"`
+	Nro      string `json:"nro"`
+	Emisor   string `json:"emisor,omitempty"`
+}
+
 // DespatchPayload body para POST /despatch/send.
 type DespatchPayload struct {
-	Version      string            `json:"version"`
-	TipoDoc      string            `json:"tipoDoc"`
-	Serie        string            `json:"serie"`
-	Correlativo  string            `json:"correlativo"`
-	FechaEmision string            `json:"fechaEmision"`
-	Observacion  string            `json:"observacion,omitempty"`
-	Company      InvoiceCompany    `json:"company"`
-	Destinatario InvoiceClient    `json:"destinatario"`
-	Envio        DespatchShipment  `json:"envio"`
-	Details      []DespatchDetail  `json:"details"`
+	Version      string                  `json:"version"`
+	TipoDoc      string                  `json:"tipoDoc"`
+	Serie        string                  `json:"serie"`
+	Correlativo  string                  `json:"correlativo"`
+	FechaEmision string                  `json:"fechaEmision"`
+	Observacion  string                  `json:"observacion,omitempty"`
+	Company      InvoiceCompany          `json:"company"`
+	Destinatario InvoiceClient           `json:"destinatario"`
+	Tercero      *InvoiceClient          `json:"tercero,omitempty"`
+	Envio        DespatchShipment        `json:"envio"`
+	Details      []DespatchDetail        `json:"details"`
+	AddDocs      []DespatchAdditionalDoc `json:"addDocs,omitempty"`
 }
 
 // SendDespatch envía la guía de remisión (POST /despatch/send). Respuesta puede traer ticket o CDR directo (sin hash).
@@ -924,6 +957,42 @@ func (c *Client) SendDespatch(payload *DespatchPayload) (*SunatResponse, error) 
 		return &out, fmt.Errorf("facturador respondió %d: %s", resp.StatusCode, string(respBody))
 	}
 	return &out, nil
+}
+
+// GetDespatchPDF obtiene PDF de guía (POST /despatch/pdf).
+func (c *Client) GetDespatchPDF(payload *DespatchPayload) ([]byte, error) {
+	return c.postDespatchDocument("/despatch/pdf", payload)
+}
+
+// GetDespatchXML obtiene XML firmado de guía (POST /despatch/xml).
+func (c *Client) GetDespatchXML(payload *DespatchPayload) ([]byte, error) {
+	return c.postDespatchDocument("/despatch/xml", payload)
+}
+
+func (c *Client) postDespatchDocument(path string, payload *DespatchPayload) ([]byte, error) {
+	if payload == nil {
+		return nil, fmt.Errorf("payload: nil")
+	}
+	normalizeDespatchPayloadDates(payload)
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("payload: %w", err)
+	}
+	req, err := http.NewRequest("POST", c.addToken(path), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("facturador %s respondió %d: %s", path, resp.StatusCode, string(b))
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // GetDespatchStatus consulta estado del ticket de guía (GET /despatch/status).
@@ -1376,4 +1445,16 @@ func extractPEMBlock(content, blockType string) string {
 		return ""
 	}
 	return content[i : i+j+len(end)]
+}
+
+func normalizeDespatchPayloadDates(payload *DespatchPayload) {
+	if payload == nil {
+		return
+	}
+	ref := payload.FechaEmision
+	payload.FechaEmision = NormalizeFiscalDateTimeString(payload.FechaEmision, ref)
+	ref = payload.FechaEmision
+	payload.Envio.FecTraslado = NormalizeFiscalDateTimeString(payload.Envio.FecTraslado, ref)
+	payload.Envio.FecEntregaBienes = NormalizeFiscalDateTimeString(payload.Envio.FecEntregaBienes, ref)
+	payload.Envio.FecEntregaTransportista = NormalizeFiscalDateTimeString(payload.Envio.FecEntregaTransportista, ref)
 }
