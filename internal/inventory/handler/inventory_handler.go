@@ -432,16 +432,21 @@ func (h *InventoryHandler) MovementsAPI(c fiber.Ctx) error {
 	if page < 1 {
 		page = 1
 	}
+	opTypeID, _ := strconv.ParseUint(c.Query("operation_type_id"), 10, 32)
 	params := service.KardexParams{
-		ProductID:      uint(productID),
-		ProductSearch:  c.Query("product_q"),
-		CategoryID:     uint(catID),
-		BranchID:       uint(branchID),
-		DateFrom:       dateFrom,
-		DateTo:         dateTo,
-		MovementKind:   c.Query("movement_kind"),
-		TextSearch:     c.Query("q"),
-		RestaurantOnly: restaurantOnly,
+		ProductID:            uint(productID),
+		ProductSearch:        c.Query("product_q"),
+		CategoryID:           uint(catID),
+		BranchID:             uint(branchID),
+		DateFrom:             dateFrom,
+		DateTo:               dateTo,
+		MovementKind:         c.Query("movement_kind"),
+		TextSearch:           c.Query("q"),
+		OperationTypeID:      uint(opTypeID),
+		OperationCode:        c.Query("operation_code"),
+		OperationDirection:   c.Query("direction"),
+		SunatCode:            c.Query("sunat_code"),
+		RestaurantOnly:       restaurantOnly,
 	}
 	if perPage > 0 {
 		params.Limit = perPage
@@ -512,22 +517,28 @@ func (h *InventoryHandler) MovementsAPI(c fiber.Ctx) error {
 	}
 
 	type movementRow struct {
-		ID           uint      `json:"id"`
-		ProductID    uint      `json:"product_id"`
-		ProductCode  string    `json:"product_code"`
-		ProductName  string    `json:"product_name"`
-		BranchID     uint      `json:"branch_id"`
-		BranchName   string    `json:"branch_name"`
-		Type         string    `json:"type"`
-		Quantity     float64   `json:"quantity"`
-		UnitCost     float64   `json:"unit_cost"`
-		Balance      float64   `json:"balance"`
-		Reference    string    `json:"reference"`
-		Notes        string    `json:"notes"`
-		UserID       uint      `json:"user_id"`
-		UserName     string    `json:"user_name"`
-		CreatedAt    time.Time `json:"created_at"`
+		ID                    uint      `json:"id"`
+		ProductID             uint      `json:"product_id"`
+		ProductCode           string    `json:"product_code"`
+		ProductName           string    `json:"product_name"`
+		BranchID              uint      `json:"branch_id"`
+		BranchName            string    `json:"branch_name"`
+		Type                  string    `json:"type"`
+		Quantity              float64   `json:"quantity"`
+		UnitCost              float64   `json:"unit_cost"`
+		Balance               float64   `json:"balance"`
+		Reference             string    `json:"reference"`
+		Notes                 string    `json:"notes"`
+		OperationTypeID       *uint     `json:"operation_type_id,omitempty"`
+		OperationTypeCode     string    `json:"operation_type_code,omitempty"`
+		OperationTypeName     string    `json:"operation_type_name,omitempty"`
+		SunatCode             string    `json:"sunat_code,omitempty"`
+		InventoryDocumentID   *uint     `json:"inventory_document_id,omitempty"`
+		UserID                uint      `json:"user_id"`
+		UserName              string    `json:"user_name"`
+		CreatedAt             time.Time `json:"created_at"`
 	}
+	opMap := enrichMovementsWithOperationTypes(tdb, movements)
 	out := make([]movementRow, 0, len(movements))
 	for _, m := range movements {
 		pc, pn := "", ""
@@ -535,23 +546,33 @@ func (h *InventoryHandler) MovementsAPI(c fiber.Ctx) error {
 			pc = p.Code
 			pn = p.Name
 		}
-		out = append(out, movementRow{
-			ID:          m.ID,
-			ProductID:   m.ProductID,
-			ProductCode: pc,
-			ProductName: pn,
-			BranchID:    m.BranchID,
-			BranchName:  brMap[m.BranchID],
-			Type:        m.Type,
-			Quantity:    m.Quantity,
-			UnitCost:    m.UnitCost,
-			Balance:     m.Balance,
-			Reference:   m.Reference,
-			Notes:       m.Notes,
-			UserID:      m.UserID,
-			UserName:    userNames[m.UserID],
-			CreatedAt:   m.CreatedAt,
-		})
+		row := movementRow{
+			ID:                  m.ID,
+			ProductID:           m.ProductID,
+			ProductCode:         pc,
+			ProductName:         pn,
+			BranchID:            m.BranchID,
+			BranchName:          brMap[m.BranchID],
+			Type:                m.Type,
+			Quantity:            m.Quantity,
+			UnitCost:            m.UnitCost,
+			Balance:             m.Balance,
+			Reference:           m.Reference,
+			Notes:               m.Notes,
+			OperationTypeID:     m.OperationTypeID,
+			InventoryDocumentID: m.InventoryDocumentID,
+			UserID:              m.UserID,
+			UserName:            userNames[m.UserID],
+			CreatedAt:           m.CreatedAt,
+		}
+		if m.OperationTypeID != nil {
+			if op, ok := opMap[*m.OperationTypeID]; ok {
+				row.OperationTypeCode = op.Code
+				row.OperationTypeName = op.Name
+				row.SunatCode = op.SunatCode
+			}
+		}
+		out = append(out, row)
 	}
 	return c.JSON(fiber.Map{"data": out, "total": total})
 }

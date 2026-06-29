@@ -53,6 +53,21 @@ func NormalizeExchangeRate(currency string, rate *float64) (*float64, error) {
 	return &r, nil
 }
 
+// RequireExchangeRateForUSD exige TC cuando la moneda es USD (p. ej. emisión electrónica desde NV).
+func RequireExchangeRateForUSD(currency string, rate *float64) error {
+	c, err := NormalizeCurrency(currency)
+	if err != nil {
+		return err
+	}
+	if c != CurrencyUSD {
+		return nil
+	}
+	if rate == nil || *rate <= 0 {
+		return fmt.Errorf("el tipo de cambio es obligatorio para ventas en dólares (USD)")
+	}
+	return nil
+}
+
 // TotalInPEN convierte el total de venta a soles para reglas fiscales (umbral retención).
 func TotalInPEN(currency string, total float64, exchangeRate *float64) float64 {
 	if strings.ToUpper(strings.TrimSpace(currency)) != CurrencyUSD {

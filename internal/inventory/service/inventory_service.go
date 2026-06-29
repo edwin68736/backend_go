@@ -20,23 +20,46 @@ func NewInventoryService(db *gorm.DB) *InventoryService {
 }
 
 type MovementInput struct {
-	ProductID uint
-	BranchID  uint
-	Type      string // in, out, adjustment, transfer
-	Quantity  float64
-	UnitCost  float64
-	Reference string
-	Notes     string
-	UserID    uint
+	ProductID           uint
+	BranchID            uint
+	Type                string // in, out, adjustment, transfer
+	Quantity            float64
+	UnitCost            float64
+	Reference           string
+	Notes               string
+	UserID              uint
+	OperationCode       string // código interno del catálogo (PURCHASE, SALE, TRANSFER, …)
+	OperationTypeID     *uint
+	InventoryDocumentID *uint
 }
 
-// recordMovementTx registra un movimiento y actualiza stock dentro de una transacción existente.
-func (s *InventoryService) recordMovementTx(tx *gorm.DB, input MovementInput) error {
+func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *MovementInput) error {
+	if input.OperationTypeID != nil && *input.OperationTypeID > 0 {
+		return nil
+	}
+	code := strings.TrimSpace(strings.ToUpper(input.OperationCode))
+	if code == "" {
+		return nil
+	}
+	op, err := LookupOperationTypeByCode(tx, code)
+	if err != nil {
+		return err
+	}
+	id := op.ID
+	input.OperationTypeID = &id
+	return nil
+}
+
+// RecordMovementTx registra un movimiento y actualiza stock dentro de una transacción existente.
+func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) error {
 	if input.ProductID == 0 || input.BranchID == 0 {
 		return errors.New("producto y sucursal son requeridos")
 	}
 	if input.Quantity <= 0 {
 		return errors.New("la cantidad debe ser mayor a cero")
+	}
+	if err := s.resolveMovementOperationType(tx, &input); err != nil {
+		return err
 	}
 	var stock database.TenantProductStock
 	tx.Where("product_id = ? AND branch_id = ?", input.ProductID, input.BranchID).First(&stock)
@@ -58,6 +81,7 @@ func (s *InventoryService) recordMovementTx(tx *gorm.DB, input MovementInput) er
 		ProductID: input.ProductID, BranchID: input.BranchID, Type: input.Type,
 		Quantity: input.Quantity, UnitCost: input.UnitCost, Balance: newBalance,
 		Reference: input.Reference, Notes: input.Notes, UserID: input.UserID,
+		OperationTypeID: input.OperationTypeID, InventoryDocumentID: input.InventoryDocumentID,
 		CreatedAt: time.Now(),
 	}
 	if err := tx.Create(&movement).Error; err != nil {
@@ -102,13 +126,14 @@ func (s *InventoryService) RecordInitialStock(productID, branchID uint, quantity
 		notes = "Stock inicial"
 	}
 	return s.RecordMovement(MovementInput{
-		ProductID: productID,
-		BranchID:  branchID,
-		Type:      "in",
-		Quantity:  quantity,
-		Reference: "STOCK_INICIAL",
-		Notes:     notes,
-		UserID:    userID,
+		ProductID:     productID,
+		BranchID:      branchID,
+		Type:          "in",
+		Quantity:      quantity,
+		Reference:     "STOCK_INICIAL",
+		Notes:         notes,
+		UserID:        userID,
+		OperationCode: "INITIAL_STOCK",
 	})
 }
 
@@ -122,6 +147,9 @@ func (s *InventoryService) RecordMovement(input MovementInput) error {
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.resolveMovementOperationType(tx, &input); err != nil {
+			return err
+		}
 		// Obtener stock actual
 		var stock database.TenantProductStock
 		tx.Where("product_id = ? AND branch_id = ?", input.ProductID, input.BranchID).First(&stock)
@@ -153,6 +181,8 @@ func (s *InventoryService) RecordMovement(input MovementInput) error {
 			Reference: input.Reference,
 			Notes:     input.Notes,
 			UserID:    input.UserID,
+			OperationTypeID:     input.OperationTypeID,
+			InventoryDocumentID: input.InventoryDocumentID,
 			CreatedAt: time.Now(),
 		}
 		if err := tx.Create(&movement).Error; err != nil {
@@ -182,25 +212,27 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 
 	ref := "TRANSFER"
 	if err := s.RecordMovement(MovementInput{
-		ProductID: productID,
-		BranchID:  fromBranchID,
-		Type:      "out",
-		Quantity:  quantity,
-		Reference: ref,
-		Notes:     notes,
-		UserID:    userID,
+		ProductID:     productID,
+		BranchID:      fromBranchID,
+		Type:          "out",
+		Quantity:      quantity,
+		Reference:     ref,
+		Notes:         notes,
+		UserID:        userID,
+		OperationCode: "TRANSFER",
 	}); err != nil {
 		return err
 	}
 
 	if err := s.RecordMovement(MovementInput{
-		ProductID: productID,
-		BranchID:  toBranchID,
-		Type:      "in",
-		Quantity:  quantity,
-		Reference: ref,
-		Notes:     notes,
-		UserID:    userID,
+		ProductID:     productID,
+		BranchID:      toBranchID,
+		Type:          "in",
+		Quantity:      quantity,
+		Reference:     ref,
+		Notes:         notes,
+		UserID:        userID,
+		OperationCode: "TRANSFER",
 	}); err != nil {
 		return err
 	}
@@ -271,36 +303,20 @@ func (s *InventoryService) TransferWithSerials(productID, fromBranchID, toBranch
 		}
 
 		qty := float64(len(serials))
-
-		// Registrar salida en kardex
-		var fromStock database.TenantProductStock
-		tx.Where("product_id = ? AND branch_id = ?", productID, fromBranchID).First(&fromStock)
-		newFromQty := fromStock.Quantity - qty
-		if newFromQty < 0 {
-			return errors.New("stock insuficiente en sucursal origen")
-		}
-
 		ref := "TRANSFER-SERIAL"
-		tx.Create(&database.TenantStockMovement{
+		if err := s.RecordMovementTx(tx, MovementInput{
 			ProductID: productID, BranchID: fromBranchID, Type: "out",
-			Quantity: qty, Balance: newFromQty, Reference: ref, Notes: notes, UserID: userID,
-			CreatedAt: time.Now(),
-		})
-		tx.Model(&fromStock).Updates(map[string]interface{}{"quantity": newFromQty, "updated_at": time.Now()})
-
-		// Registrar entrada en kardex destino
-		var toStock database.TenantProductStock
-		tx.Where("product_id = ? AND branch_id = ?", productID, toBranchID).First(&toStock)
-		newToQty := toStock.Quantity + qty
-		tx.Create(&database.TenantStockMovement{
+			Quantity: qty, Reference: ref, Notes: notes, UserID: userID,
+			OperationCode: "TRANSFER",
+		}); err != nil {
+			return err
+		}
+		if err := s.RecordMovementTx(tx, MovementInput{
 			ProductID: productID, BranchID: toBranchID, Type: "in",
-			Quantity: qty, Balance: newToQty, Reference: ref, Notes: notes, UserID: userID,
-			CreatedAt: time.Now(),
-		})
-		if toStock.ID == 0 {
-			tx.Create(&database.TenantProductStock{ProductID: productID, BranchID: toBranchID, Quantity: newToQty})
-		} else {
-			tx.Model(&toStock).Updates(map[string]interface{}{"quantity": newToQty, "updated_at": time.Now()})
+			Quantity: qty, Reference: ref, Notes: notes, UserID: userID,
+			OperationCode: "TRANSFER",
+		}); err != nil {
+			return err
 		}
 
 		// Reasignar seriales: cambiar branch_id a destino (disponibles de inmediato)
@@ -461,9 +477,10 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 			}
 
 			// Salida en origen
-			if err := s.recordMovementTx(tx, MovementInput{
+			if err := s.RecordMovementTx(tx, MovementInput{
 				ProductID: line.ProductID, BranchID: fromBranchID, Type: "out",
 				Quantity: qty, Reference: ref, Notes: notes, UserID: userID,
+				OperationCode: "TRANSFER",
 			}); err != nil {
 				return err
 			}
@@ -529,9 +546,10 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 				}
 			}
 			// Entrada en destino
-			if err := s.recordMovementTx(tx, MovementInput{
+			if err := s.RecordMovementTx(tx, MovementInput{
 				ProductID: logRow.ProductID, BranchID: logRow.ToBranchID, Type: "in",
 				Quantity: logRow.Quantity, Reference: ref, Notes: logRow.Notes, UserID: userID,
+				OperationCode: "TRANSFER",
 			}); err != nil {
 				return err
 			}
@@ -578,9 +596,10 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 				}
 			}
 			// Devolver stock al origen (entrada en origen = revertir la salida)
-			if err := s.recordMovementTx(tx, MovementInput{
+			if err := s.RecordMovementTx(tx, MovementInput{
 				ProductID: logRow.ProductID, BranchID: logRow.FromBranchID, Type: "in",
 				Quantity: logRow.Quantity, Reference: ref, Notes: "Cancelación transferencia", UserID: userID,
+				OperationCode: "TRANSFER",
 			}); err != nil {
 				return err
 			}
@@ -643,6 +662,74 @@ func (s *InventoryService) StockTotalsByProductIDs(productIDs []uint) (map[uint]
 	return out, nil
 }
 
+// WeightedAverageUnitCosts calcula el costo promedio ponderado por producto en una sucursal (kardex).
+// Si no hay historial con costo, usa purchase_price del producto.
+func (s *InventoryService) WeightedAverageUnitCosts(productIDs []uint, branchID uint) (map[uint]float64, error) {
+	out := make(map[uint]float64, len(productIDs))
+	if len(productIDs) == 0 {
+		return out, nil
+	}
+
+	var products []database.TenantProduct
+	if err := s.db.Where("id IN ?", productIDs).Find(&products).Error; err != nil {
+		return nil, err
+	}
+	fallback := make(map[uint]float64, len(products))
+	for _, p := range products {
+		if p.PurchasePrice > 0 {
+			fallback[p.ID] = p.PurchasePrice
+		}
+	}
+
+	var movements []database.TenantStockMovement
+	if err := s.db.Where("product_id IN ? AND branch_id = ?", productIDs, branchID).
+		Order("product_id ASC, created_at ASC, id ASC").
+		Find(&movements).Error; err != nil {
+		return nil, err
+	}
+
+	type costState struct {
+		qty float64
+		avg float64
+	}
+	states := make(map[uint]*costState)
+	for _, m := range movements {
+		st, ok := states[m.ProductID]
+		if !ok {
+			st = &costState{}
+			states[m.ProductID] = st
+		}
+		switch m.Type {
+		case "in", "adjustment_in":
+			if m.Quantity <= 0 {
+				continue
+			}
+			if m.UnitCost > 0 {
+				if st.qty+m.Quantity > 0 {
+					st.avg = (st.avg*st.qty + m.UnitCost*m.Quantity) / (st.qty + m.Quantity)
+				}
+			}
+			st.qty += m.Quantity
+		case "out", "adjustment_out":
+			st.qty -= m.Quantity
+			if st.qty < 0 {
+				st.qty = 0
+			}
+		case "adjustment":
+			st.qty = m.Balance
+		}
+	}
+
+	for _, id := range productIDs {
+		if st, ok := states[id]; ok && st.qty > 0 && st.avg > 0 {
+			out[id] = st.avg
+			continue
+		}
+		out[id] = fallback[id]
+	}
+	return out, nil
+}
+
 // AdjustmentInput para ajuste de inventario (desde API).
 type AdjustmentInput struct {
 	ProductID uint
@@ -653,67 +740,9 @@ type AdjustmentInput struct {
 	Serials   []string // Para productos con series: al in = nuevos seriales; al out = seriales a retirar
 }
 
-// RecordAdjustment registra un ajuste de stock y opcionalmente gestiona series.
-// Solo para productos con manage_stock. Tipo "in" = aumentar, "out" = disminuir.
-// Para productos con series: Type "in" requiere len(Serials)==Quantity (seriales nuevos);
-// Type "out" requiere Serials con los seriales a retirar (cantidad debe coincidir).
+// RecordAdjustment registra un ajuste vía documento de inventario (compatibilidad API).
 func (s *InventoryService) RecordAdjustment(input AdjustmentInput, userID uint) error {
-	if input.ProductID == 0 || input.BranchID == 0 {
-		return errors.New("producto y sucursal son requeridos")
-	}
-	if input.Type != "in" && input.Type != "out" {
-		return errors.New("tipo debe ser 'in' u 'out'")
-	}
-	if input.Quantity <= 0 {
-		return errors.New("la cantidad debe ser mayor a cero")
-	}
-
-	var product database.TenantProduct
-	if err := s.db.First(&product, input.ProductID).Error; err != nil {
-		return err
-	}
-	if !product.ManageStock {
-		return errors.New("el producto no controla stock")
-	}
-
-	ref := "AJUSTE"
-	notes := input.Notes
-	if notes == "" {
-		notes = "Ajuste de inventario"
-	}
-
-	if product.ManageSeries {
-		n := int(input.Quantity)
-		if n <= 0 {
-			return errors.New("para productos con series la cantidad debe ser un entero mayor a 0")
-		}
-		if input.Type == "in" {
-			if len(input.Serials) != n {
-				return errors.New("debe indicar exactamente la misma cantidad de números de serie")
-			}
-			return s.adjustmentInWithSerials(input.ProductID, input.BranchID, input.Serials, notes, userID)
-		}
-		// out
-		if len(input.Serials) != n {
-			return errors.New("debe seleccionar exactamente la misma cantidad de series a retirar")
-		}
-		return s.adjustmentOutWithSerials(input.ProductID, input.BranchID, input.Serials, notes, userID)
-	}
-
-	// Producto sin series
-	movType := "adjustment_in"
-	if input.Type == "out" {
-		movType = "adjustment_out"
-	}
-	return s.RecordMovement(MovementInput{
-		ProductID: input.ProductID,
-		BranchID:  input.BranchID,
-		Type:      movType,
-		Quantity:  input.Quantity,
-		Reference: ref,
-		Notes:     notes,
-		UserID:    userID,
-	})
+	return NewInventoryDocumentService(s.db).RecordAdjustmentViaDocument(input, userID)
 }
 
 func (s *InventoryService) adjustmentInWithSerials(productID, branchID uint, serials []string, notes string, userID uint) error {
@@ -789,17 +818,21 @@ func (s *InventoryService) adjustmentOutWithSerials(productID, branchID uint, se
 }
 
 type KardexParams struct {
-	ProductID       uint
-	ProductSearch   string // LIKE en nombre o código de producto (JOIN)
-	CategoryID      uint   // filtro por categoría del producto (JOIN)
-	BranchID        uint
-	DateFrom        *time.Time
-	DateTo          *time.Time
-	MovementKind    string // vacío, purchase_in, sale_out, transfer, adjustment, in, out
-	TextSearch      string // referencia o notas
-	RestaurantOnly  bool   // is_restaurant=true y manage_stock=true
-	Limit           int
-	Offset          int
+	ProductID         uint
+	ProductSearch     string
+	CategoryID        uint
+	BranchID          uint
+	DateFrom          *time.Time
+	DateTo            *time.Time
+	MovementKind      string
+	TextSearch        string
+	OperationTypeID   uint
+	OperationCode     string
+	OperationDirection string // IN | OUT (join catálogo)
+	SunatCode         string
+	RestaurantOnly    bool
+	Limit             int
+	Offset            int
 }
 
 // GetKardex lista movimientos de kardex con filtros opcionales y paginación (Limit>0).
@@ -844,6 +877,8 @@ func (s *InventoryService) GetKardex(params KardexParams) ([]database.TenantStoc
 		q = q.Where("tenant_stock_movements.reference LIKE ?", "TRANSFER%")
 	case "adjustment":
 		q = q.Where("tenant_stock_movements.type IN ?", []string{"adjustment_in", "adjustment_out"})
+	case "inventory_doc":
+		q = q.Where("tenant_stock_movements.inventory_document_id IS NOT NULL")
 	case "in":
 		q = q.Where("tenant_stock_movements.type = ?", "in")
 	case "out":
@@ -853,6 +888,23 @@ func (s *InventoryService) GetKardex(params KardexParams) ([]database.TenantStoc
 	if ts := strings.TrimSpace(params.TextSearch); ts != "" {
 		t := "%" + ts + "%"
 		q = q.Where("(tenant_stock_movements.reference LIKE ? OR tenant_stock_movements.notes LIKE ?)", t, t)
+	}
+
+	needOpJoin := params.OperationTypeID > 0 || params.OperationCode != "" || params.OperationDirection != "" || params.SunatCode != ""
+	if needOpJoin {
+		q = q.Joins("LEFT JOIN tenant_inventory_operation_types iot ON iot.id = tenant_stock_movements.operation_type_id")
+		if params.OperationTypeID > 0 {
+			q = q.Where("tenant_stock_movements.operation_type_id = ?", params.OperationTypeID)
+		}
+		if code := strings.TrimSpace(strings.ToUpper(params.OperationCode)); code != "" {
+			q = q.Where("iot.code = ?", code)
+		}
+		if dir := strings.TrimSpace(strings.ToUpper(params.OperationDirection)); dir == "IN" || dir == "OUT" {
+			q = q.Where("iot.direction = ?", dir)
+		}
+		if sc := strings.TrimSpace(params.SunatCode); sc != "" {
+			q = q.Where("iot.sunat_code = ?", sc)
+		}
 	}
 
 	var total int64

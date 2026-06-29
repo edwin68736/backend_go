@@ -524,7 +524,7 @@ func (h *ProductHandler) LookupByCodeAPI(c fiber.Ctx) error {
 	} else if branch.ActiveBranchID(c) > 0 {
 		branchID = branch.ActiveBranchID(c)
 	}
-	p, err := svc.FindRestaurantProductByBarcode(code, branchID)
+	p, err := svc.FindProductByBarcode(code, branchID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

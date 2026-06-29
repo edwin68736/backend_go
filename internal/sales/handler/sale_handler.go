@@ -123,6 +123,8 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Payments      []service.PaymentInput   `json:"payments"`
 		Notes         string                   `json:"notes"`
 		Items         []service.SaleItemInput  `json:"items"`
+		GlobalDiscountMode  string             `json:"global_discount_mode"`
+		GlobalDiscountValue float64            `json:"global_discount_value"`
 		FiscalContext *salecontext.FiscalContextInput `json:"fiscal_context"`
 		Detraccion    *detraccionsvc.SaleInput        `json:"detraccion"`
 		FromQuotationID *uint                         `json:"from_quotation_id"`
@@ -190,6 +192,8 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Payments:        body.Payments,
 		Notes:           body.Notes,
 		Items:           body.Items,
+		GlobalDiscountMode:  body.GlobalDiscountMode,
+		GlobalDiscountValue: body.GlobalDiscountValue,
 		TaxConfig:       taxCfg,
 		CentralTenantID: centralTenantID,
 		FiscalContext:           body.FiscalContext,
@@ -379,13 +383,32 @@ func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	saleIDs := make([]uint, 0, len(sales))
+	for _, s := range sales {
+		if s.DocType == "01" || s.DocType == "03" {
+			saleIDs = append(saleIDs, s.ID)
+		}
+	}
+	linkedBySale := billingSvc.NewBillingService(db(c)).BatchLinkedPerceptionsBySourceSaleIDs(saleIDs)
+	type saleListRow struct {
+		database.TenantSale
+		LinkedPerception *billingSvc.LinkedFiscalDocSummary `json:"linked_perception,omitempty"`
+	}
+	rows := make([]saleListRow, len(sales))
+	for i, s := range sales {
+		rows[i] = saleListRow{TenantSale: s}
+		if lp, ok := linkedBySale[s.ID]; ok {
+			summary := lp
+			rows[i].LinkedPerception = &summary
+		}
+	}
 	if exportAll {
-		return c.JSON(fiber.Map{"data": sales, "summary": summary})
+		return c.JSON(fiber.Map{"data": rows, "summary": summary})
 	}
 	if perPage > 0 {
-		return c.JSON(fiber.Map{"data": sales, "total": total, "summary": summary})
+		return c.JSON(fiber.Map{"data": rows, "total": total, "summary": summary})
 	}
-	return c.JSON(fiber.Map{"data": sales, "summary": summary})
+	return c.JSON(fiber.Map{"data": rows, "summary": summary})
 }
 
 // GET /api/sales/by-product?from=&to=&branch_id=&category_id=
@@ -466,6 +489,9 @@ func (h *SaleHandler) GetAPI(c fiber.Ctx) error {
 	}
 	if det, err := detraccionsvc.NewService(db(c)).LoadBySaleID(sale.ID); err == nil && det != nil {
 		out["detraccion"] = det
+	}
+	if linked, _ := billingSvc.NewBillingService(db(c)).GetLinkedPerceptionBySourceSaleID(sale.ID); linked != nil {
+		out["linked_perception"] = linked
 	}
 	return c.JSON(out)
 }

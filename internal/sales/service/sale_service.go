@@ -16,11 +16,11 @@ import (
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/salescope"
-	"tukifac/pkg/sunat"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
 	detraccionsvc "tukifac/internal/detraccion"
+	invsvc "tukifac/internal/inventory/service"
 	salecontext "tukifac/internal/fiscal/salecontext"
 	"tukifac/internal/sales/nvdisplay"
 
@@ -57,6 +57,8 @@ type SaleItemInput struct {
 	Quantity           float64 `json:"quantity"`
 	UnitPrice          float64 `json:"unit_price"`
 	Discount           float64 `json:"discount"`
+	LineDiscountMode   string  `json:"line_discount_mode"`
+	LineDiscountValue  float64 `json:"line_discount_value"`
 	TaxRate            float64 `json:"tax_rate"`             // ignorado en cálculo; se usa IgvAffectationType + config empresa
 	IgvAffectationType string  `json:"igv_affectation_type"` // catálogo SUNAT N°07
 	PriceIncludesIgv   bool    `json:"price_includes_igv"`   // si el precio ya incluye IGV
@@ -86,6 +88,8 @@ type CreateSaleInput struct {
 	Payments      []PaymentInput `json:"payments"` // múltiples métodos de pago
 	Notes         string
 	Items         []SaleItemInput
+	GlobalDiscountMode  string  `json:"global_discount_mode"`
+	GlobalDiscountValue float64 `json:"global_discount_value"`
 	TaxConfig     tax.Config // configuración tributaria de la empresa
 	// Emisión desde nota de venta (no descontar inventario ni duplicar caja/bancos).
 	SkipInventory             bool
@@ -126,49 +130,16 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 	// Calcular totales respetando el tipo de afectación SUNAT por ítem
 	var subtotal, taxAmount, total float64
-	saleItems := make([]database.TenantSaleItem, 0, len(input.Items))
+	var saleItems []database.TenantSaleItem
+	var globalDiscAmt float64
+	var globalDiscMode string
+	var globalDiscValue float64
 
-	for _, item := range input.Items {
-		affType := item.IgvAffectationType
-		if affType == "" {
-			affType = "10" // default: gravado
-		}
-		effectiveRate := taxCfg.EffectiveRate(affType)
-
-		itemSub, itemTax, itemTotal := tax.CalcItem(
-			item.UnitPrice, item.Quantity, item.Discount,
-			affType, item.PriceIncludesIgv, taxCfg,
-		)
-
-		subtotal = money.RoundSunat(subtotal + itemSub)
-		taxAmount = money.RoundSunat(taxAmount + itemTax)
-		total = money.RoundSunat(total + itemTotal)
-
-		itemType := "product"
-		if item.ProductID != nil && *item.ProductID > 0 {
-			var prod database.TenantProduct
-			if s.db.Select("type").First(&prod, *item.ProductID).Error == nil && productIsCatalogService(&prod) {
-				itemType = "service"
-			}
-		} else if strings.EqualFold(strings.TrimSpace(item.Unit), "ZZ") {
-			itemType = "service"
-		}
-
-		saleItems = append(saleItems, database.TenantSaleItem{
-			ProductID:          item.ProductID,
-			Code:               item.Code,
-			Description:        item.Description,
-			Unit:               sunat.NormalizeUnit(item.Unit, itemType),
-			Quantity:           item.Quantity,
-			UnitPrice:          item.UnitPrice,
-			Discount:           item.Discount,
-			TaxRate:            effectiveRate,
-			IgvAffectationType: affType,
-			Subtotal:           itemSub,
-			TaxAmount:          itemTax,
-			Total:              itemTotal,
-			ModifiersJSON:     item.ModifiersJSON,
-		})
+	if usesStructuredDiscounts(input) {
+		subtotal, taxAmount, total, saleItems, globalDiscAmt, globalDiscMode, globalDiscValue =
+			buildSaleLinesFromEngine(input, taxCfg, s.db)
+	} else {
+		subtotal, taxAmount, total, saleItems = buildSaleLinesLegacy(input, taxCfg, s.db)
 	}
 
 	currency, err := salecurrency.NormalizeCurrency(input.Currency)
@@ -238,8 +209,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 	}
 	if contact != nil && contact.DocType == "0" && (sunatCode == "03" || sunatCode == "00") {
-		if total > SunatMaxMontoClienteSinRUC {
-			return nil, fmt.Errorf("según SUNAT, con cliente sin RUC (doc. tipo 0) el monto máximo permitido es S/ %d para boleta o nota de venta. Total actual: S/ %.2f", SunatMaxMontoClienteSinRUC, total)
+		totalPEN := salecurrency.TotalInPEN(currency, total, exchangeRate)
+		if totalPEN > SunatMaxMontoClienteSinRUC {
+			return nil, fmt.Errorf("según SUNAT, con cliente sin RUC (doc. tipo 0) el monto máximo permitido es S/ %d para boleta o nota de venta. Total equivalente: S/ %.2f", SunatMaxMontoClienteSinRUC, totalPEN)
 		}
 	}
 
@@ -331,15 +303,17 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			}
 			sumPayments += p.Amount
 		}
-		if money.RoundDisplay(sumPayments) > money.RoundDisplay(total)+money.PaymentTolerance {
-			return nil, fmt.Errorf("la suma de pagos (%.2f) supera el total (%.2f)", money.RoundDisplay(sumPayments), money.RoundDisplay(total))
-		}
 		if !money.PaidCoversTotal(sumPayments, total) {
 			if input.DueDate == nil {
-				return nil, fmt.Errorf("la suma de pagos (%.2f) no coincide con el total (%.2f)", money.RoundDisplay(sumPayments), money.RoundDisplay(total))
+				return nil, fmt.Errorf(
+					"la suma de pagos (%.2f) no cubre el total (%.2f)",
+					money.RoundDisplay(sumPayments),
+					money.RoundDisplay(total),
+				)
 			}
 			isCreditSale = true
 		}
+		// Vuelto: sumPayments puede superar total (p. ej. efectivo). Se calcula en print_data.change_amount.
 	} else if total > 0 && input.DueDate != nil {
 		isCreditSale = true
 	}
@@ -370,6 +344,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		Subtotal:             money.RoundSunat(subtotal),
 		TaxAmount:            money.RoundSunat(taxAmount),
 		Total:                money.RoundSunat(total),
+		GlobalDiscountAmount: money.RoundSunat(globalDiscAmt),
+		GlobalDiscountMode:   globalDiscMode,
+		GlobalDiscountValue:  globalDiscValue,
 		Currency:             currency,
 		OperationTypeCode:    opCode,
 		ExchangeRate:         exchangeRate,
@@ -456,6 +433,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 
 		// Descontar stock y marcar seriales como vendidos (productos con series)
+		inv := invsvc.NewInventoryService(tx)
 		for i, item := range input.Items {
 			if item.ProductID == nil {
 				continue
@@ -468,32 +446,17 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 
-			// Actualizar stock
-			var stock database.TenantProductStock
-			tx.Where("product_id = ? AND branch_id = ?", *item.ProductID, input.BranchID).First(&stock)
-
-			newQty := stock.Quantity - item.Quantity
-			if stock.ID == 0 {
-				tx.Create(&database.TenantProductStock{
-					ProductID: *item.ProductID,
-					BranchID:  input.BranchID,
-					Quantity:  newQty,
-				})
-			} else {
-				tx.Model(&stock).Update("quantity", newQty)
+			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+				ProductID:     *item.ProductID,
+				BranchID:      input.BranchID,
+				Type:          "out",
+				Quantity:      item.Quantity,
+				Reference:     "VENTA/" + sale.Number,
+				UserID:        input.UserID,
+				OperationCode: "SALE",
+			}); err != nil {
+				return err
 			}
-
-			// Kardex
-			tx.Create(&database.TenantStockMovement{
-				ProductID: *item.ProductID,
-				BranchID:  input.BranchID,
-				Type:      "out",
-				Quantity:  item.Quantity,
-				Balance:   newQty,
-				Reference: "VENTA/" + sale.Number,
-				UserID:    input.UserID,
-				CreatedAt: time.Now(),
-			})
 
 			// Productos con series: marcar los N seriales usados como vendidos (no disponibles para otras ventas)
 			if product.ManageSeries {
@@ -1236,22 +1199,7 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 			return err
 		}
 		for _, m := range incomeMovements {
-			uid := userID
-			if uid == 0 {
-				uid = m.UserID
-			}
-			if err := tx.Create(&database.TenantCashMovement{
-				CashSessionID: m.CashSessionID,
-				Type:          "expense",
-				Amount:        m.Amount,
-				PaymentMethod: m.PaymentMethod,
-				Category:      "Anulación venta",
-				Reference:     ref,
-				SaleID:        &id,
-				Notes:         reason,
-				UserID:        uid,
-				CreatedAt:     time.Now(),
-			}).Error; err != nil {
+			if err := cashSvc.CreateCashReversal(tx, m, "Anulación venta", ref, reason, userID); err != nil {
 				return err
 			}
 		}
@@ -1292,30 +1240,13 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 			return err
 		}
 		for _, bm := range bankCredits {
-			uid := userID
-			if uid == 0 {
-				uid = bm.UserID
-			}
-			desc := "Anulación venta " + sale.Number + ": " + reason
-			if err := tx.Create(&database.TenantBankMovement{
-				BankAccountID: bm.BankAccountID,
-				Type:          "debit",
-				Amount:        bm.Amount,
-				Description:   desc,
-				Reference:     ref,
-				Date:          time.Now(),
-				UserID:        uid,
-				CreatedAt:     time.Now(),
-			}).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&database.TenantBankAccount{}).
-				Where("id = ?", bm.BankAccountID).
-				Update("balance", gorm.Expr("balance - ?", bm.Amount)).Error; err != nil {
+			desc := "Reversión por anulación de venta"
+			if err := cashSvc.CreateBankReversal(tx, bm, desc, ref, userID); err != nil {
 				return err
 			}
 		}
 
+		inv := invsvc.NewInventoryService(tx)
 		for _, item := range items {
 			if item.ProductID == nil {
 				continue
@@ -1328,38 +1259,15 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 				continue
 			}
 
-			// Restaurar stock (sumar la cantidad vendida)
-			var stock database.TenantProductStock
-			tx.Where("product_id = ? AND branch_id = ?", *item.ProductID, sale.BranchID).First(&stock)
-			newQty := stock.Quantity + item.Quantity
-			if stock.ID == 0 {
-				if err := tx.Create(&database.TenantProductStock{
-					ProductID: *item.ProductID,
-					BranchID:  sale.BranchID,
-					Quantity:  newQty,
-				}).Error; err != nil {
-					return err
-				}
-			} else {
-				if err := tx.Model(&stock).Updates(map[string]interface{}{
-					"quantity":   newQty,
-					"updated_at": time.Now(),
-				}).Error; err != nil {
-					return err
-				}
-			}
-
-			// Kardex: entrada por anulación
-			if err := tx.Create(&database.TenantStockMovement{
-				ProductID: *item.ProductID,
-				BranchID:  sale.BranchID,
-				Type:      "in",
-				Quantity:  item.Quantity,
-				Balance:   newQty,
-				Reference: ref,
-				UserID:    sale.UserID,
-				CreatedAt: time.Now(),
-			}).Error; err != nil {
+			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+				ProductID:     *item.ProductID,
+				BranchID:      sale.BranchID,
+				Type:          "in",
+				Quantity:      item.Quantity,
+				Reference:     ref,
+				UserID:        sale.UserID,
+				OperationCode: "SALE",
+			}); err != nil {
 				return err
 			}
 
@@ -1411,6 +1319,7 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 	ref := "ANULACION VENTA/" + sale.Number
 	_ = userID
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		inv := invsvc.NewInventoryService(tx)
 		for _, item := range items {
 			if item.ProductID == nil {
 				continue
@@ -1422,35 +1331,15 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 			if !product.ManageStock || productIsCatalogService(&product) {
 				continue
 			}
-			var stock database.TenantProductStock
-			tx.Where("product_id = ? AND branch_id = ?", *item.ProductID, sale.BranchID).First(&stock)
-			newQty := stock.Quantity + item.Quantity
-			if stock.ID == 0 {
-				if err := tx.Create(&database.TenantProductStock{
-					ProductID: *item.ProductID,
-					BranchID:  sale.BranchID,
-					Quantity:  newQty,
-				}).Error; err != nil {
-					return err
-				}
-			} else {
-				if err := tx.Model(&stock).Updates(map[string]interface{}{
-					"quantity":   newQty,
-					"updated_at": time.Now(),
-				}).Error; err != nil {
-					return err
-				}
-			}
-			if err := tx.Create(&database.TenantStockMovement{
-				ProductID: *item.ProductID,
-				BranchID:  sale.BranchID,
-				Type:      "in",
-				Quantity:  item.Quantity,
-				Balance:   newQty,
-				Reference: ref,
-				UserID:    sale.UserID,
-				CreatedAt: time.Now(),
-			}).Error; err != nil {
+			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+				ProductID:     *item.ProductID,
+				BranchID:      sale.BranchID,
+				Type:          "in",
+				Quantity:      item.Quantity,
+				Reference:     ref,
+				UserID:        sale.UserID,
+				OperationCode: "SALE",
+			}); err != nil {
 				return err
 			}
 			if product.ManageSeries && !productIsCatalogService(&product) {
@@ -1659,6 +1548,13 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		cid := *overrideContactID
 		contactID = &cid
 	}
+	opCode := strings.TrimSpace(nota.OperationTypeCode)
+	if opCode == "" {
+		opCode = salecurrency.OpVentaInterna
+	}
+	if err := salecurrency.RequireExchangeRateForUSD(nota.Currency, nota.ExchangeRate); err != nil {
+		return nil, fmt.Errorf("nota de venta en USD: %w", err)
+	}
 	nvID := notaSaleID
 	return s.Create(CreateSaleInput{
 		BranchID:                nota.BranchID,
@@ -1670,6 +1566,8 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		IssueDate:               issueAt,
 		DueDate:                 nota.DueDate,
 		Currency:                nota.Currency,
+		OperationTypeCode:       opCode,
+		ExchangeRate:            nota.ExchangeRate,
 		PaymentMethod:           "",
 		Payments:                pays,
 		Notes:                   notes,

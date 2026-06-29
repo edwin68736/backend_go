@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
 	"tukifac/internal/restaurant/staff"
+	invsvc "tukifac/internal/inventory/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/gormutil"
@@ -1043,70 +1045,63 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		}
 	}
 
-	// Calcular totales (descuento global sobre base imponible / subtotal, luego IGV)
-	type pricedLine struct {
-		data    *saleItemData
-		baseSub float64
-		baseTax float64
+	// Calcular totales con motor unificado (solo descuento global en restaurante).
+	mapKeys := make([]string, 0, len(itemMap))
+	for k := range itemMap {
+		mapKeys = append(mapKeys, k)
 	}
-	var lines []pricedLine
-	var subtotalBase float64
-	for _, item := range itemMap {
-		iSub, iTax, _ := tax.CalcItem(item.UnitPrice, item.Quantity, 0, item.IgvAffectationType, item.PriceIncludesIgv, taxCfg)
-		iSub = money.RoundSunat(iSub)
-		lines = append(lines, pricedLine{data: item, baseSub: iSub, baseTax: money.RoundSunat(iTax)})
-		subtotalBase = money.RoundSunat(subtotalBase + iSub)
+	sort.Strings(mapKeys)
+	saleLines := make([]tax.SaleLineInput, 0, len(mapKeys))
+	lineDataOrder := make([]*saleItemData, 0, len(mapKeys))
+	for _, k := range mapKeys {
+		item := itemMap[k]
+		saleLines = append(saleLines, tax.SaleLineInput{
+			UnitPrice:          item.UnitPrice,
+			Quantity:           item.Quantity,
+			IgvAffectationType: item.IgvAffectationType,
+			PriceIncludesIgv:   item.PriceIncludesIgv,
+		})
+		lineDataOrder = append(lineDataOrder, item)
 	}
-	discountAmount := resolveBillDiscountAmount(subtotalBase, input)
+	globalMode := strings.TrimSpace(strings.ToLower(input.DiscountMode))
+	globalValue := input.DiscountValue
+	if globalValue <= 0 && input.DiscountAmount > 0 {
+		globalMode = "amount"
+		globalValue = input.DiscountAmount
+	}
+	calcResult := tax.CalcSaleCheckout(tax.SaleCheckoutInput{
+		Lines:               saleLines,
+		GlobalDiscountMode:  globalMode,
+		GlobalDiscountValue: globalValue,
+		TaxCfg:              taxCfg,
+	})
 
 	var subtotal, taxAmount, total float64
 	var saleItems []database.TenantSaleItem
-	remainingDisc := discountAmount
-	for i, ln := range lines {
-		itemDisc := 0.0
-		if discountAmount > 0 && subtotalBase > 0 {
-			if i == len(lines)-1 {
-				itemDisc = remainingDisc
-			} else {
-				itemDisc = money.RoundSunat(discountAmount * (ln.baseSub / subtotalBase))
-				remainingDisc = money.RoundSunat(remainingDisc - itemDisc)
-			}
-		}
-		item := ln.data
-		newSub := money.RoundSunat(ln.baseSub - itemDisc)
-		if newSub < 0 {
-			newSub = 0
-		}
-		var newTax, newTotal float64
-		rate := taxCfg.EffectiveRate(item.IgvAffectationType)
-		if rate == 0 || ln.baseSub <= 0 {
-			newTax = 0
-			newTotal = newSub
-		} else {
-			effRate := ln.baseTax / ln.baseSub
-			newTax = money.RoundSunat(newSub * effRate)
-			newTotal = money.RoundSunat(newSub + newTax)
-		}
-		subtotal = money.RoundSunat(subtotal + newSub)
-		taxAmount = money.RoundSunat(taxAmount + newTax)
-		total = money.RoundSunat(total + newTotal)
-		itemDisc = money.RoundSunat(itemDisc)
+	for i, item := range lineDataOrder {
+		lr := calcResult.Lines[i]
+		subtotal = money.RoundSunat(subtotal + lr.Subtotal)
+		taxAmount = money.RoundSunat(taxAmount + lr.TaxAmount)
+		total = money.RoundSunat(total + lr.Total)
 		saleItems = append(saleItems, database.TenantSaleItem{
-			ProductID:          item.ProductID,
-			Code:               item.Code,
-			Description:        item.Description,
-			Unit:               item.Unit,
-			Quantity:           item.Quantity,
-			UnitPrice:          item.UnitPrice,
-			Discount:           itemDisc,
-			TaxRate:            item.TaxRate,
-			IgvAffectationType: item.IgvAffectationType,
-			Subtotal:           newSub,
-			TaxAmount:          newTax,
-			Total:              newTotal,
-			ModifiersJSON:      item.ModifiersJSON,
+			ProductID:              item.ProductID,
+			Code:                   item.Code,
+			Description:            item.Description,
+			Unit:                   item.Unit,
+			Quantity:               item.Quantity,
+			UnitPrice:              item.UnitPrice,
+			Discount:               lr.StoredDiscount,
+			LineDiscountSubtotal:   lr.LineDiscountSubtotal,
+			GlobalDiscountSubtotal: lr.GlobalDiscountSubtotal,
+			TaxRate:                lr.TaxRate,
+			IgvAffectationType:     item.IgvAffectationType,
+			Subtotal:               lr.Subtotal,
+			TaxAmount:              lr.TaxAmount,
+			Total:                  lr.Total,
+			ModifiersJSON:          item.ModifiersJSON,
 		})
 	}
+	discountAmount := calcResult.GlobalDiscountAmount
 
 	var totalPaid float64
 	for _, p := range input.Payments {
@@ -1137,6 +1132,9 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		Subtotal:      money.RoundSunat(subtotal),
 		TaxAmount:     money.RoundSunat(taxAmount),
 		Total:         money.RoundSunat(total),
+		GlobalDiscountAmount: money.RoundSunat(discountAmount),
+		GlobalDiscountMode:   globalMode,
+		GlobalDiscountValue:  globalValue,
 		Currency:      currency,
 		PaymentMethod: input.Payments[0].Method, // método principal
 		Status:        "paid",
@@ -1177,6 +1175,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		}
 
 		// Descontar stock y registrar kardex para productos con control de stock
+		inv := invsvc.NewInventoryService(tx)
 		for _, item := range saleItems {
 			if item.ProductID == nil {
 				continue
@@ -1188,28 +1187,17 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			if !product.ManageStock {
 				continue
 			}
-			var stock database.TenantProductStock
-			tx.Where("product_id = ? AND branch_id = ?", *item.ProductID, sess.BranchID).First(&stock)
-			newQty := stock.Quantity - item.Quantity
-			if stock.ID == 0 {
-				tx.Create(&database.TenantProductStock{
-					ProductID: *item.ProductID,
-					BranchID:  sess.BranchID,
-					Quantity:  newQty,
-				})
-			} else {
-				tx.Model(&stock).Update("quantity", newQty)
+			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+				ProductID:     *item.ProductID,
+				BranchID:      sess.BranchID,
+				Type:          "out",
+				Quantity:      item.Quantity,
+				Reference:     "VENTA/" + sale.Number,
+				UserID:        input.UserID,
+				OperationCode: "SALE",
+			}); err != nil {
+				return err
 			}
-			tx.Create(&database.TenantStockMovement{
-				ProductID: *item.ProductID,
-				BranchID:  sess.BranchID,
-				Type:      "out",
-				Quantity:  item.Quantity,
-				Balance:   newQty,
-				Reference: "VENTA/" + sale.Number,
-				UserID:    input.UserID,
-				CreatedAt: now,
-			})
 		}
 
 		// Registrar pagos múltiples: distribuir a caja o cuenta bancaria según método

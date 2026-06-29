@@ -36,3 +36,16 @@ func TestTotalInPEN(t *testing.T) {
 		t.Fatal("PEN should pass through")
 	}
 }
+
+func TestRequireExchangeRateForUSD(t *testing.T) {
+	if err := RequireExchangeRateForUSD(CurrencyPEN, nil); err != nil {
+		t.Fatalf("PEN should not require TC: %v", err)
+	}
+	if err := RequireExchangeRateForUSD(CurrencyUSD, nil); err == nil {
+		t.Fatal("expected error for USD without TC")
+	}
+	rate := 3.75
+	if err := RequireExchangeRateForUSD(CurrencyUSD, &rate); err != nil {
+		t.Fatalf("expected ok with TC: %v", err)
+	}
+}

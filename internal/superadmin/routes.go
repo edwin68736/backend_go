@@ -3,6 +3,7 @@ package superadmin
 import (
 	"tukifac/internal/ajustes"
 	consultaHandler "tukifac/internal/consulta/handler"
+	exchangeRateHandler "tukifac/internal/exchangerate/handler"
 	"tukifac/internal/payments"
 	"tukifac/internal/plans"
 	"tukifac/internal/saasadmin"
@@ -86,6 +87,10 @@ func RegisterRoutes(app *fiber.App) {
 	consultaH := consultaHandler.NewConsultaHandler()
 	saAPI.Post("/consulta/dni", consultaH.ConsultaDNIAPI)
 	saAPI.Post("/consulta/ruc", consultaH.ConsultaRUCAPI)
+
+	exchangeRateH := exchangeRateHandler.NewExchangeRateHandler()
+	saAPI.Get("/exchange-rates/today", exchangeRateH.TodayAPI)
+	saAPI.Post("/exchange-rates/refresh", exchangeRateH.RefreshAPI)
 
 	// Planes, módulos del catálogo, suscripciones y pagos
 	plans.RegisterRoutes(saAPI)

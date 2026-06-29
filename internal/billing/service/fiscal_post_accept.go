@@ -140,7 +140,3 @@ func auxiliaryDocStatusFromPipeline(pipeline string) string {
 		return "pending"
 	}
 }
-
-func despatchStatusFromPipeline(pipeline string) string {
-	return auxiliaryDocStatusFromPipeline(pipeline)
-}

@@ -123,3 +123,65 @@ func TestProductCreate_ManageStockTruePersistsInDB(t *testing.T) {
 		t.Fatalf("manage_stock en BD: got false, want true")
 	}
 }
+
+func TestProductCreate_NonRestaurantClearsPreparationArea(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	p, err := svc.Create(ProductInput{
+		Code: "ERP-1", Name: "Producto ERP", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		IsRestaurant: false, PreparationArea: "cocina", Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PreparationArea != "" {
+		t.Fatalf("PreparationArea=%q want empty", p.PreparationArea)
+	}
+}
+
+func TestProductCreate_ManageStockFalseClearsMinStock(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	p, err := svc.Create(ProductInput{
+		Code: "NO-MIN", Name: "Sin min", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		ManageStock: false, MinStock: 5, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.MinStock != 0 {
+		t.Fatalf("MinStock=%v want 0", p.MinStock)
+	}
+}
+
+func TestProductUpdate_DemoteRestaurantClearsPreparationArea(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	p, err := svc.Create(ProductInput{
+		Code: "REST-1", Name: "Plato", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		IsRestaurant: true, PreparationArea: "bar", BranchID: 1, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Update(p.ID, ProductInput{
+		Code: p.Code, Name: p.Name, Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		IsRestaurant: false, PreparationArea: "bar", ManageStock: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var loaded database.TenantProduct
+	if err := db.First(&loaded, p.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PreparationArea != "" {
+		t.Fatalf("PreparationArea=%q want empty after demote", loaded.PreparationArea)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/database/tenantmigrations"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -17,12 +18,17 @@ func setupKardexTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(
-		&database.TenantProduct{},
-		&database.TenantBranch{},
-		&database.TenantProductStock{},
-		&database.TenantStockMovement{},
-	); err != nil {
+	if err := database.ApplyBaselineSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	branch := database.TenantBranch{Name: "Local", Active: true, IsMain: true}
+	if err := db.Create(&branch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := (tenantmigrations.V083InventoryIngressEgress{}).Up(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SeedInventoryDocumentSeriesForBranch(db, branch.ID); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -74,8 +80,8 @@ func TestGetKardex_RestaurantOnlyFiltersProducts(t *testing.T) {
 
 func TestRecordAdjustment_InAndOut(t *testing.T) {
 	db := setupKardexTestDB(t)
-	branch := database.TenantBranch{Name: "Local", Active: true, IsMain: true}
-	db.Create(&branch)
+	var branch database.TenantBranch
+	db.First(&branch)
 	p := database.TenantProduct{
 		Code: "ADJ-1", Name: "Plato", ManageStock: true, IsRestaurant: true,
 		BranchID: branch.ID, Active: true, Type: "product", Unit: "NIU",
@@ -105,10 +111,9 @@ func TestRecordAdjustment_InAndOut(t *testing.T) {
 		t.Fatalf("after -20: quantity=%v want 130", stock.Quantity)
 	}
 
-	var adjIn, adjOut int64
-	db.Model(&database.TenantStockMovement{}).Where("product_id = ? AND type = ?", p.ID, "adjustment_in").Count(&adjIn)
-	db.Model(&database.TenantStockMovement{}).Where("product_id = ? AND type = ? AND reference = ?", p.ID, "adjustment_out", "AJUSTE").Count(&adjOut)
-	if adjIn != 1 || adjOut != 1 {
-		t.Fatalf("kardex adjustments: in=%d out=%d", adjIn, adjOut)
+	var docMovs int64
+	db.Model(&database.TenantStockMovement{}).Where("product_id = ? AND inventory_document_id IS NOT NULL", p.ID).Count(&docMovs)
+	if docMovs != 2 {
+		t.Fatalf("document movements: %d want 2", docMovs)
 	}
 }

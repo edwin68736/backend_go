@@ -62,10 +62,10 @@ func finalizeDetractionSalePayments(
 			money.RoundDisplay(sumDirect), money.RoundDisplay(netPayable),
 		)
 	}
-	if money.RoundDisplay(sumDirect) > money.RoundDisplay(netPayable)+money.PaymentTolerance {
+	if money.RoundDisplay(sumDirect) >= money.RoundDisplay(saleTotal)-money.PaymentTolerance {
 		return nil, false, fmt.Errorf(
-			"la suma de pagos directos (S/ %.2f) supera el neto cobrable (S/ %.2f)",
-			money.RoundDisplay(sumDirect), money.RoundDisplay(netPayable),
+			"el pago directo (S/ %.2f) no puede cubrir el total de la factura (S/ %.2f); indique solo el neto cobrable",
+			money.RoundDisplay(sumDirect), money.RoundDisplay(saleTotal),
 		)
 	}
 	if detractionAmount <= 0 {
@@ -84,7 +84,11 @@ func finalizeDetractionSalePayments(
 	for _, p := range out {
 		sumAll += p.Amount
 	}
-	if money.RoundDisplay(sumAll) > money.RoundDisplay(saleTotal)+money.PaymentTolerance {
+	directOver := 0.0
+	if money.RoundDisplay(sumDirect) > money.RoundDisplay(netPayable)+money.PaymentTolerance {
+		directOver = sumDirect - netPayable
+	}
+	if money.RoundDisplay(sumAll) > money.RoundDisplay(saleTotal)+money.RoundDisplay(directOver)+money.PaymentTolerance {
 		return nil, false, fmt.Errorf(
 			"la suma de pagos (S/ %.2f) supera el total de la factura (S/ %.2f)",
 			money.RoundDisplay(sumAll), money.RoundDisplay(saleTotal),

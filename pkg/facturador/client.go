@@ -232,6 +232,8 @@ type InvoicePayload struct {
 	ValorVenta      float64            `json:"valorVenta"`
 	SubTotal        float64            `json:"subTotal"`
 	MtoImpVenta     float64            `json:"mtoImpVenta"`
+	Descuentos      []InvoiceCharge    `json:"descuentos,omitempty"`
+	SumOtrosDescuentos float64         `json:"sumOtrosDescuentos,omitempty"`
 	Details         []InvoiceDetail    `json:"details"`
 	Observacion     string             `json:"observacion,omitempty"` // Leyenda en letras sin languageLocaleID (ver SetSUNATLegendViaObservacion)
 	Legends         []InvoiceLegend    `json:"legends,omitempty"`
@@ -285,6 +287,13 @@ type InvoiceClient struct {
 	Address  InvoiceAddress `json:"address"`
 }
 
+type InvoiceCharge struct {
+	CodTipo   string  `json:"codTipo"`
+	Factor    float64 `json:"factor,omitempty"`
+	Monto     float64 `json:"monto"`
+	MontoBase float64 `json:"montoBase"`
+}
+
 type InvoiceDetail struct {
 	Unidad          string  `json:"unidad"`
 	Cantidad        float64 `json:"cantidad"`
@@ -298,6 +307,7 @@ type InvoiceDetail struct {
 	Igv             float64 `json:"igv"`
 	TotalImpuestos  float64 `json:"totalImpuestos"`
 	MtoPrecioUnitario float64 `json:"mtoPrecioUnitario"`
+	Descuentos      []InvoiceCharge `json:"descuentos,omitempty"`
 }
 
 type InvoiceLegend struct {
@@ -1021,17 +1031,33 @@ func (c *Client) GetDespatchStatus(ticket, ruc string) (*StatusResult, error) {
 
 // --- Retención (Retention) ---
 
+// RetentionPayment pago asociado a un comprobante retenido (Greenter Retention\Payment).
+type RetentionPayment struct {
+	Moneda  string  `json:"moneda"`
+	Importe float64 `json:"importe"`
+	Fecha   string  `json:"fecha"`
+}
+
+// RetentionExchange tipo de cambio en detalle CRE/CPE (Greenter Retention\Exchange).
+type RetentionExchange struct {
+	MonedaRef string  `json:"monedaRef"`
+	MonedaObj string  `json:"monedaObj"`
+	Factor    float64 `json:"factor"`
+	Fecha     string  `json:"fecha"`
+}
+
 // RetentionDetail detalle de comprobante retenido.
 type RetentionDetail struct {
-	TipoDoc        string  `json:"tipoDoc"`
-	NumDoc         string  `json:"numDoc"`
-	FechaEmision   string  `json:"fechaEmision"`
-	ImpTotal       float64 `json:"impTotal"`
-	Moneda         string  `json:"moneda"`
-	FechaRetencion string  `json:"fechaRetencion"`
-	ImpRetenido    float64 `json:"impRetenido"`
-	ImpPagar       float64 `json:"impPagar"`
-	TipoCambio     float64 `json:"tipoCambio,omitempty"`
+	TipoDoc        string             `json:"tipoDoc"`
+	NumDoc         string             `json:"numDoc"`
+	FechaEmision   string             `json:"fechaEmision"`
+	ImpTotal       float64            `json:"impTotal"`
+	Moneda         string             `json:"moneda"`
+	Pagos          []RetentionPayment `json:"pagos,omitempty"`
+	FechaRetencion string             `json:"fechaRetencion"`
+	ImpRetenido    float64            `json:"impRetenido"`
+	ImpPagar       float64            `json:"impPagar"`
+	TipoCambio     *RetentionExchange   `json:"tipoCambio,omitempty"`
 }
 
 // RetentionPayload body para POST /retention/send.
@@ -1076,18 +1102,55 @@ func (c *Client) SendRetention(payload *RetentionPayload) (*SunatResponse, error
 	return &out, nil
 }
 
+func (c *Client) postRetentionDocument(path string, payload *RetentionPayload) ([]byte, error) {
+	if payload == nil {
+		return nil, fmt.Errorf("payload: nil")
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("payload: %w", err)
+	}
+	req, err := http.NewRequest("POST", c.addToken(path), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("facturador %s respondió %d: %s", path, resp.StatusCode, string(b))
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// GetRetentionPDF obtiene PDF de CRE (POST /retention/pdf).
+func (c *Client) GetRetentionPDF(payload *RetentionPayload) ([]byte, error) {
+	return c.postRetentionDocument("/retention/pdf", payload)
+}
+
+// GetRetentionXML obtiene XML firmado de CRE (POST /retention/xml).
+func (c *Client) GetRetentionXML(payload *RetentionPayload) ([]byte, error) {
+	return c.postRetentionDocument("/retention/xml", payload)
+}
+
 // --- Percepción (Perception) ---
 
 // PerceptionDetail detalle de comprobante percibido.
 type PerceptionDetail struct {
-	TipoDoc         string  `json:"tipoDoc"`
-	NumDoc          string  `json:"numDoc"`
-	FechaEmision    string  `json:"fechaEmision"`
-	ImpTotal        float64 `json:"impTotal"`
-	Moneda          string  `json:"moneda"`
-	FechaPercepcion string  `json:"fechaPercepcion"`
-	ImpPercibido    float64 `json:"impPercibido"`
-	ImpCobrar       float64 `json:"impCobrar"`
+	TipoDoc         string             `json:"tipoDoc"`
+	NumDoc          string             `json:"numDoc"`
+	FechaEmision    string             `json:"fechaEmision"`
+	ImpTotal        float64            `json:"impTotal"`
+	Moneda          string             `json:"moneda"`
+	Cobros          []RetentionPayment `json:"cobros,omitempty"`
+	FechaPercepcion string             `json:"fechaPercepcion"`
+	ImpPercibido    float64            `json:"impPercibido"`
+	ImpCobrar       float64            `json:"impCobrar"`
+	TipoCambio      *RetentionExchange   `json:"tipoCambio,omitempty"`
 }
 
 // PerceptionPayload body para POST /perception/send.
@@ -1130,6 +1193,41 @@ func (c *Client) SendPerception(payload *PerceptionPayload) (*SunatResponse, err
 		return &out, fmt.Errorf("facturador respondió %d: %s", resp.StatusCode, string(respBody))
 	}
 	return &out, nil
+}
+
+func (c *Client) postPerceptionDocument(path string, payload *PerceptionPayload) ([]byte, error) {
+	if payload == nil {
+		return nil, fmt.Errorf("payload: nil")
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("payload: %w", err)
+	}
+	req, err := http.NewRequest("POST", c.addToken(path), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("facturador %s respondió %d: %s", path, resp.StatusCode, string(b))
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// GetPerceptionPDF obtiene PDF de CPE (POST /perception/pdf).
+func (c *Client) GetPerceptionPDF(payload *PerceptionPayload) ([]byte, error) {
+	return c.postPerceptionDocument("/perception/pdf", payload)
+}
+
+// GetPerceptionXML obtiene XML firmado de CPE (POST /perception/xml).
+func (c *Client) GetPerceptionXML(payload *PerceptionPayload) ([]byte, error) {
+	return c.postPerceptionDocument("/perception/xml", payload)
 }
 
 // --- Reversión (Reversion) - mismo esquema que Voided ---

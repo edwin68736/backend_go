@@ -9,16 +9,16 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/internal/exchangerate"
 	"tukifac/pkg/database"
 
 	ajustesvc "tukifac/internal/ajustes/service"
 )
 
 const (
-	apiPeruBase        = "https://apiperu.dev"
-	apiPeruDNI         = apiPeruBase + "/api/dni"
-	apiPeruRUC         = apiPeruBase + "/api/ruc"
-	apiPeruTipoCambio  = apiPeruBase + "/api/tipo-de-cambio"
+	apiPeruBase = "https://apiperu.dev"
+	apiPeruDNI  = apiPeruBase + "/api/dni"
+	apiPeruRUC  = apiPeruBase + "/api/ruc"
 )
 
 // ConsultaService consulta DNI/RUC vía apiperu.dev usando token_consulta de ajustes centrales.
@@ -244,92 +244,50 @@ func sunatSiNoToBool(v string) bool {
 
 // TipoCambioResult tipo de cambio SUNAT (USD/PEN) para una fecha.
 type TipoCambioResult struct {
-	Success      bool    `json:"success"`
-	Fecha        string  `json:"fecha"`
-	Moneda       string  `json:"moneda"`
-	Venta        float64 `json:"venta"`
-	Compra       float64 `json:"compra"`
-	Fuente       string  `json:"fuente"`
-	ErrorMessage string  `json:"error_message,omitempty"`
+	Success          bool    `json:"success"`
+	Fecha            string  `json:"fecha"`
+	FechaEfectiva    string  `json:"fecha_efectiva,omitempty"`
+	Moneda           string  `json:"moneda"`
+	Venta            float64 `json:"venta"`
+	Compra           float64 `json:"compra"`
+	Fuente           string  `json:"fuente"`
+	Status           string  `json:"status,omitempty"`
+	EsFallback       bool    `json:"es_fallback,omitempty"`
+	ProximoReintento *string `json:"proximo_reintento,omitempty"`
+	Mensaje          string  `json:"mensaje,omitempty"`
+	ErrorMessage     string  `json:"error_message,omitempty"`
 }
 
-type tipoCambioAPIResponse struct {
-	Success bool `json:"success"`
-	Data    struct {
-		Moneda        string  `json:"moneda"`
-		FechaBusqueda string  `json:"fecha_busqueda"`
-		Date          string  `json:"date"`
-		Venta         float64 `json:"venta"`
-		Compra        float64 `json:"compra"`
-		Sale          float64 `json:"sale"`
-		Purchase      float64 `json:"purchase"`
-	} `json:"data"`
-	Message string `json:"message"`
-}
-
-// ConsultaTipoCambio obtiene TC SUNAT venta/compra para una fecha (yyyy-mm-dd).
-func (s *ConsultaService) ConsultaTipoCambio(fecha string) (*TipoCambioResult, error) {
-	fecha = strings.TrimSpace(fecha)
-	if fecha == "" {
-		return nil, fmt.Errorf("fecha requerida (formato yyyy-mm-dd)")
-	}
-	if _, err := time.Parse("2006-01-02", fecha); err != nil {
-		return nil, fmt.Errorf("fecha inválida: use yyyy-mm-dd")
-	}
-	token, err := s.ajusteSvc.GetTokenConsulta()
-	if err != nil || token == "" {
-		return nil, fmt.Errorf("no está configurado el token de consulta en ajustes del sistema central")
-	}
-	body, _ := json.Marshal(map[string]string{"fecha": fecha})
-	req, err := http.NewRequest(http.MethodPost, apiPeruTipoCambio, bytes.NewReader(body))
+// GetTipoCambio delega al cache central (Redis + BD); no consulta apiperu directamente.
+func (s *ConsultaService) GetTipoCambio(fecha string) (*TipoCambioResult, error) {
+	res, err := exchangerate.DefaultService().GetExchangeRate(fecha)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("error al conectar con el servicio de tipo de cambio: %w", err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	var r tipoCambioAPIResponse
-	if err := json.Unmarshal(data, &r); err != nil {
-		return nil, fmt.Errorf("respuesta inválida del servicio: %w", err)
-	}
-	if !r.Success {
-		msg := strings.TrimSpace(r.Message)
-		if msg == "" {
-			msg = "tipo de cambio no disponible para la fecha indicada"
-		}
-		return &TipoCambioResult{Success: false, Fecha: fecha, ErrorMessage: msg}, nil
-	}
-	venta := r.Data.Venta
-	if venta == 0 {
-		venta = r.Data.Sale
-	}
-	compra := r.Data.Compra
-	if compra == 0 {
-		compra = r.Data.Purchase
-	}
-	outFecha := strings.TrimSpace(r.Data.FechaBusqueda)
-	if outFecha == "" {
-		outFecha = strings.TrimSpace(r.Data.Date)
-	}
-	if outFecha == "" {
-		outFecha = fecha
-	}
-	moneda := strings.TrimSpace(r.Data.Moneda)
-	if moneda == "" {
-		moneda = "USD"
+	return mapExchangeRateResult(res), nil
+}
+
+func mapExchangeRateResult(res *exchangerate.QueryResult) *TipoCambioResult {
+	if res == nil {
+		return &TipoCambioResult{Success: false, ErrorMessage: "sin respuesta"}
 	}
 	return &TipoCambioResult{
-		Success: true,
-		Fecha:   outFecha,
-		Moneda:  moneda,
-		Venta:   venta,
-		Compra:  compra,
-		Fuente:  "SUNAT",
-	}, nil
+		Success:          res.Success,
+		Fecha:            res.Fecha,
+		FechaEfectiva:    res.FechaEfectiva,
+		Moneda:           res.Moneda,
+		Venta:            res.Venta,
+		Compra:           res.Compra,
+		Fuente:           res.Fuente,
+		Status:           res.Status,
+		EsFallback:       res.EsFallback,
+		ProximoReintento: res.ProximoReintento,
+		Mensaje:          res.Mensaje,
+		ErrorMessage:     res.ErrorMessage,
+	}
+}
+
+// ConsultaTipoCambio deprecated: usar GetTipoCambio (cache central).
+func (s *ConsultaService) ConsultaTipoCambio(fecha string) (*TipoCambioResult, error) {
+	return s.GetTipoCambio(fecha)
 }

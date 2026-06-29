@@ -224,6 +224,7 @@ func MigrateCentral() error {
 		&SaasTenantDocumentPackage{},
 		&SaasElectronicDocumentUsage{},
 		&CentralAjuste{},
+		&SaasExchangeRate{},
 		&UbiRegion{},
 		&UbiProvincia{},
 		&UbiDistrito{},
@@ -665,17 +666,70 @@ type TenantProductStock struct {
 }
 
 type TenantStockMovement struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	ProductID uint      `gorm:"not null;index" json:"product_id"`
-	BranchID  uint      `gorm:"not null;index" json:"branch_id"`
-	Type      string    `gorm:"size:30;not null" json:"type"` // in, out, transfer, adjustment
-	Quantity  float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost  float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
-	Balance   float64   `gorm:"type:decimal(15,3)" json:"balance"`
-	Reference string    `gorm:"size:100" json:"reference"`
-	Notes     string    `gorm:"type:text" json:"notes"`
-	UserID    uint      `gorm:"index" json:"user_id"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	ProductID           uint      `gorm:"not null;index" json:"product_id"`
+	BranchID            uint      `gorm:"not null;index" json:"branch_id"`
+	Type                string    `gorm:"size:30;not null" json:"type"` // in, out, transfer, adjustment
+	Quantity            float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitCost            float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
+	Balance             float64   `gorm:"type:decimal(15,3)" json:"balance"`
+	Reference           string    `gorm:"size:100" json:"reference"`
+	Notes               string    `gorm:"type:text" json:"notes"`
+	OperationTypeID     *uint     `gorm:"index" json:"operation_type_id,omitempty"`
+	InventoryDocumentID *uint     `gorm:"index" json:"inventory_document_id,omitempty"`
+	UserID              uint      `gorm:"index" json:"user_id"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
+// TenantInventoryOperationType catálogo de tipos de operación (Tabla 12 SUNAT). Seed por migración; sin CRUD.
+type TenantInventoryOperationType struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Direction        string    `gorm:"size:3;not null;index" json:"direction"` // IN | OUT
+	Code             string    `gorm:"size:40;not null;uniqueIndex" json:"code"`
+	Name             string    `gorm:"size:120;not null" json:"name"`
+	SunatCode        string    `gorm:"size:2;not null" json:"sunat_code"`
+	AllowManual      bool      `gorm:"not null" json:"allow_manual"`
+	RequiresDocument bool      `gorm:"not null" json:"requires_document"`
+	SortOrder        int       `gorm:"not null;default:0" json:"sort_order"`
+	IsActive         bool      `gorm:"not null;default:true" json:"is_active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// TenantInventoryDocument ingreso/egreso manual de inventario (borrador → confirmado → anulado).
+type TenantInventoryDocument struct {
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	Number          string     `gorm:"size:30;uniqueIndex" json:"number"`
+	SeriesID        uint       `gorm:"not null;index" json:"series_id"`
+	Correlative     uint       `gorm:"not null" json:"correlative"`
+	Direction       string     `gorm:"size:3;not null;index" json:"direction"` // IN | OUT
+	OperationTypeID uint       `gorm:"not null;index" json:"operation_type_id"`
+	BranchID        uint       `gorm:"not null;index" json:"branch_id"`
+	DocumentDate    time.Time  `gorm:"not null;index" json:"document_date"`
+	Status          string     `gorm:"size:20;not null;default:'draft';index" json:"status"` // draft | confirmed | voided
+	Source          string     `gorm:"size:30;not null;default:'MANUAL';index" json:"source"` // MANUAL | ADJUSTMENT | IMPORT
+	Reference       string     `gorm:"size:100" json:"reference"`
+	MovementReason  string     `gorm:"column:movement_reason;size:255" json:"movement_reason"`
+	Notes           string     `gorm:"type:text" json:"notes"`
+	CreatedBy       uint       `gorm:"not null;index" json:"created_by"`
+	ConfirmedAt     *time.Time `json:"confirmed_at,omitempty"`
+	ConfirmedBy     *uint      `gorm:"index" json:"confirmed_by,omitempty"`
+	VoidedAt        *time.Time `json:"voided_at,omitempty"`
+	VoidedBy        *uint      `gorm:"index" json:"voided_by,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// TenantInventoryDocumentDetail línea de un documento de inventario.
+type TenantInventoryDocumentDetail struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	DocumentID uint      `gorm:"not null;index" json:"document_id"`
+	ProductID  uint      `gorm:"not null;index" json:"product_id"`
+	Quantity   float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitCost   float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
+	SerialsJSON string   `gorm:"type:text" json:"serials_json,omitempty"`
+	SortOrder  int       `gorm:"not null;default:0" json:"sort_order"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // TenantTransfer cabecera de transferencia entre sucursales. Flujo: pending → confirmada en destino; solo se puede cancelar si pending.
@@ -723,6 +777,9 @@ type TenantSale struct {
 	Subtotal       float64        `gorm:"type:decimal(15,2);not null" json:"subtotal"`
 	TaxAmount      float64        `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
 	Total          float64        `gorm:"type:decimal(15,2);not null" json:"total"`
+	GlobalDiscountAmount float64  `gorm:"type:decimal(15,2);default:0" json:"global_discount_amount"`
+	GlobalDiscountMode   string   `gorm:"size:20" json:"global_discount_mode,omitempty"`
+	GlobalDiscountValue  float64  `gorm:"type:decimal(15,2);default:0" json:"global_discount_value"`
 	Currency            string   `gorm:"size:10;default:'PEN'" json:"currency"`
 	OperationTypeCode   string   `gorm:"size:10;default:'0101'" json:"operation_type_code"`
 	ExchangeRate        *float64 `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
@@ -773,6 +830,8 @@ type TenantSaleItem struct {
 	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
 	UnitPrice          float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
 	Discount           float64 `gorm:"type:decimal(15,2);default:0" json:"discount"`
+	LineDiscountSubtotal   float64 `gorm:"type:decimal(15,2);default:0" json:"line_discount_subtotal"`
+	GlobalDiscountSubtotal float64 `gorm:"type:decimal(15,2);default:0" json:"global_discount_subtotal"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
 	Subtotal           float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
@@ -1040,6 +1099,7 @@ type TenantDespatch struct {
 type TenantRetention struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	SaleID         *uint     `gorm:"index" json:"sale_id,omitempty"`
+	PurchaseID     *uint     `gorm:"index" json:"purchase_id,omitempty"`
 	Series         string    `gorm:"size:20;not null" json:"series"`
 	Correlative    string    `gorm:"size:20;not null" json:"correlative"`
 	FechaEmision   time.Time `gorm:"not null;index" json:"fecha_emision"`
@@ -1063,6 +1123,7 @@ type TenantRetention struct {
 type TenantPerception struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	SaleID         *uint     `gorm:"index" json:"sale_id,omitempty"`
+	SourceSaleID   *uint     `gorm:"index" json:"source_sale_id,omitempty"`
 	Series         string    `gorm:"size:20;not null" json:"series"`
 	Correlative    string    `gorm:"size:20;not null" json:"correlative"`
 	FechaEmision   time.Time `gorm:"not null;index" json:"fecha_emision"`
@@ -1168,6 +1229,7 @@ type TenantCashMovement struct {
 	Reference     string    `gorm:"size:100" json:"reference"`
 	SaleID        *uint     `gorm:"index" json:"sale_id"`
 	PurchaseID    *uint     `gorm:"index" json:"purchase_id"`
+	ReversalOfID  *uint     `gorm:"index" json:"reversal_of_id,omitempty"`
 	Notes         string    `gorm:"type:text" json:"notes"`
 	UserID        uint      `gorm:"not null" json:"user_id"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -1201,7 +1263,7 @@ type TenantPaymentCondition struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// TenantTaxPaymentType concepto tributario en pagos (SPOT detracción, retenciones futuras).
+// TenantTaxPaymentType concepto tributario en pagos (p. ej. SPOT detracción). CRE/CPE no usan este catálogo.
 type TenantTaxPaymentType struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
 	Code      string         `gorm:"size:50;not null;uniqueIndex" json:"code"`
@@ -1236,6 +1298,7 @@ type TenantBankMovement struct {
 	Reference     string    `gorm:"size:100" json:"reference"`
 	Date          time.Time `gorm:"not null" json:"date"`
 	UserID        uint      `gorm:"not null" json:"user_id"`
+	ReversalOfID  *uint     `gorm:"index" json:"reversal_of_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 

@@ -464,7 +464,7 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 	if p.Type == "" {
 		p.Type = "product"
 	}
-	normalizeProductServiceFields(p)
+	normalizeProductCatalogFields(p)
 	p.Unit = sunat.NormalizeUnit(p.Unit, p.Type)
 	if strings.EqualFold(strings.TrimSpace(p.Type), "product") && strings.EqualFold(strings.TrimSpace(p.Unit), "ZZ") {
 		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
@@ -510,6 +510,20 @@ func normalizeProductServiceFields(p *database.TenantProduct) {
 	p.PreparationArea = ""
 }
 
+// normalizeProductCatalogFields centraliza reglas de catálogo (restaurante, stock).
+// preparation_area vacío en restaurante: comandas usan "cocina" por defecto (resolveProductPreparationArea).
+func normalizeProductCatalogFields(p *database.TenantProduct) {
+	normalizeProductServiceFields(p)
+	if !p.IsRestaurant {
+		p.PreparationArea = ""
+	} else {
+		p.PreparationArea = strings.TrimSpace(strings.ToLower(p.PreparationArea))
+	}
+	if !p.ManageStock {
+		p.MinStock = 0
+	}
+}
+
 func (s *ProductService) Update(id uint, input ProductInput) error {
 	var existing database.TenantProduct
 	if err := s.db.First(&existing, id).Error; err != nil {
@@ -543,37 +557,42 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		return errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
 
+	draft := &database.TenantProduct{
+		Type:            effType,
+		Unit:            unit,
+		IsRestaurant:    input.IsRestaurant,
+		ManageStock:     input.ManageStock,
+		PreparationArea: input.PreparationArea,
+		MinStock:        input.MinStock,
+		ManageSeries:    input.ManageSeries,
+		HasVariants:     input.HasVariants,
+		HasModifiers:    input.HasModifiers,
+	}
+	normalizeProductCatalogFields(draft)
+	if strings.EqualFold(draft.Type, "service") {
+		unit = draft.Unit
+	}
+
 	upd := map[string]interface{}{
 		"category_id":          input.CategoryID,
 		"code":                 input.Code,
 		"name":                 input.Name,
 		"description":          input.Description,
-		"type":                 effType,
+		"type":                 draft.Type,
 		"unit":                 unit,
 		"sale_price":           input.SalePrice,
 		"purchase_price":       input.PurchasePrice,
 		"tax_rate":             taxRate,
 		"igv_affectation_type": igvType,
 		"price_includes_igv":   input.PriceIncludesIgv,
-		"manage_stock":         input.ManageStock,
-		"manage_series":        input.ManageSeries,
-		"has_variants":         input.HasVariants,
-		"has_modifiers":        input.HasModifiers,
-		"is_restaurant":        input.IsRestaurant,
-		"preparation_area":     input.PreparationArea,
-		"min_stock":            input.MinStock,
+		"manage_stock":         draft.ManageStock,
+		"manage_series":        draft.ManageSeries,
+		"has_variants":         draft.HasVariants,
+		"has_modifiers":        draft.HasModifiers,
+		"is_restaurant":        draft.IsRestaurant,
+		"preparation_area":     draft.PreparationArea,
+		"min_stock":            draft.MinStock,
 		"image_url":            input.ImageURL,
-	}
-	if strings.EqualFold(effType, "service") {
-		upd["type"] = "service"
-		upd["unit"] = "ZZ"
-		upd["manage_stock"] = false
-		upd["manage_series"] = false
-		upd["has_variants"] = false
-		upd["has_modifiers"] = false
-		upd["is_restaurant"] = false
-		upd["min_stock"] = 0
-		upd["preparation_area"] = ""
 	}
 	if input.ActiveSet {
 		upd["active"] = input.Active

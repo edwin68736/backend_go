@@ -16,6 +16,44 @@ func isGuiaSaleDocType(docType string) bool {
 	return dt == "GUIA_REMISION" || dt == "GUIA_TRANSPORTISTA"
 }
 
+func isRetentionSaleDocType(docType string) bool {
+	return strings.ToUpper(strings.TrimSpace(docType)) == "RETENCION"
+}
+
+func isPerceptionSaleDocType(docType string) bool {
+	return strings.ToUpper(strings.TrimSpace(docType)) == "PERCEPCION"
+}
+
+func (s *BillingService) getRetentionPayloadForSale(saleID uint) (*facturador.RetentionPayload, error) {
+	var rec database.TenantRetention
+	if err := s.db.Where("sale_id = ?", saleID).First(&rec).Error; err != nil {
+		return nil, fmt.Errorf("retención no encontrada: %w", err)
+	}
+	if strings.TrimSpace(rec.PayloadJSON) == "" {
+		return nil, errors.New("payload de retención vacío")
+	}
+	var payload facturador.RetentionPayload
+	if err := json.Unmarshal([]byte(rec.PayloadJSON), &payload); err != nil {
+		return nil, fmt.Errorf("payload retención inválido: %w", err)
+	}
+	return &payload, nil
+}
+
+func (s *BillingService) getPerceptionPayloadForSale(saleID uint) (*facturador.PerceptionPayload, error) {
+	var rec database.TenantPerception
+	if err := s.db.Where("sale_id = ?", saleID).First(&rec).Error; err != nil {
+		return nil, fmt.Errorf("percepción no encontrada: %w", err)
+	}
+	if strings.TrimSpace(rec.PayloadJSON) == "" {
+		return nil, errors.New("payload de percepción vacío")
+	}
+	var payload facturador.PerceptionPayload
+	if err := json.Unmarshal([]byte(rec.PayloadJSON), &payload); err != nil {
+		return nil, fmt.Errorf("payload percepción inválido: %w", err)
+	}
+	return &payload, nil
+}
+
 func (s *BillingService) getDespatchPayloadForSale(saleID uint) (*facturador.DespatchPayload, error) {
 	var despatch database.TenantDespatch
 	if err := s.db.Where("sale_id = ?", saleID).First(&despatch).Error; err != nil {

@@ -59,20 +59,50 @@ func extractDigits(s string) string {
 	return b.String()
 }
 
-// FindRestaurantProductByBarcode busca un plato activo por código exacto (y variantes EAN/UPC).
-func (s *ProductService) FindRestaurantProductByBarcode(code string, branchID uint) (*database.TenantProduct, error) {
-	for _, cand := range BarcodeCandidates(code) {
+func (s *ProductService) findActiveProductByCodeCandidate(cand string, branchID uint) (*database.TenantProduct, error) {
+	if branchID > 0 {
 		p, err := s.GetByCodeInBranch(cand, branchID)
 		if err != nil {
 			return nil, err
 		}
-		if p == nil || !p.IsRestaurant || !p.Active {
-			continue
+		if p != nil && p.Active {
+			if err := s.EnsureRestaurantBranchAccess(p, branchID); err == nil {
+				return p, nil
+			}
 		}
-		if err := s.EnsureRestaurantBranchAccess(p, branchID); err != nil {
-			continue
+	}
+	p, err := s.GetByCode(cand)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil || !p.Active {
+		return nil, nil
+	}
+	if err := s.EnsureRestaurantBranchAccess(p, branchID); err != nil {
+		return nil, nil
+	}
+	return p, nil
+}
+
+// FindProductByBarcode busca un producto activo por código exacto (y variantes EAN/UPC).
+func (s *ProductService) FindProductByBarcode(code string, branchID uint) (*database.TenantProduct, error) {
+	for _, cand := range BarcodeCandidates(code) {
+		p, err := s.findActiveProductByCodeCandidate(cand, branchID)
+		if err != nil {
+			return nil, err
 		}
-		return p, nil
+		if p != nil {
+			return p, nil
+		}
 	}
 	return nil, nil
+}
+
+// FindRestaurantProductByBarcode busca un plato activo por código exacto (y variantes EAN/UPC).
+func (s *ProductService) FindRestaurantProductByBarcode(code string, branchID uint) (*database.TenantProduct, error) {
+	p, err := s.FindProductByBarcode(code, branchID)
+	if err != nil || p == nil || !p.IsRestaurant {
+		return nil, err
+	}
+	return p, nil
 }

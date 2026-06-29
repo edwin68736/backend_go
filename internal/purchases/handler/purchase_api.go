@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	billingsvc "tukifac/internal/billing/service"
 	"tukifac/internal/purchases/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
@@ -52,23 +53,34 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 	}
 
 	type PurchaseItem struct {
-		ID           uint    `json:"id"`
-		DocType      string  `json:"doc_type"`
-		Series       string  `json:"series"`
-		Number       string  `json:"number"`
-		IssueDate    string  `json:"issue_date"`
-		SupplierName string  `json:"supplier_name"`
-		Currency     string  `json:"currency"`
-		Subtotal     float64 `json:"subtotal"`
-		TaxAmount    float64 `json:"tax_amount"`
-		Total        float64 `json:"total"`
-		Status       string  `json:"status"`
+		ID               uint                              `json:"id"`
+		DocType          string                            `json:"doc_type"`
+		Series           string                            `json:"series"`
+		Number           string                            `json:"number"`
+		IssueDate        string                            `json:"issue_date"`
+		SupplierName     string                            `json:"supplier_name"`
+		Currency         string                            `json:"currency"`
+		Subtotal         float64                           `json:"subtotal"`
+		TaxAmount        float64                           `json:"tax_amount"`
+		Total            float64                           `json:"total"`
+		Status           string                            `json:"status"`
+		LinkedRetention  *billingsvc.LinkedFiscalDocSummary `json:"linked_retention,omitempty"`
 	}
+	purchaseIDs := make([]uint, 0, len(purchases))
+	for _, p := range purchases {
+		purchaseIDs = append(purchaseIDs, p.ID)
+	}
+	linkedByPurchase := billingsvc.NewBillingService(tdb).BatchLinkedRetentionsByPurchaseIDs(purchaseIDs)
 	out := make([]PurchaseItem, 0, len(purchases))
 	for _, p := range purchases {
 		sname := ""
 		if p.ContactID != nil {
 			sname = contactMap[*p.ContactID]
+		}
+		var linked *billingsvc.LinkedFiscalDocSummary
+		if s, ok := linkedByPurchase[p.ID]; ok {
+			summary := s
+			linked = &summary
 		}
 		out = append(out, PurchaseItem{
 			ID:           p.ID,
@@ -80,8 +92,9 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 			Currency:     p.Currency,
 			Subtotal:     p.Subtotal,
 			TaxAmount:    p.TaxAmount,
-			Total:        p.Total,
-			Status:       p.Status,
+			Total:            p.Total,
+			Status:           p.Status,
+			LinkedRetention:  linked,
 		})
 	}
 	return c.JSON(fiber.Map{"data": out, "total": total})
@@ -151,6 +164,7 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"data": fiber.Map{
 			"id":            p.ID,
+			"branch_id":     p.BranchID,
 			"doc_type":      p.DocType,
 			"series":        p.Series,
 			"number":        p.Number,
@@ -164,6 +178,12 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 			"status":        p.Status,
 			"notes":         p.Notes,
 			"items":         itemsWithSerials,
+			"linked_retention": func() any {
+				if linked, _ := billingsvc.NewBillingService(tdb).GetLinkedRetentionByPurchaseID(p.ID); linked != nil {
+					return linked
+				}
+				return nil
+			}(),
 		},
 	})
 }

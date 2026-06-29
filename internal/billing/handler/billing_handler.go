@@ -449,9 +449,38 @@ func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
 
 // --- Retención ---
 
+func parseFiscalAuxListParams(c fiber.Ctx) service.FiscalAuxListParams {
+	purchaseID, _ := strconv.ParseUint(c.Query("purchase_id"), 10, 32)
+	sourceSaleID, _ := strconv.ParseUint(c.Query("source_sale_id"), 10, 32)
+	var from, to *time.Time
+	if f := strings.TrimSpace(c.Query("from")); f != "" {
+		if t, err := time.ParseInLocation("2006-01-02", f, time.Local); err == nil {
+			start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+			from = &start
+		}
+	}
+	if t := strings.TrimSpace(c.Query("to")); t != "" {
+		if ts, err := time.ParseInLocation("2006-01-02", t, time.Local); err == nil {
+			end := time.Date(ts.Year(), ts.Month(), ts.Day(), 23, 59, 59, 999999999, time.Local)
+			to = &end
+		}
+	}
+	return service.FiscalAuxListParams{
+		Q:             c.Query("q"),
+		Status:        c.Query("status"),
+		BillingStatus: c.Query("billing_status"),
+		Serie:         c.Query("serie"),
+		Correlativo:   c.Query("correlativo"),
+		PurchaseID:    uint(purchaseID),
+		SourceSaleID:  uint(sourceSaleID),
+		From:          from,
+		To:            to,
+	}
+}
+
 func (h *BillingHandler) ListRetentionsAPI(c fiber.Ctx) error {
 	svc := billingSvc(c)
-	list, err := svc.ListRetentions()
+	list, err := svc.ListRetentionsFiltered(parseFiscalAuxListParams(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -488,7 +517,7 @@ func (h *BillingHandler) GetRetentionStatusAPI(c fiber.Ctx) error {
 
 func (h *BillingHandler) ListPerceptionsAPI(c fiber.Ctx) error {
 	svc := billingSvc(c)
-	list, err := svc.ListPerceptions()
+	list, err := svc.ListPerceptionsFiltered(parseFiscalAuxListParams(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -525,7 +554,7 @@ func (h *BillingHandler) GetPerceptionStatusAPI(c fiber.Ctx) error {
 
 func (h *BillingHandler) ListReversionsAPI(c fiber.Ctx) error {
 	svc := billingSvc(c)
-	list, err := svc.ListReversions()
+	list, err := svc.ListReversionsFiltered(parseFiscalAuxListParams(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

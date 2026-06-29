@@ -21,6 +21,7 @@ import (
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/saas/docusage"
+	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
@@ -248,66 +249,33 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 	if err != nil {
 		return nil, err
 	}
-	details := make([]facturador.InvoiceDetail, len(items))
-	for i, item := range items {
+	details, err := BuildInvoiceDetailsFromSaleItems(items, companyTaxRate, normUnit)
+	if err != nil {
+		return nil, err
+	}
+	docDescuentos, sumOtrosDescuentos := BuildGlobalInvoiceDiscounts(&sale, items)
+	// Totales por tipo de operación desde bases finales persistidas (post descuentos).
+	var mtoOperGravadas, mtoOperExoneradas, mtoOperInafectas, mtoIGV float64
+	for _, item := range items {
 		aff := strings.TrimSpace(item.IgvAffectationType)
 		if aff == "" {
-			return nil, fmt.Errorf("el ítem «%s» no tiene tipo de afectación IGV; configúrelo en el producto (Catálogo SUNAT 07: 10 Gravado, 20 Exonerado, 30 Inafecto)", strings.TrimSpace(item.Description))
+			aff = "10"
 		}
 		if aff == "10" && item.TaxRate <= 0 {
 			return nil, fmt.Errorf("el ítem «%s» es gravado pero tiene porcentaje IGV en 0; configúrelo en el producto", strings.TrimSpace(item.Description))
 		}
-		mtoValorVenta := round2(item.Subtotal)
-		igv := round2(item.TaxAmount)
-		cantidad := item.Quantity
-		if cantidad <= 0 {
-			return nil, fmt.Errorf("el ítem «%s» tiene cantidad inválida", strings.TrimSpace(item.Description))
-		}
-		mtoValorUnitario := round2(mtoValorVenta / cantidad)
-		// MtoPrecioUnitario debe cumplir (MtoPrecioUnitario * Cantidad) = (MtoValorVenta + Igv) para que el facturador no discrepe en TaxInclusiveAmount
-		mtoPrecioUnitario := round2((mtoValorVenta + igv) / cantidad)
-		codProd := strings.TrimSpace(item.Code)
-		if codProd == "" {
-			return nil, fmt.Errorf("el ítem «%s» no tiene código de producto", strings.TrimSpace(item.Description))
-		}
-		desc := strings.TrimSpace(item.Description)
-		if desc == "" {
-			return nil, fmt.Errorf("ítem en posición %d sin descripción", i+1)
-		}
-		porcentajeIgv := round2(item.TaxRate)
-		if aff != "10" {
-			porcentajeIgv = round2(companyTaxRate)
-		}
-		details[i] = facturador.InvoiceDetail{
-			Unidad:            normUnit(item.Unit),
-			Cantidad:          cantidad,
-			CodProducto:       codProd,
-			Descripcion:       desc,
-			MtoValorUnitario:  mtoValorUnitario,
-			MtoValorVenta:     mtoValorVenta,
-			TipAfeIgv:         aff,
-			MtoBaseIgv:        mtoValorVenta, // Por línea: gravado = base; exonerado/inafecto = valor de la línea para que Lycet genere cac:TaxTotal con tributo (evita 3105)
-			PorcentajeIgv:     porcentajeIgv,
-			Igv:               igv,
-			TotalImpuestos:    igv,
-			MtoPrecioUnitario: mtoPrecioUnitario,
-		}
-	}
-	// Totales por tipo de operación (SUNAT exige tag del total del tributo si hay líneas con ese tipo — error 2638)
-	var mtoOperGravadas, mtoOperExoneradas, mtoOperInafectas, mtoIGV float64
-	for _, d := range details {
-		switch d.TipAfeIgv {
+		sub := round2(item.Subtotal)
+		switch aff {
 		case "10":
-			mtoOperGravadas += d.MtoValorVenta
-			mtoIGV += d.Igv
+			mtoOperGravadas += sub
+			mtoIGV += round2(item.TaxAmount)
 		case "20":
-			mtoOperExoneradas += d.MtoValorVenta
+			mtoOperExoneradas += sub
 		case "30":
-			mtoOperInafectas += d.MtoValorVenta
+			mtoOperInafectas += sub
 		default:
-			// Otros códigos (ej. 40 exportación) se pueden sumar a gravadas o manejar según catálogo 07
-			mtoOperGravadas += d.MtoValorVenta
-			mtoIGV += d.Igv
+			mtoOperGravadas += sub
+			mtoIGV += round2(item.TaxAmount)
 		}
 	}
 	mtoOperGravadas = round2(mtoOperGravadas)
@@ -368,6 +336,8 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		ValorVenta:        valorVenta,
 		SubTotal:          mtoImpVenta,
 		MtoImpVenta:       mtoImpVenta,
+		Descuentos:        docDescuentos,
+		SumOtrosDescuentos: sumOtrosDescuentos,
 		Details:           details,
 		Legends:           legends,
 	}
@@ -855,6 +825,32 @@ func (s *BillingService) GetInvoicePDFContent(saleID uint) ([]byte, error) {
 			return pdfBytes, nil
 		}
 	}
+	if isRetentionSaleDocType(sale.DocType) && s.facturadorConfigured() {
+		payload, err := s.getRetentionPayloadForSale(saleID)
+		if err != nil {
+			return nil, err
+		}
+		pdfBytes, err := facturador.Shared().GetRetentionPDF(payload)
+		if err != nil {
+			return nil, err
+		}
+		if len(pdfBytes) > 0 {
+			return pdfBytes, nil
+		}
+	}
+	if isPerceptionSaleDocType(sale.DocType) && s.facturadorConfigured() {
+		payload, err := s.getPerceptionPayloadForSale(saleID)
+		if err != nil {
+			return nil, err
+		}
+		pdfBytes, err := facturador.Shared().GetPerceptionPDF(payload)
+		if err != nil {
+			return nil, err
+		}
+		if len(pdfBytes) > 0 {
+			return pdfBytes, nil
+		}
+	}
 	// Obtener PDF del endpoint del facturador (no generar en este backend).
 	if s.facturadorConfigured() && invoice.PayloadJSON != "" {
 		var payload facturador.InvoicePayload
@@ -915,6 +911,20 @@ func (s *BillingService) GetInvoiceXMLGeneratedContent(saleID uint) ([]byte, err
 			return nil, err
 		}
 		return facturador.Shared().GetDespatchXML(payload)
+	}
+	if s.db.Select("doc_type").First(&sale, saleID).Error == nil && isRetentionSaleDocType(sale.DocType) && s.facturadorConfigured() {
+		payload, err := s.getRetentionPayloadForSale(saleID)
+		if err != nil {
+			return nil, err
+		}
+		return facturador.Shared().GetRetentionXML(payload)
+	}
+	if s.db.Select("doc_type").First(&sale, saleID).Error == nil && isPerceptionSaleDocType(sale.DocType) && s.facturadorConfigured() {
+		payload, err := s.getPerceptionPayloadForSale(saleID)
+		if err != nil {
+			return nil, err
+		}
+		return facturador.Shared().GetPerceptionXML(payload)
 	}
 	if !s.facturadorConfigured() || invoice.PayloadJSON == "" {
 		return nil, nil
@@ -1711,22 +1721,62 @@ func (s *BillingService) GetDespatchStatus(id uint) (*database.TenantDespatch, e
 
 // --- Retención ---
 
-func (s *BillingService) ListRetentions() ([]database.TenantRetention, error) {
-	var list []database.TenantRetention
-	err := s.db.Order("fecha_emision DESC, created_at DESC").Find(&list).Error
-	return list, err
+func (s *BillingService) ListRetentions() ([]RetentionListItem, error) {
+	return s.ListRetentionsFiltered(FiscalAuxListParams{})
+}
+
+// RetentionListItem fila CRE con estado fiscal de la venta vinculada.
+type RetentionListItem struct {
+	database.TenantRetention
+	BillingStatus       string                  `json:"billing_status,omitempty"`
+	LinkedReversion     *LinkedReversionSummary `json:"linked_reversion,omitempty"`
+	OriginPurchaseLabel string                  `json:"origin_purchase_label,omitempty"`
+}
+
+func enrichRetentionListItems(db *gorm.DB, list []database.TenantRetention) []RetentionListItem {
+	out := make([]RetentionListItem, len(list))
+	saleIDs := make([]uint, 0, len(list))
+	for _, r := range list {
+		if r.SaleID != nil && *r.SaleID > 0 {
+			saleIDs = append(saleIDs, *r.SaleID)
+		}
+	}
+	saleByID := map[uint]database.TenantSale{}
+	if len(saleIDs) > 0 {
+		var sales []database.TenantSale
+		_ = db.Select("id, billing_status").Where("id IN ?", saleIDs).Find(&sales).Error
+		for _, sale := range sales {
+			saleByID[sale.ID] = sale
+		}
+	}
+	for i, r := range list {
+		item := RetentionListItem{TenantRetention: r}
+		if r.SaleID != nil {
+			if sale, ok := saleByID[*r.SaleID]; ok {
+				item.BillingStatus = sale.BillingStatus
+			}
+		}
+		out[i] = item
+	}
+	return out
 }
 
 type CreateRetentionInput struct {
-	Series       string                  `json:"series"`
-	Correlativo  string                  `json:"correlativo"`
-	FechaEmision string                  `json:"fecha_emision"`
-	Proveedor    RetentionProveedorInput `json:"proveedor"`
-	Regimen      string                  `json:"regimen"`
-	Tasa         float64                 `json:"tasa"`
-	ImpRetenido  float64                 `json:"imp_retenido"`
-	ImpPagado    float64                 `json:"imp_pagado"`
-	Details      []RetentionDetailInput  `json:"details"`
+	BranchID         uint                    `json:"branch_id"`
+	SeriesID         uint                    `json:"series_id"`
+	ContactID        uint                    `json:"contact_id"`
+	SourcePurchaseID *uint                   `json:"source_purchase_id,omitempty"`
+	FechaEmision     string                  `json:"fecha_emision"`
+	Observacion      string                  `json:"observacion,omitempty"`
+	Proveedor        RetentionProveedorInput `json:"proveedor"`
+	Regimen          string                  `json:"regimen"`
+	Tasa             float64                 `json:"tasa"`
+	ImpRetenido      float64                 `json:"imp_retenido"`
+	ImpPagado        float64                 `json:"imp_pagado"`
+	Details          []RetentionDetailInput  `json:"details"`
+	// Legacy: solo si series_id=0 (evitar en UI nueva).
+	Series      string `json:"series,omitempty"`
+	Correlativo string `json:"correlativo,omitempty"`
 }
 
 type RetentionProveedorInput struct {
@@ -1738,19 +1788,46 @@ type RetentionProveedorInput struct {
 }
 
 type RetentionDetailInput struct {
-	TipoDoc        string  `json:"tipo_doc"`
-	NumDoc         string  `json:"num_doc"`
-	FechaEmision   string  `json:"fecha_emision"`
-	ImpTotal       float64 `json:"imp_total"`
-	Moneda         string  `json:"moneda"`
-	FechaRetencion string  `json:"fecha_retencion"`
-	ImpRetenido    float64 `json:"imp_retenido"`
-	ImpPagar       float64 `json:"imp_pagar"`
+	TipoDoc        string                    `json:"tipo_doc"`
+	NumDoc         string                    `json:"num_doc"`
+	FechaEmision   string                    `json:"fecha_emision"`
+	ImpTotal       float64                   `json:"imp_total"`
+	Moneda         string                    `json:"moneda"`
+	Pagos          []retentionPaymentInput   `json:"pagos"`
+	FechaRetencion string                    `json:"fecha_retencion"`
+	ImpRetenido    float64                   `json:"imp_retenido"`
+	ImpPagar       float64                   `json:"imp_pagar"`
+	TipoCambio     *retentionExchangeInput   `json:"tipo_cambio,omitempty"`
 }
 
 func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*database.TenantRetention, error) {
 	if !s.facturadorConfigured() {
 		return nil, errors.New("retención requiere facturador configurado")
+	}
+	if input.SourcePurchaseID != nil && *input.SourcePurchaseID > 0 {
+		if err := s.applyRetentionPrefillFromPurchase(&input, *input.SourcePurchaseID); err != nil {
+			return nil, err
+		}
+	}
+	var cfg database.TenantCompanyConfig
+	if err := s.db.First(&cfg).Error; err != nil || !cfg.SunatEnabled {
+		return nil, errors.New("la conexión con SUNAT no está activada")
+	}
+	if err := validateRegimenTasa(input.Regimen, input.Tasa, retentionRegimenTasa, "retención"); err != nil {
+		return nil, err
+	}
+	party := fiscalPartyInput{
+		TipoDoc:   input.Proveedor.TipoDoc,
+		NumDoc:    input.Proveedor.NumDoc,
+		RznSocial: input.Proveedor.RznSocial,
+		Address:   input.Proveedor.Address,
+		Ubigeo:    input.Proveedor.Ubigeo,
+	}
+	if err := s.loadFiscalPartyFromContact(input.ContactID, &party); err != nil {
+		return nil, err
+	}
+	if err := validateFiscalParty(party, "proveedor"); err != nil {
+		return nil, err
 	}
 	companyCfg, companyAddr, err := s.getCompanyConfigAndAddress()
 	if err != nil {
@@ -1760,106 +1837,190 @@ func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*da
 	if nombreComercial == "" {
 		nombreComercial = companyCfg.BusinessName
 	}
-	provAddr, errProv := s.buildInvoiceAddressFromUbigeo(input.Proveedor.Ubigeo, input.Proveedor.Address)
+	provAddr, errProv := s.buildInvoiceAddressFromUbigeo(party.Ubigeo, party.Address)
 	if errProv != nil {
 		return nil, fmt.Errorf("proveedor: %w", errProv)
 	}
-	details := make([]facturador.RetentionDetail, len(input.Details))
+	fechaEmision := strings.TrimSpace(input.FechaEmision)
+	if fechaEmision == "" {
+		fechaEmision = facturador.FormatFiscalDateTime(time.Now())
+	}
+	detailIn := make([]retentionDetailBuildInput, len(input.Details))
 	for i, d := range input.Details {
-		details[i] = facturador.RetentionDetail{
+		detailIn[i] = retentionDetailBuildInput{
 			TipoDoc: d.TipoDoc, NumDoc: d.NumDoc, FechaEmision: d.FechaEmision,
-			ImpTotal: d.ImpTotal, Moneda: d.Moneda, FechaRetencion: d.FechaRetencion,
-			ImpRetenido: d.ImpRetenido, ImpPagar: d.ImpPagar,
-		}
-		if details[i].Moneda == "" {
-			details[i].Moneda = "PEN"
+			ImpTotal: d.ImpTotal, Moneda: d.Moneda, Pagos: d.Pagos,
+			FechaRetencion: d.FechaRetencion, ImpRetenido: d.ImpRetenido, ImpPagar: d.ImpPagar,
+			TipoCambio: d.TipoCambio,
 		}
 	}
-	payload := &facturador.RetentionPayload{
-		Serie:        input.Series,
-		Correlativo:  input.Correlativo,
-		FechaEmision: input.FechaEmision,
-		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
-		Proveedor:    facturador.InvoiceClient{TipoDoc: input.Proveedor.TipoDoc, NumDoc: input.Proveedor.NumDoc, RznSocial: input.Proveedor.RznSocial, Address: provAddr},
-		Regimen:      input.Regimen,
-		Tasa:         input.Tasa,
-		ImpRetenido:  input.ImpRetenido,
-		ImpPagado:    input.ImpPagado,
-		Details:      details,
+	details, err := s.buildRetentionDetails(detailIn, fechaEmision)
+	if err != nil {
+		return nil, err
 	}
-	payloadJSON, _ := json.Marshal(payload)
-	corrNum := parseCorrelativeUint(input.Correlativo)
-	issueDate := time.Now()
-	if t, err := time.Parse(time.RFC3339, input.FechaEmision); err == nil {
-		issueDate = t
-	}
-	var seriesRec database.TenantDocumentSeries
-	_ = s.db.Where("series = ?", input.Series).First(&seriesRec).Error
-
-	retSale := database.TenantSale{
-		SeriesID:      seriesRec.ID,
-		DocType:       "RETENCION",
-		Series:        input.Series,
-		Correlative:   corrNum,
-		Number:        fmt.Sprintf("%s-%s", input.Series, input.Correlativo),
-		IssueDate:     issueDate,
-		Total:         input.ImpPagado,
-		Currency:      "PEN",
-		Status:        "paid",
-		BillingStatus: "pending",
-	}
-	if err := s.db.Create(&retSale).Error; err != nil {
-		return nil, fmt.Errorf("crear venta retención: %w", err)
-	}
-	if err := s.reserveGenericDocument("retention", retSale.ID, input.Series+"-"+input.Correlativo); err != nil {
+	if err := validateRetentionTotals(details, input.ImpRetenido, input.ImpPagado); err != nil {
 		return nil, err
 	}
 
-	saleID := retSale.ID
-	rec := &database.TenantRetention{
-		SaleID:         &saleID,
-		Series:         input.Series,
-		Correlative:    input.Correlativo,
-		ProveedorRUC:   input.Proveedor.NumDoc,
-		ProveedorRazon: input.Proveedor.RznSocial,
-		Regimen:        input.Regimen,
-		Tasa:           input.Tasa,
-		ImpRetenido:    input.ImpRetenido,
-		ImpPagado:      input.ImpPagado,
-		PayloadJSON:    string(payloadJSON),
-		DetailsCount:   len(details),
-		Status:         "pending",
-		FechaEmision:   issueDate,
+	payload := &facturador.RetentionPayload{
+		FechaEmision: fechaEmision,
+		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
+		Proveedor:    facturador.InvoiceClient{TipoDoc: party.TipoDoc, NumDoc: party.NumDoc, RznSocial: party.RznSocial, Address: provAddr},
+		Regimen:      strings.TrimSpace(input.Regimen),
+		Tasa:         input.Tasa,
+		ImpRetenido:  roundMoney(input.ImpRetenido),
+		ImpPagado:    roundMoney(input.ImpPagado),
+		Observacion:  strings.TrimSpace(input.Observacion),
+		Details:      details,
 	}
-	if err := s.db.Create(rec).Error; err != nil {
+	issueDate := time.Now()
+	if t, err := time.Parse(time.RFC3339, fechaEmision); err == nil {
+		issueDate = t
+	}
+
+	var rec database.TenantRetention
+	var retSale database.TenantSale
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var seriesRec database.TenantDocumentSeries
+		var correlativoStr string
+		var corrNum uint
+		if input.SeriesID > 0 {
+			var next uint
+			seriesRec, next, correlativoStr, err = s.reserveRetentionPerceptionSeriesTx(tx, input.BranchID, input.SeriesID, validateRetentionSeries)
+			if err != nil {
+				return err
+			}
+			corrNum = next
+		} else {
+			if strings.TrimSpace(input.Series) == "" || strings.TrimSpace(input.Correlativo) == "" {
+				return errors.New("seleccione una serie documental")
+			}
+			seriesRec.Series = strings.TrimSpace(input.Series)
+			correlativoStr = strings.TrimSpace(input.Correlativo)
+			corrNum = parseCorrelativeUint(correlativoStr)
+			_ = tx.Where("series = ?", seriesRec.Series).First(&seriesRec).Error
+			if err := validateRetentionSeries(seriesRec); err != nil {
+				return err
+			}
+		}
+
+		payload.Serie = seriesRec.Series
+		payload.Correlativo = correlativoStr
+		payloadJSON, _ := json.Marshal(payload)
+
+		retSale = database.TenantSale{
+			SeriesID:      seriesRec.ID,
+			DocType:       "RETENCION",
+			Series:        seriesRec.Series,
+			Correlative:   corrNum,
+			Number:        fmt.Sprintf("%s-%s", seriesRec.Series, correlativoStr),
+			IssueDate:     issueDate,
+			Total:         input.ImpPagado,
+			Currency:      salecurrency.CurrencyPEN,
+			Status:        "paid",
+			BillingStatus: "pending",
+		}
+		if retSale.SeriesID == 0 {
+			retSale.SeriesID = seriesRec.ID
+		}
+		if err := tx.Create(&retSale).Error; err != nil {
+			return fmt.Errorf("crear venta retención: %w", err)
+		}
+
+		saleID := retSale.ID
+		rec = database.TenantRetention{
+			SaleID:         &saleID,
+			PurchaseID:     input.SourcePurchaseID,
+			Series:         seriesRec.Series,
+			Correlative:    correlativoStr,
+			ProveedorRUC:   party.NumDoc,
+			ProveedorRazon: party.RznSocial,
+			Regimen:        input.Regimen,
+			Tasa:           input.Tasa,
+			ImpRetenido:    input.ImpRetenido,
+			ImpPagado:      input.ImpPagado,
+			PayloadJSON:    string(payloadJSON),
+			DetailsCount:   len(details),
+			Status:         "pending",
+			FechaEmision:   issueDate,
+		}
+		if err := tx.Create(&rec).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.reserveGenericDocument("retention", retSale.ID, rec.Series+"-"+rec.Correlative); err != nil {
 		return nil, err
 	}
 
 	tenantDB := s.lookupTenantDBName(s.centralTenantID)
 	if _, err := s.EnqueueSendToSUNAT(retSale.ID, s.centralTenantID, s.tenantSlug, tenantDB, FiscalSourceAutoCreate); err != nil {
-		return rec, err
+		return &rec, err
 	}
-	return rec, nil
+	return &rec, nil
 }
 
 // --- Percepción ---
 
-func (s *BillingService) ListPerceptions() ([]database.TenantPerception, error) {
-	var list []database.TenantPerception
-	err := s.db.Order("fecha_emision DESC, created_at DESC").Find(&list).Error
-	return list, err
+func (s *BillingService) ListPerceptions() ([]PerceptionListItem, error) {
+	return s.ListPerceptionsFiltered(FiscalAuxListParams{})
+}
+
+// PerceptionListItem fila CPE con estado fiscal de la venta vinculada.
+type PerceptionListItem struct {
+	database.TenantPerception
+	BillingStatus   string                  `json:"billing_status,omitempty"`
+	LinkedReversion *LinkedReversionSummary `json:"linked_reversion,omitempty"`
+	OriginSaleLabel string                  `json:"origin_sale_label,omitempty"`
+}
+
+func enrichPerceptionListItems(db *gorm.DB, list []database.TenantPerception) []PerceptionListItem {
+	out := make([]PerceptionListItem, len(list))
+	saleIDs := make([]uint, 0, len(list))
+	for _, p := range list {
+		if p.SaleID != nil && *p.SaleID > 0 {
+			saleIDs = append(saleIDs, *p.SaleID)
+		}
+	}
+	saleByID := map[uint]database.TenantSale{}
+	if len(saleIDs) > 0 {
+		var sales []database.TenantSale
+		_ = db.Select("id, billing_status").Where("id IN ?", saleIDs).Find(&sales).Error
+		for _, sale := range sales {
+			saleByID[sale.ID] = sale
+		}
+	}
+	for i, p := range list {
+		item := PerceptionListItem{TenantPerception: p}
+		if p.SaleID != nil {
+			if sale, ok := saleByID[*p.SaleID]; ok {
+				item.BillingStatus = sale.BillingStatus
+			}
+		}
+		out[i] = item
+	}
+	return out
 }
 
 type CreatePerceptionInput struct {
-	Series       string                   `json:"series"`
-	Correlativo  string                   `json:"correlativo"`
+	BranchID     uint                     `json:"branch_id"`
+	SeriesID     uint                     `json:"series_id"`
+	ContactID    uint                     `json:"contact_id"`
+	SourceSaleID *uint                    `json:"source_sale_id,omitempty"`
 	FechaEmision string                   `json:"fecha_emision"`
+	Observacion  string                   `json:"observacion,omitempty"`
 	Proveedor    PerceptionProveedorInput `json:"proveedor"`
 	Regimen      string                   `json:"regimen"`
 	Tasa         float64                  `json:"tasa"`
 	ImpPercibido float64                  `json:"imp_percibido"`
 	ImpCobrado   float64                  `json:"imp_cobrado"`
 	Details      []PerceptionDetailInput  `json:"details"`
+	Series       string                   `json:"series,omitempty"`
+	Correlativo  string                   `json:"correlativo,omitempty"`
 }
 
 type PerceptionProveedorInput struct {
@@ -1871,19 +2032,46 @@ type PerceptionProveedorInput struct {
 }
 
 type PerceptionDetailInput struct {
-	TipoDoc         string  `json:"tipo_doc"`
-	NumDoc          string  `json:"num_doc"`
-	FechaEmision    string  `json:"fecha_emision"`
-	ImpTotal        float64 `json:"imp_total"`
-	Moneda          string  `json:"moneda"`
-	FechaPercepcion string  `json:"fecha_percepcion"`
-	ImpPercibido    float64 `json:"imp_percibido"`
-	ImpCobrar       float64 `json:"imp_cobrar"`
+	TipoDoc         string                  `json:"tipo_doc"`
+	NumDoc          string                  `json:"num_doc"`
+	FechaEmision    string                  `json:"fecha_emision"`
+	ImpTotal        float64                 `json:"imp_total"`
+	Moneda          string                  `json:"moneda"`
+	Cobros          []retentionPaymentInput `json:"cobros"`
+	FechaPercepcion string                  `json:"fecha_percepcion"`
+	ImpPercibido    float64                 `json:"imp_percibido"`
+	ImpCobrar       float64                 `json:"imp_cobrar"`
+	TipoCambio      *retentionExchangeInput `json:"tipo_cambio,omitempty"`
 }
 
 func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*database.TenantPerception, error) {
 	if !s.facturadorConfigured() {
 		return nil, errors.New("percepción requiere facturador configurado")
+	}
+	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
+		if err := s.applyPerceptionPrefillFromSale(&input, *input.SourceSaleID); err != nil {
+			return nil, err
+		}
+	}
+	var cfg database.TenantCompanyConfig
+	if err := s.db.First(&cfg).Error; err != nil || !cfg.SunatEnabled {
+		return nil, errors.New("la conexión con SUNAT no está activada")
+	}
+	if err := validateRegimenTasa(input.Regimen, input.Tasa, perceptionRegimenTasa, "percepción"); err != nil {
+		return nil, err
+	}
+	party := fiscalPartyInput{
+		TipoDoc:   input.Proveedor.TipoDoc,
+		NumDoc:    input.Proveedor.NumDoc,
+		RznSocial: input.Proveedor.RznSocial,
+		Address:   input.Proveedor.Address,
+		Ubigeo:    input.Proveedor.Ubigeo,
+	}
+	if err := s.loadFiscalPartyFromContact(input.ContactID, &party); err != nil {
+		return nil, err
+	}
+	if err := validateFiscalParty(party, "sujeto percibido"); err != nil {
+		return nil, err
 	}
 	companyCfg, companyAddr, err := s.getCompanyConfigAndAddress()
 	if err != nil {
@@ -1893,89 +2081,131 @@ func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*
 	if nombreComercial == "" {
 		nombreComercial = companyCfg.BusinessName
 	}
-	provAddr, errProv := s.buildInvoiceAddressFromUbigeo(input.Proveedor.Ubigeo, input.Proveedor.Address)
+	provAddr, errProv := s.buildInvoiceAddressFromUbigeo(party.Ubigeo, party.Address)
 	if errProv != nil {
-		return nil, fmt.Errorf("proveedor: %w", errProv)
+		return nil, fmt.Errorf("sujeto percibido: %w", errProv)
 	}
-	details := make([]facturador.PerceptionDetail, len(input.Details))
+	fechaEmision := strings.TrimSpace(input.FechaEmision)
+	if fechaEmision == "" {
+		fechaEmision = facturador.FormatFiscalDateTime(time.Now())
+	}
+	detailIn := make([]perceptionDetailBuildInput, len(input.Details))
 	for i, d := range input.Details {
-		details[i] = facturador.PerceptionDetail{
+		detailIn[i] = perceptionDetailBuildInput{
 			TipoDoc: d.TipoDoc, NumDoc: d.NumDoc, FechaEmision: d.FechaEmision,
-			ImpTotal: d.ImpTotal, Moneda: d.Moneda, FechaPercepcion: d.FechaPercepcion,
-			ImpPercibido: d.ImpPercibido, ImpCobrar: d.ImpCobrar,
-		}
-		if details[i].Moneda == "" {
-			details[i].Moneda = "PEN"
+			ImpTotal: d.ImpTotal, Moneda: d.Moneda, Cobros: d.Cobros,
+			FechaPercepcion: d.FechaPercepcion, ImpPercibido: d.ImpPercibido, ImpCobrar: d.ImpCobrar,
+			TipoCambio: d.TipoCambio,
 		}
 	}
-	payload := &facturador.PerceptionPayload{
-		Serie:        input.Series,
-		Correlativo:  input.Correlativo,
-		FechaEmision: input.FechaEmision,
-		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
-		Proveedor:    facturador.InvoiceClient{TipoDoc: input.Proveedor.TipoDoc, NumDoc: input.Proveedor.NumDoc, RznSocial: input.Proveedor.RznSocial, Address: provAddr},
-		Regimen:      input.Regimen,
-		Tasa:         input.Tasa,
-		ImpPercibido: input.ImpPercibido,
-		ImpCobrado:   input.ImpCobrado,
-		Details:      details,
+	details, err := s.buildPerceptionDetails(detailIn, fechaEmision)
+	if err != nil {
+		return nil, err
 	}
-	payloadJSON, _ := json.Marshal(payload)
-	corrNum := parseCorrelativeUint(input.Correlativo)
-	issueDate := time.Now()
-	if t, err := time.Parse(time.RFC3339, input.FechaEmision); err == nil {
-		issueDate = t
-	}
-	var seriesRec database.TenantDocumentSeries
-	_ = s.db.Where("series = ?", input.Series).First(&seriesRec).Error
-
-	percSale := database.TenantSale{
-		SeriesID:      seriesRec.ID,
-		DocType:       "PERCEPCION",
-		Series:        input.Series,
-		Correlative:   corrNum,
-		Number:        fmt.Sprintf("%s-%s", input.Series, input.Correlativo),
-		IssueDate:     issueDate,
-		Total:         input.ImpCobrado,
-		Currency:      "PEN",
-		Status:        "paid",
-		BillingStatus: "pending",
-	}
-	if err := s.db.Create(&percSale).Error; err != nil {
-		return nil, fmt.Errorf("crear venta percepción: %w", err)
-	}
-	if err := s.reserveGenericDocument("perception", percSale.ID, input.Series+"-"+input.Correlativo); err != nil {
+	if err := validatePerceptionTotals(details, input.ImpPercibido, input.ImpCobrado); err != nil {
 		return nil, err
 	}
 
-	saleID := percSale.ID
-	rec := &database.TenantPerception{
-		SaleID:         &saleID,
-		Series:         input.Series,
-		Correlative:    input.Correlativo,
-		ProveedorRUC:   input.Proveedor.NumDoc,
-		ProveedorRazon: input.Proveedor.RznSocial,
-		Regimen:        input.Regimen,
-		Tasa:           input.Tasa,
-		ImpPercibido:   input.ImpPercibido,
-		ImpCobrado:     input.ImpCobrado,
-		PayloadJSON:    string(payloadJSON),
-		DetailsCount:   len(details),
-		Status:         "pending",
-		FechaEmision:   issueDate,
+	payload := &facturador.PerceptionPayload{
+		FechaEmision: fechaEmision,
+		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
+		Proveedor:    facturador.InvoiceClient{TipoDoc: party.TipoDoc, NumDoc: party.NumDoc, RznSocial: party.RznSocial, Address: provAddr},
+		Regimen:      strings.TrimSpace(input.Regimen),
+		Tasa:         input.Tasa,
+		ImpPercibido: roundMoney(input.ImpPercibido),
+		ImpCobrado:   roundMoney(input.ImpCobrado),
+		Observacion:  strings.TrimSpace(input.Observacion),
+		Details:      details,
 	}
-	if err := s.db.Create(rec).Error; err != nil {
+	issueDate := time.Now()
+	if t, err := time.Parse(time.RFC3339, fechaEmision); err == nil {
+		issueDate = t
+	}
+
+	var rec database.TenantPerception
+	var percSale database.TenantSale
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var seriesRec database.TenantDocumentSeries
+		var correlativoStr string
+		var corrNum uint
+		if input.SeriesID > 0 {
+			var next uint
+			seriesRec, next, correlativoStr, err = s.reserveRetentionPerceptionSeriesTx(tx, input.BranchID, input.SeriesID, validatePerceptionSeries)
+			if err != nil {
+				return err
+			}
+			corrNum = next
+		} else {
+			if strings.TrimSpace(input.Series) == "" || strings.TrimSpace(input.Correlativo) == "" {
+				return errors.New("seleccione una serie documental")
+			}
+			seriesRec.Series = strings.TrimSpace(input.Series)
+			correlativoStr = strings.TrimSpace(input.Correlativo)
+			corrNum = parseCorrelativeUint(correlativoStr)
+			_ = tx.Where("series = ?", seriesRec.Series).First(&seriesRec).Error
+			if err := validatePerceptionSeries(seriesRec); err != nil {
+				return err
+			}
+		}
+
+		payload.Serie = seriesRec.Series
+		payload.Correlativo = correlativoStr
+		payloadJSON, _ := json.Marshal(payload)
+
+		percSale = database.TenantSale{
+			SeriesID:      seriesRec.ID,
+			DocType:       "PERCEPCION",
+			Series:        seriesRec.Series,
+			Correlative:   corrNum,
+			Number:        fmt.Sprintf("%s-%s", seriesRec.Series, correlativoStr),
+			IssueDate:     issueDate,
+			Total:         input.ImpCobrado,
+			Currency:      salecurrency.CurrencyPEN,
+			Status:        "paid",
+			BillingStatus: "pending",
+		}
+		if err := tx.Create(&percSale).Error; err != nil {
+			return fmt.Errorf("crear venta percepción: %w", err)
+		}
+
+		saleID := percSale.ID
+		rec = database.TenantPerception{
+			SaleID:         &saleID,
+			SourceSaleID:   input.SourceSaleID,
+			Series:         seriesRec.Series,
+			Correlative:    correlativoStr,
+			ProveedorRUC:   party.NumDoc,
+			ProveedorRazon: party.RznSocial,
+			Regimen:        input.Regimen,
+			Tasa:           input.Tasa,
+			ImpPercibido:   input.ImpPercibido,
+			ImpCobrado:     input.ImpCobrado,
+			PayloadJSON:    string(payloadJSON),
+			DetailsCount:   len(details),
+			Status:         "pending",
+			FechaEmision:   issueDate,
+		}
+		if err := tx.Create(&rec).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.reserveGenericDocument("perception", percSale.ID, rec.Series+"-"+rec.Correlative); err != nil {
 		return nil, err
 	}
 
 	tenantDB := s.lookupTenantDBName(s.centralTenantID)
 	if _, err := s.EnqueueSendToSUNAT(percSale.ID, s.centralTenantID, s.tenantSlug, tenantDB, FiscalSourceAutoCreate); err != nil {
-		return rec, err
+		return &rec, err
 	}
-	return rec, nil
+	return &rec, nil
 }
 
-func (s *BillingService) GetRetentionStatus(id uint) (*database.TenantRetention, error) {
+func (s *BillingService) GetRetentionStatus(id uint) (*RetentionListItem, error) {
 	var rec database.TenantRetention
 	if err := s.db.First(&rec, id).Error; err != nil {
 		return nil, err
@@ -1987,10 +2217,11 @@ func (s *BillingService) GetRetentionStatus(id uint) (*database.TenantRetention,
 		}
 		_ = s.db.First(&rec, id).Error
 	}
-	return &rec, nil
+	items := enrichRetentionListItems(s.db, []database.TenantRetention{rec})
+	return &items[0], nil
 }
 
-func (s *BillingService) GetPerceptionStatus(id uint) (*database.TenantPerception, error) {
+func (s *BillingService) GetPerceptionStatus(id uint) (*PerceptionListItem, error) {
 	var rec database.TenantPerception
 	if err := s.db.First(&rec, id).Error; err != nil {
 		return nil, err
@@ -2002,15 +2233,14 @@ func (s *BillingService) GetPerceptionStatus(id uint) (*database.TenantPerceptio
 		}
 		_ = s.db.First(&rec, id).Error
 	}
-	return &rec, nil
+	items := enrichPerceptionListItems(s.db, []database.TenantPerception{rec})
+	return &items[0], nil
 }
 
 // --- Reversión (mismo esquema que voided) ---
 
-func (s *BillingService) ListReversions() ([]database.TenantSunatReversion, error) {
-	var list []database.TenantSunatReversion
-	err := s.db.Order("fec_comunicacion DESC, created_at DESC").Find(&list).Error
-	return list, err
+func (s *BillingService) ListReversions() ([]ReversionListItem, error) {
+	return s.ListReversionsFiltered(FiscalAuxListParams{})
 }
 
 func (s *BillingService) CreateReversion(details []CreateVoidedInput) (*database.TenantSunatReversion, error) {
@@ -2034,7 +2264,10 @@ func (s *BillingService) CreateReversion(details []CreateVoidedInput) (*database
 	correlativo := strconv.FormatInt(count+1, 10)
 	voidedDetails := make([]facturador.VoidedDetail, len(details))
 	for i, d := range details {
-		voidedDetails[i] = facturador.VoidedDetail{TipoDoc: d.TipoDoc, Serie: d.Serie, Correlativo: d.Correlativo, DesMotivoBaja: d.DesMotivoBaja}
+		if err := validateReversionDetail(d.TipoDoc, d.Serie, d.Correlativo, d.DesMotivoBaja); err != nil {
+			return nil, fmt.Errorf("línea %d: %w", i+1, err)
+		}
+		voidedDetails[i] = facturador.VoidedDetail{TipoDoc: d.TipoDoc, Serie: strings.ToUpper(strings.TrimSpace(d.Serie)), Correlativo: strings.TrimSpace(d.Correlativo), DesMotivoBaja: strings.TrimSpace(d.DesMotivoBaja)}
 	}
 	payload := &facturador.VoidedPayload{
 		Company:         facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},

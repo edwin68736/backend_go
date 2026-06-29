@@ -10,6 +10,8 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/numeroletras"
+	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/taxpayment"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
 
 	"gorm.io/gorm"
@@ -46,6 +48,8 @@ type PrintData struct {
 	Subtotal  float64 `json:"subtotal"`
 	TaxAmount float64 `json:"tax_amount"`
 	Total     float64 `json:"total"`
+	GlobalDiscountAmount float64 `json:"global_discount_amount,omitempty"`
+	LineDiscountTotal    float64 `json:"line_discount_total,omitempty"`
 
 	// Leyenda en letras (mismo texto que se envía a Lycet/SUNAT en legends code 1000)
 	LegendText string `json:"legend_text,omitempty"`
@@ -150,6 +154,8 @@ type PrintItem struct {
 	Quantity      float64 `json:"quantity"`
 	UnitPrice     float64 `json:"unit_price"`
 	Discount      float64 `json:"discount"`
+	LineDiscountSubtotal   float64 `json:"line_discount_subtotal,omitempty"`
+	GlobalDiscountSubtotal float64 `json:"global_discount_subtotal,omitempty"`
 	Subtotal      float64 `json:"subtotal"`
 	TaxAmount     float64 `json:"tax_amount"`
 	Total         float64 `json:"total"`
@@ -184,6 +190,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		Subtotal:  sale.Subtotal,
 		TaxAmount: sale.TaxAmount,
 		Total:     sale.Total,
+		GlobalDiscountAmount: sale.GlobalDiscountAmount,
 		SunatHash: sunatHash,
 	}
 
@@ -288,8 +295,10 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	}
 
 	// Items
+	var lineDiscSum float64
 	pd.Items = make([]PrintItem, len(items))
 	for i, it := range items {
+		lineDiscSum = money.RoundSunat(lineDiscSum + it.LineDiscountSubtotal)
 		pd.Items[i] = PrintItem{
 			Code:          it.Code,
 			Description:   it.Description,
@@ -297,12 +306,15 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			Quantity:      it.Quantity,
 			UnitPrice:     it.UnitPrice,
 			Discount:      it.Discount,
+			LineDiscountSubtotal:   it.LineDiscountSubtotal,
+			GlobalDiscountSubtotal: it.GlobalDiscountSubtotal,
 			Subtotal:      it.Subtotal,
 			TaxAmount:     it.TaxAmount,
 			Total:         it.Total,
 			ModifiersJSON: it.ModifiersJSON,
 		}
 	}
+	pd.LineDiscountTotal = money.RoundSunat(lineDiscSum)
 
 	// Totales por afectación
 	affMap := make(map[string]*PrintAffectTotal)
@@ -332,13 +344,24 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 
 	// Pagos
 	pd.Payments = make([]PrintPayment, len(payments))
-	var paidSum float64
+	var directPaidSum float64
 	for i, p := range payments {
 		pd.Payments[i] = PrintPayment{Method: p.Method, Amount: p.Amount, Reference: p.Reference}
-		paidSum += p.Amount
+		if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
+			continue
+		}
+		directPaidSum += p.Amount
 	}
-	if paidSum > sale.Total+0.001 {
-		pd.ChangeAmount = money.RoundDisplay(paidSum - sale.Total)
+	payable := sale.Total
+	if pd.Fiscal != nil {
+		if pd.Fiscal.HasDetraccion && pd.Fiscal.DetraccionNetPayable > 0 {
+			payable = pd.Fiscal.DetraccionNetPayable
+		} else if pd.Fiscal.RetentionApplied && pd.Fiscal.NetCollectible > 0 {
+			payable = pd.Fiscal.NetCollectible
+		}
+	}
+	if directPaidSum > payable+0.001 {
+		pd.ChangeAmount = money.CalcPaymentChange(directPaidSum, payable)
 	}
 
 	pd.QRData = pd.buildQRData()

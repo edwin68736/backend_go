@@ -206,52 +206,28 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 	if err != nil {
 		return nil, err
 	}
-	details := make([]facturador.InvoiceDetail, len(items))
-	for i, it := range items {
-		aff := strings.TrimSpace(it.IgvAffectationType)
-		if aff == "" {
-			return nil, fmt.Errorf("el ítem «%s» no tiene tipo de afectación IGV", strings.TrimSpace(it.Description))
-		}
-		mtoValorVenta := round2(it.Subtotal)
-		igv := round2(it.TaxAmount)
-		cantidad := it.Quantity
-		if cantidad <= 0 {
-			return nil, fmt.Errorf("ítem «%s» con cantidad inválida", strings.TrimSpace(it.Description))
-		}
-		mtoValorUnitario := round2(mtoValorVenta / cantidad)
-		mtoPrecioUnitario := round2((mtoValorVenta + igv) / cantidad)
-		codProd := strings.TrimSpace(it.Code)
-		if codProd == "" {
-			return nil, fmt.Errorf("el ítem «%s» no tiene código de producto", strings.TrimSpace(it.Description))
-		}
-		desc := strings.TrimSpace(it.Description)
-		if desc == "" {
-			return nil, fmt.Errorf("ítem en posición %d sin descripción", i+1)
-		}
-		porcentajeIgv := round2(it.TaxRate)
-		if aff != "10" {
-			porcentajeIgv = round2(companyTaxRate)
-		}
-		details[i] = facturador.InvoiceDetail{
-			Unidad: normUnit(it.Unit), Cantidad: cantidad, CodProducto: codProd, Descripcion: desc,
-			MtoValorUnitario: mtoValorUnitario, MtoValorVenta: mtoValorVenta, TipAfeIgv: aff,
-			MtoBaseIgv: mtoValorVenta, PorcentajeIgv: porcentajeIgv, Igv: igv,
-			TotalImpuestos: igv, MtoPrecioUnitario: mtoPrecioUnitario,
-		}
+	details, err := BuildInvoiceDetailsFromSaleItems(items, companyTaxRate, normUnit)
+	if err != nil {
+		return nil, err
 	}
 	var mtoOperGravadas, mtoOperExoneradas, mtoOperInafectas, mtoIGV float64
-	for _, d := range details {
-		switch d.TipAfeIgv {
+	for _, item := range items {
+		aff := strings.TrimSpace(item.IgvAffectationType)
+		if aff == "" {
+			aff = "10"
+		}
+		sub := round2(item.Subtotal)
+		switch aff {
 		case "10":
-			mtoOperGravadas += d.MtoValorVenta
-			mtoIGV += d.Igv
+			mtoOperGravadas += sub
+			mtoIGV += round2(item.TaxAmount)
 		case "20":
-			mtoOperExoneradas += d.MtoValorVenta
+			mtoOperExoneradas += sub
 		case "30":
-			mtoOperInafectas += d.MtoValorVenta
+			mtoOperInafectas += sub
 		default:
-			mtoOperGravadas += d.MtoValorVenta
-			mtoIGV += d.Igv
+			mtoOperGravadas += sub
+			mtoIGV += round2(item.TaxAmount)
 		}
 	}
 	mtoOperGravadas = round2(mtoOperGravadas)

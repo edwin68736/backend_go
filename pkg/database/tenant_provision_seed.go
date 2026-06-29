@@ -41,6 +41,12 @@ func ProvisionTenantSeed(db *gorm.DB, in TenantSeedInput) error {
 		if err := seedDocumentSeries(tx, mainBranchID); err != nil {
 			return err
 		}
+		if err := SeedInventoryOperationTypes(tx); err != nil {
+			return err
+		}
+		if err := SeedInventoryDocumentSeriesForBranch(tx, mainBranchID); err != nil {
+			return err
+		}
 		if err := seedAdminUser(tx, in, mainBranchID); err != nil {
 			return err
 		}

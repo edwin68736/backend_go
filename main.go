@@ -46,6 +46,7 @@ func runServer(cfg *config.Config) {
 	// Cron de vencimientos espera esquema central (deploy migrate-central o AutoMigrateDev en dev).
 	cron.StartExpirationChecker()
 	cron.StartSaasScheduler()
+	cron.StartExchangeRateScheduler()
 	cron.StartFiscalReconcileWorker()
 
 	app := fiber.New(fiber.Config{

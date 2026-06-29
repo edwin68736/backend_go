@@ -23,6 +23,9 @@ func TestMigrationsUpToSparseVersions(t *testing.T) {
 	if _, ok := seen[59]; !ok {
 		t.Fatal("expected V059 in range to MaxVersion")
 	}
+	if _, ok := seen[79]; !ok {
+		t.Fatal("expected V080 in range to MaxVersion")
+	}
 }
 
 func TestMinVersionIsBaseline(t *testing.T) {
