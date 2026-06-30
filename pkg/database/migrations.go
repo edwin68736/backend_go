@@ -568,10 +568,23 @@ type TenantCategory struct {
 	Name        string         `gorm:"size:255;not null" json:"name"`
 	Description string         `gorm:"size:255" json:"description"`
 	ParentID    *uint          `gorm:"index" json:"parent_id"`
+	SortOrder   int            `gorm:"default:0;index" json:"sort_order"`
 	Active      bool           `gorm:"default:true" json:"active"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantPreparationArea área de preparación configurable (cocina, bar, etc.) para productos restaurante.
+type TenantPreparationArea struct {
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	Name      string         `gorm:"size:100;not null" json:"name"`
+	Slug      string         `gorm:"size:50;not null;uniqueIndex" json:"slug"`
+	SortOrder int            `gorm:"default:0;index" json:"sort_order"`
+	Active    bool           `gorm:"default:true" json:"active"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type TenantProduct struct {
@@ -593,7 +606,8 @@ type TenantProduct struct {
 	HasModifiers       bool           `gorm:"default:false" json:"has_modifiers"`
 	IsRestaurant       bool           `gorm:"default:false" json:"is_restaurant"`
 	BranchID           uint           `gorm:"index" json:"branch_id"` // platos Tukichef: sucursal dueña del catálogo
-	PreparationArea    string         `gorm:"size:50" json:"preparation_area"` // solo restaurante: cocina, bar, barra, etc.
+	PreparationAreaID  *uint          `gorm:"index" json:"preparation_area_id"`
+	PreparationArea    string         `gorm:"size:50" json:"preparation_area"` // slug denormalizado (comandas, impresoras)
 	MinStock           float64        `gorm:"type:decimal(15,3);default:0" json:"min_stock"`
 	ImageURL           string         `gorm:"size:255" json:"image_url"`
 	Active             bool           `gorm:"default:true" json:"active"`

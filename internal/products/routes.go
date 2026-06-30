@@ -53,6 +53,17 @@ func RegisterRoutes(api fiber.Router) {
 		h.CategoryListAPI,
 	)
 	api.Post("/categories", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.CategoryCreateAPI)
+	api.Put("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.CategoryUpdateAPI)
+	api.Delete("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.CategoryDeleteAPI)
+	api.Get("/preparation-areas",
+		middleware.RequireModule("products"),
+		middleware.LoadRestaurantPermissions(),
+		middleware.RequireProductsViewOrRestaurantCatalog(),
+		h.PreparationAreaListAPI,
+	)
+	api.Post("/preparation-areas", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.PreparationAreaCreateAPI)
+	api.Put("/preparation-areas/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.PreparationAreaUpdateAPI)
+	api.Delete("/preparation-areas/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.PreparationAreaDeleteAPI)
 	api.Get("/modifier-groups",
 		middleware.RequireModule("products"),
 		middleware.LoadRestaurantPermissions(),

@@ -750,8 +750,17 @@ func resolveProductPreparationArea(tx *gorm.DB, productID *uint) string {
 		return "cocina"
 	}
 	var p database.TenantProduct
-	if err := tx.Select("preparation_area").First(&p, *productID).Error; err != nil {
+	if err := tx.Select("preparation_area_id", "preparation_area").First(&p, *productID).Error; err != nil {
 		return "cocina"
+	}
+	if p.PreparationAreaID != nil && *p.PreparationAreaID > 0 {
+		var area database.TenantPreparationArea
+		if err := tx.Select("slug").First(&area, *p.PreparationAreaID).Error; err == nil {
+			slug := strings.TrimSpace(strings.ToLower(area.Slug))
+			if slug != "" {
+				return slug
+			}
+		}
 	}
 	area := strings.TrimSpace(strings.ToLower(p.PreparationArea))
 	if area == "" {

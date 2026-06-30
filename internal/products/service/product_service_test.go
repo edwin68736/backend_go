@@ -17,7 +17,7 @@ func setupProductServiceTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&database.TenantProduct{}); err != nil {
+	if err := db.AutoMigrate(&database.TenantProduct{}, &database.TenantCategory{}, &database.TenantPreparationArea{}); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -183,5 +183,150 @@ func TestProductUpdate_DemoteRestaurantClearsPreparationArea(t *testing.T) {
 	}
 	if loaded.PreparationArea != "" {
 		t.Fatalf("PreparationArea=%q want empty after demote", loaded.PreparationArea)
+	}
+}
+
+func TestProductList_DefaultSortByIDDesc(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+	branchID := uint(1)
+	for i, name := range []string{"Primero", "Segundo", "Tercero"} {
+		_, err := svc.Create(ProductInput{
+			Code: fmt.Sprintf("P%d", i+1), Name: name, Type: "product", Unit: "NIU",
+			SalePrice: float64(i+1) * 10, TaxRate: 18, IgvAffectationType: "10",
+			IsRestaurant: true, BranchID: branchID, Active: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, _, err := svc.ListWithCategoryNames(ProductListParams{
+		RestaurantOnly: true,
+		ActiveOnly:     true,
+		BranchID:       branchID,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) < 3 {
+		t.Fatalf("len=%d want >=3", len(items))
+	}
+	if items[0].Name != "Tercero" || items[len(items)-1].Name != "Primero" {
+		t.Fatalf("default order got %q..%q want Tercero..Primero", items[0].Name, items[len(items)-1].Name)
+	}
+}
+
+func TestProductList_SortByNameAsc(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+	branchID := uint(1)
+	for _, name := range []string{"Zeta", "Alpha"} {
+		_, err := svc.Create(ProductInput{
+			Code: name, Name: name, Type: "product", Unit: "NIU",
+			SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+			IsRestaurant: true, BranchID: branchID, Active: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, _, err := svc.ListWithCategoryNames(ProductListParams{
+		RestaurantOnly: true,
+		ActiveOnly:     true,
+		BranchID:       branchID,
+		SortBy:         "name",
+		SortDir:        "asc",
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Name != "Alpha" || items[1].Name != "Zeta" {
+		t.Fatalf("sort name asc: %#v", items)
+	}
+}
+
+func TestCategoryCRUD_sortOrderAndDeleteGuard(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	order1 := 10
+	c1, err := svc.CreateCategory("Bebidas", "", &order1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := svc.CreateCategory("Platos", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.SortOrder <= c1.SortOrder {
+		t.Fatalf("auto sort_order got %d want > %d", c2.SortOrder, c1.SortOrder)
+	}
+
+	cats, err := svc.ListCategories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cats) != 2 || cats[0].Name != "Bebidas" {
+		t.Fatalf("list order: %#v", cats)
+	}
+
+	order5 := 5
+	if _, err := svc.UpdateCategory(c2.ID, "Entradas", "desc", order5); err != nil {
+		t.Fatal(err)
+	}
+	cats, _ = svc.ListCategories()
+	if cats[0].Name != "Entradas" {
+		t.Fatalf("after update order: %#v", cats)
+	}
+
+	if err := svc.DeleteCategory(c1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cid := c2.ID
+	if _, err := svc.Create(ProductInput{
+		Code: "P1", Name: "Prod", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		CategoryID: &cid, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteCategory(c2.ID); err == nil {
+		t.Fatal("expected delete blocked with linked product")
+	}
+}
+
+func TestPreparationAreaCRUD_linksProductByID(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	area, err := svc.CreatePreparationArea("Cocina", "cocina", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aid := area.ID
+	p, err := svc.Create(ProductInput{
+		Code: "R1", Name: "Plato", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		IsRestaurant: true, PreparationAreaID: &aid, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PreparationArea != "cocina" || p.PreparationAreaID == nil || *p.PreparationAreaID != aid {
+		t.Fatalf("product area: id=%v slug=%q", p.PreparationAreaID, p.PreparationArea)
+	}
+
+	if _, err := svc.Create(ProductInput{
+		Code: "R2", Name: "Otro", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		IsRestaurant: true, PreparationAreaID: &aid, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeletePreparationArea(aid); err == nil {
+		t.Fatal("expected delete blocked with linked products")
 	}
 }

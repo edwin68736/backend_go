@@ -58,6 +58,9 @@ var TenantMigrations = []TenantMigration{
 	V083InventoryIngressEgress{},
 	V084InventoryOperationTransfer{},
 	V085InventoryDocumentSource{},
+	V086CategorySortOrder{},
+	V087PreparationAreas{},
+	V088PreparationAreasTimestamps{},
 }
 
 // ByVersion mapa versión → migración.

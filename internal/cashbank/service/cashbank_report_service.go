@@ -398,6 +398,10 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		report.CancelledSalesDetail = append(report.CancelledSalesDetail, row)
 	}
 
+	if err := s.appendCancelledSalesFromPayments(report, &session, voidMovements); err != nil {
+		return nil, err
+	}
+
 	populateSessionReportSections(report)
 	return report, nil
 }
@@ -465,8 +469,13 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 	if err != nil {
 		return MovementsReportSplit{}, err
 	}
+	cancelledElectronicRows, err := s.buildCancelledElectronicMovementRows(f)
+	if err != nil {
+		return MovementsReportSplit{}, err
+	}
 
 	all := append(saleRows, cashRows...)
+	all = append(all, cancelledElectronicRows...)
 	sortMovementRowsDesc(all)
 
 	var cashChannel, electronicChannel, detractionChannel []MovementReportRow
@@ -568,6 +577,7 @@ type salePayRow struct {
 	CashSessionID     uint
 	SalePaymentMethod string
 	SaleCreatedAt     time.Time
+	SaleNotes         string
 	BranchID          uint
 }
 

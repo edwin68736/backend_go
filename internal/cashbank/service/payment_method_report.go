@@ -83,7 +83,7 @@ func movementRowChannel(row MovementReportRow) string {
 	if row.Type == "venta" && IsDetractionPaymentMethod(row.PaymentMethod) {
 		return "detraction"
 	}
-	if row.Type == "venta" && !IsCashPaymentMethod(row.PaymentMethod) {
+	if (row.Type == "venta" || row.Type == "anulacion_venta") && !IsCashPaymentMethod(row.PaymentMethod) {
 		return "electronic"
 	}
 	return "cash"

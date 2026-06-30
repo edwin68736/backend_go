@@ -312,7 +312,7 @@ func (s *ProductService) resolveCategoryIDByName(name string, cache map[string]u
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
-	created, err := s.CreateCategory(strings.TrimSpace(name), "")
+		created, err := s.CreateCategory(strings.TrimSpace(name), "", nil)
 	if err != nil {
 		return 0, fmt.Errorf("crear categoría %q: %w", name, err)
 	}

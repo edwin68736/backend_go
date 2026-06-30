@@ -15,13 +15,14 @@ import (
 // DashboardData respuesta agregada GET /api/restaurant/dashboard
 type DashboardData struct {
 	Summary              DashboardSummary       `json:"summary"`
-	SalesByStatus        []DashboardStatusRow `json:"sales_by_status"`
-	SalesByPaymentMethod []DashboardPaymentRow `json:"sales_by_payment_method"`
-	TopProducts          []DashboardProductRow `json:"top_products"`
+	SalesByStatus        []DashboardStatusRow   `json:"sales_by_status"`
+	SalesByPaymentMethod []DashboardPaymentRow  `json:"sales_by_payment_method"`
+	TopProducts          []DashboardProductRow  `json:"top_products"`
 	TopCategories        []DashboardCategoryRow `json:"top_categories"`
 	SalesLast30Days      []DashboardDayRow      `json:"sales_last_30_days"`
 	SalesByHour          []DashboardHourRow     `json:"sales_by_hour"`
 	TablesSummary        DashboardTablesSummary `json:"tables_summary"`
+	ScopedToUser         bool                   `json:"scoped_to_user"`
 }
 
 type DashboardSummary struct {
@@ -89,7 +90,7 @@ func NewDashboardService(db *gorm.DB) *DashboardService {
 	return &DashboardService{db: db}
 }
 
-func (s *DashboardService) GetDashboard(branchID uint, from, toExclusive time.Time, topN int) (*DashboardData, error) {
+func (s *DashboardService) GetDashboard(branchID uint, from, toExclusive time.Time, topN int, filter DashboardFilter) (*DashboardData, error) {
 	if topN <= 0 {
 		topN = 10
 	}
@@ -97,27 +98,27 @@ func (s *DashboardService) GetDashboard(branchID uint, from, toExclusive time.Ti
 		topN = 100
 	}
 
-	out := &DashboardData{}
+	out := &DashboardData{ScopedToUser: filter.RestrictUser && filter.UserID > 0}
 
-	if err := s.loadSummary(branchID, from, toExclusive, out); err != nil {
+	if err := s.loadSummary(branchID, from, toExclusive, filter, out); err != nil {
 		return nil, err
 	}
-	if err := s.loadSalesByStatus(branchID, from, toExclusive, out); err != nil {
+	if err := s.loadSalesByStatus(branchID, from, toExclusive, filter, out); err != nil {
 		return nil, err
 	}
-	if err := s.loadSalesByPayment(branchID, from, toExclusive, out); err != nil {
+	if err := s.loadSalesByPayment(branchID, from, toExclusive, filter, out); err != nil {
 		return nil, err
 	}
-	if err := s.loadTopProducts(branchID, from, toExclusive, topN, out); err != nil {
+	if err := s.loadTopProducts(branchID, from, toExclusive, topN, filter, out); err != nil {
 		return nil, err
 	}
-	if err := s.loadTopCategories(branchID, from, toExclusive, out); err != nil {
+	if err := s.loadTopCategories(branchID, from, toExclusive, filter, out); err != nil {
 		return nil, err
 	}
-	if err := s.loadSalesLast30Days(branchID, out); err != nil {
+	if err := s.loadSalesLast30Days(branchID, filter, out); err != nil {
 		return nil, err
 	}
-	if err := s.loadSalesByHour(branchID, from, toExclusive, out); err != nil {
+	if err := s.loadSalesByHour(branchID, from, toExclusive, filter, out); err != nil {
 		return nil, err
 	}
 	if err := s.loadTablesSummary(branchID, out); err != nil {
@@ -129,12 +130,15 @@ func (s *DashboardService) GetDashboard(branchID uint, from, toExclusive time.Ti
 
 // restaurantSalesScope: ventas de la sucursal en el rango (mismo criterio que /api/sales).
 // No exige restaurant_session_id: NV/FE, ventas legacy y emisiones sin sesión también cuentan.
-func restaurantSalesScope(db *gorm.DB, branchID uint, from, toExclusive time.Time) *gorm.DB {
+func restaurantSalesScope(db *gorm.DB, branchID uint, from, toExclusive time.Time, filter DashboardFilter) *gorm.DB {
 	q := salescope.CommercialSales(db.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status != ?", "cancelled")
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)
+	}
+	if filter.RestrictUser && filter.UserID > 0 {
+		q = q.Where("user_id = ?", filter.UserID)
 	}
 	return q
 }
@@ -150,23 +154,35 @@ func dashboardDayKey(raw string) string {
 	return raw
 }
 
-func restaurantSessionsScope(db *gorm.DB, branchID uint, from, toExclusive time.Time) *gorm.DB {
+func restaurantSessionsScope(db *gorm.DB, branchID uint, from, toExclusive time.Time, filter DashboardFilter) *gorm.DB {
 	q := db.Model(&database.TenantTableSession{}).
 		Where("opened_at >= ? AND opened_at < ?", from, toExclusive)
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)
 	}
+	if filter.RestrictUser && filter.UserID > 0 {
+		q = q.Where("user_id = ?", filter.UserID)
+	}
 	return q
 }
 
-func (s *DashboardService) loadSummary(branchID uint, from, toExclusive time.Time, out *DashboardData) error {
+func userScopeSaleJoin(filter DashboardFilter) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if filter.RestrictUser && filter.UserID > 0 {
+			return db.Where("s.user_id = ?", filter.UserID)
+		}
+		return db
+	}
+}
+
+func (s *DashboardService) loadSummary(branchID uint, from, toExclusive time.Time, filter DashboardFilter, out *DashboardData) error {
 	type salesAgg struct {
-		TotalSales   float64 `gorm:"column:total_sales"`
-		TotalOrders  int64   `gorm:"column:total_orders"`
-		ClientsServed int64  `gorm:"column:clients_served"`
+		TotalSales    float64 `gorm:"column:total_sales"`
+		TotalOrders   int64   `gorm:"column:total_orders"`
+		ClientsServed int64   `gorm:"column:clients_served"`
 	}
 	var agg salesAgg
-	err := restaurantSalesScope(s.db, branchID, from, toExclusive).
+	err := restaurantSalesScope(s.db, branchID, from, toExclusive, filter).
 		Select(`
 			COALESCE(SUM(total), 0) AS total_sales,
 			COUNT(*) AS total_orders,
@@ -185,6 +201,7 @@ func (s *DashboardService) loadSummary(branchID uint, from, toExclusive time.Tim
 		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
 		Where("s.status != ?", "cancelled").
 		Scopes(branchScopeSales(branchID)).
+		Scopes(userScopeSaleJoin(filter)).
 		Scan(&productsSold).Error
 	if err != nil {
 		return err
@@ -215,13 +232,13 @@ func branchScopeSales(branchID uint) func(*gorm.DB) *gorm.DB {
 	}
 }
 
-func (s *DashboardService) loadSalesByStatus(branchID uint, from, toExclusive time.Time, out *DashboardData) error {
+func (s *DashboardService) loadSalesByStatus(branchID uint, from, toExclusive time.Time, filter DashboardFilter, out *DashboardData) error {
 	type row struct {
 		StatusKey string `gorm:"column:status_key"`
 		Count     int64  `gorm:"column:count"`
 	}
 	var rows []row
-	err := restaurantSessionsScope(s.db, branchID, from, toExclusive).
+	err := restaurantSessionsScope(s.db, branchID, from, toExclusive, filter).
 		Select(`
 			CASE
 				WHEN order_status IN ('draft','pending') THEN 'pending'
@@ -281,14 +298,20 @@ func paymentLabel(bucket string) string {
 	}
 }
 
-func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive time.Time, out *DashboardData) error {
+func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive time.Time, filter DashboardFilter, out *DashboardData) error {
 	branchClause := ""
+	userClause := ""
 	argsPayments := []interface{}{from, toExclusive}
 	argsHeader := []interface{}{from, toExclusive}
 	if branchID > 0 {
 		branchClause = " AND s.branch_id = ?"
 		argsPayments = append(argsPayments, branchID)
 		argsHeader = append(argsHeader, branchID)
+	}
+	if filter.RestrictUser && filter.UserID > 0 {
+		userClause = " AND s.user_id = ?"
+		argsPayments = append(argsPayments, filter.UserID)
+		argsHeader = append(argsHeader, filter.UserID)
 	}
 
 	sql := `
@@ -308,7 +331,7 @@ func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive t
 			INNER JOIN tenant_sales s ON s.id = tsp.sale_id
 			WHERE s.issue_date >= ? AND s.issue_date < ?
 				AND s.status != 'cancelled'
-				AND ` + salescope.CommercialWhere("s") + branchClause + `
+				AND ` + salescope.CommercialWhere("s") + branchClause + userClause + `
 			UNION ALL
 			SELECT
 				CASE
@@ -325,7 +348,7 @@ func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive t
 			WHERE s.issue_date >= ? AND s.issue_date < ?
 				AND s.status != 'cancelled'
 				AND ` + salescope.CommercialWhere("s") + `
-				AND NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = s.id)` + branchClause + `
+				AND NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = s.id)` + branchClause + userClause + `
 		) AS combined
 		GROUP BY bucket
 		ORDER BY total DESC
@@ -354,12 +377,17 @@ func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive t
 	return nil
 }
 
-func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time.Time, topN int, out *DashboardData) error {
+func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time.Time, topN int, filter DashboardFilter, out *DashboardData) error {
 	branchClause := ""
+	userClause := ""
 	args := []interface{}{from, toExclusive}
 	if branchID > 0 {
 		branchClause = " AND s.branch_id = ?"
 		args = append(args, branchID)
+	}
+	if filter.RestrictUser && filter.UserID > 0 {
+		userClause = " AND s.user_id = ?"
+		args = append(args, filter.UserID)
 	}
 
 	var totalAmountAll float64
@@ -369,7 +397,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
 		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'
-			AND ` + salescope.CommercialWhere("s") + branchClause
+			AND ` + salescope.CommercialWhere("s") + branchClause + userClause
 	if err := s.db.Raw(totalSQL, args...).Scan(&totalAmountAll).Error; err != nil {
 		return err
 	}
@@ -391,7 +419,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 		LEFT JOIN tenant_products p ON p.id = si.product_id
 		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'
-			AND ` + salescope.CommercialWhere("s") + branchClause + `
+			AND ` + salescope.CommercialWhere("s") + branchClause + userClause + `
 		GROUP BY COALESCE(si.product_id, 0), product_name
 		ORDER BY quantity_sold DESC
 		LIMIT ?
@@ -422,12 +450,17 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 	return nil
 }
 
-func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive time.Time, out *DashboardData) error {
+func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive time.Time, filter DashboardFilter, out *DashboardData) error {
 	branchClause := ""
+	userClause := ""
 	args := []interface{}{from, toExclusive}
 	if branchID > 0 {
 		branchClause = " AND s.branch_id = ?"
 		args = append(args, branchID)
+	}
+	if filter.RestrictUser && filter.UserID > 0 {
+		userClause = " AND s.user_id = ?"
+		args = append(args, filter.UserID)
 	}
 
 	type catRow struct {
@@ -446,7 +479,7 @@ func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive ti
 		LEFT JOIN tenant_categories pc ON pc.id = p.category_id
 		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'
-			AND ` + salescope.CommercialWhere("s") + branchClause + `
+			AND ` + salescope.CommercialWhere("s") + branchClause + userClause + `
 		GROUP BY category_name
 		ORDER BY total_amount DESC
 		LIMIT 20
@@ -466,7 +499,7 @@ func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive ti
 	return nil
 }
 
-func (s *DashboardService) loadSalesLast30Days(branchID uint, out *DashboardData) error {
+func (s *DashboardService) loadSalesLast30Days(branchID uint, filter DashboardFilter, out *DashboardData) error {
 	now := saas.NowLima()
 	todayStart := saas.CalendarDateLima(now)
 	from30 := todayStart.AddDate(0, 0, -29)
@@ -477,7 +510,7 @@ func (s *DashboardService) loadSalesLast30Days(branchID uint, out *DashboardData
 		Total float64 `gorm:"column:total"`
 		Count int64   `gorm:"column:count"`
 	}
-	q := restaurantSalesScope(s.db, branchID, from30, toExclusive).
+	q := restaurantSalesScope(s.db, branchID, from30, toExclusive, filter).
 		Select("DATE_FORMAT(issue_date, '%Y-%m-%d') AS day, COALESCE(SUM(total), 0) AS total, COUNT(*) AS count").
 		Group("DATE_FORMAT(issue_date, '%Y-%m-%d')").
 		Order("day")
@@ -507,12 +540,12 @@ func (s *DashboardService) loadSalesLast30Days(branchID uint, out *DashboardData
 	return nil
 }
 
-func (s *DashboardService) loadSalesByHour(branchID uint, from, toExclusive time.Time, out *DashboardData) error {
+func (s *DashboardService) loadSalesByHour(branchID uint, from, toExclusive time.Time, filter DashboardFilter, out *DashboardData) error {
 	type hourRow struct {
 		Hour   int   `gorm:"column:hour"`
 		Orders int64 `gorm:"column:orders"`
 	}
-	q := restaurantSessionsScope(s.db, branchID, from, toExclusive).
+	q := restaurantSessionsScope(s.db, branchID, from, toExclusive, filter).
 		Select("HOUR(opened_at) AS hour, COUNT(*) AS orders").
 		Group("HOUR(opened_at)").
 		Order("hour")

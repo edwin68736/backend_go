@@ -30,12 +30,15 @@ type ProductListParams struct {
 	InactiveOnly     bool // solo productos inactivos (panel restaurante)
 	ManageStockOnly    bool // solo productos con manage_stock (para transferencias/inventario)
 	NoManageStockOnly  bool // solo productos sin control de stock (reporte restaurante)
-	RestaurantOnly     bool // solo productos con is_restaurant (para panel restaurante)
-	PreparationArea  string // filtrar por área de preparación (cocina, bar, etc.)
+	RestaurantOnly       bool // solo productos con is_restaurant (para panel restaurante)
+	PreparationArea      string // filtrar por slug (legacy)
+	PreparationAreaID    uint   // filtrar por FK
 	StockLessThan    *float64
 	BranchID         uint // >0: restaurante → tenant_products.branch_id; inventario ERP → stock en sucursal
 	Limit            int // 0 = sin límite (comportamiento anterior)
 	Offset           int
+	SortBy           string // id, code, name, category, price, stock
+	SortDir          string // asc, desc
 }
 
 const maxReportSerialsPerProduct = 120
@@ -64,49 +67,52 @@ type ProductReportItem struct {
 }
 
 func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
+	const p = "tenant_products."
 	q := s.db.Model(&database.TenantProduct{})
 	if params.Query != "" {
-		q = q.Where("name LIKE ? OR code LIKE ? OR description LIKE ?",
+		q = q.Where(p+"name LIKE ? OR "+p+"code LIKE ? OR "+p+"description LIKE ?",
 			"%"+params.Query+"%", "%"+params.Query+"%", "%"+params.Query+"%")
 	}
 	if params.CategoryID > 0 {
-		q = q.Where("category_id = ?", params.CategoryID)
+		q = q.Where(p+"category_id = ?", params.CategoryID)
 	}
 	t := strings.ToLower(strings.TrimSpace(params.Type))
 	if t != "" {
 		switch t {
 		case "product":
 			// Catálogo de bienes: filas creadas antes de `type` quedan NULL o ''; no deben excluirse del listado.
-			q = q.Where("(type IS NULL OR TRIM(COALESCE(type, '')) = '' OR LOWER(TRIM(type)) = ?)", "product")
+			q = q.Where("("+p+"type IS NULL OR TRIM(COALESCE("+p+"type, '')) = '' OR LOWER(TRIM("+p+"type)) = ?)", "product")
 		case "service":
-			q = q.Where("LOWER(TRIM(COALESCE(type, ''))) = ?", "service")
+			q = q.Where("LOWER(TRIM(COALESCE("+p+"type, ''))) = ?", "service")
 		default:
-			q = q.Where("type = ?", params.Type)
+			q = q.Where(p+"type = ?", params.Type)
 		}
 	}
 	if params.InactiveOnly {
-		q = q.Where("active = ?", false)
+		q = q.Where(p+"active = ?", false)
 	} else if params.ActiveOnly {
-		q = q.Where("active = ?", true)
+		q = q.Where(p+"active = ?", true)
 	}
 	if params.ManageStockOnly {
-		q = q.Where("manage_stock = ?", true)
+		q = q.Where(p+"manage_stock = ?", true)
 	} else if params.NoManageStockOnly {
-		q = q.Where("manage_stock = ?", false)
+		q = q.Where(p+"manage_stock = ?", false)
 	}
 	if params.RestaurantOnly {
-		q = q.Where("is_restaurant = ?", true)
+		q = q.Where(p+"is_restaurant = ?", true)
 	}
-	if params.PreparationArea != "" {
-		q = q.Where("preparation_area = ?", params.PreparationArea)
+	if params.PreparationAreaID > 0 {
+		q = q.Where(p+"preparation_area_id = ?", params.PreparationAreaID)
+	} else if params.PreparationArea != "" {
+		q = q.Where(p+"preparation_area = ?", params.PreparationArea)
 	}
 	if params.BranchID > 0 {
 		bid := params.BranchID
 		if params.RestaurantOnly {
 			// Carta Tukichef: catálogo exclusivo por sucursal (branch_id en el producto).
-			q = q.Where("branch_id = ?", bid)
+			q = q.Where(p+"branch_id = ?", bid)
 		} else {
-			q = q.Where(`(tenant_products.manage_stock = ? OR EXISTS (
+			q = q.Where(`(`+p+`manage_stock = ? OR EXISTS (
 				SELECT 1 FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = ?
 			))`, false, bid)
 		}
@@ -115,20 +121,60 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 		thr := *params.StockLessThan
 		if params.BranchID > 0 {
 			bid := params.BranchID
-			q = q.Where("manage_stock = ?", true).
+			q = q.Where(p+"manage_stock = ?", true).
 				Where(`COALESCE((
 					SELECT s.quantity FROM tenant_product_stocks s
 					WHERE s.product_id = tenant_products.id AND s.branch_id = ?
 					LIMIT 1
 				), 0) < ?`, bid, thr)
 		} else {
-			q = q.Where("manage_stock = ?", true).
+			q = q.Where(p+"manage_stock = ?", true).
 				Where(`COALESCE((
 					SELECT SUM(s.quantity) FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id
 				), 0) < ?`, thr)
 		}
 	}
 	return q
+}
+
+func (s *ProductService) applyProductListOrder(q *gorm.DB, params ProductListParams) *gorm.DB {
+	col := strings.ToLower(strings.TrimSpace(params.SortBy))
+	if col == "" {
+		col = "id"
+	}
+	dir := "DESC"
+	if strings.EqualFold(params.SortDir, "asc") {
+		dir = "ASC"
+	} else if col == "id" && strings.TrimSpace(params.SortDir) == "" {
+		dir = "DESC"
+	}
+
+	tie := ", tenant_products.id DESC"
+	switch col {
+	case "code":
+		return q.Order("tenant_products.code " + dir + tie)
+	case "name":
+		return q.Order("tenant_products.name " + dir + tie)
+	case "category":
+		q = q.Joins("LEFT JOIN tenant_categories ON tenant_categories.id = tenant_products.category_id")
+		return q.Order("COALESCE(tenant_categories.name, '') " + dir + tie)
+	case "price":
+		return q.Order("tenant_products.sale_price " + dir + tie)
+	case "stock":
+		if params.BranchID > 0 {
+			stockExpr := fmt.Sprintf(
+				"COALESCE((SELECT s.quantity FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = %d LIMIT 1), 0)",
+				params.BranchID,
+			)
+			return q.Order(stockExpr + " " + dir + tie)
+		}
+		stockExpr := "COALESCE((SELECT SUM(s.quantity) FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id), 0)"
+		return q.Order(stockExpr + " " + dir + tie)
+	case "id":
+		return q.Order("tenant_products.id " + dir)
+	default:
+		return q.Order("tenant_products.id DESC")
+	}
 }
 
 func (s *ProductService) List(params ProductListParams) ([]database.TenantProduct, int64, error) {
@@ -142,7 +188,8 @@ func (s *ProductService) List(params ProductListParams) ([]database.TenantProduc
 		}
 		q = q.Offset(params.Offset).Limit(params.Limit)
 	}
-	err := q.Order("name ASC").Find(&products).Error
+	q = s.applyProductListOrder(q, params)
+	err := q.Find(&products).Error
 	return products, total, err
 }
 
@@ -211,7 +258,8 @@ func (s *ProductService) ListReport(params ProductListParams) ([]ProductReportIt
 		}
 		q = q.Offset(params.Offset).Limit(params.Limit)
 	}
-	if err := q.Order("name ASC").Find(&products).Error; err != nil {
+	q = s.applyProductListOrder(q, params)
+	if err := q.Find(&products).Error; err != nil {
 		return nil, 0, err
 	}
 	return s.enrichReport(products, params.BranchID), total, nil
@@ -388,7 +436,8 @@ type ProductInput struct {
 	HasVariants        bool
 	HasModifiers       bool
 	IsRestaurant       bool
-	PreparationArea    string // solo restaurante: cocina, bar, barra
+	PreparationAreaID  *uint
+	PreparationArea    string // slug legacy; se sincroniza desde preparation_area_id
 	MinStock           float64
 	ImageURL           string
 	Active             bool
@@ -452,6 +501,7 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 		HasModifiers:       input.HasModifiers,
 		IsRestaurant:       input.IsRestaurant,
 		BranchID:           input.BranchID,
+		PreparationAreaID:  input.PreparationAreaID,
 		PreparationArea:    input.PreparationArea,
 		MinStock:           input.MinStock,
 		ImageURL:           input.ImageURL,
@@ -465,6 +515,9 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 		p.Type = "product"
 	}
 	normalizeProductCatalogFields(p)
+	if err := s.resolvePreparationAreaFields(p); err != nil {
+		return nil, err
+	}
 	p.Unit = sunat.NormalizeUnit(p.Unit, p.Type)
 	if strings.EqualFold(strings.TrimSpace(p.Type), "product") && strings.EqualFold(strings.TrimSpace(p.Unit), "ZZ") {
 		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
@@ -507,6 +560,7 @@ func normalizeProductServiceFields(p *database.TenantProduct) {
 	p.HasModifiers = false
 	p.IsRestaurant = false
 	p.MinStock = 0
+	p.PreparationAreaID = nil
 	p.PreparationArea = ""
 }
 
@@ -515,6 +569,7 @@ func normalizeProductServiceFields(p *database.TenantProduct) {
 func normalizeProductCatalogFields(p *database.TenantProduct) {
 	normalizeProductServiceFields(p)
 	if !p.IsRestaurant {
+		p.PreparationAreaID = nil
 		p.PreparationArea = ""
 	} else {
 		p.PreparationArea = strings.TrimSpace(strings.ToLower(p.PreparationArea))
@@ -558,17 +613,21 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 	}
 
 	draft := &database.TenantProduct{
-		Type:            effType,
-		Unit:            unit,
-		IsRestaurant:    input.IsRestaurant,
-		ManageStock:     input.ManageStock,
-		PreparationArea: input.PreparationArea,
-		MinStock:        input.MinStock,
-		ManageSeries:    input.ManageSeries,
-		HasVariants:     input.HasVariants,
-		HasModifiers:    input.HasModifiers,
+		Type:              effType,
+		Unit:              unit,
+		IsRestaurant:      input.IsRestaurant,
+		ManageStock:         input.ManageStock,
+		PreparationAreaID:   input.PreparationAreaID,
+		PreparationArea:     input.PreparationArea,
+		MinStock:            input.MinStock,
+		ManageSeries:        input.ManageSeries,
+		HasVariants:         input.HasVariants,
+		HasModifiers:        input.HasModifiers,
 	}
 	normalizeProductCatalogFields(draft)
+	if err := s.resolvePreparationAreaFields(draft); err != nil {
+		return err
+	}
 	if strings.EqualFold(draft.Type, "service") {
 		unit = draft.Unit
 	}
@@ -590,6 +649,7 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		"has_variants":         draft.HasVariants,
 		"has_modifiers":        draft.HasModifiers,
 		"is_restaurant":        draft.IsRestaurant,
+		"preparation_area_id":  draft.PreparationAreaID,
 		"preparation_area":     draft.PreparationArea,
 		"min_stock":            draft.MinStock,
 		"image_url":            input.ImageURL,
@@ -699,19 +759,324 @@ func (s *ProductService) GetStockByBranch(productID, branchID uint) float64 {
 
 // ========= Categorías =========
 
+// CategoryListItem categoría con conteo de productos (panel restaurante).
+type CategoryListItem struct {
+	database.TenantCategory
+	ProductCount int64 `json:"product_count"`
+}
+
+func (s *ProductService) nextCategorySortOrder() (int, error) {
+	var maxOrder *int
+	err := s.db.Model(&database.TenantCategory{}).Select("MAX(sort_order)").Scan(&maxOrder).Error
+	if err != nil {
+		return 0, err
+	}
+	if maxOrder == nil {
+		return 1, nil
+	}
+	return *maxOrder + 1, nil
+}
+
 func (s *ProductService) ListCategories() ([]database.TenantCategory, error) {
 	var cats []database.TenantCategory
-	err := s.db.Where("active = ?", true).Order("name ASC").Find(&cats).Error
+	err := s.db.Where("active = ?", true).Order("sort_order ASC, name ASC").Find(&cats).Error
 	return cats, err
 }
 
-func (s *ProductService) CreateCategory(name, description string) (*database.TenantCategory, error) {
+func (s *ProductService) ListCategoriesWithCounts() ([]CategoryListItem, error) {
+	var cats []database.TenantCategory
+	if err := s.db.Order("sort_order ASC, name ASC").Find(&cats).Error; err != nil {
+		return nil, err
+	}
+	if len(cats) == 0 {
+		return nil, nil
+	}
+	ids := make([]uint, len(cats))
+	for i, c := range cats {
+		ids[i] = c.ID
+	}
+	type countRow struct {
+		CategoryID uint
+		Count      int64
+	}
+	var counts []countRow
+	if err := s.db.Model(&database.TenantProduct{}).
+		Select("category_id, COUNT(*) AS count").
+		Where("category_id IN ?", ids).
+		Group("category_id").
+		Scan(&counts).Error; err != nil {
+		return nil, err
+	}
+	countMap := make(map[uint]int64, len(counts))
+	for _, r := range counts {
+		countMap[r.CategoryID] = r.Count
+	}
+	out := make([]CategoryListItem, len(cats))
+	for i, c := range cats {
+		out[i] = CategoryListItem{TenantCategory: c, ProductCount: countMap[c.ID]}
+	}
+	return out, nil
+}
+
+func (s *ProductService) GetCategory(id uint) (*database.TenantCategory, error) {
+	var cat database.TenantCategory
+	if err := s.db.First(&cat, id).Error; err != nil {
+		return nil, err
+	}
+	return &cat, nil
+}
+
+func (s *ProductService) CreateCategory(name, description string, sortOrder *int) (*database.TenantCategory, error) {
+	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("nombre de categoría requerido")
 	}
-	cat := &database.TenantCategory{Name: name, Description: description, Active: true}
+	order := 0
+	if sortOrder != nil {
+		order = *sortOrder
+	} else {
+		next, err := s.nextCategorySortOrder()
+		if err != nil {
+			return nil, err
+		}
+		order = next
+	}
+	cat := &database.TenantCategory{Name: name, Description: strings.TrimSpace(description), SortOrder: order, Active: true}
 	err := s.db.Create(cat).Error
 	return cat, err
+}
+
+func (s *ProductService) UpdateCategory(id uint, name, description string, sortOrder int) (*database.TenantCategory, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("nombre de categoría requerido")
+	}
+	var cat database.TenantCategory
+	if err := s.db.First(&cat, id).Error; err != nil {
+		return nil, errors.New("categoría no encontrada")
+	}
+	cat.Name = name
+	cat.Description = strings.TrimSpace(description)
+	cat.SortOrder = sortOrder
+	if err := s.db.Save(&cat).Error; err != nil {
+		return nil, err
+	}
+	return &cat, nil
+}
+
+func (s *ProductService) DeleteCategory(id uint) error {
+	var cat database.TenantCategory
+	if err := s.db.First(&cat, id).Error; err != nil {
+		return errors.New("categoría no encontrada")
+	}
+	var linked int64
+	if err := s.db.Model(&database.TenantProduct{}).Where("category_id = ?", id).Count(&linked).Error; err != nil {
+		return err
+	}
+	if linked > 0 {
+		return fmt.Errorf("no se puede eliminar: hay %d producto(s) vinculados", linked)
+	}
+	return s.db.Delete(&cat).Error
+}
+
+func (s *ProductService) resolvePreparationAreaFields(p *database.TenantProduct) error {
+	if !p.IsRestaurant {
+		p.PreparationAreaID = nil
+		p.PreparationArea = ""
+		return nil
+	}
+	if p.PreparationAreaID != nil && *p.PreparationAreaID > 0 {
+		var area database.TenantPreparationArea
+		if err := s.db.First(&area, *p.PreparationAreaID).Error; err != nil {
+			return errors.New("área de preparación no encontrada")
+		}
+		p.PreparationArea = area.Slug
+		return nil
+	}
+	p.PreparationArea = strings.TrimSpace(strings.ToLower(p.PreparationArea))
+	if p.PreparationArea == "" {
+		p.PreparationAreaID = nil
+		return nil
+	}
+	var area database.TenantPreparationArea
+	if err := s.db.Where("slug = ?", p.PreparationArea).First(&area).Error; err != nil {
+		return nil
+	}
+	id := area.ID
+	p.PreparationAreaID = &id
+	return nil
+}
+
+func slugifyPreparationAreaName(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	lastSep := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSep = false
+			continue
+		}
+		if !lastSep {
+			b.WriteRune('_')
+			lastSep = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "area"
+	}
+	return out
+}
+
+func (s *ProductService) uniquePreparationAreaSlug(base string) (string, error) {
+	slug := base
+	for i := 0; i < 100; i++ {
+		var n int64
+		if err := s.db.Model(&database.TenantPreparationArea{}).Where("slug = ?", slug).Count(&n).Error; err != nil {
+			return "", err
+		}
+		if n == 0 {
+			return slug, nil
+		}
+		slug = fmt.Sprintf("%s_%d", base, i+2)
+	}
+	return "", errors.New("no se pudo generar slug único")
+}
+
+func (s *ProductService) ResolvePreparationAreaIDBySlug(slug string) (*uint, error) {
+	slug = strings.TrimSpace(strings.ToLower(slug))
+	if slug == "" {
+		return nil, nil
+	}
+	var area database.TenantPreparationArea
+	if err := s.db.Where("slug = ?", slug).First(&area).Error; err != nil {
+		return nil, fmt.Errorf("área de preparación %q no encontrada", slug)
+	}
+	id := area.ID
+	return &id, nil
+}
+
+// ========= Áreas de preparación =========
+
+type PreparationAreaListItem struct {
+	database.TenantPreparationArea
+	ProductCount int64 `json:"product_count"`
+}
+
+func (s *ProductService) nextPreparationAreaSortOrder() (int, error) {
+	var maxOrder *int
+	err := s.db.Model(&database.TenantPreparationArea{}).Select("MAX(sort_order)").Scan(&maxOrder).Error
+	if err != nil {
+		return 0, err
+	}
+	if maxOrder == nil {
+		return 1, nil
+	}
+	return *maxOrder + 1, nil
+}
+
+func (s *ProductService) ListPreparationAreas() ([]database.TenantPreparationArea, error) {
+	var areas []database.TenantPreparationArea
+	err := s.db.Where("active = ?", true).Order("sort_order ASC, name ASC").Find(&areas).Error
+	return areas, err
+}
+
+func (s *ProductService) ListPreparationAreasWithCounts() ([]PreparationAreaListItem, error) {
+	var areas []database.TenantPreparationArea
+	if err := s.db.Order("sort_order ASC, name ASC").Find(&areas).Error; err != nil {
+		return nil, err
+	}
+	if len(areas) == 0 {
+		return nil, nil
+	}
+	ids := make([]uint, len(areas))
+	for i, a := range areas {
+		ids[i] = a.ID
+	}
+	type countRow struct {
+		PreparationAreaID uint
+		Count             int64
+	}
+	var counts []countRow
+	if err := s.db.Model(&database.TenantProduct{}).
+		Select("preparation_area_id, COUNT(*) AS count").
+		Where("preparation_area_id IN ?", ids).
+		Group("preparation_area_id").
+		Scan(&counts).Error; err != nil {
+		return nil, err
+	}
+	countMap := make(map[uint]int64, len(counts))
+	for _, r := range counts {
+		countMap[r.PreparationAreaID] = r.Count
+	}
+	out := make([]PreparationAreaListItem, len(areas))
+	for i, a := range areas {
+		out[i] = PreparationAreaListItem{TenantPreparationArea: a, ProductCount: countMap[a.ID]}
+	}
+	return out, nil
+}
+
+func (s *ProductService) CreatePreparationArea(name, slug string, sortOrder *int) (*database.TenantPreparationArea, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("nombre de área requerido")
+	}
+	baseSlug := strings.TrimSpace(strings.ToLower(slug))
+	if baseSlug == "" {
+		baseSlug = slugifyPreparationAreaName(name)
+	}
+	uniqueSlug, err := s.uniquePreparationAreaSlug(baseSlug)
+	if err != nil {
+		return nil, err
+	}
+	order := 0
+	if sortOrder != nil {
+		order = *sortOrder
+	} else {
+		next, err := s.nextPreparationAreaSortOrder()
+		if err != nil {
+			return nil, err
+		}
+		order = next
+	}
+	area := &database.TenantPreparationArea{Name: name, Slug: uniqueSlug, SortOrder: order, Active: true}
+	if err := s.db.Create(area).Error; err != nil {
+		return nil, err
+	}
+	return area, nil
+}
+
+func (s *ProductService) UpdatePreparationArea(id uint, name string, sortOrder int) (*database.TenantPreparationArea, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("nombre de área requerido")
+	}
+	var area database.TenantPreparationArea
+	if err := s.db.First(&area, id).Error; err != nil {
+		return nil, errors.New("área de preparación no encontrada")
+	}
+	area.Name = name
+	area.SortOrder = sortOrder
+	if err := s.db.Save(&area).Error; err != nil {
+		return nil, err
+	}
+	return &area, nil
+}
+
+func (s *ProductService) DeletePreparationArea(id uint) error {
+	var area database.TenantPreparationArea
+	if err := s.db.First(&area, id).Error; err != nil {
+		return errors.New("área de preparación no encontrada")
+	}
+	var linked int64
+	if err := s.db.Model(&database.TenantProduct{}).Where("preparation_area_id = ?", id).Count(&linked).Error; err != nil {
+		return err
+	}
+	if linked > 0 {
+		return fmt.Errorf("no se puede eliminar: hay %d producto(s) vinculados", linked)
+	}
+	return s.db.Delete(&area).Error
 }
 
 // ========= Grupos de modificadores =========

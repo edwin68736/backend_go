@@ -185,6 +185,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		HasModifiers       bool    `json:"has_modifiers"`
 		MinStock           float64 `json:"min_stock"`
 		IsRestaurant       bool    `json:"is_restaurant"`
+		PreparationAreaID  *uint   `json:"preparation_area_id"`
 		PreparationArea    string  `json:"preparation_area"`
 		ImageURL           string  `json:"image_url"`
 		ModifierGroupIDs   []uint  `json:"modifier_group_ids"`
@@ -230,6 +231,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		HasModifiers:       body.HasModifiers,
 		MinStock:           body.MinStock,
 		IsRestaurant:       body.IsRestaurant,
+		PreparationAreaID:  body.PreparationAreaID,
 		PreparationArea:    body.PreparationArea,
 		ImageURL:           body.ImageURL,
 		Active:             true,
@@ -323,6 +325,7 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		HasModifiers       bool    `json:"has_modifiers"`
 		MinStock           float64 `json:"min_stock"`
 		IsRestaurant       bool    `json:"is_restaurant"`
+		PreparationAreaID  *uint   `json:"preparation_area_id"`
 		PreparationArea    string  `json:"preparation_area"`
 		ImageURL           string  `json:"image_url"`
 		Active             *bool   `json:"active"`
@@ -366,6 +369,7 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		HasModifiers:       body.HasModifiers,
 		MinStock:           body.MinStock,
 		IsRestaurant:       body.IsRestaurant,
+		PreparationAreaID:  body.PreparationAreaID,
 		PreparationArea:    body.PreparationArea,
 		ImageURL:           body.ImageURL,
 		ModifierGroupIDs:   body.ModifierGroupIDs,
@@ -472,7 +476,10 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		ManageStockOnly:    c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1",
 		NoManageStockOnly:  c.Query("no_manage_stock_only") == "true" || c.Query("no_manage_stock_only") == "1",
 		RestaurantOnly:     c.Query("restaurant_only") == "true" || c.Query("restaurant_only") == "1",
-		PreparationArea: c.Query("preparation_area"),
+		PreparationArea:    c.Query("preparation_area"),
+	}
+	if prepAreaID, err := strconv.ParseUint(c.Query("preparation_area_id"), 10, 32); err == nil && prepAreaID > 0 {
+		params.PreparationAreaID = uint(prepAreaID)
 	}
 	if v := strings.TrimSpace(c.Query("stock_less_than")); v != "" {
 		if x, err := strconv.ParseFloat(v, 64); err == nil {
@@ -491,6 +498,8 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		params.Limit = perPage
 		params.Offset = (page - 1) * perPage
 	}
+	params.SortBy = strings.TrimSpace(c.Query("sort_by"))
+	params.SortDir = strings.TrimSpace(c.Query("sort_dir"))
 	if report {
 		items, total, err := svc.ListReport(params)
 		if err != nil {
@@ -624,29 +633,137 @@ func (h *ProductHandler) UploadImageAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"image_url": imageURL})
 }
 
-// CategoryListAPI devuelve todas las categorías activas.
+// CategoryListAPI devuelve categorías activas (POS y selects).
 func (h *ProductHandler) CategoryListAPI(c fiber.Ctx) error {
-	cats, err := service.NewProductService(db(c)).ListCategories()
+	svc := service.NewProductService(db(c))
+	if c.Query("with_counts") == "true" || c.Query("with_counts") == "1" {
+		items, err := svc.ListCategoriesWithCounts()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"data": items})
+	}
+	cats, err := svc.ListCategories()
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"data": cats})
 }
 
-// CategoryCreateAPI crea una categoría inline desde el formulario de producto.
+// CategoryCreateAPI crea una categoría inline desde el formulario de producto o panel.
 func (h *ProductHandler) CategoryCreateAPI(c fiber.Ctx) error {
 	var body struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		SortOrder   *int   `json:"sort_order"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
-	cat, err := service.NewProductService(db(c)).CreateCategory(body.Name, body.Description)
+	cat, err := service.NewProductService(db(c)).CreateCategory(body.Name, body.Description, body.SortOrder)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(201).JSON(fiber.Map{"data": cat})
+}
+
+// CategoryUpdateAPI actualiza nombre, descripción y orden.
+func (h *ProductHandler) CategoryUpdateAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		SortOrder   int    `json:"sort_order"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	cat, err := service.NewProductService(db(c)).UpdateCategory(uint(id), body.Name, body.Description, body.SortOrder)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": cat})
+}
+
+// CategoryDeleteAPI elimina categoría si no tiene productos vinculados.
+func (h *ProductHandler) CategoryDeleteAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := service.NewProductService(db(c)).DeleteCategory(uint(id)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// PreparationAreaListAPI devuelve áreas de preparación activas.
+func (h *ProductHandler) PreparationAreaListAPI(c fiber.Ctx) error {
+	svc := service.NewProductService(db(c))
+	if c.Query("with_counts") == "true" || c.Query("with_counts") == "1" {
+		items, err := svc.ListPreparationAreasWithCounts()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"data": items})
+	}
+	areas, err := svc.ListPreparationAreas()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": areas})
+}
+
+// PreparationAreaCreateAPI crea un área de preparación.
+func (h *ProductHandler) PreparationAreaCreateAPI(c fiber.Ctx) error {
+	var body struct {
+		Name      string `json:"name"`
+		Slug      string `json:"slug"`
+		SortOrder *int   `json:"sort_order"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	area, err := service.NewProductService(db(c)).CreatePreparationArea(body.Name, body.Slug, body.SortOrder)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(fiber.Map{"data": area})
+}
+
+// PreparationAreaUpdateAPI actualiza nombre y orden (slug inmutable).
+func (h *ProductHandler) PreparationAreaUpdateAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Name      string `json:"name"`
+		SortOrder int    `json:"sort_order"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	area, err := service.NewProductService(db(c)).UpdatePreparationArea(uint(id), body.Name, body.SortOrder)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": area})
+}
+
+// PreparationAreaDeleteAPI elimina área si no tiene productos vinculados.
+func (h *ProductHandler) PreparationAreaDeleteAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := service.NewProductService(db(c)).DeletePreparationArea(uint(id)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
 }
 
 // ModifierGroupsAPI devuelve todos los grupos con opciones.

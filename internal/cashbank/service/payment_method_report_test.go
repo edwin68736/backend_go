@@ -25,4 +25,12 @@ func TestMovementRowChannel_cashVsElectronic(t *testing.T) {
 	if movementRowChannel(yape) != "electronic" {
 		t.Fatalf("expected electronic, got %q", movementRowChannel(yape))
 	}
+	voidYape := MovementReportRow{Type: "anulacion_venta", PaymentMethod: "yape", Amount: -50}
+	if movementRowChannel(voidYape) != "electronic" {
+		t.Fatalf("expected electronic for void yape, got %q", movementRowChannel(voidYape))
+	}
+	voidCash := MovementReportRow{Type: "anulacion_venta", PaymentMethod: "cash", Amount: -100}
+	if movementRowChannel(voidCash) != "cash" {
+		t.Fatalf("expected cash for void cash, got %q", movementRowChannel(voidCash))
+	}
 }

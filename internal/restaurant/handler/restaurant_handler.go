@@ -800,11 +800,35 @@ func (h *RestaurantHandler) Dashboard(c fiber.Ctx) error {
 	if topN <= 0 {
 		topN = 10
 	}
-	data, err := service.NewDashboardService(tdb).GetDashboard(branchID, from, toExclusive, topN)
+	filter := resolveRestaurantDashboardFilter(c)
+	data, err := service.NewDashboardService(tdb).GetDashboard(branchID, from, toExclusive, topN, filter)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"data": data})
+}
+
+func resolveRestaurantDashboardFilter(c fiber.Ctx) service.DashboardFilter {
+	if middleware.HasRestaurantPerm(c, restaurantperm.SettingsManage) {
+		return service.DashboardFilter{}
+	}
+	if claims, ok := c.Locals("tenant_claims").(*middleware.TenantClaims); ok && claims != nil {
+		if claims.RoleName == "Administrador" {
+			return service.DashboardFilter{}
+		}
+		switch strings.ToLower(strings.TrimSpace(claims.EmployeeType)) {
+		case "admin", "supervisor":
+			return service.DashboardFilter{}
+		}
+	}
+	if userRole, _ := c.Locals("user_role").(string); userRole == "Administrador" {
+		return service.DashboardFilter{}
+	}
+	userID := uid(c)
+	if userID == 0 {
+		return service.DashboardFilter{}
+	}
+	return service.DashboardFilter{UserID: userID, RestrictUser: true}
 }
 
 // ================================================================
