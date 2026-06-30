@@ -600,7 +600,7 @@ type TenantProduct struct {
 	TaxRate            float64        `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"`
 	IgvAffectationType string         `gorm:"size:10;default:'10'" json:"igv_affectation_type"` // Catálogo SUNAT N°7
 	PriceIncludesIgv   bool           `gorm:"default:true" json:"price_includes_igv"`
-	ManageStock        bool           `gorm:"default:true" json:"manage_stock"`
+	ManageStock        bool           `gorm:"default:false" json:"manage_stock"`
 	ManageSeries       bool           `gorm:"default:false" json:"manage_series"`
 	HasVariants        bool           `gorm:"default:false" json:"has_variants"`
 	HasModifiers       bool           `gorm:"default:false" json:"has_modifiers"`

@@ -61,6 +61,7 @@ var TenantMigrations = []TenantMigration{
 	V086CategorySortOrder{},
 	V087PreparationAreas{},
 	V088PreparationAreasTimestamps{},
+	V089ProductManageStockDefault{},
 }
 
 // ByVersion mapa versión → migración.

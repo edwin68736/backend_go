@@ -41,19 +41,17 @@ func ValidateNotaCreditoSeriesCode(seriesName string) error {
 	return nil
 }
 
-// ValidateSeriesConfig reglas por categoría / código SUNAT (series y comprobantes).
-func ValidateSeriesConfig(category, sunatCode, seriesName string) error {
-	cat := strings.TrimSpace(strings.ToLower(category))
-	sc := strings.TrimSpace(sunatCode)
-	name := NormalizeSeriesCode(seriesName)
-	if cat == "nota_credito" || sc == "07" {
-		if cat != "" && cat != "nota_credito" {
-			return fmt.Errorf("categoría %q no corresponde a nota de crédito (SUNAT 07)", category)
-		}
-		if sc != "" && sc != "07" {
-			return fmt.Errorf("código SUNAT %q no corresponde a nota de crédito (use 07)", sunatCode)
-		}
-		return ValidateNotaCreditoSeriesCode(name)
+// ValidateSeriesConfig valida coherencia tipo/categoría/código documental y reglas de formato de serie.
+func ValidateSeriesConfig(docType, category, documentCode, seriesName string) error {
+	if err := ValidateSeriesDocumentType(docType, documentCode, category); err != nil {
+		return err
+	}
+	def, err := ResolveDocumentType(docType)
+	if err != nil {
+		return err
+	}
+	if def.Category == "nota_credito" {
+		return ValidateNotaCreditoSeriesCode(seriesName)
 	}
 	return nil
 }

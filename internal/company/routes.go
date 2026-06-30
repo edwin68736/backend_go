@@ -20,6 +20,7 @@ func RegisterRoutes(api fiber.Router) {
 	api.Post("/company/branches", h.CreateBranchAPI)
 	api.Put("/company/branches/:id", h.UpdateBranchAPI)
 	api.Delete("/company/branches/:id", h.DeleteBranchAPI)
+	api.Get("/company/series/document-types", h.ListSeriesDocumentTypesAPI)
 	api.Get("/company/series", h.ListSeriesAPI)
 	api.Post("/company/series", h.CreateSeriesAPI)
 	api.Put("/company/series/:id", h.UpdateSeriesAPI)

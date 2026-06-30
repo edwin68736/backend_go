@@ -93,6 +93,36 @@ func TestProductList_NoManageStockOnly(t *testing.T) {
 	}
 }
 
+func TestProductCreate_DefaultManageStockFalseWhenOmitted(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	p, err := svc.Create(ProductInput{
+		Code:               "TST-DEFAULT-NO-STOCK",
+		Name:               "Producto sin flag explícito",
+		Type:               "product",
+		Unit:               "NIU",
+		SalePrice:          12,
+		TaxRate:            18,
+		IgvAffectationType: "10",
+		Active:             true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if p.ManageStock {
+		t.Fatalf("ManageStock en memoria: got true, want false (default)")
+	}
+
+	var loaded database.TenantProduct
+	if err := db.First(&loaded, p.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ManageStock {
+		t.Fatalf("manage_stock en BD: got true, want false (default)")
+	}
+}
+
 func TestProductCreate_ManageStockTruePersistsInDB(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)

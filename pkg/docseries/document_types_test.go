@@ -1,0 +1,69 @@
+package docseries
+
+import "testing"
+
+func TestValidateSeriesDocumentType_rejectsInconsistentCode(t *testing.T) {
+	err := ValidateSeriesDocumentType("BOLETA", "01", "venta")
+	if err == nil {
+		t.Fatal("Boleta + código 01 debe rechazarse")
+	}
+}
+
+func TestValidateSeriesDocumentType_acceptsConsistentFactura(t *testing.T) {
+	if err := ValidateSeriesDocumentType("FACTURA", "01", "venta"); err != nil {
+		t.Fatalf("Factura + 01: %v", err)
+	}
+}
+
+func TestNormalizeSeriesDocumentInput_derivesCanonicalFields(t *testing.T) {
+	doc, code, cat, err := NormalizeSeriesDocumentInput("Boleta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc != "BOLETA" || code != "03" || cat != "venta" {
+		t.Fatalf("got doc=%q code=%q cat=%q", doc, code, cat)
+	}
+}
+
+func TestResolveDocumentType_legacyLabels(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"NOTA DE CRÉDITO", "NOTA_CREDITO"},
+		{"GUÍA DE REMISIÓN", "GUIA_REMISION"},
+		{"NOTA DE VENTA", "NOTA DE VENTA"},
+	}
+	for _, c := range cases {
+		def, err := ResolveDocumentType(c.in)
+		if err != nil {
+			t.Fatalf("%q: %v", c.in, err)
+		}
+		if def.DocType != c.want {
+			t.Fatalf("%q: got doc_type %q want %q", c.in, def.DocType, c.want)
+		}
+	}
+}
+
+func TestListFormDocumentTypes_withoutSunatOnlyNotaVenta(t *testing.T) {
+	types := ListFormDocumentTypes(false, false)
+	if len(types) != 1 || types[0].ID != "nota_venta" {
+		t.Fatalf("want solo nota_venta, got %d tipos", len(types))
+	}
+}
+
+func TestListFormDocumentTypes_restaurantSubset(t *testing.T) {
+	types := ListFormDocumentTypes(true, true)
+	for _, item := range types {
+		if !item.RestaurantForm {
+			t.Fatalf("tipo %s no es restaurant_form", item.ID)
+		}
+	}
+}
+
+func TestCategoryLabels_includesInventoryAndQuotation(t *testing.T) {
+	labels := CategoryLabels()
+	if labels["almacen"] == "" || labels["cotizacion"] == "" {
+		t.Fatalf("labels=%v", labels)
+	}
+}

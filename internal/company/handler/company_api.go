@@ -9,6 +9,7 @@ import (
 
 	"tukifac/internal/company/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/docseries"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
 
@@ -315,21 +316,29 @@ func (h *CompanyHandler) ListSeriesAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": series})
 }
 
+// GET /api/company/series/document-types?context=restaurant
+func (h *CompanyHandler) ListSeriesDocumentTypesAPI(c fiber.Ctx) error {
+	svc := service.NewCompanyService(db(c))
+	restaurant := strings.TrimSpace(strings.ToLower(c.Query("context"))) == "restaurant"
+	types := docseries.ListFormDocumentTypes(svc.IsSunatEnabled(), restaurant)
+	return c.JSON(fiber.Map{
+		"data":             types,
+		"category_labels":  docseries.CategoryLabels(),
+	})
+}
+
 // POST /api/company/series
 func (h *CompanyHandler) CreateSeriesAPI(c fiber.Ctx) error {
 	var body struct {
-		BranchID  uint   `json:"branch_id"`
-		DocType   string `json:"doc_type"`
-		SunatCode string `json:"sunat_code"`
-		Category  string `json:"category"`
-		Series    string `json:"series"`
+		BranchID    uint   `json:"branch_id"`
+		DocType     string `json:"doc_type"`
+		Series      string `json:"series"`
+		Correlative *uint  `json:"correlative"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if err := service.NewCompanyService(db(c)).CreateSeries(
-		body.BranchID, body.DocType, body.SunatCode, body.Category, body.Series,
-	); err != nil {
+	if err := service.NewCompanyService(db(c)).CreateSeries(body.BranchID, body.DocType, body.Series, body.Correlative); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true})
@@ -345,8 +354,6 @@ func (h *CompanyHandler) UpdateSeriesAPI(c fiber.Ctx) error {
 		Series      string `json:"series"`
 		Active      bool   `json:"active"`
 		DocType     string `json:"doc_type"`
-		SunatCode   string `json:"sunat_code"`
-		Category    string `json:"category"`
 		Correlative *uint  `json:"correlative"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
@@ -356,7 +363,7 @@ func (h *CompanyHandler) UpdateSeriesAPI(c fiber.Ctx) error {
 	if body.Correlative != nil {
 		corr = body.Correlative
 	}
-	if err := service.NewCompanyService(db(c)).UpdateSeries(uint(id), body.Series, body.Active, body.DocType, body.SunatCode, body.Category, corr); err != nil {
+	if err := service.NewCompanyService(db(c)).UpdateSeries(uint(id), body.Series, body.Active, body.DocType, corr); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

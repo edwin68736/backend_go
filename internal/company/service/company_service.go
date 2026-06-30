@@ -272,59 +272,53 @@ func (s *CompanyService) assertSeriesCodeUnique(seriesName string, excludeID uin
 	return nil
 }
 
-func (s *CompanyService) CreateSeries(branchID uint, docType, sunatCode, category, seriesName string) error {
+func (s *CompanyService) CreateSeries(branchID uint, docType, seriesName string, correlative *uint) error {
 	if seriesName == "" || docType == "" {
 		return errors.New("serie y tipo de documento son requeridos")
 	}
-	if category == "" {
-		category = "venta"
-	}
-	if sunatCode == "" {
-		sunatCode = "01"
+	var err error
+	var documentCode, category string
+	docType, documentCode, category, err = docseries.NormalizeSeriesDocumentInput(docType)
+	if err != nil {
+		return err
 	}
 	seriesName = docseries.NormalizeSeriesCode(seriesName)
-	if err := docseries.ValidateSeriesConfig(category, sunatCode, seriesName); err != nil {
+	if err := docseries.ValidateSeriesConfig(docType, category, documentCode, seriesName); err != nil {
 		return err
 	}
 	if err := s.assertSeriesCodeUnique(seriesName, 0); err != nil {
 		return err
 	}
+	startCorrelative := uint(1)
+	if correlative != nil {
+		if *correlative == 0 {
+			return errors.New("el correlativo inicial debe ser mayor a 0")
+		}
+		startCorrelative = *correlative
+	}
 	return s.db.Create(&database.TenantDocumentSeries{
 		BranchID:    branchID,
 		DocType:     docType,
-		SunatCode:   sunatCode,
+		SunatCode:   documentCode,
 		Category:    category,
 		Series:      seriesName,
-		Correlative: 1,
+		Correlative: startCorrelative,
 		Active:      true,
 	}).Error
 }
 
-func (s *CompanyService) seriesUsage(id uint) (salesCount int64, ser *database.TenantDocumentSeries, err error) {
-	var row database.TenantDocumentSeries
-	if err = s.db.First(&row, id).Error; err != nil {
-		return 0, nil, err
-	}
-	if err = s.db.Model(&database.TenantSale{}).Where("series_id = ?", id).Count(&salesCount).Error; err != nil {
-		return 0, nil, err
-	}
-	return salesCount, &row, nil
+func (s *CompanyService) seriesUsageSvc() *SeriesUsageService {
+	return NewSeriesUsageService(s.db)
 }
 
-func (s *CompanyService) isSeriesLocked(id uint) (bool, int64, error) {
-	salesCount, ser, err := s.seriesUsage(id)
-	if err != nil {
-		return false, 0, err
-	}
-	return ser.Correlative > 1 || salesCount > 0, salesCount, nil
-}
-
-// SeriesListItem enriquece la serie con metadatos de uso documentario.
+// SeriesListItem enriquece la serie con metadatos de uso documentario (API única para el frontend).
 type SeriesListItem struct {
 	database.TenantDocumentSeries
-	Locked     bool  `json:"locked"`
-	SalesCount int64 `json:"sales_count"`
-	CanDelete  bool  `json:"can_delete"`
+	Locked      bool   `json:"locked"`
+	CanDelete   bool   `json:"can_delete"`
+	UsageTable  string `json:"usage_table"`
+	UsageCount  int64  `json:"usage_count"`
+	UsageReason string `json:"usage_reason"`
 }
 
 func (s *CompanyService) ListSeriesEnriched(branchID uint) ([]SeriesListItem, error) {
@@ -332,57 +326,65 @@ func (s *CompanyService) ListSeriesEnriched(branchID uint) ([]SeriesListItem, er
 	if err != nil {
 		return nil, err
 	}
+	usageSvc := s.seriesUsageSvc()
 	out := make([]SeriesListItem, 0, len(series))
 	for _, row := range series {
-		var salesCount int64
-		_ = s.db.Model(&database.TenantSale{}).Where("series_id = ?", row.ID).Count(&salesCount).Error
-		locked := row.Correlative > 1 || salesCount > 0
+		inUse, info, err := usageSvc.IsSeriesInUse(row.ID)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, SeriesListItem{
 			TenantDocumentSeries: row,
-			Locked:               locked,
-			SalesCount:           salesCount,
-			CanDelete:            !locked,
+			Locked:               inUse,
+			CanDelete:            !inUse,
+			UsageTable:           info.Table,
+			UsageCount:           info.Count,
+			UsageReason:          info.Reason,
 		})
 	}
 	return out, nil
 }
 
 func (s *CompanyService) DeleteSeries(id uint) error {
-	locked, salesCount, err := s.isSeriesLocked(id)
+	inUse, info, err := s.seriesUsageSvc().IsSeriesInUse(id)
 	if err != nil {
 		return err
 	}
-	if locked || salesCount > 0 {
-		return errors.New("no se puede eliminar una serie con documentos emitidos o numeración iniciada")
+	if inUse {
+		return errors.New(LockMessageWhenInUse(info))
 	}
 	return s.db.Delete(&database.TenantDocumentSeries{}, id).Error
 }
 
-func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, docType, sunatCode, category string, correlative *uint) error {
-	locked, _, err := s.isSeriesLocked(id)
+func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, docType string, correlative *uint) error {
+	inUse, usageInfo, err := s.seriesUsageSvc().IsSeriesInUse(id)
 	if err != nil {
 		return err
 	}
-	if locked {
+	lockMsg := LockMessageWhenInUse(usageInfo)
+	if inUse {
 		var existing database.TenantDocumentSeries
 		if err := s.db.First(&existing, id).Error; err != nil {
 			return err
 		}
-		// Solo permitir cambiar estado activo cuando la serie ya tiene uso.
 		if seriesName != "" && docseries.NormalizeSeriesCode(seriesName) != existing.Series {
-			return errors.New("no se puede modificar la serie: ya tiene documentos emitidos o numeración iniciada")
+			return errors.New(lockMsg)
 		}
-		if docType != "" && docType != existing.DocType {
-			return errors.New("no se puede modificar el tipo de documento: la serie ya está en uso")
-		}
-		if sunatCode != "" && sunatCode != existing.SunatCode {
-			return errors.New("no se puede modificar el código SUNAT: la serie ya está en uso")
-		}
-		if category != "" && category != existing.Category {
-			return errors.New("no se puede modificar la categoría: la serie ya está en uso")
+		if docType != "" {
+			incoming, err := docseries.ResolveDocumentType(docType)
+			if err != nil {
+				return err
+			}
+			current, err := docseries.ResolveDocumentType(existing.DocType)
+			if err != nil {
+				return err
+			}
+			if incoming.ID != current.ID {
+				return errors.New(lockMsg)
+			}
 		}
 		if correlative != nil && *correlative != existing.Correlative {
-			return errors.New("no se puede modificar el correlativo: la serie ya está en uso")
+			return errors.New(lockMsg)
 		}
 		return s.db.Model(&database.TenantDocumentSeries{}).Where("id = ?", id).Update("active", active).Error
 	}
@@ -401,15 +403,15 @@ func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, d
 	if seriesName != "" {
 		finalName = seriesName
 	}
-	finalCat := existing.Category
-	if category != "" {
-		finalCat = category
+	effectiveDocType := existing.DocType
+	if docType != "" {
+		effectiveDocType = docType
 	}
-	finalSunat := existing.SunatCode
-	if sunatCode != "" {
-		finalSunat = sunatCode
+	finalDocType, finalDocumentCode, finalCat, err := docseries.NormalizeSeriesDocumentInput(effectiveDocType)
+	if err != nil {
+		return err
 	}
-	if err := docseries.ValidateSeriesConfig(finalCat, finalSunat, finalName); err != nil {
+	if err := docseries.ValidateSeriesConfig(finalDocType, finalCat, finalDocumentCode, finalName); err != nil {
 		return err
 	}
 	updates := map[string]interface{}{"active": active}
@@ -417,13 +419,9 @@ func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, d
 		updates["series"] = seriesName
 	}
 	if docType != "" {
-		updates["doc_type"] = docType
-	}
-	if sunatCode != "" {
-		updates["sunat_code"] = sunatCode
-	}
-	if category != "" {
-		updates["category"] = category
+		updates["doc_type"] = finalDocType
+		updates["sunat_code"] = finalDocumentCode
+		updates["category"] = finalCat
 	}
 	if correlative != nil {
 		updates["correlative"] = *correlative
