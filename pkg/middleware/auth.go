@@ -29,7 +29,8 @@ type TenantClaims struct {
 	Modules     []string `json:"modules"`      // Módulos habilitados (fuente: BD central al login)
 	Permissions []string `json:"permissions"`  // Permisos del rol en formato "module.action"
 	EmployeeType   string `json:"employee_type"` // admin, cashier, waiter, cook, driver, supervisor
-	AuthMethod     string `json:"am,omitempty"`    // pwd | pin (vacío = pwd)
+	AuthMethod     string `json:"auth_method,omitempty"` // pwd | pin | master_access
+	Impersonated   bool   `json:"impersonated,omitempty"`
 	PermVer        uint   `json:"pv,omitempty"`    // versión cache permisos restaurante
 	StaffID        uint   `json:"sid,omitempty"`   // tenant_restaurant_staff.id
 	Status         string `json:"status"`          // Estado del tenant al momento del login

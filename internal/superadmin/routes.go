@@ -44,6 +44,7 @@ func RegisterRoutes(app *fiber.App) {
 	saAPI.Put("/pse/empresas/:id", tenantHandler.UpdatePSEEmpresaAPI)
 	saAPI.Patch("/pse/empresas/:id/toggle", tenantHandler.TogglePSEEmpresaAPI)
 	saAPI.Get("/tenants/:id", tenantHandler.GetAPI)
+	saAPI.Post("/tenants/:id/master-access", tenantHandler.MasterAccessAPI)
 	saAPI.Post("/tenants", tenantHandler.CreateAPI)
 	saAPI.Put("/tenants/:id", tenantHandler.UpdateAPI)
 	saAPI.Post("/tenants/:id/destroy-complete", tenantHandler.DestroyCompleteAPI)

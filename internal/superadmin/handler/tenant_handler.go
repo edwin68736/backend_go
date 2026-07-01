@@ -128,6 +128,27 @@ func (h *TenantHandler) UpdateAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// POST /api/superadmin/tenants/:id/master-access — acceso maestro al ERP web del tenant.
+func (h *TenantHandler) MasterAccessAPI(c fiber.Ctx) error {
+	if err := saRequireSuperAdminRole(c); err != nil {
+		return err
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	saUserID, _ := c.Locals("sa_user_id").(uint)
+	saEmail, _ := c.Locals("sa_user_email").(string)
+	result, err := h.svc.MasterAccess(uint(id), saUserID, saEmail, c.IP())
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"tenant_url": result.TenantURL,
+		"token":      result.Token,
+	})
+}
+
 // PATCH /api/superadmin/tenants/:id/status
 func (h *TenantHandler) ToggleStatusAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)

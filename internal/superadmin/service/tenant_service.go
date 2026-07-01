@@ -1,15 +1,18 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	authsvc "tukifac/internal/auth/service"
 	usersvc "tukifac/internal/users/service"
 	"tukifac/config"
 	"tukifac/pkg/database"
 	"tukifac/pkg/database/engine"
+	"tukifac/pkg/domains"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/saas"
 	"tukifac/pkg/tenantrubro"
@@ -444,4 +447,74 @@ func (s *TenantService) DestroyTenantComplete(id uint, input DestroyTenantInput)
 	middleware.InvalidateTenantCache(tenant.Slug)
 	saas.InvalidateTenantCache(tenant.ID)
 	return res, nil
+}
+
+// MasterAccessResult respuesta del acceso maestro al ERP web del tenant.
+type MasterAccessResult struct {
+	TenantURL string
+	Token     string
+}
+
+// MasterAccess genera JWT del usuario propietario del tenant para soporte técnico (ERP web).
+func (s *TenantService) MasterAccess(tenantID, saUserID uint, saEmail, clientIP string) (*MasterAccessResult, error) {
+	tenant, err := s.GetByID(tenantID)
+	if err != nil {
+		return nil, errors.New("tenant no encontrado")
+	}
+
+	tenantDB, err := database.GetTenantDB(tenant.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("conectando BD tenant: %w", err)
+	}
+	defer database.ReleaseTenantDB(tenant.DBName)
+
+	ownerID, ok, err := database.TenantOwnerUserID(tenantDB)
+	if err != nil {
+		return nil, fmt.Errorf("obteniendo usuario propietario: %w", err)
+	}
+	if !ok || ownerID == 0 {
+		return nil, errors.New("no se encontró el usuario propietario del tenant")
+	}
+
+	user, legacyBranch, err := database.LoadTenantUserForBranch(tenantDB, ownerID)
+	if err != nil {
+		return nil, errors.New("usuario propietario no encontrado")
+	}
+	if !user.Active {
+		return nil, errors.New("el usuario propietario está inactivo")
+	}
+
+	session, err := authsvc.BuildTenantSession(tenant, tenantDB, user, legacyBranch, authsvc.TenantSessionOpts{
+		AuthMethod:   "master_access",
+		Impersonated: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("generando sesión: %w", err)
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"superadmin_id":    saUserID,
+		"superadmin_email": saEmail,
+		"tenant_slug":      tenant.Slug,
+		"owner_user_id":    user.ID,
+		"owner_email":      user.Email,
+	})
+	_ = s.db.Create(&database.AuditLog{
+		TenantID:  tenant.ID,
+		UserID:    saUserID,
+		Action:    "master_access",
+		Entity:    "tenant_user",
+		EntityID:  user.ID,
+		Payload:   string(payload),
+		IPAddress: clientIP,
+	}).Error
+
+	rootDomain := ""
+	if config.AppConfig != nil {
+		rootDomain = config.AppConfig.AppDomain
+	}
+	return &MasterAccessResult{
+		TenantURL: domains.TenantURL(tenant.Slug, rootDomain),
+		Token:     session.Token,
+	}, nil
 }
