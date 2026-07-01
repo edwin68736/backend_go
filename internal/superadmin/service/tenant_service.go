@@ -14,6 +14,7 @@ import (
 	"tukifac/pkg/database/engine"
 	"tukifac/pkg/domains"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
 	"tukifac/pkg/tenantrubro"
 	"tukifac/pkg/tenantstorage"
@@ -177,17 +178,24 @@ func (s *TenantService) rollbackNewTenant(tenantID uint, dbName string) {
 	database.RollbackTenantProvision(s.db, tenantID, dbName)
 }
 
-func (s *TenantService) List(query, status, regionID, provinciaID string) ([]database.Tenant, error) {
-	var tenants []database.Tenant
-	q := s.db.Model(&database.Tenant{})
+// TenantListParams filtros y paginación de empresas.
+type TenantListParams struct {
+	Query       string
+	Status      string
+	RegionID    string
+	ProvinciaID string
+	Page        int
+	PerPage     int
+}
+
+func (s *TenantService) applyTenantFilters(q *gorm.DB, query, status, regionID, provinciaID string) *gorm.DB {
 	if query != "" {
-		q = q.Where("name LIKE ? OR slug LIKE ? OR ruc LIKE ? OR address LIKE ?",
-			"%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%")
+		q = q.Where("name LIKE ? OR slug LIKE ? OR ruc LIKE ? OR address LIKE ? OR email LIKE ?",
+			"%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%")
 	}
 	if status != "" {
 		q = q.Where("status = ?", status)
 	}
-	// Filtro por departamento: ubigeo empieza con los 2 primeros dígitos del region_id (ej. 15 para Lima)
 	if regionID != "" && len(regionID) >= 2 {
 		prefix := regionID
 		if len(prefix) > 2 {
@@ -195,13 +203,29 @@ func (s *TenantService) List(query, status, regionID, provinciaID string) ([]dat
 		}
 		q = q.Where("ubigeo LIKE ?", prefix+"%")
 	}
-	// Filtro por provincia: ubigeo empieza con los 4 primeros dígitos del provincia_id (ej. 1501 para Lima)
 	if provinciaID != "" && len(provinciaID) >= 4 {
 		prefix := provinciaID[:4]
 		q = q.Where("ubigeo LIKE ?", prefix+"%")
 	}
-	err := q.Order("created_at DESC").Find(&tenants).Error
-	return tenants, err
+	return q
+}
+
+// List devuelve tenants paginados (LIMIT/OFFSET en BD).
+func (s *TenantService) List(params TenantListParams) ([]database.Tenant, int64, error) {
+	page, perPage := pagination.Normalize(params.Page, params.PerPage)
+	q := s.applyTenantFilters(s.db.Model(&database.Tenant{}), params.Query, params.Status, params.RegionID, params.ProvinciaID)
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var tenants []database.Tenant
+	err := q.Order("created_at DESC").
+		Limit(perPage).
+		Offset(pagination.Offset(page, perPage)).
+		Find(&tenants).Error
+	return tenants, total, err
 }
 
 // BillingEnabledByTenantIDs devuelve un mapa tenant_id -> true si el tenant tiene el módulo billing habilitado.

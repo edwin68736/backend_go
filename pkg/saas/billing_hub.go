@@ -188,6 +188,8 @@ func EventLabel(t string) string {
 		return "Servicio suspendido"
 	case EventReactivated:
 		return "Servicio reactivado"
+	case EventValidityAdjusted:
+		return "Vigencia ajustada"
 	default:
 		return t
 	}

@@ -18,6 +18,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/fiscal"
+	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
@@ -32,13 +33,23 @@ func NewTenantHandler() *TenantHandler {
 	return &TenantHandler{svc: service.NewTenantService()}
 }
 
-// GET /api/superadmin/tenants?q=&status=&region_id=&provincia_id=
+// GET /api/superadmin/tenants?q=&status=&region_id=&provincia_id=&page=&per_page=
 func (h *TenantHandler) ListAPI(c fiber.Ctx) error {
-	tenants, err := h.svc.List(c.Query("q"), c.Query("status"), c.Query("region_id"), c.Query("provincia_id"))
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	perPage, _ := strconv.Atoi(c.Query("per_page", "25"))
+	page, perPage = pagination.Normalize(page, perPage)
+
+	tenants, total, err := h.svc.List(service.TenantListParams{
+		Query:       c.Query("q"),
+		Status:      c.Query("status"),
+		RegionID:    c.Query("region_id"),
+		ProvinciaID: c.Query("provincia_id"),
+		Page:        page,
+		PerPage:     perPage,
+	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	// Incluir billing_enabled por tenant para la columna Modo SUNAT
 	billingByTenant, _ := h.svc.BillingEnabledByTenantIDs(tenantIDs(tenants))
 	out := make([]fiber.Map, 0, len(tenants))
 	for _, t := range tenants {
@@ -46,7 +57,13 @@ func (h *TenantHandler) ListAPI(c fiber.Ctx) error {
 		m["billing_enabled"] = billingByTenant[t.ID]
 		out = append(out, m)
 	}
-	return c.JSON(fiber.Map{"data": out})
+	return c.JSON(fiber.Map{
+		"data":        out,
+		"page":        page,
+		"per_page":    perPage,
+		"total":       total,
+		"total_pages": pagination.TotalPages(total, perPage),
+	})
 }
 
 func tenantIDs(tenants []database.Tenant) []uint {

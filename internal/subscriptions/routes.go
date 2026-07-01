@@ -13,6 +13,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/subscriptions", h.CreateAPI)
 	saAPI.Patch("/subscriptions/:id/suspend", h.SuspendAPI)
 	saAPI.Patch("/subscriptions/:id/reactivate", h.ReactivateAPI)
+	saAPI.Patch("/subscriptions/:id/adjust-validity", h.AdjustValidityAPI)
 	saAPI.Get("/tenants/:id/subscription", h.GetByTenantAPI)
 	saAPI.Post("/cron/check-expirations", h.CheckExpirationsAPI)
 }
