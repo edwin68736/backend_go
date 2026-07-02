@@ -124,8 +124,9 @@ func (h *QuotationHandler) CreateAPI(c fiber.Ctx) error {
 		ValidUntil   string                            `json:"valid_until"`
 		Currency     string                            `json:"currency"`
 		ExchangeRate *float64                          `json:"exchange_rate"`
-		Notes        string                            `json:"notes"`
-		Items        []quotationsvc.QuotationItemInput `json:"items"`
+		Notes               string                            `json:"notes"`
+		ShowTermsConditions bool                              `json:"show_terms_conditions"`
+		Items               []quotationsvc.QuotationItemInput `json:"items"`
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
@@ -145,14 +146,19 @@ func (h *QuotationHandler) CreateAPI(c fiber.Ctx) error {
 		ValidUntil:   quotationsvc.ParseOptionalDateYMD(body.ValidUntil),
 		Currency:     body.Currency,
 		ExchangeRate: body.ExchangeRate,
-		Notes:        body.Notes,
-		Items:        body.Items,
+		Notes:               body.Notes,
+		ShowTermsConditions: body.ShowTermsConditions,
+		Items:               body.Items,
 		TaxConfig:    taxCfg,
 	})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"quotation": q})
+	out := fiber.Map{"quotation": q}
+	if printData, err := quotationsvc.BuildPrintDataForQuotation(db(c), q.ID); err == nil {
+		out["print_data"] = printData
+	}
+	return c.Status(fiber.StatusCreated).JSON(out)
 }
 
 // PATCH /api/quotations/:id
@@ -168,8 +174,9 @@ func (h *QuotationHandler) UpdateAPI(c fiber.Ctx) error {
 		ValidUntil   string                            `json:"valid_until"`
 		Currency     string                            `json:"currency"`
 		ExchangeRate *float64                          `json:"exchange_rate"`
-		Notes        string                            `json:"notes"`
-		Items        []quotationsvc.QuotationItemInput `json:"items"`
+		Notes               string                            `json:"notes"`
+		ShowTermsConditions bool                              `json:"show_terms_conditions"`
+		Items               []quotationsvc.QuotationItemInput `json:"items"`
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
@@ -183,14 +190,19 @@ func (h *QuotationHandler) UpdateAPI(c fiber.Ctx) error {
 		ValidUntil:   quotationsvc.ParseOptionalDateYMD(body.ValidUntil),
 		Currency:     body.Currency,
 		ExchangeRate: body.ExchangeRate,
-		Notes:        body.Notes,
-		Items:        body.Items,
+		Notes:               body.Notes,
+		ShowTermsConditions: body.ShowTermsConditions,
+		Items:               body.Items,
 		TaxConfig:    taxCfg,
 	})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"quotation": q})
+	out := fiber.Map{"quotation": q}
+	if printData, err := quotationsvc.BuildPrintDataForQuotation(db(c), q.ID); err == nil {
+		out["print_data"] = printData
+	}
+	return c.JSON(out)
 }
 
 // DELETE /api/quotations/:id

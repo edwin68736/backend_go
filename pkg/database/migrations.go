@@ -496,6 +496,7 @@ type TenantCompanyConfig struct {
 	AutomaticSend          bool       `gorm:"default:true" json:"automatic_send"`
 	ColorTheme             string     `gorm:"size:30;default:'green'" json:"color_theme"`
 	AdditionalNotes        string     `gorm:"type:text" json:"additional_notes"`
+	TermsAndConditions     string     `gorm:"type:text" json:"terms_and_conditions"`
 	// QR de pago Yape/Plin en comprobantes locales (PDF ticket / A4)
 	WalletProvider     string `gorm:"size:20" json:"wallet_provider"`       // yape | plin
 	WalletPhone        string `gorm:"size:30" json:"wallet_phone"`
@@ -815,6 +816,8 @@ type TenantSale struct {
 
 	// ContactName se rellena al listar (join con tenant_contacts), no es columna en BD
 	ContactName string `gorm:"-" json:"contact_name"`
+	// UserName se rellena al listar (usuario que registró la venta).
+	UserName string `gorm:"-" json:"user_name,omitempty"`
 	// ID de la venta electrónica (01/03) emitida desde esta NV; solo listados NV.
 	ElectronicIssueSaleID *uint `gorm:"-" json:"electronic_issue_sale_id,omitempty"`
 	ElectronicIssueDocType string `gorm:"-" json:"electronic_issue_doc_type,omitempty"`
@@ -946,8 +949,9 @@ type TenantQuotation struct {
 	Total             float64    `gorm:"type:decimal(15,2);not null" json:"total"`
 	Currency          string     `gorm:"size:10;default:'PEN'" json:"currency"`
 	ExchangeRate      *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
-	Notes             string     `gorm:"type:text" json:"notes"`
-	Status            string     `gorm:"size:30;default:'draft';index" json:"status"` // draft | converted
+	Notes                 string     `gorm:"type:text" json:"notes"`
+	ShowTermsConditions   bool       `gorm:"default:false" json:"show_terms_conditions"`
+	Status                string     `gorm:"size:30;default:'draft';index" json:"status"` // draft | converted
 	ConvertedSaleID   *uint      `gorm:"index" json:"converted_sale_id,omitempty"`
 	ConvertedAt       *time.Time `json:"converted_at,omitempty"`
 	ConvertedTarget   string     `gorm:"size:30" json:"converted_target,omitempty"` // nota_venta | 01 | 03

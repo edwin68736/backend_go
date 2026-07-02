@@ -75,7 +75,7 @@ var seriesDocumentCatalog = []SeriesDocumentType{
 	{
 		ID: "cotizacion", DocType: "Cotización", Label: "Cotización",
 		DocumentCode: "QT", Category: "cotizacion", CategoryLabel: "Cotización", SeriesPrefixHint: "COT",
-		Electronic: false, SunatNumbering: false, FormSelectable: false,
+		Electronic: false, SunatNumbering: false, FormSelectable: true,
 	},
 	{
 		ID: "ingreso_inventario", DocType: "INGRESO_INVENTARIO", Label: "Ingreso de inventario",
@@ -183,7 +183,7 @@ func ListFormDocumentTypes(sunatEnabled, restaurantOnly bool) []SeriesDocumentTy
 		if restaurantOnly && !t.RestaurantForm {
 			continue
 		}
-		if !sunatEnabled && t.DocumentCode != "00" {
+		if !sunatEnabled && t.RequiresSunat {
 			continue
 		}
 		out = append(out, t)

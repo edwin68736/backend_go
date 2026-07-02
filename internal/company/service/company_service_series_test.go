@@ -144,6 +144,21 @@ func TestCompanyService_CreateSeries_almacenDifferentCodesPerBranch(t *testing.T
 	}
 }
 
+func TestCompanyService_CreateSeries_cotizacionPerBranch(t *testing.T) {
+	db := setupCompanySeriesTestDB(t)
+	svc := NewCompanyService(db)
+	if err := svc.CreateSeries(1, "Cotización", "COT001", nil); err != nil {
+		t.Fatalf("CreateSeries: %v", err)
+	}
+	var row database.TenantDocumentSeries
+	if err := db.Where("series = ?", "COT001").First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.SunatCode != "QT" || row.Category != "cotizacion" || row.DocType != "Cotización" {
+		t.Fatalf("row=%+v", row)
+	}
+}
+
 func TestCompanyService_CreateSeries_derivesDocumentCodeFromType(t *testing.T) {
 	db := setupCompanySeriesTestDB(t)
 	svc := NewCompanyService(db)

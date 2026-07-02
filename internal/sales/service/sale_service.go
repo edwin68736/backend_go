@@ -66,10 +66,11 @@ type SaleItemInput struct {
 	Serials            []string `json:"serials"`             // números de serie elegidos (productos con ManageSeries)
 }
 
-// PaymentInput representa un pago individual (método + monto).
+// PaymentInput representa un pago individual (método + monto + referencia opcional).
 type PaymentInput struct {
-	Method string  `json:"method"` // código: cash, yape, plin, etc.
-	Amount float64 `json:"amount"`
+	Method    string  `json:"method"` // código: cash, yape, plin, etc.
+	Amount    float64 `json:"amount"`
+	Reference string  `json:"reference,omitempty"` // nro. transferencia, depósito, voucher, etc.
 }
 
 type CreateSaleInput struct {
@@ -408,9 +409,10 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 			if err := tx.Create(&database.TenantSalePayment{
-				SaleID: sale.ID,
-				Method: p.Method,
-				Amount: p.Amount,
+				SaleID:    sale.ID,
+				Method:    p.Method,
+				Amount:    p.Amount,
+				Reference: strings.TrimSpace(p.Reference),
 			}).Error; err != nil {
 				return err
 			}
@@ -841,6 +843,44 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 					if sales[i].ContactID != nil {
 						if name, ok := byID[*sales[i].ContactID]; ok {
 							sales[i].ContactName = name
+						}
+					}
+				}
+			}
+		}
+		// Rellenar nombre del usuario que registró la venta
+		userIDs := make(map[uint]struct{})
+		for _, sale := range sales {
+			if sale.UserID > 0 {
+				userIDs[sale.UserID] = struct{}{}
+			}
+		}
+		if len(userIDs) > 0 {
+			idList := make([]uint, 0, len(userIDs))
+			for id := range userIDs {
+				idList = append(idList, id)
+			}
+			var users []struct {
+				ID    uint
+				Name  string
+				Email string
+			}
+			if s.db.Table("tenant_users").Select("id, name, email").Where("id IN ?", idList).Find(&users).Error == nil {
+				byID := make(map[uint]string, len(users))
+				for _, u := range users {
+					label := strings.TrimSpace(u.Name)
+					if label == "" {
+						label = strings.TrimSpace(u.Email)
+					}
+					if label == "" {
+						label = fmt.Sprintf("Usuario #%d", u.ID)
+					}
+					byID[u.ID] = label
+				}
+				for i := range sales {
+					if sales[i].UserID > 0 {
+						if name, ok := byID[sales[i].UserID]; ok {
+							sales[i].UserName = name
 						}
 					}
 				}
@@ -1395,7 +1435,7 @@ func alignPaymentsToSaleTotal(pays []PaymentInput, total float64) []PaymentInput
 		return []PaymentInput{{Method: "cash", Amount: roundedTotal}}
 	}
 	if len(pays) == 1 {
-		return []PaymentInput{{Method: pays[0].Method, Amount: roundedTotal}}
+		return []PaymentInput{{Method: pays[0].Method, Amount: roundedTotal, Reference: pays[0].Reference}}
 	}
 	var sum float64
 	for _, p := range pays {
@@ -1411,7 +1451,7 @@ func alignPaymentsToSaleTotal(pays []PaymentInput, total float64) []PaymentInput
 		if i == len(pays)-1 {
 			amt = money.RoundSunat(roundedTotal - allocated)
 		}
-		out = append(out, PaymentInput{Method: p.Method, Amount: amt})
+		out = append(out, PaymentInput{Method: p.Method, Amount: amt, Reference: p.Reference})
 		allocated += amt
 	}
 	return out
@@ -1514,7 +1554,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 	var pays []PaymentInput
 	for _, p := range paymentsDB {
 		if p.Amount > 0 && strings.TrimSpace(p.Method) != "" {
-			pays = append(pays, PaymentInput{Method: p.Method, Amount: p.Amount})
+			pays = append(pays, PaymentInput{Method: p.Method, Amount: p.Amount, Reference: p.Reference})
 		}
 	}
 	if len(pays) == 0 && nota.Total > 0 {

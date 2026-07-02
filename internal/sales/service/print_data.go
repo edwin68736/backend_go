@@ -528,7 +528,7 @@ func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *Prin
 		if enrich.ShowTermsConditions {
 			var company database.TenantCompanyConfig
 			if db.First(&company).Error == nil {
-				fc.TermsText = strings.TrimSpace(company.AdditionalNotes)
+				fc.TermsText = strings.TrimSpace(company.TermsAndConditions)
 			}
 		}
 		if enrich.SellerUserID != nil && *enrich.SellerUserID > 0 {

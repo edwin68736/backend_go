@@ -68,6 +68,7 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 		"currency":         input.Currency,
 		"tax_rate":         input.TaxRate,
 		"additional_notes": strings.TrimSpace(input.AdditionalNotes),
+		"terms_and_conditions": strings.TrimSpace(input.TermsAndConditions),
 		"detraction_bn_account":            strings.TrimSpace(input.DetractionBNAccount),
 		"detraction_default_payment_method": normalizeDetractionPaymentMethod(input.DetractionDefaultPaymentMethod),
 	}

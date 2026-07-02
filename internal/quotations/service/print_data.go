@@ -138,6 +138,16 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 		}
 	}
 
+	if q.ShowTermsConditions {
+		terms := strings.TrimSpace(company.TermsAndConditions)
+		if terms != "" {
+			pd.Fiscal = &salessvc.PrintFiscalContext{
+				ShowTermsConditions: true,
+				TermsText:           terms,
+			}
+		}
+	}
+
 	return pd, nil
 }
 

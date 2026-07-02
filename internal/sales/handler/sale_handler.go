@@ -222,7 +222,11 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 	var printPayments []service.PrintPaymentInput
 	if len(body.Payments) > 0 {
 		for _, p := range body.Payments {
-			printPayments = append(printPayments, service.PrintPaymentInput{Method: p.Method, Amount: p.Amount})
+			printPayments = append(printPayments, service.PrintPaymentInput{
+				Method:    p.Method,
+				Amount:    p.Amount,
+				Reference: p.Reference,
+			})
 		}
 	} else if body.PaymentMethod != "" && sale.Total > 0 {
 		printPayments = []service.PrintPaymentInput{{Method: body.PaymentMethod, Amount: sale.Total}}

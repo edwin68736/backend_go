@@ -88,8 +88,8 @@ func TestEnrichFiscalPrintData_noProfile(t *testing.T) {
 func TestEnrichFiscalPrintData_termsFromCompany(t *testing.T) {
 	db := setupPrintDataFiscalTestDB(t)
 	db.Create(&database.TenantCompanyConfig{
-		ID:              1,
-		AdditionalNotes: "Plazo de pago 30 días",
+		ID:                 1,
+		TermsAndConditions: "Plazo de pago 30 días",
 	})
 
 	_, err := salecontext.NewService(db).Persist(salecontext.PersistInput{

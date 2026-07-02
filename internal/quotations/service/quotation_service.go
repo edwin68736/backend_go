@@ -47,8 +47,9 @@ type CreateQuotationInput struct {
 	ValidUntil   *time.Time
 	Currency     string
 	ExchangeRate *float64
-	Notes        string
-	Items        []QuotationItemInput
+	Notes                string
+	ShowTermsConditions  bool
+	Items                []QuotationItemInput
 	TaxConfig    tax.Config
 }
 
@@ -59,8 +60,9 @@ type UpdateQuotationInput struct {
 	ValidUntil   *time.Time
 	Currency     string
 	ExchangeRate *float64
-	Notes        string
-	Items        []QuotationItemInput
+	Notes                string
+	ShowTermsConditions  bool
+	Items                []QuotationItemInput
 	TaxConfig    tax.Config
 }
 
@@ -188,8 +190,9 @@ func (s *QuotationService) Create(input CreateQuotationInput) (*database.TenantQ
 		Total:        money.RoundSunat(total),
 		Currency:     currency,
 		ExchangeRate: exchangeRate,
-		Notes:        input.Notes,
-		Status:       "draft",
+		Notes:               input.Notes,
+		ShowTermsConditions: input.ShowTermsConditions,
+		Status:              "draft",
 	}
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -332,8 +335,9 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 			"valid_until":   input.ValidUntil,
 			"currency":      currency,
 			"exchange_rate": exchangeRate,
-			"notes":         input.Notes,
-			"subtotal":      money.RoundSunat(subtotal),
+			"notes":                 input.Notes,
+			"show_terms_conditions": input.ShowTermsConditions,
+			"subtotal":              money.RoundSunat(subtotal),
 			"tax_amount":    money.RoundSunat(taxAmount),
 			"total":         money.RoundSunat(total),
 		}).Error; err != nil {
