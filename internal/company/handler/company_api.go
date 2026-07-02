@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,25 +28,24 @@ func (h *CompanyHandler) GetConfigAPI(c fiber.Ctx) error {
 
 // PUT /api/company/config
 func (h *CompanyHandler) UpdateConfigAPI(c fiber.Ctx) error {
-	var input database.TenantCompanyConfig
-	if err := c.Bind().JSON(&input); err != nil {
+	var patch service.CompanyConfigPatch
+	if err := c.Bind().JSON(&patch); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
 	svc := service.NewCompanyService(db(c))
-	if err := svc.SaveConfig(input); err != nil {
+	if err := svc.ApplyConfigPatch(patch); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
-		if ruc := tenantstorage.SanitizeRUC(input.RUC); ruc != "" {
-			_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("ruc", ruc).Error
-			t.RUC = ruc
-			c.Locals("tenant_ruc", ruc)
+		if patch.LogoURL != nil {
+			if ruc := tenantstorage.SanitizeRUC(t.RUC); ruc != "" {
+				c.Locals("tenant_ruc", ruc)
+			}
 		}
 	}
 	// Solo sincronizar logo con Lycet cuando el usuario envió un logo (acción explícita).
-	// Guardar dirección/teléfono/etc. no debe tocar credenciales ni metadatos fiscales en el facturador.
-	if svc.IsSunatEnabled() {
-		logoBase64 := extractBase64FromDataURL(input.LogoURL)
+	if svc.IsSunatEnabled() && patch.LogoURL != nil {
+		logoBase64 := extractBase64FromDataURL(*patch.LogoURL)
 		if logoBase64 != "" {
 			syncSvc := svc
 			if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
@@ -54,7 +54,7 @@ func (h *CompanyHandler) UpdateConfigAPI(c fiber.Ctx) error {
 			_ = syncSvc.SyncFacturadorConfigWithFiles("", "", logoBase64, "", "", "", "")
 		}
 		if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
-			_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", input.LogoURL).Error
+			_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", strings.TrimSpace(*patch.LogoURL)).Error
 		}
 	}
 	cfg, _ := svc.GetConfig()
@@ -124,6 +124,72 @@ func (h *CompanyHandler) UploadReceiptWalletQRAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true, "wallet_qr_url": imageURL})
+}
+
+// UploadCompanyLogoAPI POST /api/company/logo — imagen en uploads/tenants/{RUC}/company/.
+func (h *CompanyHandler) UploadCompanyLogoAPI(c fiber.Ctx) error {
+	ruc, err := tenantstorage.ResolveTenantRUC(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	file, err := c.FormFile("image")
+	if err != nil || file == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "envía un archivo en el campo 'image'"})
+	}
+	if file.Size > uploadlimits.MaxFileBytes {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "la imagen no debe superar 10 MB"})
+	}
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true}
+	if !allowed[ext] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "formato no permitido. Usa JPG, PNG o WebP"})
+	}
+
+	dir := tenantstorage.TenantUploadDir(ruc, "company")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("no se pudo crear carpeta %s: %v", dir, err),
+		})
+	}
+	filename := "logo" + ext
+	savePath := filepath.Join(dir, filename)
+	if err := c.SaveFile(file, savePath); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("error guardando logo en %s: %v", savePath, err),
+		})
+	}
+	imageURL := tenantstorage.TenantUploadPublicURL(ruc, "company", filename)
+	svc := service.NewCompanyService(db(c))
+	if err := svc.UpdateLogoURL(imageURL); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if svc.IsSunatEnabled() {
+		logoBytes, readErr := os.ReadFile(savePath)
+		if readErr == nil && len(logoBytes) > 0 {
+			logoBase64 := base64.StdEncoding.EncodeToString(logoBytes)
+			syncSvc := svc
+			if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+				syncSvc = svc.WithSaaSContext(t.ID, t.Slug)
+				_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", imageURL).Error
+			}
+			_ = syncSvc.SyncFacturadorConfigWithFiles("", "", logoBase64, "", "", "", "")
+		}
+	}
+	cfg, _ := svc.GetConfig()
+	return c.JSON(fiber.Map{"success": true, "logo_url": imageURL, "data": cfg})
+}
+
+// DeleteCompanyLogoAPI DELETE /api/company/logo — quita logo del tenant.
+func (h *CompanyHandler) DeleteCompanyLogoAPI(c fiber.Ctx) error {
+	svc := service.NewCompanyService(db(c))
+	if err := svc.UpdateLogoURL(""); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+		_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", "").Error
+	}
+	cfg, _ := svc.GetConfig()
+	return c.JSON(fiber.Map{"success": true, "data": cfg})
 }
 
 // extractBase64FromDataURL obtiene el payload base64 de un data URL (ej. "data:image/png;base64,iVBORw...").

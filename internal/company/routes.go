@@ -12,6 +12,8 @@ func RegisterRoutes(api fiber.Router) {
 	api.Put("/company/config", h.UpdateConfigAPI)
 	api.Put("/company/receipt-wallet", h.UpdateReceiptWalletAPI)
 	api.Post("/company/receipt-wallet/qr", h.UploadReceiptWalletQRAPI)
+	api.Post("/company/logo", h.UploadCompanyLogoAPI)
+	api.Delete("/company/logo", h.DeleteCompanyLogoAPI)
 	api.Get("/company/sunat", h.GetSunatAPI)
 	api.Get("/company/invoicing", h.GetInvoicingAPI)
 	api.Put("/company/sunat", h.UpdateSunatAPI)

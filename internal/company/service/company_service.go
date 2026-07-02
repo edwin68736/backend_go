@@ -50,6 +50,88 @@ func (s *CompanyService) GetConfig() (*database.TenantCompanyConfig, error) {
 	return &cfg, nil
 }
 
+// CompanyConfigPatch campos opcionales para PUT /api/company/config (solo actualiza lo enviado).
+type CompanyConfigPatch struct {
+	TradeName                      *string  `json:"trade_name"`
+	Address                        *string  `json:"address"`
+	Ubigeo                         *string  `json:"ubigeo"`
+	Country                        *string  `json:"country"`
+	Phone                          *string  `json:"phone"`
+	Email                          *string  `json:"email"`
+	Website                        *string  `json:"website"`
+	Currency                       *string  `json:"currency"`
+	TaxRate                        *float64 `json:"tax_rate"`
+	AdditionalNotes                *string  `json:"additional_notes"`
+	TermsAndConditions             *string  `json:"terms_and_conditions"`
+	DetractionBNAccount            *string  `json:"detraction_bn_account"`
+	DetractionDefaultPaymentMethod *string  `json:"detraction_default_payment_method"`
+	ColorTheme                     *string  `json:"color_theme"`
+	LogoURL                        *string  `json:"logo_url"`
+}
+
+func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
+	var existing database.TenantCompanyConfig
+	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("configure primero los datos generales de la empresa")
+	}
+	updates := map[string]interface{}{}
+	if patch.TradeName != nil {
+		updates["trade_name"] = strings.TrimSpace(*patch.TradeName)
+	}
+	if patch.Address != nil {
+		updates["address"] = strings.TrimSpace(*patch.Address)
+	}
+	if patch.Ubigeo != nil {
+		updates["ubigeo"] = strings.TrimSpace(*patch.Ubigeo)
+	}
+	if patch.Country != nil {
+		updates["country"] = strings.TrimSpace(*patch.Country)
+	}
+	if patch.Phone != nil {
+		updates["phone"] = strings.TrimSpace(*patch.Phone)
+	}
+	if patch.Email != nil {
+		updates["email"] = strings.TrimSpace(*patch.Email)
+	}
+	if patch.Website != nil {
+		updates["website"] = strings.TrimSpace(*patch.Website)
+	}
+	if patch.Currency != nil {
+		if c := strings.TrimSpace(*patch.Currency); c != "" {
+			updates["currency"] = c
+		}
+	}
+	if patch.TaxRate != nil && *patch.TaxRate > 0 {
+		updates["tax_rate"] = *patch.TaxRate
+	}
+	if patch.AdditionalNotes != nil {
+		updates["additional_notes"] = strings.TrimSpace(*patch.AdditionalNotes)
+	}
+	if patch.TermsAndConditions != nil {
+		updates["terms_and_conditions"] = strings.TrimSpace(*patch.TermsAndConditions)
+	}
+	if patch.DetractionBNAccount != nil {
+		updates["detraction_bn_account"] = strings.TrimSpace(*patch.DetractionBNAccount)
+	}
+	if patch.DetractionDefaultPaymentMethod != nil {
+		updates["detraction_default_payment_method"] = normalizeDetractionPaymentMethod(*patch.DetractionDefaultPaymentMethod)
+	}
+	if patch.ColorTheme != nil {
+		if theme := strings.TrimSpace(*patch.ColorTheme); theme != "" {
+			updates["color_theme"] = theme
+		}
+	}
+	if patch.LogoURL != nil {
+		if logo := strings.TrimSpace(*patch.LogoURL); logo != "" {
+			updates["logo_url"] = logo
+		}
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.db.Model(&existing).Updates(updates).Error
+}
+
 func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 	var existing database.TenantCompanyConfig
 	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -64,7 +146,6 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 		"phone":      input.Phone,
 		"email":      input.Email,
 		"website":    input.Website,
-		"logo_url":   input.LogoURL,
 		"currency":         input.Currency,
 		"tax_rate":         input.TaxRate,
 		"additional_notes": strings.TrimSpace(input.AdditionalNotes),
@@ -76,7 +157,19 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 	if strings.TrimSpace(input.ColorTheme) != "" {
 		updates["color_theme"] = input.ColorTheme
 	}
+	if logoURL := strings.TrimSpace(input.LogoURL); logoURL != "" {
+		updates["logo_url"] = logoURL
+	}
 	return s.db.Model(&existing).Updates(updates).Error
+}
+
+// UpdateLogoURL persiste la ruta pública del logo (/uploads/tenants/{RUC}/company/...).
+func (s *CompanyService) UpdateLogoURL(url string) error {
+	var existing database.TenantCompanyConfig
+	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.New("configure primero los datos generales de la empresa")
+	}
+	return s.db.Model(&existing).Update("logo_url", strings.TrimSpace(url)).Error
 }
 
 func normalizeDetractionPaymentMethod(raw string) string {
