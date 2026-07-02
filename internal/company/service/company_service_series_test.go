@@ -119,6 +119,31 @@ func TestCompanyService_DeleteSeries_sameUsageLogic(t *testing.T) {
 	}
 }
 
+func TestCompanyService_CreateSeries_almacenSameCodeDifferentBranches(t *testing.T) {
+	db := setupCompanySeriesTestDB(t)
+	if err := db.AutoMigrate(&database.TenantBranch{}); err != nil {
+		t.Fatal(err)
+	}
+	b1 := database.TenantBranch{Name: "Principal", Active: true, IsMain: true}
+	b2 := database.TenantBranch{Name: "Sucursal 2", Active: true}
+	if err := db.Create(&b1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&b2).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc := NewCompanyService(db)
+	if err := svc.CreateSeries(b1.ID, "INGRESO_INVENTARIO", "ING001", nil); err != nil {
+		t.Fatalf("branch1 ING001: %v", err)
+	}
+	if err := svc.CreateSeries(b2.ID, "INGRESO_INVENTARIO", "ING001", nil); err != nil {
+		t.Fatalf("branch2 ING001: %v", err)
+	}
+	if err := svc.CreateSeries(b1.ID, "INGRESO_INVENTARIO", "ING001", nil); err == nil {
+		t.Fatal("debe rechazar ING001 duplicado en la misma sucursal")
+	}
+}
+
 func TestCompanyService_CreateSeries_derivesDocumentCodeFromType(t *testing.T) {
 	db := setupCompanySeriesTestDB(t)
 	svc := NewCompanyService(db)

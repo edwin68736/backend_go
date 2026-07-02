@@ -221,8 +221,13 @@ func (s *CompanyService) CreateBranch(name, address, phone, fiscalDomicileCode s
 		IsMain:             isMain,
 		Active:             true,
 	}
-	err := s.db.Create(b).Error
-	return b, err
+	if err := s.db.Create(b).Error; err != nil {
+		return nil, err
+	}
+	if err := database.SeedInventoryDocumentSeriesForBranch(s.db, b.ID); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 func (s *CompanyService) UpdateBranch(id uint, name, address, phone, fiscalDomicileCode string, isMain bool) error {
@@ -253,12 +258,19 @@ func (s *CompanyService) ListSeries(branchID uint) ([]database.TenantDocumentSer
 	return series, err
 }
 
-func (s *CompanyService) assertSeriesCodeUnique(seriesName string, excludeID uint) error {
+func (s *CompanyService) assertSeriesCodeUnique(branchID uint, category, seriesName string, excludeID uint) error {
 	code := docseries.NormalizeSeriesCode(seriesName)
 	if code == "" {
 		return errors.New("código de serie inválido")
 	}
 	q := s.db.Model(&database.TenantDocumentSeries{}).Where("series = ?", code)
+	// Series de almacén (ING001/EGR001) son internas y se repiten por sucursal.
+	if strings.TrimSpace(strings.ToLower(category)) == "almacen" {
+		if branchID == 0 {
+			return errors.New("sucursal requerida para series de almacén")
+		}
+		q = q.Where("branch_id = ?", branchID)
+	}
 	if excludeID > 0 {
 		q = q.Where("id != ?", excludeID)
 	}
@@ -286,7 +298,7 @@ func (s *CompanyService) CreateSeries(branchID uint, docType, seriesName string,
 	if err := docseries.ValidateSeriesConfig(docType, category, documentCode, seriesName); err != nil {
 		return err
 	}
-	if err := s.assertSeriesCodeUnique(seriesName, 0); err != nil {
+	if err := s.assertSeriesCodeUnique(branchID, category, seriesName, 0); err != nil {
 		return err
 	}
 	startCorrelative := uint(1)
@@ -389,12 +401,6 @@ func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, d
 		return s.db.Model(&database.TenantDocumentSeries{}).Where("id = ?", id).Update("active", active).Error
 	}
 
-	seriesName = docseries.NormalizeSeriesCode(seriesName)
-	if seriesName != "" {
-		if err := s.assertSeriesCodeUnique(seriesName, id); err != nil {
-			return err
-		}
-	}
 	var existing database.TenantDocumentSeries
 	if err := s.db.First(&existing, id).Error; err != nil {
 		return err
@@ -414,9 +420,16 @@ func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, d
 	if err := docseries.ValidateSeriesConfig(finalDocType, finalCat, finalDocumentCode, finalName); err != nil {
 		return err
 	}
+	if seriesName != "" {
+		normalized := docseries.NormalizeSeriesCode(seriesName)
+		if err := s.assertSeriesCodeUnique(existing.BranchID, finalCat, normalized, id); err != nil {
+			return err
+		}
+		finalName = normalized
+	}
 	updates := map[string]interface{}{"active": active}
 	if seriesName != "" {
-		updates["series"] = seriesName
+		updates["series"] = finalName
 	}
 	if docType != "" {
 		updates["doc_type"] = finalDocType

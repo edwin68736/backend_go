@@ -80,12 +80,12 @@ var seriesDocumentCatalog = []SeriesDocumentType{
 	{
 		ID: "ingreso_inventario", DocType: "INGRESO_INVENTARIO", Label: "Ingreso de inventario",
 		DocumentCode: "00", Category: "almacen", CategoryLabel: "Almacén", SeriesPrefixHint: "ING",
-		Electronic: false, SunatNumbering: false, FormSelectable: false,
+		Electronic: false, SunatNumbering: false, FormSelectable: true,
 	},
 	{
 		ID: "egreso_inventario", DocType: "EGRESO_INVENTARIO", Label: "Egreso de inventario",
 		DocumentCode: "00", Category: "almacen", CategoryLabel: "Almacén", SeriesPrefixHint: "EGR",
-		Electronic: false, SunatNumbering: false, FormSelectable: false,
+		Electronic: false, SunatNumbering: false, FormSelectable: true,
 	},
 }
 

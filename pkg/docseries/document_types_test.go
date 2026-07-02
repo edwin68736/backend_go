@@ -47,8 +47,17 @@ func TestResolveDocumentType_legacyLabels(t *testing.T) {
 
 func TestListFormDocumentTypes_withoutSunatOnlyNotaVenta(t *testing.T) {
 	types := ListFormDocumentTypes(false, false)
-	if len(types) != 1 || types[0].ID != "nota_venta" {
-		t.Fatalf("want solo nota_venta, got %d tipos", len(types))
+	if len(types) != 3 {
+		t.Fatalf("want 3 tipos internos (nota_venta + inventario), got %d", len(types))
+	}
+	ids := map[string]bool{}
+	for _, item := range types {
+		ids[item.ID] = true
+	}
+	for _, want := range []string{"nota_venta", "ingreso_inventario", "egreso_inventario"} {
+		if !ids[want] {
+			t.Fatalf("falta tipo %s en %v", want, types)
+		}
 	}
 }
 

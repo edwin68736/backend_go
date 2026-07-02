@@ -104,15 +104,6 @@ func ensureInventorySeries(db *gorm.DB, branchID uint, seriesCode, docType strin
 	if count > 0 {
 		return nil
 	}
-	var dup int64
-	if err := db.Model(&TenantDocumentSeries{}).
-		Where("series = ?", seriesCode).
-		Count(&dup).Error; err != nil {
-		return err
-	}
-	if dup > 0 {
-		return nil
-	}
 	row := TenantDocumentSeries{
 		BranchID:    branchID,
 		DocType:     docType,
