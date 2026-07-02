@@ -264,3 +264,63 @@ func TestUpdateDraftOnly(t *testing.T) {
 		t.Fatalf("update confirmed: %v", err)
 	}
 }
+
+func TestRecordAdjustmentViaDocument_usesCustomSeriesPerBranch(t *testing.T) {
+	db := setupDocumentTestDB(t)
+	var branch database.TenantBranch
+	db.First(&branch)
+	p := seedProduct(t, db, branch.ID)
+
+	if err := db.Where("branch_id = ? AND category = ?", branch.ID, "almacen").
+		Delete(&database.TenantDocumentSeries{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantDocumentSeries{
+		BranchID: branch.ID, DocType: "INGRESO_INVENTARIO", SunatCode: "00", Category: "almacen",
+		Series: "ING002", Correlative: 1, Active: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	inv := NewInventoryService(db)
+	if err := inv.RecordAdjustment(AdjustmentInput{
+		ProductID: p.ID, BranchID: branch.ID, Type: "in", Quantity: 6, Notes: "ING002 branch",
+	}, 1); err != nil {
+		t.Fatalf("adjustment ING002: %v", err)
+	}
+
+	var doc database.TenantInventoryDocument
+	if err := db.Order("id DESC").First(&doc).Error; err != nil {
+		t.Fatal(err)
+	}
+	if doc.Number != "ING002-00000001" {
+		t.Fatalf("number = %q want ING002-00000001", doc.Number)
+	}
+}
+
+func TestRecordAdjustmentViaDocument_autoSeedMissingSeries(t *testing.T) {
+	db := setupDocumentTestDB(t)
+	var branch database.TenantBranch
+	db.First(&branch)
+	p := seedProduct(t, db, branch.ID)
+
+	if err := db.Where("branch_id = ? AND category = ?", branch.ID, "almacen").
+		Delete(&database.TenantDocumentSeries{}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	inv := NewInventoryService(db)
+	if err := inv.RecordAdjustment(AdjustmentInput{
+		ProductID: p.ID, BranchID: branch.ID, Type: "in", Quantity: 4, Notes: "Auto seed",
+	}, 1); err != nil {
+		t.Fatalf("adjustment auto-seed: %v", err)
+	}
+
+	var n int64
+	db.Model(&database.TenantDocumentSeries{}).
+		Where("branch_id = ? AND series = ? AND category = ?", branch.ID, "ING001", "almacen").
+		Count(&n)
+	if n != 1 {
+		t.Fatalf("ING001 count = %d want 1", n)
+	}
+}

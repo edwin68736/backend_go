@@ -8,6 +8,41 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestEnsureInventorySeries_skipsDefaultWhenDocTypeExists(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&TenantBranch{}, &TenantDocumentSeries{}); err != nil {
+		t.Fatal(err)
+	}
+	b := TenantBranch{Name: "Sucursal 2", Active: true}
+	if err := db.Create(&b).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&TenantDocumentSeries{
+		BranchID: b.ID, DocType: "INGRESO_INVENTARIO", SunatCode: "00", Category: "almacen",
+		Series: "ING002", Correlative: 1, Active: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedInventoryDocumentSeriesForBranch(db, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	var ingCount int64
+	db.Model(&TenantDocumentSeries{}).
+		Where("branch_id = ? AND doc_type = ?", b.ID, "INGRESO_INVENTARIO").
+		Count(&ingCount)
+	if ingCount != 1 {
+		t.Fatalf("ingreso series count = %d want 1 (no debe agregar ING001)", ingCount)
+	}
+	var row TenantDocumentSeries
+	if err := db.Where("branch_id = ? AND doc_type = ?", b.ID, "EGRESO_INVENTARIO").First(&row).Error; err != nil {
+		t.Fatal("debe crear EGR001 por defecto para egreso")
+	}
+}
+
 func TestSeedInventoryDocumentSeriesForBranch_MultipleBranches(t *testing.T) {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})

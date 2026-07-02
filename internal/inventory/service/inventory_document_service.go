@@ -521,20 +521,74 @@ func documentDetailsToLineInputs(lines []database.TenantInventoryDocumentDetail)
 }
 
 func resolveInventorySeriesID(tx *gorm.DB, branchID uint, direction string) (uint, error) {
-	seriesCode := "ING001"
-	if strings.ToUpper(direction) == "OUT" {
-		seriesCode = "EGR001"
-	}
-	var series database.TenantDocumentSeries
-	err := tx.Where("branch_id = ? AND category = ? AND series = ? AND active = ?",
-		branchID, "almacen", seriesCode, true).First(&series).Error
+	docType := inventoryDirectionDocType(direction)
+	id, err := lookupInventorySeriesByDocType(tx, branchID, docType)
 	if err == nil {
-		return series.ID, nil
+		return id, nil
 	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+	if !errors.Is(err, errInventorySeriesNotFound) {
 		return 0, err
 	}
-	return 0, fmt.Errorf("serie de almacén %s no configurada para la sucursal", seriesCode)
+	if err := database.SeedInventoryDocumentSeriesForBranch(tx, branchID); err != nil {
+		return 0, err
+	}
+	id, err = lookupInventorySeriesByDocType(tx, branchID, docType)
+	if err == nil {
+		return id, nil
+	}
+	if errors.Is(err, errInventorySeriesNotFound) {
+		return 0, fmt.Errorf(
+			"no hay serie activa de %s de inventario para esta sucursal; créela en Ajustes → Series",
+			inventoryDirectionLabel(direction),
+		)
+	}
+	return 0, err
+}
+
+var errInventorySeriesNotFound = errors.New("inventory series not found")
+
+func lookupInventorySeriesByDocType(tx *gorm.DB, branchID uint, docType string) (uint, error) {
+	var rows []database.TenantDocumentSeries
+	if err := tx.Where(
+		"branch_id = ? AND category = ? AND doc_type = ? AND active = ?",
+		branchID, "almacen", docType, true,
+	).Order("id ASC").Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	switch len(rows) {
+	case 0:
+		return 0, errInventorySeriesNotFound
+	case 1:
+		return rows[0].ID, nil
+	default:
+		return 0, fmt.Errorf(
+			"hay más de una serie activa de %s para esta sucursal; deje solo una en Ajustes → Series",
+			inventoryDocTypeLabel(docType),
+		)
+	}
+}
+
+func inventoryDirectionDocType(direction string) string {
+	if strings.ToUpper(direction) == "OUT" {
+		return "EGRESO_INVENTARIO"
+	}
+	return "INGRESO_INVENTARIO"
+}
+
+func inventoryDirectionLabel(direction string) string {
+	if strings.ToUpper(direction) == "OUT" {
+		return "egreso"
+	}
+	return "ingreso"
+}
+
+func inventoryDocTypeLabel(docType string) string {
+	switch strings.ToUpper(strings.TrimSpace(docType)) {
+	case "EGRESO_INVENTARIO":
+		return "egreso"
+	default:
+		return "ingreso"
+	}
 }
 
 func buildMovementNotes(doc database.TenantInventoryDocument) string {

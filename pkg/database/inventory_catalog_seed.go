@@ -97,7 +97,7 @@ func SeedInventoryDocumentSeriesForAllBranches(db *gorm.DB) error {
 func ensureInventorySeries(db *gorm.DB, branchID uint, seriesCode, docType string) error {
 	var count int64
 	if err := db.Model(&TenantDocumentSeries{}).
-		Where("branch_id = ? AND series = ?", branchID, seriesCode).
+		Where("branch_id = ? AND category = ? AND doc_type = ?", branchID, "almacen", docType).
 		Count(&count).Error; err != nil {
 		return err
 	}

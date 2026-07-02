@@ -264,7 +264,7 @@ func (s *CompanyService) assertSeriesCodeUnique(branchID uint, category, seriesN
 		return errors.New("código de serie inválido")
 	}
 	q := s.db.Model(&database.TenantDocumentSeries{}).Where("series = ?", code)
-	// Series de almacén (ING001/EGR001) son internas y se repiten por sucursal.
+	// Series de almacén: código único dentro de la sucursal (puede repetirse en otra sucursal).
 	if strings.TrimSpace(strings.ToLower(category)) == "almacen" {
 		if branchID == 0 {
 			return errors.New("sucursal requerida para series de almacén")
