@@ -70,6 +70,7 @@ type PrintData struct {
 
 	SellerName         string             `json:"seller_name,omitempty"`
 	PaymentCondition   string             `json:"payment_condition,omitempty"` // Contado, Crédito
+	CreditInstallments []PrintCreditInstallment `json:"credit_installments,omitempty"`
 	BankAccounts       []PrintBankAccount `json:"bank_accounts,omitempty"`
 	PaymentWallet      *PrintPaymentWallet `json:"payment_wallet,omitempty"`
 
@@ -176,6 +177,14 @@ type PrintPayment struct {
 	Reference string  `json:"reference,omitempty"`
 }
 
+type PrintCreditInstallment struct {
+	InstallmentNo int     `json:"installment_no"`
+	DueDate       string  `json:"due_date"`
+	Amount        float64 `json:"amount"`
+	Currency      string  `json:"currency,omitempty"`
+	Status        string  `json:"status,omitempty"`
+}
+
 // BuildPrintData construye la estructura print_data para una venta.
 func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.TenantSaleItem, payments []PrintPaymentInput, sunatHash string) (*PrintData, error) {
 	pd := &PrintData{
@@ -200,7 +209,26 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		currency = "PEN"
 	}
 	pd.LegendText = numeroletras.MontoEnLetras(sale.Total, currency)
-	pd.PaymentCondition = "Contado"
+	pd.PaymentCondition = paymentcondition.NameCash
+	if paymentcondition.IsCreditCode(sale.PaymentConditionCode) || sale.Status == "credit" {
+		pd.PaymentCondition = paymentcondition.NameCredit
+	} else if paymentcondition.IsCashCode(sale.PaymentConditionCode) {
+		pd.PaymentCondition = paymentcondition.NameCash
+	}
+
+	var creditRows []database.TenantSaleCreditInstallment
+	if db.Where("sale_id = ?", sale.ID).Order("installment_no ASC").Find(&creditRows).Error == nil && len(creditRows) > 0 {
+		pd.CreditInstallments = make([]PrintCreditInstallment, len(creditRows))
+		for i, row := range creditRows {
+			pd.CreditInstallments[i] = PrintCreditInstallment{
+				InstallmentNo: row.InstallmentNo,
+				DueDate:       row.DueDate.Format("02/01/2006"),
+				Amount:        row.Amount,
+				Currency:      row.Currency,
+				Status:        row.Status,
+			}
+		}
+	}
 
 	// Serie → sunat_code
 	var series database.TenantDocumentSeries

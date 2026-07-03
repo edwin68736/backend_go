@@ -35,25 +35,29 @@ type ListFilter struct {
 }
 
 type ReceivableRow struct {
-	SaleID                 uint       `json:"sale_id"`
-	SaleNumber             string     `json:"sale_number"`
-	DocType                string     `json:"doc_type"`
-	IssueDate              time.Time  `json:"issue_date"`
-	DueDate                *time.Time `json:"due_date,omitempty"`
-	ContactID              uint       `json:"contact_id"`
-	ContactName            string     `json:"contact_name"`
-	ContactDocNumber       string     `json:"contact_doc_number"`
-	Total                  float64    `json:"total"`
-	Status                 string     `json:"status"`
-	HasDetraccion          bool       `json:"has_detraccion"`
-	DirectTarget           float64    `json:"direct_target"`
-	DirectPaid             float64    `json:"direct_paid"`
-	DirectDue              float64    `json:"direct_due"`
-	SpotAmount             float64    `json:"spot_amount"`
-	SpotPending            float64    `json:"spot_pending"`
-	BnConfirmationStatus   string     `json:"bn_confirmation_status,omitempty"`
-	BnConfirmationReference string    `json:"bn_confirmation_reference,omitempty"`
-	IsOverdue              bool       `json:"is_overdue"`
+	SaleID                  uint             `json:"sale_id"`
+	SaleNumber              string           `json:"sale_number"`
+	DocType                 string           `json:"doc_type"`
+	IssueDate               time.Time        `json:"issue_date"`
+	DueDate                 *time.Time       `json:"due_date,omitempty"`
+	ContactID               uint             `json:"contact_id"`
+	ContactName             string           `json:"contact_name"`
+	ContactDocNumber        string           `json:"contact_doc_number"`
+	Total                   float64          `json:"total"`
+	Status                  string           `json:"status"`
+	PaymentConditionCode    string           `json:"payment_condition_code"`
+	HasDetraccion           bool             `json:"has_detraccion"`
+	DirectTarget            float64          `json:"direct_target"`
+	DirectPaid              float64          `json:"direct_paid"`
+	DirectDue               float64          `json:"direct_due"`
+	SpotAmount              float64          `json:"spot_amount"`
+	SpotPending             float64          `json:"spot_pending"`
+	BnConfirmationStatus    string           `json:"bn_confirmation_status,omitempty"`
+	BnConfirmationReference string           `json:"bn_confirmation_reference,omitempty"`
+	IsOverdue               bool             `json:"is_overdue"`
+	Installments            []InstallmentRow `json:"installments,omitempty"`
+	InstallmentsPending     int              `json:"installments_pending"`
+	NextInstallmentDue      *time.Time       `json:"next_installment_due,omitempty"`
 }
 
 type Summary struct {
@@ -65,9 +69,10 @@ type Summary struct {
 }
 
 type CollectPaymentInput struct {
-	Payments      []salessvc.PaymentInput `json:"payments"`
-	CashSessionID *uint                   `json:"cash_session_id,omitempty"`
-	UserID        uint                    `json:"-"`
+	Payments             []salessvc.PaymentInput `json:"payments"`
+	CashSessionID        *uint                   `json:"cash_session_id,omitempty"`
+	PreferInstallmentID  uint                    `json:"prefer_installment_id,omitempty"`
+	UserID               uint                    `json:"-"`
 }
 
 type ConfirmBNInput struct {
@@ -95,9 +100,9 @@ type StatementResult struct {
 }
 
 func (s *ReceivableService) List(f ListFilter) ([]ReceivableRow, int64, error) {
+	// Ventas con saldo pendiente (crédito, parcial o SPOT BN). Doc types reales: BOLETA, FACTURA, NOTA DE VENTA, etc.
 	q := s.db.Model(&database.TenantSale{}).
-		Where("tenant_sales.status != ?", "cancelled").
-		Where("tenant_sales.doc_type IN ?", []string{"01", "03", "NV"})
+		Where("tenant_sales.status != ?", "cancelled")
 
 	if f.BranchID > 0 {
 		q = q.Where("tenant_sales.branch_id = ?", f.BranchID)
@@ -128,7 +133,7 @@ func (s *ReceivableService) List(f ListFilter) ([]ReceivableRow, int64, error) {
 		}
 	}
 
-	detBySale, payBySale, contactsByID, err := s.loadRelated(ids, contactIDs)
+	detBySale, payBySale, instBySale, contactsByID, err := s.loadRelated(ids, contactIDs)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -141,7 +146,7 @@ func (s *ReceivableService) List(f ListFilter) ([]ReceivableRow, int64, error) {
 		if !HasOpenReceivable(sale, det, payments) {
 			continue
 		}
-		row := s.buildRow(sale, det, payments, contactsByID, now)
+		row := s.buildRow(sale, det, payments, instBySale[sale.ID], contactsByID, now)
 		if !matchStatusFilter(f, row) {
 			continue
 		}
@@ -264,6 +269,7 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var collected float64
 		for _, p := range in.Payments {
 			if p.Amount <= 0 || p.Method == "" {
 				continue
@@ -279,6 +285,11 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 			if err := cbSvc.RecordPayment(tx, p.Method, p.Amount, cashSessionID, sale.Number, desc, &sale.ID, in.UserID); err != nil {
 				return err
 			}
+			collected += p.Amount
+		}
+
+		if err := applyPaymentToInstallmentsTx(tx, saleID, collected, in.PreferInstallmentID); err != nil {
+			return err
 		}
 
 		var all []database.TenantSalePayment
@@ -286,9 +297,19 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 			return err
 		}
 		_, paidAfter, dueAfter, _, _, _ := SaleBalance(sale, det, all)
+		// Venta a crédito: se marca pagada solo cuando el saldo directo queda en cero.
 		newStatus := sale.Status
 		if dueAfter < money.PaymentTolerance {
 			newStatus = "paid"
+			// Cierra cuotas pendientes por redondeo o ventas sin cuotas parciales.
+			if err := tx.Model(&database.TenantSaleCreditInstallment{}).
+				Where("sale_id = ? AND status != ?", saleID, InstallmentPaid).
+				Updates(map[string]interface{}{
+					"status":      InstallmentPaid,
+					"paid_amount": gorm.Expr("amount"),
+				}).Error; err != nil {
+				return err
+			}
 		} else {
 			newStatus = "credit"
 		}
@@ -355,7 +376,7 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 	for i := range sales {
 		ids[i] = sales[i].ID
 	}
-	detBySale, payBySale, _, err := s.loadRelated(ids, nil)
+	detBySale, payBySale, _, _, err := s.loadRelated(ids, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -420,11 +441,17 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 func (s *ReceivableService) loadRelated(
 	saleIDs []uint,
 	contactIDs []uint,
-) (map[uint]*database.TenantSaleDetraccion, map[uint][]database.TenantSalePayment, map[uint]database.TenantContact, error) {
+) (
+	map[uint]*database.TenantSaleDetraccion,
+	map[uint][]database.TenantSalePayment,
+	map[uint][]database.TenantSaleCreditInstallment,
+	map[uint]database.TenantContact,
+	error,
+) {
 	detBySale := map[uint]*database.TenantSaleDetraccion{}
 	var dets []database.TenantSaleDetraccion
 	if err := s.db.Where("sale_id IN ?", saleIDs).Find(&dets).Error; err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	for i := range dets {
 		d := dets[i]
@@ -434,29 +461,39 @@ func (s *ReceivableService) loadRelated(
 	payBySale := map[uint][]database.TenantSalePayment{}
 	var pays []database.TenantSalePayment
 	if err := s.db.Where("sale_id IN ?", saleIDs).Order("created_at ASC").Find(&pays).Error; err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	for _, p := range pays {
 		payBySale[p.SaleID] = append(payBySale[p.SaleID], p)
+	}
+
+	instBySale := map[uint][]database.TenantSaleCreditInstallment{}
+	var insts []database.TenantSaleCreditInstallment
+	if err := s.db.Where("sale_id IN ?", saleIDs).Order("installment_no ASC").Find(&insts).Error; err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, inst := range insts {
+		instBySale[inst.SaleID] = append(instBySale[inst.SaleID], inst)
 	}
 
 	contactsByID := map[uint]database.TenantContact{}
 	if len(contactIDs) > 0 {
 		var contacts []database.TenantContact
 		if err := s.db.Where("id IN ?", contactIDs).Find(&contacts).Error; err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		for _, c := range contacts {
 			contactsByID[c.ID] = c
 		}
 	}
-	return detBySale, payBySale, contactsByID, nil
+	return detBySale, payBySale, instBySale, contactsByID, nil
 }
 
 func (s *ReceivableService) buildRow(
 	sale database.TenantSale,
 	det *database.TenantSaleDetraccion,
 	payments []database.TenantSalePayment,
+	installments []database.TenantSaleCreditInstallment,
 	contacts map[uint]database.TenantContact,
 	now time.Time,
 ) ReceivableRow {
@@ -472,21 +509,45 @@ func (s *ReceivableService) buildRow(
 			docNum = c.DocNumber
 		}
 	}
+	instRows := toInstallmentRows(installments, now)
+	nextDue := nextOpenInstallmentDue(instRows)
+	displayDue := sale.DueDate
+	if nextDue != nil {
+		displayDue = nextDue
+	}
 	isOverdue := false
-	if sale.DueDate != nil && due > 0 {
-		isOverdue = sale.DueDate.Before(now)
+	if due > 0 {
+		if nextDue != nil {
+			isOverdue = nextDue.Before(now)
+		} else if sale.DueDate != nil {
+			isOverdue = sale.DueDate.Before(now)
+		}
+		for _, ir := range instRows {
+			if ir.IsOverdue {
+				isOverdue = true
+				break
+			}
+		}
+	}
+	payCond := sale.PaymentConditionCode
+	if payCond == "" && (sale.Status == "credit" || len(instRows) > 0) {
+		payCond = paymentcondition.CodeCredit
+	}
+	if payCond == "" {
+		payCond = paymentcondition.CodeCash
 	}
 	return ReceivableRow{
 		SaleID:               sale.ID,
 		SaleNumber:           sale.Number,
 		DocType:              sale.DocType,
 		IssueDate:            sale.IssueDate,
-		DueDate:              sale.DueDate,
+		DueDate:              displayDue,
 		ContactID:            contactIDVal(sale.ContactID),
 		ContactName:          name,
 		ContactDocNumber:     docNum,
 		Total:                sale.Total,
 		Status:               sale.Status,
+		PaymentConditionCode: payCond,
 		HasDetraccion:        det != nil,
 		DirectTarget:         target,
 		DirectPaid:           paid,
@@ -500,7 +561,10 @@ func (s *ReceivableService) buildRow(
 			}
 			return ""
 		}(),
-		IsOverdue: isOverdue,
+		IsOverdue:           isOverdue,
+		Installments:        instRows,
+		InstallmentsPending: countPendingInstallments(instRows),
+		NextInstallmentDue:  nextDue,
 	}
 }
 

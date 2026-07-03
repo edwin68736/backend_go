@@ -87,6 +87,8 @@ type CreateSaleInput struct {
 	ExchangeRate      *float64
 	PaymentMethod     string   // legacy: si Payments vacío, se usa para el total
 	Payments      []PaymentInput `json:"payments"` // múltiples métodos de pago
+	PaymentConditionCode string                 `json:"payment_condition_code"` // cash | credit
+	CreditInstallments   []CreditInstallmentInput `json:"credit_installments"`
 	Notes         string
 	Items         []SaleItemInput
 	GlobalDiscountMode  string  `json:"global_discount_mode"`
@@ -323,6 +325,67 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		primaryMethod = paymentcondition.CodeCredit
 	}
 
+	payCond := normalizePaymentConditionCode(input.PaymentConditionCode)
+	if payCond == paymentcondition.CodeCredit {
+		isCreditSale = true
+	} else if payCond == paymentcondition.CodeCash {
+		isCreditSale = false
+	}
+
+	salePayable := total
+	if opCode == salecurrency.OpDetraccion && total > 0 {
+		if eval, derr := s.evaluateDetractionForCreate(input, &series, total, saleItems, contact); derr == nil && eval.Applicable {
+			salePayable = eval.NetPayablePEN
+		}
+	}
+
+	var creditInstallmentRows []database.TenantSaleCreditInstallment
+	if isCreditSale {
+		loc, locErr := time.LoadLocation("America/Lima")
+		if locErr != nil || loc == nil {
+			loc = time.Local
+		}
+		directPaid := sumDirectPaymentsExclSpecial(payments)
+		creditTarget := money.RoundDisplay(salePayable - directPaid)
+		if creditTarget <= 0.009 {
+			return nil, errors.New("el saldo a crédito debe ser mayor a cero; reduzca el pago directo o elija contado")
+		}
+		installments := input.CreditInstallments
+		if len(installments) == 0 && input.DueDate != nil {
+			installments = []CreditInstallmentInput{{
+				DueDate: input.DueDate.Format("2006-01-02"),
+				Amount:  creditTarget,
+			}}
+		}
+		var lastDue *time.Time
+		var instErr error
+		creditInstallmentRows, lastDue, instErr = validateCreditInstallments(installments, creditTarget, currency, loc)
+		if instErr != nil {
+			return nil, instErr
+		}
+		if lastDue != nil {
+			input.DueDate = lastDue
+		}
+	} else if payCond == paymentcondition.CodeCash && total > 0 {
+		if len(payments) == 0 {
+			return nil, errors.New("debe indicar al menos un método de pago para venta al contado")
+		}
+		if !money.PaidCoversTotal(sumDirectPaymentsExclSpecial(payments), salePayable) {
+			return nil, fmt.Errorf(
+				"venta al contado: los pagos (%.2f) deben cubrir el total (%.2f)",
+				sumDirectPaymentsExclSpecial(payments),
+				money.RoundDisplay(salePayable),
+			)
+		}
+	}
+
+	if payCond == "" {
+		payCond = paymentcondition.CodeCash
+		if isCreditSale {
+			payCond = paymentcondition.CodeCredit
+		}
+	}
+
 	saleOrigin := salescope.SaleOriginDirect
 	if emitFromNV {
 		saleOrigin = salescope.SaleOriginConvertedFromNota
@@ -352,6 +415,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		OperationTypeCode:    opCode,
 		ExchangeRate:         exchangeRate,
 		PaymentMethod:        primaryMethod,
+		PaymentConditionCode: payCond,
 		SaleOrigin:           saleOrigin,
 		Notes:                input.Notes,
 		Status:               saleStatus,
@@ -374,6 +438,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		sale.Number = fmt.Sprintf("%s-%08d", seriesLocked.Series, correlative)
 
 		if err := tx.Create(sale).Error; err != nil {
+			return err
+		}
+		if err := s.persistCreditInstallmentsTx(tx, sale.ID, creditInstallmentRows); err != nil {
 			return err
 		}
 		for i := range saleItems {

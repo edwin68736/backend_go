@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"tukifac/internal/company/service"
 	"tukifac/pkg/database"
@@ -153,14 +154,22 @@ func (h *CompanyHandler) UploadCompanyLogoAPI(c fiber.Ctx) error {
 	}
 	filename := "logo" + ext
 	savePath := filepath.Join(dir, filename)
+	for _, oldExt := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+		if oldExt == ext {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, "logo"+oldExt))
+	}
 	if err := c.SaveFile(file, savePath); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": fmt.Sprintf("error guardando logo en %s: %v", savePath, err),
 		})
 	}
 	imageURL := tenantstorage.TenantUploadPublicURL(ruc, "company", filename)
+	// ?v= evita caché del navegador al reemplazar el mismo archivo logo.*
+	storedURL := fmt.Sprintf("%s?v=%d", imageURL, time.Now().UnixMilli())
 	svc := service.NewCompanyService(db(c))
-	if err := svc.UpdateLogoURL(imageURL); err != nil {
+	if err := svc.UpdateLogoURL(storedURL); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	if svc.IsSunatEnabled() {
@@ -170,13 +179,13 @@ func (h *CompanyHandler) UploadCompanyLogoAPI(c fiber.Ctx) error {
 			syncSvc := svc
 			if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
 				syncSvc = svc.WithSaaSContext(t.ID, t.Slug)
-				_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", imageURL).Error
+				_ = database.CentralDB.Model(&database.Tenant{}).Where("id = ?", t.ID).Update("logo_url", storedURL).Error
 			}
 			_ = syncSvc.SyncFacturadorConfigWithFiles("", "", logoBase64, "", "", "", "")
 		}
 	}
 	cfg, _ := svc.GetConfig()
-	return c.JSON(fiber.Map{"success": true, "logo_url": imageURL, "data": cfg})
+	return c.JSON(fiber.Map{"success": true, "logo_url": storedURL, "data": cfg})
 }
 
 // DeleteCompanyLogoAPI DELETE /api/company/logo — quita logo del tenant.

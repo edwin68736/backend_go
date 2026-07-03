@@ -497,6 +497,8 @@ type TenantCompanyConfig struct {
 	ColorTheme             string     `gorm:"size:30;default:'green'" json:"color_theme"`
 	AdditionalNotes        string     `gorm:"type:text" json:"additional_notes"`
 	TermsAndConditions     string     `gorm:"type:text" json:"terms_and_conditions"`
+	// Preferencia global: incluir términos en comprobantes/NV/cotizaciones nuevas.
+	ShowTermsConditions bool `gorm:"default:false" json:"show_terms_conditions"`
 	// QR de pago Yape/Plin en comprobantes locales (PDF ticket / A4)
 	WalletProvider     string `gorm:"size:20" json:"wallet_provider"`       // yape | plin
 	WalletPhone        string `gorm:"size:30" json:"wallet_phone"`
@@ -799,6 +801,7 @@ type TenantSale struct {
 	OperationTypeCode   string   `gorm:"size:10;default:'0101'" json:"operation_type_code"`
 	ExchangeRate        *float64 `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
 	PaymentMethod       string   `gorm:"size:50" json:"payment_method"`
+	PaymentConditionCode string  `gorm:"size:20;default:cash;index" json:"payment_condition_code"`
 	Notes          string         `gorm:"type:text" json:"notes"`
 	Status         string         `gorm:"size:30;default:'paid'" json:"status"`            // draft, paid, cancelled, credit
 	BillingStatus  string         `gorm:"size:30;default:'pending'" json:"billing_status"` // pending, sent, accepted, rejected
@@ -1268,6 +1271,20 @@ type TenantPaymentMethod struct {
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantSaleCreditInstallment cuota de una venta a crédito (CxC).
+type TenantSaleCreditInstallment struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	SaleID        uint      `gorm:"not null;index" json:"sale_id"`
+	InstallmentNo int       `gorm:"not null" json:"installment_no"`
+	DueDate       time.Time `gorm:"not null;index" json:"due_date"`
+	Amount        float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
+	Currency      string    `gorm:"size:10;default:'PEN'" json:"currency"`
+	Status        string    `gorm:"size:20;default:'pending'" json:"status"`
+	PaidAmount    float64   `gorm:"type:decimal(15,2);default:0" json:"paid_amount"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // TenantPaymentCondition condición comercial de la venta (contado / crédito).

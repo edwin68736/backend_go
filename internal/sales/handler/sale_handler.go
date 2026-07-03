@@ -121,6 +121,8 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		ExchangeRate      *float64                 `json:"exchange_rate"`
 		PaymentMethod     string                   `json:"payment_method"`
 		Payments      []service.PaymentInput   `json:"payments"`
+		PaymentConditionCode string             `json:"payment_condition_code"`
+		CreditInstallments   []service.CreditInstallmentInput `json:"credit_installments"`
 		Notes         string                   `json:"notes"`
 		Items         []service.SaleItemInput  `json:"items"`
 		GlobalDiscountMode  string             `json:"global_discount_mode"`
@@ -190,6 +192,8 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		ExchangeRate:      body.ExchangeRate,
 		PaymentMethod:     body.PaymentMethod,
 		Payments:        body.Payments,
+		PaymentConditionCode: body.PaymentConditionCode,
+		CreditInstallments:   body.CreditInstallments,
 		Notes:           body.Notes,
 		Items:           body.Items,
 		GlobalDiscountMode:  body.GlobalDiscountMode,
@@ -468,7 +472,8 @@ func (h *SaleHandler) GetAPI(c fiber.Ctx) error {
 	}
 	items, _ := svc.GetItems(sale.ID)
 	payments, _ := svc.GetPayments(sale.ID)
-	out := fiber.Map{"sale": sale, "items": items, "payments": payments}
+	creditInstallments, _ := svc.GetCreditInstallments(sale.ID)
+	out := fiber.Map{"sale": sale, "items": items, "payments": payments, "credit_installments": creditInstallments}
 	if sale.ContactID != nil && *sale.ContactID > 0 {
 		var contact database.TenantContact
 		if db(c).First(&contact, *sale.ContactID).Error == nil {

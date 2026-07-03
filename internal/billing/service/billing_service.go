@@ -347,6 +347,7 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 	if det, err := detraccionsvc.NewService(s.db).LoadBySaleID(saleID); err == nil && det != nil {
 		detraccionsvc.ApplyToInvoicePayload(payload, det)
 	}
+	applyCreditTermsToInvoicePayload(s.db, &sale, payload)
 	payloadBytes, _ := json.Marshal(payload)
 	payloadJSON := string(payloadBytes)
 

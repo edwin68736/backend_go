@@ -208,6 +208,29 @@ func RequireModule(moduleKey string) fiber.Handler {
 	}
 }
 
+// RequireAnyModule permite la ruta si el tenant tiene al menos uno de los módulos indicados.
+func RequireAnyModule(moduleKeys ...string) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		claims, ok := c.Locals("tenant_claims").(*TenantClaims)
+		if !ok || claims == nil {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "Sin contexto de autenticación",
+			})
+		}
+		for _, want := range moduleKeys {
+			for _, m := range claims.Modules {
+				if m == want {
+					return c.Next()
+				}
+			}
+		}
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error":   "Ninguno de los módulos requeridos está habilitado en tu plan",
+			"modules": moduleKeys,
+		})
+	}
+}
+
 // SuperAdminAuthWeb protege rutas web del panel super admin (cookie sa_token)
 func SuperAdminAuthWeb() fiber.Handler {
 	return func(c fiber.Ctx) error {

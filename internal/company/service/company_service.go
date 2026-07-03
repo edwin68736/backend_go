@@ -63,6 +63,7 @@ type CompanyConfigPatch struct {
 	TaxRate                        *float64 `json:"tax_rate"`
 	AdditionalNotes                *string  `json:"additional_notes"`
 	TermsAndConditions             *string  `json:"terms_and_conditions"`
+	ShowTermsConditions            *bool    `json:"show_terms_conditions"`
 	DetractionBNAccount            *string  `json:"detraction_bn_account"`
 	DetractionDefaultPaymentMethod *string  `json:"detraction_default_payment_method"`
 	ColorTheme                     *string  `json:"color_theme"`
@@ -110,6 +111,9 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 	if patch.TermsAndConditions != nil {
 		updates["terms_and_conditions"] = strings.TrimSpace(*patch.TermsAndConditions)
 	}
+	if patch.ShowTermsConditions != nil {
+		updates["show_terms_conditions"] = *patch.ShowTermsConditions
+	}
 	if patch.DetractionBNAccount != nil {
 		updates["detraction_bn_account"] = strings.TrimSpace(*patch.DetractionBNAccount)
 	}
@@ -149,7 +153,8 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 		"currency":         input.Currency,
 		"tax_rate":         input.TaxRate,
 		"additional_notes": strings.TrimSpace(input.AdditionalNotes),
-		"terms_and_conditions": strings.TrimSpace(input.TermsAndConditions),
+		"terms_and_conditions":  strings.TrimSpace(input.TermsAndConditions),
+		"show_terms_conditions": input.ShowTermsConditions,
 		"detraction_bn_account":            strings.TrimSpace(input.DetractionBNAccount),
 		"detraction_default_payment_method": normalizeDetractionPaymentMethod(input.DetractionDefaultPaymentMethod),
 	}

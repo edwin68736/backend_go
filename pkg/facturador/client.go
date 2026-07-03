@@ -221,6 +221,7 @@ type InvoicePayload struct {
 	FechaEmision    string             `json:"fechaEmision"`
 	FecVencimiento  string             `json:"fecVencimiento,omitempty"` // Solo factura (01). ISO 8601 con zona (Y-m-d\TH:i:sP).
 	FormaPago       *InvoiceFormaPago  `json:"formaPago,omitempty"`
+	Cuotas          []InvoiceCuota     `json:"cuotas,omitempty"`
 	Company         InvoiceCompany     `json:"company"`
 	Client          InvoiceClient      `json:"client"`
 	TipoMoneda      string             `json:"tipoMoneda"`
@@ -258,9 +259,18 @@ type InvoiceRelatedDoc struct {
 	NroDoc  string `json:"nroDoc"`
 }
 
-// InvoiceFormaPago según doc: al menos "tipo" (ej. "Contado").
+// InvoiceFormaPago según doc: al menos "tipo" (ej. "Contado", "Credito").
 type InvoiceFormaPago struct {
-	Tipo string `json:"tipo"`
+	Tipo   string  `json:"tipo"`
+	Moneda string  `json:"moneda,omitempty"`
+	Monto  float64 `json:"monto,omitempty"`
+}
+
+// InvoiceCuota cuota de pago a crédito (SUNAT / Lycet).
+type InvoiceCuota struct {
+	Moneda    string  `json:"moneda,omitempty"`
+	Monto     float64 `json:"monto"`
+	FechaPago string  `json:"fechaPago"`
 }
 
 type InvoiceCompany struct {

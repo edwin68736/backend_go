@@ -9,9 +9,10 @@ import (
 
 func RegisterRoutes(api fiber.Router) {
 	h := handler.NewPaymentCatalogHandler()
-	view := middleware.RequireModule("cashbank")
+	// Métodos de pago: caja o ventas (CxC / registro de ventas).
+	payMethods := middleware.RequireAnyModule("cashbank", "sales")
 
-	api.Get("/payment-methods", view, h.ListPaymentMethodsAPI)
-	api.Get("/payment-conditions", view, middleware.RequireModule("sales"), h.ListPaymentConditionsAPI)
-	api.Get("/tax-payment-types", view, middleware.RequireModule("billing"), h.ListTaxPaymentTypesAPI)
+	api.Get("/payment-methods", payMethods, h.ListPaymentMethodsAPI)
+	api.Get("/payment-conditions", middleware.RequireModule("sales"), h.ListPaymentConditionsAPI)
+	api.Get("/tax-payment-types", middleware.RequireModule("billing"), h.ListTaxPaymentTypesAPI)
 }
