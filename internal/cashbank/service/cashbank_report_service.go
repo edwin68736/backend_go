@@ -581,14 +581,15 @@ type salePayRow struct {
 	BranchID          uint
 }
 
-// listOrphanSalesForSession ventas del turno sin cash_session_id (histórico antes del fix).
+// listOrphanSalesForSession ventas del turno sin cash_session_id (cualquier usuario de la sucursal).
+// Incluye ventas del administrador u otros sin caja propia registradas durante el turno.
 func (s *CashBankService) listOrphanSalesForSession(session *database.TenantCashSession) ([]database.TenantSale, error) {
 	if session == nil || session.ID == 0 {
 		return nil, nil
 	}
 	q := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
 		Where("(cash_session_id IS NULL OR cash_session_id = 0)").
-		Where("user_id = ? AND branch_id = ?", sessionOwnerID(session), session.BranchID).
+		Where("branch_id = ?", session.BranchID).
 		Where("created_at >= ?", session.OpenedAt).
 		Where("status NOT IN ?", []string{"cancelled", "draft"})
 	if session.ClosedAt != nil {
@@ -613,7 +614,7 @@ func (s *CashBankService) scanOrphanSalePaymentRows(f MovementReportFilters) ([]
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_payments.sale_id").
 		Where("(tenant_sales.cash_session_id IS NULL OR tenant_sales.cash_session_id = 0)").
 		Scopes(salescope.ScopeCommercial("tenant_sales")).
-		Where("tenant_sales.user_id = ? AND tenant_sales.branch_id = ?", sessionOwnerID(&session), session.BranchID).
+		Where("tenant_sales.branch_id = ?", session.BranchID).
 		Where("tenant_sales.created_at >= ?", session.OpenedAt).
 		Where("tenant_sales.status NOT IN ?", []string{"cancelled", "draft"})
 	if session.ClosedAt != nil {
@@ -621,6 +622,41 @@ func (s *CashBankService) scanOrphanSalePaymentRows(f MovementReportFilters) ([]
 	}
 	if f.UserID > 0 {
 		q = q.Where("tenant_sales.user_id = ?", f.UserID)
+	}
+	if f.PaymentMethod != "" {
+		q = applyPaymentMethodFilter(q, "tenant_sale_payments.method", f.PaymentMethod)
+	}
+	var rows []salePayRow
+	err := q.Order("tenant_sale_payments.created_at DESC").Scan(&rows).Error
+	return rows, err
+}
+
+// scanUnlinkedSalePaymentRows ventas sin sesión de caja en rango de fechas (reporte de movimientos sin filtrar por sesión).
+func (s *CashBankService) scanUnlinkedSalePaymentRows(f MovementReportFilters) ([]salePayRow, error) {
+	if f.SessionID > 0 {
+		return nil, nil
+	}
+	q := s.db.Table("tenant_sale_payments").
+		Select(`tenant_sale_payments.id AS payment_id, tenant_sale_payments.sale_id, tenant_sale_payments.method,
+			tenant_sale_payments.amount, tenant_sale_payments.reference, tenant_sale_payments.notes, tenant_sale_payments.created_at,
+			tenant_sales.number AS sale_number, tenant_sales.user_id AS sale_user_id, tenant_sales.contact_id,
+			0 AS cash_session_id, tenant_sales.payment_method AS sale_payment_method, tenant_sales.created_at AS sale_created_at,
+			tenant_sales.branch_id`).
+		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_payments.sale_id").
+		Where("(tenant_sales.cash_session_id IS NULL OR tenant_sales.cash_session_id = 0)").
+		Scopes(salescope.ScopeCommercial("tenant_sales")).
+		Where("tenant_sales.status NOT IN ?", []string{"cancelled", "draft"})
+	if f.BranchID > 0 {
+		q = q.Where("tenant_sales.branch_id = ?", f.BranchID)
+	}
+	if f.UserID > 0 {
+		q = q.Where("tenant_sales.user_id = ?", f.UserID)
+	}
+	if f.DateFrom != nil {
+		q = q.Where("tenant_sales.created_at >= ?", f.DateFrom)
+	}
+	if f.DateTo != nil {
+		q = q.Where("tenant_sales.created_at <= ?", f.DateTo)
 	}
 	if f.PaymentMethod != "" {
 		q = applyPaymentMethodFilter(q, "tenant_sale_payments.method", f.PaymentMethod)
@@ -668,11 +704,17 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 	if err := q.Order("tenant_sale_payments.created_at DESC").Scan(&payRows).Error; err != nil {
 		return nil, err
 	}
+	var extra []salePayRow
+	var extraErr error
 	if f.SessionID > 0 {
-		extra, err := s.scanOrphanSalePaymentRows(f)
-		if err != nil {
-			return nil, err
-		}
+		extra, extraErr = s.scanOrphanSalePaymentRows(f)
+	} else {
+		extra, extraErr = s.scanUnlinkedSalePaymentRows(f)
+	}
+	if extraErr != nil {
+		return nil, extraErr
+	}
+	if len(extra) > 0 {
 		seen := make(map[uint]struct{}, len(payRows))
 		for _, p := range payRows {
 			seen[p.PaymentID] = struct{}{}

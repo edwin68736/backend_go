@@ -464,6 +464,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			if err != nil {
 				return err
 			}
+			if resolvedCash == nil || *resolvedCash == 0 {
+				return errors.New("debe abrir una sesión de caja antes de registrar ventas")
+			}
 			input.CashSessionID = resolvedCash
 			sale.CashSessionID = resolvedCash
 		} else if input.CashSessionID != nil && *input.CashSessionID > 0 {

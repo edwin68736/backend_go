@@ -239,6 +239,21 @@ func (s *CashBankService) GetOpenSession(branchID, userID uint) (*database.Tenan
 	return &session, err
 }
 
+// GetAnyOpenSessionInBranch sesión abierta más reciente de la sucursal (cualquier cajero).
+// Sirve para vincular ventas de usuarios sin caja propia (p. ej. administrador) al turno activo.
+func (s *CashBankService) GetAnyOpenSessionInBranch(branchID uint) (*database.TenantCashSession, error) {
+	if branchID == 0 {
+		return nil, nil
+	}
+	var session database.TenantCashSession
+	err := s.db.Where("branch_id = ? AND status = ?", branchID, "open").
+		Order("opened_at DESC").First(&session).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &session, err
+}
+
 // OpenSessionListItem fila para listado de cajas abiertas en sucursal (solo lectura).
 type OpenSessionListItem struct {
 	ID              uint    `json:"id"`
@@ -627,13 +642,15 @@ type PaymentLineInput struct {
 	Amount float64
 }
 
-// ResolveCashSessionForSale vincula la venta a la sesión del cajero.
-// Exige sesión abierta si hay efectivo; si el pago es solo digital, usa la sesión abierta del usuario (reportes de caja).
+// ResolveCashSessionForSale exige sesión de caja abierta del propio usuario.
+// Nadie puede registrar ventas sin caja (administrador incluido).
 func (s *CashBankService) ResolveCashSessionForSale(
 	branchID, userID uint,
 	cashSessionID *uint,
 	payments []PaymentLineInput,
 ) (*uint, error) {
+	const errNoCash = "debe abrir una sesión de caja antes de registrar ventas"
+
 	resolved, err := s.ResolveCashSessionForPayments(branchID, userID, cashSessionID, payments)
 	if err != nil {
 		return nil, err
@@ -652,7 +669,7 @@ func (s *CashBankService) ResolveCashSessionForSale(
 		return nil, err
 	}
 	if sess == nil {
-		return nil, nil
+		return nil, errors.New(errNoCash)
 	}
 	sid := sess.ID
 	return &sid, nil
