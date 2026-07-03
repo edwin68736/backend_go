@@ -26,20 +26,21 @@ const ErrInitialStockWithoutManageStock = InitialStockRequiresManageStock
 
 // BulkImportItem fila normalizada para importación masiva.
 type BulkImportItem struct {
-	RowNumber          int     `json:"row_number"`
-	Name               string  `json:"name"`
-	Code               string  `json:"code"`
-	Description        string  `json:"description"`
-	SalePrice          float64 `json:"sale_price"`
-	Unit               string  `json:"unit"`
-	CategoryName       string  `json:"category_name"`
-	IgvAffectationType string  `json:"igv_affectation_type"`
-	PriceIncludesIgv   bool    `json:"price_includes_igv"`
-	ManageStock        bool    `json:"manage_stock"`
-	InitialStock       float64 `json:"initial_stock"`
-	IsRestaurant       bool    `json:"is_restaurant"`
-	PreparationArea    string  `json:"preparation_area"`
-	CatalogType        string  `json:"type"` // product | service (solo catálogo tenant)
+	RowNumber          int      `json:"row_number"`
+	Name               string   `json:"name"`
+	Code               string   `json:"code"`
+	Description        string   `json:"description"`
+	SalePrice          float64  `json:"sale_price"`
+	PurchasePrice      *float64 `json:"purchase_price"` // opcional; nil = no enviar / no sobrescribir en update
+	Unit               string   `json:"unit"`
+	CategoryName       string   `json:"category_name"`
+	IgvAffectationType string   `json:"igv_affectation_type"`
+	PriceIncludesIgv   bool     `json:"price_includes_igv"`
+	ManageStock        bool     `json:"manage_stock"`
+	InitialStock       float64  `json:"initial_stock"`
+	IsRestaurant       bool     `json:"is_restaurant"`
+	PreparationArea    string   `json:"preparation_area"`
+	CatalogType        string   `json:"type"` // product | service (solo catálogo tenant)
 }
 
 type BulkImportFail struct {
@@ -131,6 +132,12 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			})
 			continue
 		}
+		if item.PurchasePrice != nil && *item.PurchasePrice < 0 {
+			result.Failed = append(result.Failed, BulkImportFail{
+				Row: item.RowNumber, Name: item.Name, Error: "precio_compra no puede ser negativo",
+			})
+			continue
+		}
 
 		code := strings.TrimSpace(item.Code)
 		autoCode := code == ""
@@ -178,9 +185,12 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			prepArea = ""
 		}
 
-		igvType := strings.TrimSpace(item.IgvAffectationType)
-		if igvType == "" {
-			igvType = "10"
+		igvType, igvErr := normalizeBulkIgvAffectation(item.IgvAffectationType)
+		if igvErr != nil {
+			result.Failed = append(result.Failed, BulkImportFail{
+				Row: item.RowNumber, Name: item.Name, Error: igvErr.Error(),
+			})
+			continue
 		}
 
 		var catID *uint
@@ -230,8 +240,12 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			Active:             true,
 			TaxRate:            taxCfg.EffectiveRate(igvType),
 		}
-		if hasExisting {
+		if item.PurchasePrice != nil {
+			input.PurchasePrice = *item.PurchasePrice
+		} else if hasExisting {
 			input.PurchasePrice = existing.PurchasePrice
+		}
+		if hasExisting {
 			input.ManageSeries = existing.ManageSeries
 			input.HasVariants = existing.HasVariants
 			input.HasModifiers = existing.HasModifiers
@@ -286,6 +300,25 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 	}
 
 	return result, nil
+}
+
+// normalizeBulkIgvAffectation códigos SUNAT de afectación IGV permitidos en importación.
+// 10 gravado, 20 exonerado, 30 inafecto, 40 exportación. Vacío → 10.
+func normalizeBulkIgvAffectation(raw string) (string, error) {
+	c := strings.TrimSpace(raw)
+	if c == "" {
+		return "10", nil
+	}
+	// Excel / JSON a veces envían "10.0"
+	if i := strings.IndexByte(c, '.'); i > 0 {
+		c = c[:i]
+	}
+	switch c {
+	case "10", "20", "30", "40":
+		return c, nil
+	default:
+		return "", errors.New("afectacion_igv debe ser 10 (gravado), 20 (exonerado), 30 (inafecto) o 40 (exportación)")
+	}
 }
 
 func branchIDForImport(isRestaurant bool, branchID uint) uint {
