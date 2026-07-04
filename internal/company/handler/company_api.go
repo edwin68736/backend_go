@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +31,8 @@ func (h *CompanyHandler) GetConfigAPI(c fiber.Ctx) error {
 // PUT /api/company/config
 func (h *CompanyHandler) UpdateConfigAPI(c fiber.Ctx) error {
 	var patch service.CompanyConfigPatch
-	if err := c.Bind().JSON(&patch); err != nil {
+	// Unmarshal directo: Bind de Fiber a veces no rellena *string en patches parciales.
+	if err := json.Unmarshal(c.Body(), &patch); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
 	svc := service.NewCompanyService(db(c))
@@ -62,24 +64,28 @@ func (h *CompanyHandler) UpdateConfigAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": cfg})
 }
 
-// PUT /api/company/receipt-wallet — QR Yape/Plin en comprobantes locales.
+// PUT /api/company/receipt-wallet — QR Yape/Plin y cuentas bancarias en comprobantes locales.
 func (h *CompanyHandler) UpdateReceiptWalletAPI(c fiber.Ctx) error {
 	var body struct {
-		WalletProvider        string `json:"wallet_provider"`
-		WalletPhone           string `json:"wallet_phone"`
-		WalletQrURL           string `json:"wallet_qr_url"`
-		WalletShowOnA4        bool   `json:"wallet_show_on_a4"`
-		WalletShowOnTicket    bool   `json:"wallet_show_on_ticket"`
-		ReceiptBankAccountIDs []uint `json:"receipt_bank_account_ids"`
+		WalletProvider        string          `json:"wallet_provider"`
+		WalletPhone           string          `json:"wallet_phone"`
+		WalletQrURL           string          `json:"wallet_qr_url"`
+		WalletShowOnA4        bool            `json:"wallet_show_on_a4"`
+		WalletShowOnTicket    bool            `json:"wallet_show_on_ticket"`
+		ReceiptBankAccountIDs json.RawMessage `json:"receipt_bank_account_ids"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	bankIDs, err := service.ParseReceiptBankAccountIDsJSON(body.ReceiptBankAccountIDs)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	svc := service.NewCompanyService(db(c))
 	if err := svc.SaveReceiptWallet(
 		body.WalletProvider, body.WalletPhone, body.WalletQrURL,
 		body.WalletShowOnA4, body.WalletShowOnTicket,
-		body.ReceiptBankAccountIDs,
+		bankIDs,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

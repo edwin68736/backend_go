@@ -289,16 +289,27 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	var bankAccounts []database.TenantBankAccount
 	if db.Where("active = ?", true).Order("id ASC").Find(&bankAccounts).Error == nil {
 		for _, ba := range bankAccounts {
-			if strings.TrimSpace(ba.AccountNumber) == "" && strings.TrimSpace(ba.BankName) == "" {
+			// Cuentas tipo caja no van en el comprobante.
+			if strings.EqualFold(strings.TrimSpace(ba.Type), "cash") {
+				continue
+			}
+			name := strings.TrimSpace(ba.Name)
+			bankName := strings.TrimSpace(ba.BankName)
+			acct := strings.TrimSpace(ba.AccountNumber)
+			// Muchas cuentas seed solo tienen Name (sin bank_name ni número); igual deben imprimirse.
+			if name == "" && bankName == "" && acct == "" {
 				continue
 			}
 			if receiptBanksConfigured && !receiptBankAccountAllowed(ba.ID, receiptBankIDs) {
 				continue
 			}
+			if bankName == "" {
+				bankName = name
+			}
 			pd.BankAccounts = append(pd.BankAccounts, PrintBankAccount{
-				Name:          ba.Name,
-				BankName:      ba.BankName,
-				AccountNumber: ba.AccountNumber,
+				Name:          name,
+				BankName:      bankName,
+				AccountNumber: acct,
 				Currency:      ba.Currency,
 			})
 		}
@@ -313,12 +324,27 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 
 	enrichFiscalPrintData(db, sale.ID, sale.Total, pd)
 
-	// Sucursal: en comprobantes impresos/PDF la dirección es la de la sucursal de la venta.
+	// Términos: preferencia global de empresa (toggle en registro). Asegura impresión aunque
+	// el perfil fiscal de la venta no se haya persistido (p. ej. binding JSON incompleto).
+	if companyOK && company.ShowTermsConditions {
+		if pd.Fiscal == nil {
+			pd.Fiscal = &PrintFiscalContext{}
+		}
+		pd.Fiscal.ShowTermsConditions = true
+		if strings.TrimSpace(pd.Fiscal.TermsText) == "" {
+			pd.Fiscal.TermsText = strings.TrimSpace(company.TermsAndConditions)
+		}
+	}
+
+	// Sucursal (nombre/dirección propios). La dirección del emisor en el PDF es la de la empresa
+	// (editable en registro de ventas); no se pisa con la de la sucursal.
 	var branch database.TenantBranch
 	if db.First(&branch, sale.BranchID).Error == nil {
 		pd.Branch = PrintBranch{Name: branch.Name, Address: branch.Address}
-		if addr := strings.TrimSpace(branch.Address); addr != "" {
-			pd.Company.Address = addr
+		if strings.TrimSpace(pd.Company.Address) == "" {
+			if addr := strings.TrimSpace(branch.Address); addr != "" {
+				pd.Company.Address = addr
+			}
 		}
 	}
 

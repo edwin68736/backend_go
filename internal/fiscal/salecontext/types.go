@@ -10,23 +10,23 @@ type ContactSnapshot struct {
 
 // FiscalContextInput entrada desde API al crear venta.
 type FiscalContextInput struct {
-	HasIgvRetention            *bool
-	IgvRetentionManualOverride bool
-	ShowTermsConditions        bool
-	FiscalObservations         string
-	PurchaseOrderNumber        string
-	SellerUserID               *uint
-	References                 []FiscalReferenceInput
+	HasIgvRetention            *bool                   `json:"has_igv_retention"`
+	IgvRetentionManualOverride bool                    `json:"igv_retention_manual_override"`
+	ShowTermsConditions        bool                    `json:"show_terms_conditions"`
+	FiscalObservations         string                  `json:"fiscal_observations"`
+	PurchaseOrderNumber        string                  `json:"purchase_order_number"`
+	SellerUserID               *uint                   `json:"seller_user_id"`
+	References                 []FiscalReferenceInput  `json:"references"`
 }
 
 // FiscalReferenceInput referencia a otro documento (guía, etc.).
 type FiscalReferenceInput struct {
-	ReferenceKind        string
-	ReferencedSunatType  string
-	ReferencedSeries     string
-	ReferencedNumber     string
-	ReferencedFullNumber string
-	SortOrder            int
+	ReferenceKind        string `json:"reference_kind"`
+	ReferencedSunatType  string `json:"referenced_sunat_type"`
+	ReferencedSeries     string `json:"referenced_series"`
+	ReferencedNumber     string `json:"referenced_number"`
+	ReferencedFullNumber string `json:"referenced_full_number"`
+	SortOrder            int    `json:"sort_order"`
 }
 
 // RetentionEvalInput parámetros para evaluar retención IGV.
