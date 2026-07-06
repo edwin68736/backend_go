@@ -338,7 +338,7 @@ func (h *InventoryHandler) StockAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": stocks})
 }
 
-// StockSummaryAPI devuelve stock total por producto para una lista de IDs (query product_ids=1,2,3).
+// StockSummaryAPI devuelve stock por producto para una lista de IDs (query product_ids=1,2,3; opcional branch_id).
 func (h *InventoryHandler) StockSummaryAPI(c fiber.Ctx) error {
 	idsStr := c.Query("product_ids")
 	if idsStr == "" {
@@ -357,8 +357,12 @@ func (h *InventoryHandler) StockSummaryAPI(c fiber.Ctx) error {
 	if len(ids) == 0 {
 		return c.JSON(fiber.Map{"data": map[string]float64{}})
 	}
+	var branchID uint
+	if reqB, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil && reqB > 0 {
+		branchID = branch.ResolveReadBranchFilter(c, uint(reqB))
+	}
 	svc := service.NewInventoryService(db(c))
-	totals, err := svc.StockTotalsByProductIDs(ids)
+	totals, err := svc.StockTotalsByProductIDs(ids, branchID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

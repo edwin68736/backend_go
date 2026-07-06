@@ -31,12 +31,8 @@ func RequireCashbankAccess(action string) fiber.Handler {
 		if !ok || claims == nil {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Sin contexto de autenticación"})
 		}
-		if len(claims.Permissions) > 0 {
-			for _, p := range claims.Permissions {
-				if p == tenantPerm || p == "cashbank.manage" {
-					return c.Next()
-				}
-			}
+		if tenantHasPermission(claims.Permissions, tenantPerm) {
+			return c.Next()
 		}
 		if claims.AuthMethod == "pin" || claims.EmployeeType != "" {
 			if action == "manage" {

@@ -631,9 +631,9 @@ func (s *InventoryService) ListTransfersByHeader(limit int) ([]database.TenantTr
 	return transfers, logs, nil
 }
 
-// StockTotalsByProductIDs devuelve el stock total (suma por sucursales) para cada product_id.
+// StockTotalsByProductIDs devuelve stock por product_id. Si branchID > 0, solo esa sucursal; si no, suma todas.
 // Útil para listar productos con su stock en una sola llamada.
-func (s *InventoryService) StockTotalsByProductIDs(productIDs []uint) (map[uint]float64, error) {
+func (s *InventoryService) StockTotalsByProductIDs(productIDs []uint, branchID uint) (map[uint]float64, error) {
 	if len(productIDs) == 0 {
 		return map[uint]float64{}, nil
 	}
@@ -642,11 +642,13 @@ func (s *InventoryService) StockTotalsByProductIDs(productIDs []uint) (map[uint]
 		Total     float64
 	}
 	var rows []row
-	err := s.db.Model(&database.TenantProductStock{}).
+	q := s.db.Model(&database.TenantProductStock{}).
 		Select("product_id, COALESCE(SUM(quantity), 0) as total").
-		Where("product_id IN ?", productIDs).
-		Group("product_id").
-		Scan(&rows).Error
+		Where("product_id IN ?", productIDs)
+	if branchID > 0 {
+		q = q.Where("branch_id = ?", branchID)
+	}
+	err := q.Group("product_id").Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}

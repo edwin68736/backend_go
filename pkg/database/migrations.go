@@ -612,6 +612,8 @@ type TenantProduct struct {
 	PreparationAreaID  *uint          `gorm:"index" json:"preparation_area_id"`
 	PreparationArea    string         `gorm:"size:50" json:"preparation_area"` // slug denormalizado (comandas, impresoras)
 	MinStock           float64        `gorm:"type:decimal(15,3);default:0" json:"min_stock"`
+	HasExpiryDate      bool           `gorm:"default:false" json:"has_expiry_date"`
+	ExpiryDate         *time.Time     `gorm:"type:date" json:"expiry_date"`
 	ImageURL           string         `gorm:"size:255" json:"image_url"`
 	Active             bool           `gorm:"default:true" json:"active"`
 	CreatedAt          time.Time      `json:"created_at"`

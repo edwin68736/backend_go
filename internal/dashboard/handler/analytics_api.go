@@ -319,6 +319,22 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Limit(8).
 		Scan(&lowStock)
 
+	// Productos con vencimiento próximo (30 días) o ya vencidos
+	expiringProducts := make([]struct {
+		ProductID       uint      `json:"product_id"`
+		ProductName     string    `json:"product_name"`
+		ExpiryDate      time.Time `json:"expiry_date"`
+		DaysUntilExpiry int       `json:"days_until_expiry"`
+	}, 0)
+	horizon := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, 30)
+	tdb.Table("tenant_products p").
+		Select(`p.id as product_id, p.name as product_name, p.expiry_date,
+			DATEDIFF(p.expiry_date, CURDATE()) as days_until_expiry`).
+		Where("p.active = ? AND p.has_expiry_date = ? AND p.expiry_date IS NOT NULL AND p.expiry_date <= ?", true, true, horizon).
+		Order("p.expiry_date ASC").
+		Limit(8).
+		Scan(&expiringProducts)
+
 	// Últimos comprobantes
 	type recentDoc struct {
 		ID             uint      `json:"id"`
@@ -442,6 +458,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		"by_sale_status":     bySaleStatus,
 		"by_product_category": byCategory,
 		"low_stock_products": lowStock,
+		"expiring_products":  expiringProducts,
 		"recent_sales":       recentSales,
 	})
 }

@@ -184,6 +184,8 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		HasVariants        bool    `json:"has_variants"`
 		HasModifiers       bool    `json:"has_modifiers"`
 		MinStock           float64 `json:"min_stock"`
+		HasExpiryDate      bool    `json:"has_expiry_date"`
+		ExpiryDate         string  `json:"expiry_date"`
 		IsRestaurant       bool    `json:"is_restaurant"`
 		PreparationAreaID  *uint   `json:"preparation_area_id"`
 		PreparationArea    string  `json:"preparation_area"`
@@ -206,6 +208,10 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	}
 	if body.InitialStock > 0 && !body.ManageStock {
 		return c.Status(400).JSON(fiber.Map{"error": service.InitialStockRequiresManageStock})
+	}
+	expiryDate, err := service.ParseProductExpiryDate(body.ExpiryDate)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	manageStock := body.ManageStock
 	taxCfg := tax.LoadFromDB(db(c))
@@ -230,6 +236,8 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		HasVariants:        body.HasVariants,
 		HasModifiers:       body.HasModifiers,
 		MinStock:           body.MinStock,
+		HasExpiryDate:      body.HasExpiryDate,
+		ExpiryDate:         expiryDate,
 		IsRestaurant:       body.IsRestaurant,
 		PreparationAreaID:  body.PreparationAreaID,
 		PreparationArea:    body.PreparationArea,
@@ -324,6 +332,8 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		HasVariants        bool    `json:"has_variants"`
 		HasModifiers       bool    `json:"has_modifiers"`
 		MinStock           float64 `json:"min_stock"`
+		HasExpiryDate      bool    `json:"has_expiry_date"`
+		ExpiryDate         string  `json:"expiry_date"`
 		IsRestaurant       bool    `json:"is_restaurant"`
 		PreparationAreaID  *uint   `json:"preparation_area_id"`
 		PreparationArea    string  `json:"preparation_area"`
@@ -345,6 +355,10 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	}
 	if msg, denied := h.productBranchDenied(c, existing); denied {
 		return c.Status(403).JSON(fiber.Map{"error": msg})
+	}
+	expiryDate, err := service.ParseProductExpiryDate(body.ExpiryDate)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	taxCfg := tax.LoadFromDB(db(c))
 	igvType := body.IgvAffectationType
@@ -368,6 +382,8 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		HasVariants:        body.HasVariants,
 		HasModifiers:       body.HasModifiers,
 		MinStock:           body.MinStock,
+		HasExpiryDate:      body.HasExpiryDate,
+		ExpiryDate:         expiryDate,
 		IsRestaurant:       body.IsRestaurant,
 		PreparationAreaID:  body.PreparationAreaID,
 		PreparationArea:    body.PreparationArea,

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/gormutil"
@@ -439,6 +440,8 @@ type ProductInput struct {
 	PreparationAreaID  *uint
 	PreparationArea    string // slug legacy; se sincroniza desde preparation_area_id
 	MinStock           float64
+	HasExpiryDate      bool
+	ExpiryDate         *time.Time
 	ImageURL           string
 	Active             bool
 	ActiveSet          bool // si true, Update actualiza el campo active
@@ -483,6 +486,10 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 		taxRate = 0
 	}
 
+	if err := validateProductExpiry(input.HasExpiryDate, input.ExpiryDate); err != nil {
+		return nil, err
+	}
+
 	p := &database.TenantProduct{
 		CategoryID:         input.CategoryID,
 		Code:               input.Code,
@@ -504,6 +511,8 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 		PreparationAreaID:  input.PreparationAreaID,
 		PreparationArea:    input.PreparationArea,
 		MinStock:           input.MinStock,
+		HasExpiryDate:      input.HasExpiryDate,
+		ExpiryDate:         input.ExpiryDate,
 		ImageURL:           input.ImageURL,
 		Active:             input.Active,
 	}
@@ -560,6 +569,8 @@ func normalizeProductServiceFields(p *database.TenantProduct) {
 	p.HasModifiers = false
 	p.IsRestaurant = false
 	p.MinStock = 0
+	p.HasExpiryDate = false
+	p.ExpiryDate = nil
 	p.PreparationAreaID = nil
 	p.PreparationArea = ""
 }
@@ -577,6 +588,7 @@ func normalizeProductCatalogFields(p *database.TenantProduct) {
 	if !p.ManageStock {
 		p.MinStock = 0
 	}
+	normalizeProductExpiryFields(p)
 }
 
 func (s *ProductService) Update(id uint, input ProductInput) error {
@@ -612,6 +624,10 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		return errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
 
+	if err := validateProductExpiry(input.HasExpiryDate, input.ExpiryDate); err != nil {
+		return err
+	}
+
 	draft := &database.TenantProduct{
 		Type:              effType,
 		Unit:              unit,
@@ -620,6 +636,8 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		PreparationAreaID:   input.PreparationAreaID,
 		PreparationArea:     input.PreparationArea,
 		MinStock:            input.MinStock,
+		HasExpiryDate:       input.HasExpiryDate,
+		ExpiryDate:          input.ExpiryDate,
 		ManageSeries:        input.ManageSeries,
 		HasVariants:         input.HasVariants,
 		HasModifiers:        input.HasModifiers,
@@ -652,6 +670,8 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		"preparation_area_id":  draft.PreparationAreaID,
 		"preparation_area":     draft.PreparationArea,
 		"min_stock":            draft.MinStock,
+		"has_expiry_date":      draft.HasExpiryDate,
+		"expiry_date":          draft.ExpiryDate,
 		"image_url":            input.ImageURL,
 	}
 	if input.ActiveSet {

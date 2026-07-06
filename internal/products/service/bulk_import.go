@@ -41,6 +41,8 @@ type BulkImportItem struct {
 	IsRestaurant       bool     `json:"is_restaurant"`
 	PreparationArea    string   `json:"preparation_area"`
 	CatalogType        string   `json:"type"` // product | service (solo catálogo tenant)
+	// ExpiryDate: nil = no cambiar vencimiento en update; "" = sin vencimiento; YYYY-MM-DD = con vencimiento.
+	ExpiryDate *string `json:"expiry_date"`
 }
 
 type BulkImportFail struct {
@@ -244,6 +246,20 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			input.PurchasePrice = *item.PurchasePrice
 		} else if hasExisting {
 			input.PurchasePrice = existing.PurchasePrice
+		}
+		if item.ExpiryDate != nil {
+			expiryDate, expiryErr := ParseProductExpiryDate(*item.ExpiryDate)
+			if expiryErr != nil {
+				result.Failed = append(result.Failed, BulkImportFail{
+					Row: item.RowNumber, Name: item.Name, Error: expiryErr.Error(),
+				})
+				continue
+			}
+			input.HasExpiryDate = expiryDate != nil
+			input.ExpiryDate = expiryDate
+		} else if hasExisting {
+			input.HasExpiryDate = existing.HasExpiryDate
+			input.ExpiryDate = existing.ExpiryDate
 		}
 		if hasExisting {
 			input.ManageSeries = existing.ManageSeries
