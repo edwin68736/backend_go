@@ -135,6 +135,82 @@ func (s *ProductService) BulkDeleteRestaurant(in BulkDeleteRestaurantInput) (*Bu
 	return result, nil
 }
 
+// BulkDeleteCatalogInput eliminación masiva catálogo ERP (productos/servicios).
+type BulkDeleteCatalogInput struct {
+	ProductIDs []uint
+	Pin        string
+	Reason     string
+	UserID     uint
+	BranchID   uint
+}
+
+// BulkDeleteCatalog elimina productos del catálogo tras validar PIN y dependencias.
+func (s *ProductService) BulkDeleteCatalog(in BulkDeleteCatalogInput) (*BulkDeleteRestaurantResult, error) {
+	if err := restaurantsvc.New(s.db).VerifyDeletionPin(in.Pin); err != nil {
+		return nil, &PinVerificationError{Message: err.Error()}
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if reason == "" {
+		return nil, errors.New("se requiere motivo")
+	}
+	if len(in.ProductIDs) == 0 {
+		return nil, errors.New("se requiere al menos un producto")
+	}
+
+	unique := dedupeUints(in.ProductIDs)
+	result := &BulkDeleteRestaurantResult{
+		Deleted: make([]BulkDeleteProductRef, 0),
+		Blocked: make([]BulkDeleteBlockedItem, 0),
+	}
+
+	productsByID := make(map[uint]database.TenantProduct, len(unique))
+	var found []database.TenantProduct
+	if err := s.db.Where("id IN ?", unique).Find(&found).Error; err != nil {
+		return nil, err
+	}
+	for _, p := range found {
+		productsByID[p.ID] = p
+	}
+
+	blockers := s.scanBulkDeleteBlockers(unique)
+
+	for _, id := range unique {
+		p, ok := productsByID[id]
+		if !ok {
+			result.Blocked = append(result.Blocked, BulkDeleteBlockedItem{
+				ID: id, Name: "", Reasons: []string{blockReasonNotFound},
+			})
+			continue
+		}
+		reasons := append([]string{}, blockers[id]...)
+		if p.IsRestaurant && in.BranchID > 0 {
+			if err := s.EnsureRestaurantBranchAccess(&p, in.BranchID); err != nil {
+				reasons = appendUniqueReason(reasons, blockReasonBranchMismatch)
+			}
+		}
+		if len(reasons) > 0 {
+			result.Blocked = append(result.Blocked, BulkDeleteBlockedItem{
+				ID: id, Name: p.Name, Reasons: reasons,
+			})
+			continue
+		}
+		if err := s.purgeRestaurantProduct(id); err != nil {
+			result.Blocked = append(result.Blocked, BulkDeleteBlockedItem{
+				ID: id, Name: p.Name, Reasons: []string{err.Error()},
+			})
+			continue
+		}
+		result.Deleted = append(result.Deleted, BulkDeleteProductRef{ID: id, Name: p.Name})
+	}
+
+	log.Printf(
+		"[bulk-delete-catalog] user_id=%d branch_id=%d requested=%d deleted=%d blocked=%d reason=%q",
+		in.UserID, in.BranchID, len(unique), len(result.Deleted), len(result.Blocked), reason,
+	)
+
+	return result, nil
+}
+
 func dedupeUints(ids []uint) []uint {
 	seen := make(map[uint]struct{}, len(ids))
 	out := make([]uint, 0, len(ids))

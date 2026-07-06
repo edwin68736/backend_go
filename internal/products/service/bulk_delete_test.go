@@ -51,6 +51,39 @@ func createRestaurantProduct(t *testing.T, db *gorm.DB, code, name string) datab
 	return p
 }
 
+func createCatalogProduct(t *testing.T, db *gorm.DB, code, name string) database.TenantProduct {
+	t.Helper()
+	p := database.TenantProduct{
+		Code: code, Name: name, ManageStock: false, IsRestaurant: false,
+		Active: true, Type: "product", Unit: "NIU", SalePrice: 10,
+	}
+	if err := db.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestBulkDeleteCatalog_DeletesCleanProduct(t *testing.T) {
+	db := setupBulkDeleteTestDB(t)
+	p := createCatalogProduct(t, db, "CAT-1", "Catálogo limpio")
+
+	svc := NewProductService(db)
+	res, err := svc.BulkDeleteCatalog(BulkDeleteCatalogInput{
+		ProductIDs: []uint{p.ID}, Pin: "1234", Reason: "depuración", UserID: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Deleted) != 1 || res.Deleted[0].ID != p.ID {
+		t.Fatalf("deleted=%+v", res.Deleted)
+	}
+	var prodCount int64
+	db.Unscoped().Model(&database.TenantProduct{}).Where("id = ?", p.ID).Count(&prodCount)
+	if prodCount != 0 {
+		t.Fatalf("product still exists")
+	}
+}
+
 func TestBulkDeleteRestaurant_InvalidPinDeletesNothing(t *testing.T) {
 	db := setupBulkDeleteTestDB(t)
 	p := createRestaurantProduct(t, db, "OK-1", "Plato limpio")
