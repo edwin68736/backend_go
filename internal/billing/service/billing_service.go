@@ -15,6 +15,7 @@ import (
 	"tukifac/config"
 	salesvc "tukifac/internal/sales/service"
 	detraccionsvc "tukifac/internal/detraccion"
+	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/internal/fiscal/salecontext"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
@@ -254,46 +255,22 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		return nil, err
 	}
 	docDescuentos, sumOtrosDescuentos := BuildGlobalInvoiceDiscounts(&sale, items)
-	// Totales por tipo de operación desde bases finales persistidas (post descuentos).
-	var mtoOperGravadas, mtoOperExoneradas, mtoOperInafectas, mtoIGV float64
 	for _, item := range items {
 		aff := strings.TrimSpace(item.IgvAffectationType)
 		if aff == "" {
 			aff = "10"
 		}
-		if aff == "10" && item.TaxRate <= 0 {
+		if tax.IsGravado(aff) && !tax.IsBonificacionGravada(aff) && item.TaxRate <= 0 {
 			return nil, fmt.Errorf("el ítem «%s» es gravado pero tiene porcentaje IGV en 0; configúrelo en el producto", strings.TrimSpace(item.Description))
 		}
-		sub := round2(item.Subtotal)
-		switch aff {
-		case "10":
-			mtoOperGravadas += sub
-			mtoIGV += round2(item.TaxAmount)
-		case "20":
-			mtoOperExoneradas += sub
-		case "30":
-			mtoOperInafectas += sub
-		default:
-			mtoOperGravadas += sub
-			mtoIGV += round2(item.TaxAmount)
-		}
 	}
-	mtoOperGravadas = round2(mtoOperGravadas)
-	mtoOperExoneradas = round2(mtoOperExoneradas)
-	mtoOperInafectas = round2(mtoOperInafectas)
-	mtoIGV = round2(mtoIGV)
-	valorVenta := round2(mtoOperGravadas + mtoOperExoneradas + mtoOperInafectas)
-	mtoImpVenta := round2(valorVenta + mtoIGV)
-	// Total de la venta en BD es la referencia para Lycet (leyenda 1000 usa mtoImpVenta del JSON).
-	if sale.Total > 0 {
-		mtoImpVenta = round2(sale.Total)
-	}
+	sunatTotals := ComputeInvoiceSunatTotals(items, sale.Total)
 	tipoMoneda := sale.Currency
 	if tipoMoneda == "" {
 		tipoMoneda = "PEN"
 	}
 	var legends []facturador.InvoiceLegend
-	facturador.SetSUNATLegend1000(&legends, mtoImpVenta, tipoMoneda)
+	facturador.SetSUNATLegend1000(&legends, sunatTotals.MtoImpVenta, tipoMoneda)
 	nombreComercial := companyCfg.TradeName
 	if nombreComercial == "" {
 		nombreComercial = companyCfg.BusinessName
@@ -328,14 +305,16 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		Company:           facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
 		Client:            facturador.InvoiceClient{TipoDoc: clientTipoDoc, NumDoc: clientNumDoc, RznSocial: clientRzn, Address: clientAddr},
 		TipoMoneda:        tipoMoneda,
-		MtoOperGravadas:   mtoOperGravadas,
-		MtoOperExoneradas: mtoOperExoneradas,
-		MtoOperInafectas:  mtoOperInafectas,
-		MtoIGV:            mtoIGV,
-		TotalImpuestos:    mtoIGV,
-		ValorVenta:        valorVenta,
-		SubTotal:          mtoImpVenta,
-		MtoImpVenta:       mtoImpVenta,
+		MtoOperGravadas:   sunatTotals.MtoOperGravadas,
+		MtoOperExoneradas: sunatTotals.MtoOperExoneradas,
+		MtoOperInafectas:  sunatTotals.MtoOperInafectas,
+		MtoOperGratuitas:  sunatTotals.MtoOperGratuitas,
+		MtoIGVGratuitas:   sunatTotals.MtoIGVGratuitas,
+		MtoIGV:            sunatTotals.MtoIGV,
+		TotalImpuestos:    sunatTotals.TotalImpuestos,
+		ValorVenta:        sunatTotals.ValorVenta,
+		SubTotal:          sunatTotals.MtoImpVenta,
+		MtoImpVenta:       sunatTotals.MtoImpVenta,
 		Descuentos:        docDescuentos,
 		SumOtrosDescuentos: sumOtrosDescuentos,
 		Details:           details,
@@ -346,6 +325,17 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 	}
 	if det, err := detraccionsvc.NewService(s.db).LoadBySaleID(saleID); err == nil && det != nil {
 		detraccionsvc.ApplyToInvoicePayload(payload, det)
+	}
+	if voucher, err := prepaymentsvc.NewService(s.db).LoadBySaleID(saleID); err == nil && voucher != nil {
+		prepaymentsvc.ApplyEmitToInvoicePayload(payload, voucher)
+	}
+	if apps, grossTotals, applyRes, ok, err := prepaymentsvc.NewService(s.db).DeductionFiscalContext(saleID, items, companyTaxRate); err == nil && ok {
+		prepaymentsvc.ApplyDeductionToInvoicePayload(payload, apps, applyRes, grossTotals, prepaymentsvc.SaleDeductionNet{
+			Subtotal:  sale.Subtotal,
+			TaxAmount: sale.TaxAmount,
+			Total:     sale.Total,
+		})
+		facturador.SetSUNATLegend1000(&payload.Legends, payload.MtoImpVenta, tipoMoneda)
 	}
 	applyCreditTermsToInvoicePayload(s.db, &sale, payload)
 	payloadBytes, _ := json.Marshal(payload)
@@ -865,6 +855,9 @@ func (s *BillingService) GetInvoicePDFContent(saleID uint) ([]byte, error) {
 		var pdfOpts *facturador.InvoicePDFOptions
 		if enrich, err := salecontext.LoadInvoiceEnrichment(s.db, saleID, saleTotal); err == nil && enrich != nil {
 			salecontext.ApplyToInvoicePayload(&payload, enrich)
+		}
+		if voucher, err := prepaymentsvc.NewService(s.db).LoadBySaleID(saleID); err == nil && voucher != nil {
+			prepaymentsvc.ApplyEmitToInvoicePayload(&payload, voucher)
 		}
 		client := facturador.Shared()
 		pdfBytes, err := client.GetInvoicePDF(&payload, pdfOpts)

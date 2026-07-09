@@ -210,35 +210,7 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 	if err != nil {
 		return nil, err
 	}
-	var mtoOperGravadas, mtoOperExoneradas, mtoOperInafectas, mtoIGV float64
-	for _, item := range items {
-		aff := strings.TrimSpace(item.IgvAffectationType)
-		if aff == "" {
-			aff = "10"
-		}
-		sub := round2(item.Subtotal)
-		switch aff {
-		case "10":
-			mtoOperGravadas += sub
-			mtoIGV += round2(item.TaxAmount)
-		case "20":
-			mtoOperExoneradas += sub
-		case "30":
-			mtoOperInafectas += sub
-		default:
-			mtoOperGravadas += sub
-			mtoIGV += round2(item.TaxAmount)
-		}
-	}
-	mtoOperGravadas = round2(mtoOperGravadas)
-	mtoOperExoneradas = round2(mtoOperExoneradas)
-	mtoOperInafectas = round2(mtoOperInafectas)
-	mtoIGV = round2(mtoIGV)
-	valorVenta := round2(mtoOperGravadas + mtoOperExoneradas + mtoOperInafectas)
-	mtoImpVenta := round2(valorVenta + mtoIGV)
-	if noteSale.Total > 0 {
-		mtoImpVenta = round2(noteSale.Total)
-	}
+	sunatTotals := ComputeInvoiceSunatTotals(items, noteSale.Total)
 	nombreComercial := companyCfg.TradeName
 	if nombreComercial == "" {
 		nombreComercial = companyCfg.BusinessName
@@ -260,7 +232,7 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 		}
 	}
 	var legends []facturador.InvoiceLegend
-	facturador.SetSUNATLegend1000(&legends, mtoImpVenta, tipoMoneda)
+	facturador.SetSUNATLegend1000(&legends, sunatTotals.MtoImpVenta, tipoMoneda)
 	return &facturador.NotePayload{
 		UBLVersion:        "2.1",
 		TipoDoc:           tipoDoc,
@@ -277,14 +249,16 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 		NumDocfectado:   numDocAfectado,
 		// Sin relDocs duplicando el comprobante afectado: va a AdditionalDocumentReference (cat. 12)
 		// y SUNAT observa 4009 si se repite 01/03 del cat. 01 ya presente en BillingReference.
-		MtoOperGravadas: mtoOperGravadas,
-		MtoOperExoneradas: mtoOperExoneradas,
-		MtoOperInafectas:  mtoOperInafectas,
-		MtoIGV:            mtoIGV,
-		TotalImpuestos:    mtoIGV,
-		ValorVenta:        valorVenta,
-		SubTotal:          mtoImpVenta,
-		MtoImpVenta:       mtoImpVenta,
+		MtoOperGravadas:   sunatTotals.MtoOperGravadas,
+		MtoOperExoneradas: sunatTotals.MtoOperExoneradas,
+		MtoOperInafectas:  sunatTotals.MtoOperInafectas,
+		MtoOperGratuitas:  sunatTotals.MtoOperGratuitas,
+		MtoIGVGratuitas:   sunatTotals.MtoIGVGratuitas,
+		MtoIGV:            sunatTotals.MtoIGV,
+		TotalImpuestos:    sunatTotals.TotalImpuestos,
+		ValorVenta:        sunatTotals.ValorVenta,
+		SubTotal:          sunatTotals.MtoImpVenta,
+		MtoImpVenta:       sunatTotals.MtoImpVenta,
 		Details:           details,
 		Legends:           legends,
 	}, nil

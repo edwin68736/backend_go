@@ -9,6 +9,7 @@ import (
 
 	billingSvc "tukifac/internal/billing/service"
 	detraccionsvc "tukifac/internal/detraccion"
+	prepaymentsvc "tukifac/internal/prepayment"
 	salecontext "tukifac/internal/fiscal/salecontext"
 	quotationsvc "tukifac/internal/quotations/service"
 	"tukifac/internal/sales/nvdisplay"
@@ -129,6 +130,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		GlobalDiscountValue float64            `json:"global_discount_value"`
 		FiscalContext *salecontext.FiscalContextInput `json:"fiscal_context"`
 		Detraccion    *detraccionsvc.SaleInput        `json:"detraccion"`
+		Prepayment    *prepaymentsvc.SaleInput        `json:"prepayment"`
 		FromQuotationID *uint                         `json:"from_quotation_id"`
 	}
 
@@ -202,6 +204,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		CentralTenantID: centralTenantID,
 		FiscalContext:           body.FiscalContext,
 		Detraccion:              body.Detraccion,
+		Prepayment:              body.Prepayment,
 		IssuedFromQuotationID:   issuedFromQuotationID,
 	})
 	if err != nil {

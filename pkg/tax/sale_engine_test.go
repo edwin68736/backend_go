@@ -127,3 +127,19 @@ func TestCalcSaleCheckoutMixedLinesGlobal(t *testing.T) {
 		t.Fatalf("shares %v %v", r.Lines[0].GlobalDiscountSubtotal, r.Lines[1].GlobalDiscountSubtotal)
 	}
 }
+
+func TestCalcSaleCheckoutBonificacionGravada15(t *testing.T) {
+	r := CalcSaleCheckout(SaleCheckoutInput{
+		Lines: []SaleLineInput{
+			{UnitPrice: 100, Quantity: 1, IgvAffectationType: "10", PriceIncludesIgv: false},
+			{UnitPrice: 50, Quantity: 1, IgvAffectationType: "15", PriceIncludesIgv: false},
+		},
+		TaxCfg: cfg18(),
+	})
+	if r.Subtotal != 100 || r.TaxAmount != 18 || r.Total != 118 {
+		t.Fatalf("chargeable got %v/%v/%v want 100/18/118", r.Subtotal, r.TaxAmount, r.Total)
+	}
+	if r.Lines[1].Subtotal != 50 || r.Lines[1].TaxAmount != 9 || r.Lines[1].Total != 0 {
+		t.Fatalf("bonif line fiscal=%v/%v chargeable=%v want 50/9/0", r.Lines[1].Subtotal, r.Lines[1].TaxAmount, r.Lines[1].Total)
+	}
+}

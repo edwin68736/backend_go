@@ -102,11 +102,22 @@ func CalcSaleCheckout(in SaleCheckoutInput) SaleResult {
 			TaxRate:              taxCfg.EffectiveRate(aff),
 		}
 		afterLineSubs[i] = afterLine
-		subtotalAfterLineSum = money.RoundSunat(subtotalAfterLineSum + afterLine)
+		if !IsBonificacionGravada(aff) {
+			subtotalAfterLineSum = money.RoundSunat(subtotalAfterLineSum + afterLine)
+		}
 	}
 
 	globalDisc := money.CalcCheckoutDiscountAmount(subtotalAfterLineSum, in.GlobalDiscountMode, in.GlobalDiscountValue)
-	globalShares := money.DistributeCheckoutDiscountToLines(afterLineSubs, globalDisc)
+	chargeableAfterLine := make([]float64, n)
+	for i, line := range in.Lines {
+		aff := normalizeAff(line.IgvAffectationType)
+		if IsBonificacionGravada(aff) {
+			chargeableAfterLine[i] = 0
+		} else {
+			chargeableAfterLine[i] = afterLineSubs[i]
+		}
+	}
+	globalShares := money.DistributeCheckoutDiscountToLines(chargeableAfterLine, globalDisc)
 
 	var globalCharges []AllowanceCharge
 	if globalDisc > 0 {
@@ -137,13 +148,16 @@ func CalcSaleCheckout(in SaleCheckoutInput) SaleResult {
 		lr.GlobalDiscountSubtotal = globalShare
 		lr.Subtotal = finalSub
 		lr.TaxAmount = taxAmt
-		lr.Total = total
+		if IsBonificacionGravada(aff) {
+			lr.Total = 0
+		} else {
+			lr.Total = total
+			out.Subtotal = money.RoundSunat(out.Subtotal + finalSub)
+			out.TaxAmount = money.RoundSunat(out.TaxAmount + taxAmt)
+			out.Total = money.RoundSunat(out.Total + total)
+		}
 		lr.StoredDiscount = storedDisc
 		out.Lines[i] = lr
-
-		out.Subtotal = money.RoundSunat(out.Subtotal + finalSub)
-		out.TaxAmount = money.RoundSunat(out.TaxAmount + taxAmt)
-		out.Total = money.RoundSunat(out.Total + total)
 	}
 
 	out.GlobalDiscountAmount = globalDisc

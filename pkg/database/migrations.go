@@ -937,6 +937,41 @@ type TenantSaleDetraccion struct {
 
 func (TenantSaleDetraccion) TableName() string { return "tenant_sale_detraccion" }
 
+// TenantSalePrepaymentVoucher comprobante emitido por anticipo (1:1 con venta 01/03).
+type TenantSalePrepaymentVoucher struct {
+	SaleID            uint       `gorm:"primaryKey" json:"sale_id"`
+	ContactID         *uint      `gorm:"index:idx_prepay_contact_status,priority:1" json:"contact_id,omitempty"`
+	SunatDocCode      string     `gorm:"size:2;not null" json:"sunat_doc_code"`       // cat. 01: 01 factura / 03 boleta
+	DocumentNumber    string     `gorm:"size:20;not null;index" json:"document_number"` // serie-correlativo
+	OperationTypeCode string     `gorm:"size:4;not null" json:"operation_type_code"`  // snapshot cat. 51 al emitir
+	AffectationGroup  string     `gorm:"size:20;not null;index:idx_prepay_contact_status,priority:3" json:"affectation_group"`
+	RelatedDocType    string     `gorm:"size:2;not null" json:"related_doc_type"` // cat. 12: 02 factura / 03 boleta
+	OriginalAmount    float64    `gorm:"type:decimal(15,2);not null" json:"original_amount"`
+	BalanceAmount     float64    `gorm:"type:decimal(15,2);not null" json:"balance_amount"`
+	Currency          string     `gorm:"size:10;default:'PEN'" json:"currency"`
+	Status            string     `gorm:"size:30;default:'pending_acceptance';index:idx_prepay_contact_status,priority:2" json:"status"`
+	AvailableAt       *time.Time `json:"available_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+func (TenantSalePrepaymentVoucher) TableName() string { return "tenant_sale_prepayment_vouchers" }
+
+// TenantSalePrepaymentApplication vínculo venta final → voucher de anticipo deducido.
+type TenantSalePrepaymentApplication struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	ConsumerSaleID   uint      `gorm:"not null;index" json:"consumer_sale_id"`
+	SourceSaleID     uint      `gorm:"not null;index" json:"source_sale_id"`
+	DocumentNumber   string    `gorm:"size:20;not null" json:"document_number"`
+	RelatedDocType   string    `gorm:"size:2;not null" json:"related_doc_type"`
+	AffectationGroup string    `gorm:"size:20;not null" json:"affectation_group"`
+	Amount           float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
+	Total            float64   `gorm:"type:decimal(15,2);not null" json:"total"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+func (TenantSalePrepaymentApplication) TableName() string { return "tenant_sale_prepayment_applications" }
+
 // TenantQuotation — cotización comercial (pre venta); no afecta inventario ni caja.
 type TenantQuotation struct {
 	ID                uint       `gorm:"primaryKey" json:"id"`

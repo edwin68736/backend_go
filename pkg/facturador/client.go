@@ -228,6 +228,8 @@ type InvoicePayload struct {
 	MtoOperGravadas float64            `json:"mtoOperGravadas"`
 	MtoOperExoneradas float64         `json:"mtoOperExoneradas,omitempty"` // Total operaciones exoneradas (Cat.07 = 20). Obligatorio si hay líneas exoneradas.
 	MtoOperInafectas float64           `json:"mtoOperInafectas,omitempty"`  // Total operaciones inafectas (Cat.07 = 30). Obligatorio si hay líneas inafectas.
+	MtoOperGratuitas float64           `json:"mtoOperGratuitas,omitempty"`  // Operaciones gratuitas (bonificación 15, etc.).
+	MtoIGVGratuitas  float64           `json:"mtoIGVGratuitas,omitempty"`
 	MtoIGV          float64            `json:"mtoIGV"`
 	TotalImpuestos  float64            `json:"totalImpuestos"`
 	ValorVenta      float64            `json:"valorVenta"`
@@ -241,7 +243,16 @@ type InvoicePayload struct {
 	Compra          string             `json:"compra,omitempty"` // Orden de compra (O/C)
 	Guias           []InvoiceRelatedDoc `json:"guias,omitempty"` // Guías relacionadas (tipoDoc + nroDoc)
 	Detraccion      *InvoiceDetraction  `json:"detraccion,omitempty"`
+	Anticipos       []InvoicePrepayment `json:"anticipos,omitempty"`
+	TotalAnticipos  float64             `json:"totalAnticipos,omitempty"`
 	Parameters      *InvoicePDFParameters `json:"parameters,omitempty"` // Solo PDF Lycet; no afecta XML SUNAT.
+}
+
+// InvoicePrepayment anticipo deducido en venta final (Greenter Prepayment).
+type InvoicePrepayment struct {
+	TipoDocRel string  `json:"tipoDocRel"`
+	NroDocRel  string  `json:"nroDocRel"`
+	Total      float64 `json:"total"`
 }
 
 // InvoiceDetraction bloque detracción SUNAT (cat. 54, 59, cuenta BN).
@@ -317,6 +328,7 @@ type InvoiceDetail struct {
 	Igv             float64 `json:"igv"`
 	TotalImpuestos  float64 `json:"totalImpuestos"`
 	MtoPrecioUnitario float64 `json:"mtoPrecioUnitario"`
+	MtoValorGratuito  float64 `json:"mtoValorGratuito,omitempty"`
 	Descuentos      []InvoiceCharge `json:"descuentos,omitempty"`
 }
 
@@ -353,6 +365,8 @@ type NotePayload struct {
 	MtoOperGravadas float64            `json:"mtoOperGravadas"`
 	MtoOperExoneradas float64          `json:"mtoOperExoneradas,omitempty"`
 	MtoOperInafectas float64           `json:"mtoOperInafectas,omitempty"`
+	MtoOperGratuitas float64           `json:"mtoOperGratuitas,omitempty"`
+	MtoIGVGratuitas  float64           `json:"mtoIGVGratuitas,omitempty"`
 	MtoIGV          float64            `json:"mtoIGV"`
 	TotalImpuestos  float64            `json:"totalImpuestos"`
 	ValorVenta      float64            `json:"valorVenta"`

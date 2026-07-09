@@ -399,15 +399,18 @@ func (s *RestaurantService) GetPrecuenta(sessionID uint) (*PrecuentaPayload, err
 				continue
 			}
 			affType, priceIncludes := comandaIgvForCalc(s.db, &c)
-			lineSub, lineTax, lineTotal := tax.CalcItem(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
-			subtotal += lineSub
-			taxAmount += lineTax
-			total += lineTotal
+			payable := tax.CalcItemPayableTotal(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
+			if !tax.IsBonificacionGravada(affType) {
+				lineSub, lineTax, _ := tax.CalcItem(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
+				subtotal += lineSub
+				taxAmount += lineTax
+			}
+			total += payable
 			lines = append(lines, PrecuentaLine{
 				ProductName:   c.ProductName,
 				Quantity:      c.Quantity,
 				UnitPrice:     c.UnitPrice,
-				LineTotal:     lineTotal,
+				LineTotal:     payable,
 				Notes:         c.Notes,
 				ModifiersJSON: strings.TrimSpace(c.ModifiersJSON),
 			})

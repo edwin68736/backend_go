@@ -138,17 +138,14 @@ func (s *ProductService) BulkDeleteRestaurant(in BulkDeleteRestaurantInput) (*Bu
 // BulkDeleteCatalogInput eliminación masiva catálogo ERP (productos/servicios).
 type BulkDeleteCatalogInput struct {
 	ProductIDs []uint
-	Pin        string
 	Reason     string
 	UserID     uint
 	BranchID   uint
 }
 
-// BulkDeleteCatalog elimina productos del catálogo tras validar PIN y dependencias.
+// BulkDeleteCatalog elimina productos del catálogo tras validar dependencias.
+// La autorización es por sesión/permiso products.delete (no usa PIN de restaurante).
 func (s *ProductService) BulkDeleteCatalog(in BulkDeleteCatalogInput) (*BulkDeleteRestaurantResult, error) {
-	if err := restaurantsvc.New(s.db).VerifyDeletionPin(in.Pin); err != nil {
-		return nil, &PinVerificationError{Message: err.Error()}
-	}
 	reason := strings.TrimSpace(in.Reason)
 	if reason == "" {
 		return nil, errors.New("se requiere motivo")

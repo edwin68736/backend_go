@@ -105,9 +105,14 @@ func buildSaleLinesLegacy(input CreateSaleInput, taxCfg tax.Config, db *gorm.DB)
 			item.UnitPrice, item.Quantity, item.Discount,
 			affType, item.PriceIncludesIgv, taxCfg,
 		)
-		subtotal = money.RoundSunat(subtotal + itemSub)
-		taxAmount = money.RoundSunat(taxAmount + itemTax)
-		total = money.RoundSunat(total + itemTotal)
+		chargeableTotal := itemTotal
+		if tax.IsBonificacionGravada(affType) {
+			chargeableTotal = 0
+		} else {
+			subtotal = money.RoundSunat(subtotal + itemSub)
+			taxAmount = money.RoundSunat(taxAmount + itemTax)
+			total = money.RoundSunat(total + chargeableTotal)
+		}
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:          item.ProductID,
 			Code:               item.Code,
@@ -120,7 +125,7 @@ func buildSaleLinesLegacy(input CreateSaleInput, taxCfg tax.Config, db *gorm.DB)
 			IgvAffectationType: affType,
 			Subtotal:           itemSub,
 			TaxAmount:          itemTax,
-			Total:              itemTotal,
+			Total:              chargeableTotal,
 			ModifiersJSON:      item.ModifiersJSON,
 		})
 	}

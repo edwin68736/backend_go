@@ -113,6 +113,109 @@ func TestBuildInvoiceDetails_LineAndGlobalCombined(t *testing.T) {
 	}
 }
 
+func TestBuildInvoiceDetails_Affectacion15GravadoBonificaciones(t *testing.T) {
+	// SUNAT Cat. 07 código 15: gravado bonificaciones — mismo IGV que 10, tipAfeIgv distinto en XML.
+	items := []database.TenantSaleItem{{
+		Code: "BONIF01", Description: "Bonificación gravada", Unit: "NIU", Quantity: 1,
+		IgvAffectationType: "15", TaxRate: 18,
+		Subtotal: 100, TaxAmount: 18, Total: 118,
+	}}
+	details, err := BuildInvoiceDetailsFromSaleItems(items, 18, testNormUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := details[0]
+	if d.TipAfeIgv != "15" {
+		t.Fatalf("tipAfeIgv=%q want 15", d.TipAfeIgv)
+	}
+	if d.MtoBaseIgv != 100 || d.Igv != 18 || d.PorcentajeIgv != 18 {
+		t.Fatalf("base/igv/pct=%v/%v/%v want 100/18/18", d.MtoBaseIgv, d.Igv, d.PorcentajeIgv)
+	}
+	if d.MtoPrecioUnitario != 0 || d.MtoValorUnitario != 0 || d.MtoValorGratuito != 100 {
+		t.Fatalf("precio/unit/gratuito=%v/%v/%v want 0/0/100", d.MtoPrecioUnitario, d.MtoValorUnitario, d.MtoValorGratuito)
+	}
+	if d.MtoValorVenta != 100 {
+		t.Fatalf("mtoValorVenta=%v want 100 (base referencial línea)", d.MtoValorVenta)
+	}
+	if d.TotalImpuestos != 0 {
+		t.Fatalf("totalImpuestos=%v want 0 (legacy total_taxes; IGV referencial en igv)", d.TotalImpuestos)
+	}
+}
+
+func TestBuildInvoiceDetails_Mixed10And15_LegacyTaxStructure(t *testing.T) {
+	// Escenario alineado con B001-57 / B002-171: línea 15 gratuita + línea 10 onerosa.
+	items := []database.TenantSaleItem{
+		{
+			Code: "LBC22", Description: "Revisión General de Fluidos", Unit: "NIU", Quantity: 1,
+			IgvAffectationType: "15", TaxRate: 18,
+			Subtotal: 29.66, TaxAmount: 5.34, Total: 0,
+		},
+		{
+			Code: "LBC21", Description: "Cambio de Filtro de Aire", Unit: "NIU", Quantity: 1,
+			IgvAffectationType: "10", TaxRate: 18,
+			Subtotal: 21.19, TaxAmount: 3.81, Total: 25,
+		},
+	}
+	details, err := BuildInvoiceDetailsFromSaleItems(items, 18, testNormUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details) != 2 {
+		t.Fatalf("details len=%d want 2", len(details))
+	}
+
+	free := details[0]
+	if free.TipAfeIgv != "15" {
+		t.Fatalf("free tipAfeIgv=%q", free.TipAfeIgv)
+	}
+	if free.TotalImpuestos != 0 {
+		t.Fatalf("free totalImpuestos=%v want 0", free.TotalImpuestos)
+	}
+	if free.Igv != 5.34 || free.MtoBaseIgv != 29.66 || free.MtoValorVenta != 29.66 {
+		t.Fatalf("free referential=%v/%v/%v want 29.66/5.34/29.66", free.MtoValorVenta, free.MtoBaseIgv, free.Igv)
+	}
+	if free.MtoValorGratuito != 29.66 || free.MtoValorUnitario != 0 {
+		t.Fatalf("free price ref=%v/%v want gratuito 29.66 unit 0", free.MtoValorGratuito, free.MtoValorUnitario)
+	}
+
+	onerous := details[1]
+	if onerous.TipAfeIgv != "10" {
+		t.Fatalf("onerous tipAfeIgv=%q", onerous.TipAfeIgv)
+	}
+	if onerous.TotalImpuestos != 3.81 {
+		t.Fatalf("onerous totalImpuestos=%v want 3.81", onerous.TotalImpuestos)
+	}
+	if onerous.Igv != 3.81 || onerous.MtoBaseIgv != 21.19 {
+		t.Fatalf("onerous igv/base=%v/%v want 3.81/21.19", onerous.Igv, onerous.MtoBaseIgv)
+	}
+	if onerous.MtoValorGratuito != 0 {
+		t.Fatalf("onerous mtoValorGratuito=%v want 0", onerous.MtoValorGratuito)
+	}
+
+	tot := ComputeInvoiceSunatTotals(items, 25)
+	if tot.TotalImpuestos != 3.81 || tot.MtoIGVGratuitas != 5.34 {
+		t.Fatalf("header taxes=%v igvFree=%v want 3.81/5.34", tot.TotalImpuestos, tot.MtoIGVGratuitas)
+	}
+}
+
+func TestBuildInvoiceDetails_GravadoRetiroPremio11_ChargeableTaxZero(t *testing.T) {
+	items := []database.TenantSaleItem{{
+		Code: "P11", Description: "Retiro premio", Unit: "NIU", Quantity: 1,
+		IgvAffectationType: "11", TaxRate: 18,
+		Subtotal: 50, TaxAmount: 9, Total: 0,
+	}}
+	details, err := BuildInvoiceDetailsFromSaleItems(items, 18, testNormUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details[0].TotalImpuestos != 0 {
+		t.Fatalf("totalImpuestos=%v want 0 for code 11", details[0].TotalImpuestos)
+	}
+	if details[0].Igv != 9 {
+		t.Fatalf("igv=%v want 9 referential", details[0].Igv)
+	}
+}
+
 func TestBuildInvoiceDetails_MixedThreeProducts(t *testing.T) {
 	items := []database.TenantSaleItem{
 		{

@@ -46,10 +46,7 @@ func BuildInvoiceDetailsFromSaleItems(items []database.TenantSaleItem, companyTa
 		}
 
 		rate := lineIgvRateForPayload(aff, item.TaxRate, companyTaxRate)
-		porcentajeIgv := round2(item.TaxRate)
-		if aff != "10" {
-			porcentajeIgv = round2(companyTaxRate)
-		}
+		porcentajeIgv := linePorcentajeIgvForPayload(aff, item.TaxRate, companyTaxRate)
 
 		var mtoBaseIgv, igv, mtoPrecioUnitario float64
 		if hasGlobal {
@@ -75,6 +72,23 @@ func BuildInvoiceDetailsFromSaleItems(items []database.TenantSaleItem, companyTa
 			}
 		}
 
+		var mtoValorGratuito float64
+		if tax.IsBonificacionGravada(aff) {
+			// SUNAT UBL 2.1 operación gratuita (Guía factura/boleta 2.1):
+			// - cac:Price/cbc:PriceAmount → 0 (error 2640 si lleva base onerosa).
+			// - cac:PricingReference PriceTypeCode 02 → mtoValorGratuito (ref. unitario con IGV).
+			// - LineExtensionAmount (mtoValorVenta) y TaxTotal conservan base/IGV referencial.
+			// - tipAfeIgv 15; Greenter stock mapea 15 → tributo 9996 (default).
+			mtoValorGratuito = round2(mtoValorVenta / cantidad)
+			mtoPrecioUnitario = 0
+			mtoValorUnitario = 0
+		}
+
+		// Impuesto cobrable de línea (Greenter TotalImpuestos). En gravado no oneroso 11–16 el
+		// legacy deja total_taxes≈0; el IGV referencial va solo en detail.Igv (TaxSubtotal).
+		linePlasticBag := 0.0 // ICBPER por línea: reservado; legacy suma bolsa en total_taxes 11–16.
+		totalImpuestos := tax.LineChargeableTotalImpuestos(aff, igv, linePlasticBag)
+
 		details[i] = facturador.InvoiceDetail{
 			Unidad:            normUnit(item.Unit),
 			Cantidad:          cantidad,
@@ -86,8 +100,9 @@ func BuildInvoiceDetailsFromSaleItems(items []database.TenantSaleItem, companyTa
 			MtoBaseIgv:        mtoBaseIgv,
 			PorcentajeIgv:     porcentajeIgv,
 			Igv:               igv,
-			TotalImpuestos:    igv,
+			TotalImpuestos:    totalImpuestos,
 			MtoPrecioUnitario: mtoPrecioUnitario,
+			MtoValorGratuito:  mtoValorGratuito,
 			Descuentos:        lineDescuentos,
 		}
 	}
@@ -107,17 +122,26 @@ func lineIgvRateForPayload(aff string, itemRate, companyTaxRate float64) float64
 	switch aff {
 	case "20", "30":
 		return 0
-	case "10":
-		if itemRate > 0 {
-			return itemRate
-		}
-		return companyTaxRate
 	default:
+		if !tax.IsGravado(aff) {
+			return 0
+		}
 		if itemRate > 0 {
 			return itemRate
 		}
 		return companyTaxRate
 	}
+}
+
+// linePorcentajeIgvForPayload porcentaje para <cbc:Percent> (Catálogo 07 gravado → tasa empresa).
+func linePorcentajeIgvForPayload(aff string, itemRate, companyTaxRate float64) float64 {
+	if !tax.IsGravado(aff) {
+		return 0
+	}
+	if itemRate > 0 {
+		return round2(itemRate)
+	}
+	return round2(companyTaxRate)
 }
 
 // BuildGlobalInvoiceDiscounts genera descuentos globales UBL (cod 02) para el documento.

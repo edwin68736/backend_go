@@ -330,10 +330,10 @@ func normalizeBulkIgvAffectation(raw string) (string, error) {
 		c = c[:i]
 	}
 	switch c {
-	case "10", "20", "30", "40":
+	case "10", "15", "20", "30", "40":
 		return c, nil
 	default:
-		return "", errors.New("afectacion_igv debe ser 10 (gravado), 20 (exonerado), 30 (inafecto) o 40 (exportación)")
+		return "", errors.New("afectacion_igv debe ser 10 (gravado), 15 (gravado bonificaciones), 20 (exonerado), 30 (inafecto) o 40 (exportación)")
 	}
 }
 

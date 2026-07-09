@@ -11,6 +11,7 @@ import (
 	"tukifac/pkg/modifierkind"
 	"tukifac/pkg/money"
 	"tukifac/pkg/sunat"
+	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
 )
@@ -482,7 +483,7 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 	// La tasa viene del config de empresa (calculada en el handler). Para tipos no gravados
 	// se fuerza a 0 como medida de seguridad.
 	taxRate := input.TaxRate
-	if igvType != "10" {
+	if !tax.IsGravado(igvType) {
 		taxRate = 0
 	}
 
@@ -603,7 +604,7 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 	}
 	// La tasa viene del config de empresa. Para tipos no gravados se fuerza a 0.
 	taxRate := input.TaxRate
-	if igvType != "10" {
+	if !tax.IsGravado(igvType) {
 		taxRate = 0
 	}
 

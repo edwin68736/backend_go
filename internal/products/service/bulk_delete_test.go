@@ -69,7 +69,7 @@ func TestBulkDeleteCatalog_DeletesCleanProduct(t *testing.T) {
 
 	svc := NewProductService(db)
 	res, err := svc.BulkDeleteCatalog(BulkDeleteCatalogInput{
-		ProductIDs: []uint{p.ID}, Pin: "1234", Reason: "depuración", UserID: 7,
+		ProductIDs: []uint{p.ID}, Reason: "depuración", UserID: 7,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +81,25 @@ func TestBulkDeleteCatalog_DeletesCleanProduct(t *testing.T) {
 	db.Unscoped().Model(&database.TenantProduct{}).Where("id = ?", p.ID).Count(&prodCount)
 	if prodCount != 0 {
 		t.Fatalf("product still exists")
+	}
+}
+
+func TestBulkDeleteCatalog_WorksWithoutRestaurantPin(t *testing.T) {
+	db := setupBulkDeleteTestDB(t)
+	if err := db.Exec("DELETE FROM tenant_restaurant_settings").Error; err != nil {
+		t.Fatal(err)
+	}
+	p := createCatalogProduct(t, db, "CAT-2", "Sin PIN restaurante")
+
+	svc := NewProductService(db)
+	res, err := svc.BulkDeleteCatalog(BulkDeleteCatalogInput{
+		ProductIDs: []uint{p.ID}, Reason: "depuración", UserID: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Deleted) != 1 {
+		t.Fatalf("deleted=%+v", res.Deleted)
 	}
 }
 

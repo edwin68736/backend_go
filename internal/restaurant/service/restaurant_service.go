@@ -42,6 +42,9 @@ func restaurantLinePayableTotal(
 	if strings.TrimSpace(affType) == "" {
 		affType = "10"
 	}
+	if tax.IsBonificacionGravada(affType) {
+		return 0
+	}
 	_, _, total := tax.CalcItem(unitPrice, quantity, 0, affType, priceIncludesIgv, taxCfg)
 	return money.RoundSunat(total)
 }
@@ -568,8 +571,7 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 			}
 			c.PriceIncludesIgv = item.PriceIncludesIgv
 			comandas = append(comandas, c)
-			_, _, lineTotal := tax.CalcItem(item.UnitPrice, item.Quantity, 0, affType, item.PriceIncludesIgv, taxCfg)
-			sessionTotal += money.RoundSunat(lineTotal)
+			sessionTotal += money.RoundSunat(tax.CalcItemPayableTotal(item.UnitPrice, item.Quantity, 0, affType, item.PriceIncludesIgv, taxCfg))
 		}
 
 		tx.Model(&database.TenantTableSession{}).Where("id = ?", sessionID).
@@ -1085,13 +1087,9 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		TaxCfg:              taxCfg,
 	})
 
-	var subtotal, taxAmount, total float64
 	var saleItems []database.TenantSaleItem
 	for i, item := range lineDataOrder {
 		lr := calcResult.Lines[i]
-		subtotal = money.RoundSunat(subtotal + lr.Subtotal)
-		taxAmount = money.RoundSunat(taxAmount + lr.TaxAmount)
-		total = money.RoundSunat(total + lr.Total)
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:              item.ProductID,
 			Code:                   item.Code,
@@ -1110,6 +1108,9 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			ModifiersJSON:          item.ModifiersJSON,
 		})
 	}
+	subtotal := calcResult.Subtotal
+	taxAmount := calcResult.TaxAmount
+	total := calcResult.Total
 	discountAmount := calcResult.GlobalDiscountAmount
 
 	var totalPaid float64

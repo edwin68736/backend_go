@@ -3,13 +3,15 @@ package salecurrency
 import (
 	"fmt"
 	"strings"
+
+	sunatpre "tukifac/pkg/sunat/prepayment"
 )
 
 const (
-	CurrencyPEN      = "PEN"
-	CurrencyUSD      = "USD"
-	OpVentaInterna   = "0101"
-	OpDetraccion     = "1001"
+	CurrencyPEN    = "PEN"
+	CurrencyUSD    = "USD"
+	OpVentaInterna = "0101"
+	OpDetraccion   = "1001"
 )
 
 // NormalizeCurrency valida PEN/USD.
@@ -24,7 +26,7 @@ func NormalizeCurrency(raw string) (string, error) {
 	return c, nil
 }
 
-// NormalizeOperationType permite venta interna (0101) y detracción general (1001).
+// NormalizeOperationType permite venta interna (0101), emisión de anticipos (configurable) y detracción (1001).
 func NormalizeOperationType(raw string) (string, error) {
 	code := strings.TrimSpace(raw)
 	if code == "" {
@@ -34,7 +36,11 @@ func NormalizeOperationType(raw string) (string, error) {
 	case OpVentaInterna, OpDetraccion:
 		return code, nil
 	default:
-		return "", fmt.Errorf("tipo de operación %s no está habilitado; use %s o %s", code, OpVentaInterna, OpDetraccion)
+		if sunatpre.IsAllowedEmitOperationType(code) {
+			return code, nil
+		}
+		return "", fmt.Errorf("tipo de operación %s no está habilitado; use %s, %s o %s",
+			code, OpVentaInterna, sunatpre.EmitOperationTypeCode(), OpDetraccion)
 	}
 }
 

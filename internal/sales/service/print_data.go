@@ -7,12 +7,15 @@ import (
 
 	"tukifac/internal/fiscal/salecontext"
 	detraccionsvc "tukifac/internal/detraccion"
+	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/numeroletras"
 	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/tax"
 	"tukifac/pkg/taxpayment"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
+	sunatpre "tukifac/pkg/sunat/prepayment"
 
 	"gorm.io/gorm"
 )
@@ -99,6 +102,13 @@ type PrintFiscalContext struct {
 	DetraccionBankAccount string       `json:"detraccion_bank_account,omitempty"`
 	DetraccionPaymentMethodCode string `json:"detraccion_payment_method_code,omitempty"`
 	DetraccionNetPayable float64       `json:"detraccion_net_payable,omitempty"`
+	HasPrepaymentEmit    bool           `json:"has_prepayment_emit,omitempty"`
+	PrepaymentLabel      string         `json:"prepayment_label,omitempty"`
+	PrepaymentAffectationGroup string   `json:"prepayment_affectation_group,omitempty"`
+	PrepaymentRelatedDocType   string   `json:"prepayment_related_doc_type,omitempty"`
+	HasPrepaymentDeduction     bool     `json:"has_prepayment_deduction,omitempty"`
+	PrepaymentDeductionTotal   float64  `json:"prepayment_deduction_total,omitempty"`
+	PrepaymentDeductions       []PrintPrepaymentDeduction `json:"prepayment_deductions,omitempty"`
 	ShowTermsConditions bool           `json:"show_terms_conditions,omitempty"`
 	TermsText           string         `json:"terms_text,omitempty"`
 }
@@ -106,6 +116,14 @@ type PrintFiscalContext struct {
 type PrintGuiaRef struct {
 	Kind   string `json:"kind,omitempty"`
 	Number string `json:"number"`
+}
+
+// PrintPrepaymentDeduction anticipo deducido en venta final (legacy document.prepayments).
+type PrintPrepaymentDeduction struct {
+	DocumentNumber string  `json:"document_number"`
+	RelatedDocType string  `json:"related_doc_type"`
+	Amount         float64 `json:"amount"`
+	Total          float64 `json:"total"`
 }
 
 type PrintPaymentWallet struct {
@@ -160,6 +178,7 @@ type PrintItem struct {
 	Subtotal      float64 `json:"subtotal"`
 	TaxAmount     float64 `json:"tax_amount"`
 	Total         float64 `json:"total"`
+	IgvAffectationType string `json:"igv_affectation_type,omitempty"`
 	ModifiersJSON string  `json:"modifiers_json,omitempty"`
 }
 
@@ -365,6 +384,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			Subtotal:      it.Subtotal,
 			TaxAmount:     it.TaxAmount,
 			Total:         it.Total,
+			IgvAffectationType: it.IgvAffectationType,
 			ModifiersJSON: it.ModifiersJSON,
 		}
 	}
@@ -424,9 +444,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 }
 
 func affectDesc(code string) string {
-	m := map[string]string{"10": "Gravado", "20": "Exonerado", "30": "Inafecto", "40": "Exportación"}
-	if d, ok := m[code]; ok {
-		return d
+	if label := tax.SunatIgvTypeLabel(code); label != "" {
+		return label
 	}
 	return code
 }
@@ -616,8 +635,45 @@ func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *Prin
 		fc.DetraccionNetPayable = money.RoundSunat(det.NetPayablePen)
 	}
 
+	if voucher, err := prepaymentsvc.NewService(db).LoadBySaleID(saleID); err == nil && prepaymentsvc.IsEmitVoucher(voucher) {
+		if fc == nil {
+			fc = &PrintFiscalContext{}
+		}
+		fc.HasPrepaymentEmit = true
+		fc.PrepaymentLabel = prepaymentsvc.EmitPDFLabel()
+		fc.PrepaymentAffectationGroup = voucher.AffectationGroup
+		fc.PrepaymentRelatedDocType = voucher.RelatedDocType
+		if pd.OperationTypeCode == "" {
+			if voucher.OperationTypeCode != "" {
+				pd.OperationTypeCode = voucher.OperationTypeCode
+			} else {
+				pd.OperationTypeCode = sunatpre.EmitOperationTypeCode()
+			}
+		}
+	}
+
+	if apps, err := prepaymentsvc.NewService(db).LoadApplicationsByConsumerSale(saleID); err == nil && len(apps) > 0 {
+		if fc == nil {
+			fc = &PrintFiscalContext{}
+		}
+		fc.HasPrepaymentDeduction = true
+		fc.PrepaymentDeductions = make([]PrintPrepaymentDeduction, 0, len(apps))
+		var sumTotal float64
+		for _, app := range apps {
+			fc.PrepaymentDeductions = append(fc.PrepaymentDeductions, PrintPrepaymentDeduction{
+				DocumentNumber: strings.TrimSpace(app.DocumentNumber),
+				RelatedDocType: strings.TrimSpace(app.RelatedDocType),
+				Amount:         money.RoundSunat(app.Amount),
+				Total:          money.RoundSunat(app.Total),
+			})
+			sumTotal += app.Total
+		}
+		fc.PrepaymentDeductionTotal = money.RoundSunat(sumTotal)
+	}
+
 	if fc != nil && (fc.PurchaseOrderNumber != "" || fc.FiscalObservations != "" || len(fc.Guias) > 0 ||
-		fc.RetentionApplied || fc.HasIgvRetention || fc.ShowTermsConditions || fc.HasDetraccion) {
+		fc.RetentionApplied || fc.HasIgvRetention || fc.ShowTermsConditions || fc.HasDetraccion ||
+		fc.HasPrepaymentEmit || fc.HasPrepaymentDeduction) {
 		pd.Fiscal = fc
 	}
 }

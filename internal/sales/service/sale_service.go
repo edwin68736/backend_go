@@ -17,9 +17,11 @@ import (
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/salescope"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
+	sunatpre "tukifac/pkg/sunat/prepayment"
 	"tukifac/pkg/tax"
 	cashbanksvc "tukifac/internal/cashbank/service"
 	detraccionsvc "tukifac/internal/detraccion"
+	prepaymentsvc "tukifac/internal/prepayment"
 	invsvc "tukifac/internal/inventory/service"
 	salecontext "tukifac/internal/fiscal/salecontext"
 	"tukifac/internal/sales/nvdisplay"
@@ -102,6 +104,7 @@ type CreateSaleInput struct {
 	CentralTenantID           uint  // tenant SaaS (cupo de documentos electrónicos)
 	FiscalContext             *salecontext.FiscalContextInput
 	Detraccion                *detraccionsvc.SaleInput
+	Prepayment                *prepaymentsvc.SaleInput
 }
 
 // NextCorrelative retorna el siguiente correlativo para una serie y lo incrementa (transacción con bloqueo de fila).
@@ -149,6 +152,46 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	if err != nil {
 		return nil, err
 	}
+	if input.Prepayment != nil && input.Prepayment.Emit {
+		if input.Detraccion != nil {
+			return nil, errors.New("no se puede combinar emisión de anticipo con detracción")
+		}
+		if len(input.Prepayment.Deductions) > 0 {
+			return nil, errors.New("no se puede emitir y deducir anticipo en la misma venta")
+		}
+		// PHP legacy: operation_type_id permanece 0101; has_prepayment marca el anticipo.
+		if strings.TrimSpace(input.OperationTypeCode) == "" {
+			input.OperationTypeCode = salecurrency.OpVentaInterna
+		}
+	}
+
+	var prepaymentDeductionPlan *prepaymentsvc.DeductionPlan
+	if input.Prepayment != nil && len(input.Prepayment.Deductions) > 0 {
+		if input.Detraccion != nil {
+			return nil, errors.New("no se puede combinar deducción de anticipos con detracción")
+		}
+		if input.Prepayment.Emit {
+			return nil, errors.New("no se puede emitir y deducir anticipo en la misma venta")
+		}
+		if sunatCode := strings.TrimSpace(series.SunatCode); sunatCode != "01" && sunatCode != "03" {
+			return nil, errors.New("la deducción de anticipos solo aplica a factura (01) o boleta (03)")
+		}
+		plan, err := prepaymentsvc.NewService(s.db).PlanDeductions(
+			input.ContactID,
+			input.Prepayment.AffectationGroup,
+			saleItems,
+			input.Prepayment.Deductions,
+			taxCfg.TaxRate,
+		)
+		if err != nil {
+			return nil, err
+		}
+		prepaymentDeductionPlan = &plan
+		subtotal = plan.AdjustedSubtotal
+		taxAmount = plan.AdjustedTax
+		total = plan.AdjustedTotal
+	}
+
 	opCode, err := salecurrency.NormalizeOperationType(input.OperationTypeCode)
 	if err != nil {
 		return nil, err
@@ -175,6 +218,17 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	if opCode != salecurrency.OpDetraccion && input.Detraccion != nil {
 		return nil, errors.New("datos de detracción solo aplican con tipo de operación 1001")
+	}
+	if input.Prepayment != nil && input.Prepayment.Emit {
+		if sunatCode != "01" && sunatCode != "03" {
+			return nil, errors.New("el comprobante de anticipo solo aplica a factura (01) o boleta (03)")
+		}
+		if !sunatpre.IsValidAffectationGroup(input.Prepayment.AffectationGroup) {
+			return nil, errors.New("indique el grupo de afectación del anticipo: gravado, exonerado o inafecto")
+		}
+		if opCode != salecurrency.OpVentaInterna {
+			return nil, errors.New("el comprobante de anticipo requiere tipo de operación venta interna (0101)")
+		}
 	}
 
 	// Validaciones SUNAT: Factura 01 solo con RUC de 11 dígitos; doc. tipo 0 máximo S/ 700 en boleta/nota de venta
@@ -501,6 +555,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			if err := s.persistDetraccionTx(tx, sale, input, seriesLocked, saleItems); err != nil {
 				return err
 			}
+			if err := s.persistPrepaymentTx(tx, sale, input, seriesLocked, saleItems); err != nil {
+				return err
+			}
+			if err := s.persistPrepaymentDeductionTx(tx, sale.ID, prepaymentDeductionPlan); err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -578,6 +638,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			return err
 		}
 		if err := s.persistDetraccionTx(tx, sale, input, seriesLocked, saleItems); err != nil {
+			return err
+		}
+		if err := s.persistPrepaymentTx(tx, sale, input, seriesLocked, saleItems); err != nil {
+			return err
+		}
+		if err := s.persistPrepaymentDeductionTx(tx, sale.ID, prepaymentDeductionPlan); err != nil {
 			return err
 		}
 		return nil
@@ -659,6 +725,55 @@ func (s *SaleService) persistDetraccionTx(
 		ContactEsPercepcion: contactEsPercepcion,
 	})
 	return err
+}
+
+func (s *SaleService) persistPrepaymentTx(
+	tx *gorm.DB,
+	sale *database.TenantSale,
+	input CreateSaleInput,
+	series database.TenantDocumentSeries,
+	saleItems []database.TenantSaleItem,
+) error {
+	if input.Prepayment == nil || !input.Prepayment.Emit {
+		return nil
+	}
+	itemAffs := make([]string, 0, len(saleItems))
+	for _, it := range saleItems {
+		itemAffs = append(itemAffs, it.IgvAffectationType)
+	}
+	_, err := prepaymentsvc.NewService(tx).Persist(prepaymentsvc.PersistInput{
+		SaleID:            sale.ID,
+		ContactID:         saleContactID(input.ContactID, sale.ContactID),
+		SunatDocCode:      salecontext.SunatCodeFromSeries(&series, input.DocType),
+		DocumentNumber:    sale.Number,
+		OperationTypeCode: sale.OperationTypeCode,
+		Currency:          sale.Currency,
+		SaleTotal:         sale.Total,
+		AffectationGroup:  input.Prepayment.AffectationGroup,
+		ItemAffs:          itemAffs,
+	})
+	return err
+}
+
+func saleContactID(input *uint, sale *uint) *uint {
+	if input != nil && *input > 0 {
+		return input
+	}
+	if sale != nil && *sale > 0 {
+		return sale
+	}
+	return input
+}
+
+func (s *SaleService) persistPrepaymentDeductionTx(
+	tx *gorm.DB,
+	consumerSaleID uint,
+	plan *prepaymentsvc.DeductionPlan,
+) error {
+	if plan == nil || len(plan.Resolved) == 0 {
+		return nil
+	}
+	return prepaymentsvc.NewService(tx).PersistApplicationsTx(tx, consumerSaleID, plan.Resolved)
 }
 
 func (s *SaleService) evaluateDetractionForCreate(
