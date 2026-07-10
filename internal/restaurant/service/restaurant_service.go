@@ -1212,6 +1212,15 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 		// Registrar pagos múltiples: distribuir a caja o cuenta bancaria según método
 		cbSvc := cashbanksvc.NewCashBankService(s.db)
+		var recordAmounts []float64
+		for _, p := range input.Payments {
+			if p.Amount <= 0 || p.Method == "" {
+				continue
+			}
+			recordAmounts = append(recordAmounts, p.Amount)
+		}
+		netRecordAmounts := money.AllocateSalePaymentNetAmounts(total, recordAmounts)
+		recordIdx := 0
 		for _, p := range input.Payments {
 			tx.Create(&database.TenantSalePayment{
 				SaleID:    sale.ID,
@@ -1221,7 +1230,12 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 				Notes:     p.Notes,
 			})
 			desc := "Venta " + sale.Number
-			_ = cbSvc.RecordPayment(tx, p.Method, p.Amount, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID)
+			recordAmt := p.Amount
+			if p.Amount > 0 && p.Method != "" {
+				recordAmt = netRecordAmounts[recordIdx]
+				recordIdx++
+			}
+			_ = cbSvc.RecordPayment(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID)
 		}
 
 		if input.CloseSession {
@@ -1356,6 +1370,15 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 
 	cbSvc := cashbanksvc.NewCashBankService(s.db)
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var recordAmounts []float64
+		for _, p := range payments {
+			if p.Amount <= 0 || p.Method == "" {
+				continue
+			}
+			recordAmounts = append(recordAmounts, p.Amount)
+		}
+		netRecordAmounts := money.AllocateSalePaymentNetAmounts(sale.Total, recordAmounts)
+		recordIdx := 0
 		for _, p := range payments {
 			tx.Create(&database.TenantSalePayment{
 				SaleID:    saleID,
@@ -1365,7 +1388,12 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 				Notes:     p.Notes,
 			})
 			desc := "Venta " + sale.Number
-			_ = cbSvc.RecordPayment(tx, p.Method, p.Amount, sale.CashSessionID, sale.Number, desc, &sale.ID, userID)
+			recordAmt := p.Amount
+			if p.Amount > 0 && p.Method != "" {
+				recordAmt = netRecordAmounts[recordIdx]
+				recordIdx++
+			}
+			_ = cbSvc.RecordPayment(tx, p.Method, recordAmt, sale.CashSessionID, sale.Number, desc, &sale.ID, userID)
 		}
 		// Actualizar método de pago principal en la venta
 		if len(payments) > 0 {

@@ -528,6 +528,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				return err
 			}
 		}
+		var recordAmounts []float64
+		for _, p := range payments {
+			if p.Amount <= 0 || p.Method == "" {
+				continue
+			}
+			recordAmounts = append(recordAmounts, p.Amount)
+		}
+		netRecordAmounts := money.AllocateSalePaymentNetAmounts(sale.Total, recordAmounts)
+		recordIdx := 0
 		for _, p := range payments {
 			if p.Amount <= 0 || p.Method == "" {
 				continue
@@ -542,7 +551,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			}
 			if !skipPay {
 				desc := "Venta " + sale.Number
-				if err := cbSvc.RecordPayment(tx, p.Method, p.Amount, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID); err != nil {
+				recordAmt := netRecordAmounts[recordIdx]
+				recordIdx++
+				if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID); err != nil {
 					return err
 				}
 			}

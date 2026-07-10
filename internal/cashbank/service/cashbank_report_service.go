@@ -8,6 +8,7 @@ import (
 
 	"tukifac/internal/sales/nvdisplay"
 	"tukifac/pkg/database"
+	"tukifac/pkg/money"
 	"tukifac/pkg/salescope"
 
 	"gorm.io/gorm"
@@ -267,10 +268,12 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 	if len(saleIDs) > 0 {
 		var payments []database.TenantSalePayment
 		s.db.Where("sale_id IN ?", saleIDs).Order("created_at ASC").Find(&payments)
+		reportAmounts := buildSalePaymentReportAmountsFromPayments(salesMap, payments)
 		paidBySale := make(map[uint]float64)
 		for _, p := range payments {
 			meth := normalizeReportMethod(p.Method)
 			sale := salesMap[p.SaleID]
+			reportAmt := paymentReportAmount(p.Amount, p.ID, reportAmounts)
 			if IsDetractionPaymentMethod(meth) || IsDetractionPaymentMethod(p.Method) {
 				report.Totals.TotalDetractionSpot += p.Amount
 				report.Totals.TotalSalesCommercial += p.Amount
@@ -285,17 +288,17 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				})
 				continue
 			}
-			salesByMethod[meth] += p.Amount
-			report.Totals.TotalSales += p.Amount
-			report.Totals.TotalSalesDirect += p.Amount
-			report.Totals.TotalSalesCommercial += p.Amount
-			paidBySale[p.SaleID] += p.Amount
+			salesByMethod[meth] += reportAmt
+			report.Totals.TotalSales += reportAmt
+			report.Totals.TotalSalesDirect += reportAmt
+			report.Totals.TotalSalesCommercial += reportAmt
+			paidBySale[p.SaleID] += reportAmt
 			report.IncomeDetail = append(report.IncomeDetail, IncomeDetailRow{
 				Date:          p.CreatedAt,
 				Type:          "venta",
 				DocNumber:     displayDocNumbers[sale.ID],
 				Reference:     p.Reference,
-				Amount:        p.Amount,
+				Amount:        reportAmt,
 				PaymentMethod: meth,
 			})
 		}
@@ -745,6 +748,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 	for _, p := range payRows {
 		saleIDsForDisplay = append(saleIDsForDisplay, p.SaleID)
 	}
+	reportAmounts, _ := s.buildSalePaymentReportAmountMap(saleIDsForDisplay)
 
 	rows := make([]MovementReportRow, 0, len(payRows))
 
@@ -799,7 +803,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 			UserName:      users[p.SaleUserID],
 			BranchName:    branches[p.BranchID],
 			PaymentMethod: meth,
-			Amount:        p.Amount,
+			Amount:        paymentReportAmount(p.Amount, p.PaymentID, reportAmounts),
 			MovementID:    salePaymentMovementID(p.PaymentID),
 			CashSessionID: p.CashSessionID,
 			Category:      "Venta",
@@ -1021,6 +1025,74 @@ func (s *CashBankService) GetSessionProductsReport(sessionID uint) ([]SessionPro
 		Order("tenant_sale_items.description ASC").
 		Scan(&rows).Error
 	return rows, err
+}
+
+func buildSalePaymentReportAmountsFromPayments(
+	salesMap map[uint]database.TenantSale,
+	payments []database.TenantSalePayment,
+) map[uint]float64 {
+	bySale := make(map[uint][]database.TenantSalePayment)
+	for _, p := range payments {
+		bySale[p.SaleID] = append(bySale[p.SaleID], p)
+	}
+	out := make(map[uint]float64)
+	for saleID, pList := range bySale {
+		sale, ok := salesMap[saleID]
+		if !ok {
+			for _, p := range pList {
+				out[p.ID] = p.Amount
+			}
+			continue
+		}
+		lines := make([]money.SalePaymentLine, len(pList))
+		for i, p := range pList {
+			lines[i] = money.SalePaymentLine{ID: p.ID, Amount: p.Amount}
+		}
+		for id, amt := range money.AllocateSalePaymentReportAmounts(sale.Total, lines) {
+			out[id] = amt
+		}
+	}
+	return out
+}
+
+func (s *CashBankService) buildSalePaymentReportAmountMap(saleIDs []uint) (map[uint]float64, error) {
+	out := make(map[uint]float64)
+	if len(saleIDs) == 0 {
+		return out, nil
+	}
+	unique := make(map[uint]struct{}, len(saleIDs))
+	for _, id := range saleIDs {
+		if id > 0 {
+			unique[id] = struct{}{}
+		}
+	}
+	ids := keysUint(unique)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var sales []database.TenantSale
+	if err := s.db.Where("id IN ?", ids).Find(&sales).Error; err != nil {
+		return nil, err
+	}
+	salesMap := make(map[uint]database.TenantSale, len(sales))
+	for _, sale := range sales {
+		salesMap[sale.ID] = sale
+	}
+	var payments []database.TenantSalePayment
+	if err := s.db.Where("sale_id IN ?", ids).Order("created_at ASC").Find(&payments).Error; err != nil {
+		return nil, err
+	}
+	return buildSalePaymentReportAmountsFromPayments(salesMap, payments), nil
+}
+
+func paymentReportAmount(raw float64, paymentID uint, reportAmounts map[uint]float64) float64 {
+	if reportAmounts == nil {
+		return raw
+	}
+	if amt, ok := reportAmounts[paymentID]; ok {
+		return amt
+	}
+	return raw
 }
 
 func keysUint(m map[uint]struct{}) []uint {
