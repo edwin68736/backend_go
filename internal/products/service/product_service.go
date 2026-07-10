@@ -390,6 +390,31 @@ func (s *ProductService) GetByCode(code string) (*database.TenantProduct, error)
 	return &p, err
 }
 
+// findProductByCodeUnscoped busca por código incluyendo productos ocultos (soft delete).
+func (s *ProductService) findProductByCodeUnscoped(code string, branchID uint, scopeBranch bool) (*database.TenantProduct, error) {
+	if strings.TrimSpace(code) == "" {
+		return nil, nil
+	}
+	var p database.TenantProduct
+	q := s.db.Unscoped().Where("code = ?", code)
+	if scopeBranch && branchID > 0 {
+		q = q.Where("branch_id = ?", branchID)
+	}
+	err := q.First(&p).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &p, err
+}
+
+func isProductSoftDeleted(p *database.TenantProduct) bool {
+	return p != nil && p.DeletedAt.Valid
+}
+
+func (s *ProductService) restoreSoftDeletedProduct(id uint) error {
+	return s.db.Unscoped().Model(&database.TenantProduct{}).Where("id = ?", id).Update("deleted_at", nil).Error
+}
+
 // GetByCodeInBranch busca por código dentro de la sucursal (catálogo restaurante).
 func (s *ProductService) GetByCodeInBranch(code string, branchID uint) (*database.TenantProduct, error) {
 	if code == "" {
@@ -466,12 +491,15 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 	}
 
 	if input.Code != "" {
-		var existing database.TenantProduct
-		q := s.db.Where("code = ?", input.Code)
-		if input.IsRestaurant && input.BranchID > 0 {
-			q = q.Where("branch_id = ?", input.BranchID)
+		scopeBranch := input.IsRestaurant && input.BranchID > 0
+		existing, err := s.findProductByCodeUnscoped(input.Code, input.BranchID, scopeBranch)
+		if err != nil {
+			return nil, err
 		}
-		if err := q.First(&existing).Error; err == nil {
+		if existing != nil {
+			if isProductSoftDeleted(existing) {
+				return s.reactivateProductFromInput(existing.ID, input)
+			}
 			return nil, fmt.Errorf("el código '%s' ya está en uso en esta sucursal", input.Code)
 		}
 	}
@@ -555,6 +583,58 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 	}
 
 	return p, nil
+}
+
+// reactivateProductFromInput restaura un producto oculto (soft delete) y aplica los datos del alta.
+func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput) (*database.TenantProduct, error) {
+	igvType := input.IgvAffectationType
+	if igvType == "" {
+		igvType = "10"
+	}
+	taxRate := input.TaxRate
+	if !tax.IsGravado(igvType) {
+		taxRate = 0
+	}
+	if err := validateProductExpiry(input.HasExpiryDate, input.ExpiryDate); err != nil {
+		return nil, err
+	}
+	effType := strings.TrimSpace(input.Type)
+	if effType == "" {
+		effType = "product"
+	}
+	unit := sunat.NormalizeUnit(input.Unit, effType)
+	if strings.EqualFold(effType, "product") && strings.EqualFold(unit, "ZZ") {
+		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
+	}
+
+	input.IgvAffectationType = igvType
+	input.TaxRate = taxRate
+	input.Type = effType
+	input.Unit = unit
+	input.Active = true
+	input.ActiveSet = true
+
+	if err := s.restoreSoftDeletedProduct(id); err != nil {
+		return nil, err
+	}
+	if err := s.Update(id, input); err != nil {
+		return nil, err
+	}
+	if err := gormutil.PersistBoolWithDefault(s.db, &database.TenantProduct{ID: id}, "price_includes_igv", input.PriceIncludesIgv); err != nil {
+		return nil, err
+	}
+	if err := gormutil.PersistBoolWithDefault(s.db, &database.TenantProduct{ID: id}, "manage_stock", input.ManageStock); err != nil {
+		return nil, err
+	}
+	if input.ModifierGroupIDs != nil {
+		s.syncModifierGroups(id, *input.ModifierGroupIDs)
+	}
+	if input.Presentations != nil {
+		if err := s.syncPresentations(id, *input.Presentations); err != nil {
+			return nil, err
+		}
+	}
+	return s.GetByID(id)
 }
 
 // normalizeProductServiceFields fuerza reglas SUNAT/ERP para filas type=service.

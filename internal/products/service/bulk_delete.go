@@ -17,12 +17,6 @@ const (
 	blockReasonBranchMismatch  = "El producto no pertenece a la sucursal activa"
 	blockReasonHasSales        = "Tiene ventas registradas"
 	blockReasonHasPurchases      = "Tiene compras registradas"
-	blockReasonHasComandas     = "Tiene comandas registradas"
-	blockReasonHasKardex       = "Tiene movimientos de inventario"
-	blockReasonHasStock        = "Tiene stock disponible"
-	blockReasonHasTransfers    = "Tiene transferencias registradas"
-	blockReasonHasSerials      = "Tiene series asociadas"
-	blockReasonHasMemberships  = "Tiene membresías asociadas"
 )
 
 // PinVerificationError indica PIN inválido o no configurado (HTTP 403).
@@ -266,65 +260,6 @@ func (s *ProductService) scanBulkDeleteBlockers(ids []uint) map[uint][]string {
 		Scan(&rows)
 	for _, r := range rows {
 		add(r.ProductID, blockReasonHasPurchases)
-	}
-
-	rows = nil
-	s.db.Model(&database.TenantComanda{}).
-		Select("DISTINCT product_id").
-		Where("product_id IN ?", ids).
-		Scan(&rows)
-	for _, r := range rows {
-		add(r.ProductID, blockReasonHasComandas)
-	}
-
-	rows = nil
-	s.db.Model(&database.TenantStockMovement{}).
-		Select("DISTINCT product_id").
-		Where("product_id IN ?", ids).
-		Scan(&rows)
-	for _, r := range rows {
-		add(r.ProductID, blockReasonHasKardex)
-	}
-
-	type stockRow struct {
-		ProductID uint `gorm:"column:product_id"`
-	}
-	var stockRows []stockRow
-	s.db.Table("tenant_product_stocks").
-		Select("product_id").
-		Where("product_id IN ?", ids).
-		Group("product_id").
-		Having("COALESCE(SUM(quantity), 0) > 0").
-		Scan(&stockRows)
-	for _, r := range stockRows {
-		add(r.ProductID, blockReasonHasStock)
-	}
-
-	rows = nil
-	s.db.Model(&database.TenantTransferLog{}).
-		Select("DISTINCT product_id").
-		Where("product_id IN ?", ids).
-		Scan(&rows)
-	for _, r := range rows {
-		add(r.ProductID, blockReasonHasTransfers)
-	}
-
-	rows = nil
-	s.db.Model(&database.TenantProductSerial{}).
-		Select("DISTINCT product_id").
-		Where("product_id IN ?", ids).
-		Scan(&rows)
-	for _, r := range rows {
-		add(r.ProductID, blockReasonHasSerials)
-	}
-
-	rows = nil
-	s.db.Model(&database.TenantMembership{}).
-		Select("DISTINCT product_id").
-		Where("product_id IN ?", ids).
-		Scan(&rows)
-	for _, r := range rows {
-		add(r.ProductID, blockReasonHasMemberships)
 	}
 
 	return blockers

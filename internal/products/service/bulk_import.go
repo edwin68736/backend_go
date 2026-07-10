@@ -150,13 +150,8 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 		var existing database.TenantProduct
 		hasExisting := false
 		if !autoCode {
-			var found *database.TenantProduct
-			var err error
-			if (item.IsRestaurant || opts.ForceRestaurant) && opts.BranchID > 0 {
-				found, err = s.GetByCodeInBranch(code, opts.BranchID)
-			} else {
-				found, err = s.GetByCode(code)
-			}
+			restaurantScoped := (item.IsRestaurant || opts.ForceRestaurant) && opts.BranchID > 0
+			found, err := s.findProductByCodeUnscoped(code, opts.BranchID, restaurantScoped)
 			if err != nil {
 				result.Failed = append(result.Failed, BulkImportFail{
 					Row: item.RowNumber, Name: item.Name, Error: err.Error(),
@@ -240,6 +235,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			BranchID:           branchIDForImport(isRestaurant, opts.BranchID),
 			PreparationArea:    prepArea,
 			Active:             true,
+			ActiveSet:          true,
 			TaxRate:            taxCfg.EffectiveRate(igvType),
 		}
 		if item.PurchasePrice != nil {
@@ -275,6 +271,11 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			ps := NewProductService(tx)
 			inv := invsvc.NewInventoryService(tx)
 			if hasExisting {
+				if isProductSoftDeleted(&existing) {
+					if err := ps.restoreSoftDeletedProduct(existing.ID); err != nil {
+						return err
+					}
+				}
 				if err := ps.Update(existing.ID, input); err != nil {
 					return err
 				}

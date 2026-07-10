@@ -163,7 +163,7 @@ func TestBulkDeleteRestaurant_BlockedBySales(t *testing.T) {
 	}
 }
 
-func TestBulkDeleteRestaurant_BlockedByKardex(t *testing.T) {
+func TestBulkDeleteRestaurant_DeletesDespiteKardex(t *testing.T) {
 	db := setupBulkDeleteTestDB(t)
 	p := createRestaurantProduct(t, db, "KDX-1", "Con kardex")
 	db.Create(&database.TenantStockMovement{
@@ -177,21 +177,12 @@ func TestBulkDeleteRestaurant_BlockedByKardex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Deleted) != 0 {
-		t.Fatalf("expected blocked, deleted=%d", len(res.Deleted))
-	}
-	found := false
-	for _, r := range res.Blocked[0].Reasons {
-		if r == blockReasonHasKardex {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("reasons=%v", res.Blocked[0].Reasons)
+	if len(res.Deleted) != 1 {
+		t.Fatalf("expected delete despite kardex, deleted=%d blocked=%+v", len(res.Deleted), res.Blocked)
 	}
 }
 
-func TestBulkDeleteRestaurant_BlockedByStock(t *testing.T) {
+func TestBulkDeleteRestaurant_DeletesDespiteStock(t *testing.T) {
 	db := setupBulkDeleteTestDB(t)
 	p := createRestaurantProduct(t, db, "STK-1", "Con stock")
 	db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 3})
@@ -203,11 +194,8 @@ func TestBulkDeleteRestaurant_BlockedByStock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Deleted) != 0 {
-		t.Fatal("should be blocked")
-	}
-	if res.Blocked[0].Reasons[0] != blockReasonHasStock {
-		t.Fatalf("reason=%v", res.Blocked[0].Reasons)
+	if len(res.Deleted) != 1 {
+		t.Fatalf("expected delete despite stock, deleted=%d blocked=%+v", len(res.Deleted), res.Blocked)
 	}
 }
 
@@ -350,8 +338,8 @@ func TestBulkDeleteRestaurant_MixedBatchPartialResult(t *testing.T) {
 		validIDs = append(validIDs, p.ID)
 	}
 
-	blocked := make([]uint, 0, 5)
-	for i := 1; i <= 5; i++ {
+	blocked := make([]uint, 0, 2)
+	for i := 1; i <= 2; i++ {
 		p := createRestaurantProduct(t, db, fmt.Sprintf("BLK-%d", i), fmt.Sprintf("Bloqueado %d", i))
 		blocked = append(blocked, p.ID)
 		switch i {
@@ -359,15 +347,23 @@ func TestBulkDeleteRestaurant_MixedBatchPartialResult(t *testing.T) {
 			pid := p.ID
 			db.Create(&database.TenantSaleItem{SaleID: 1, ProductID: &pid, Description: "x", Quantity: 1, UnitPrice: 1, Subtotal: 1, TaxAmount: 0, Total: 1})
 		case 2:
-			db.Create(&database.TenantStockMovement{ProductID: p.ID, BranchID: 1, Type: "in", Quantity: 1, Balance: 1})
-		case 3:
-			db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 2})
-		case 4:
-			pid := p.ID
-			db.Create(&database.TenantComanda{OrderID: 1, SessionID: 1, ProductID: &pid, ProductName: "x", Quantity: 1, UnitPrice: 1})
-		case 5:
 			pid := p.ID
 			db.Create(&database.TenantPurchaseItem{PurchaseID: 1, ProductID: &pid, Description: "x", Quantity: 1, UnitCost: 1, Subtotal: 1, TaxAmount: 0, Total: 1})
+		}
+	}
+
+	// Productos con kardex/stock/comandas deben poder eliminarse físicamente.
+	for i := 1; i <= 3; i++ {
+		p := createRestaurantProduct(t, db, fmt.Sprintf("HIST-%d", i), fmt.Sprintf("Historial %d", i))
+		validIDs = append(validIDs, p.ID)
+		switch i {
+		case 1:
+			db.Create(&database.TenantStockMovement{ProductID: p.ID, BranchID: 1, Type: "in", Quantity: 1, Balance: 1})
+		case 2:
+			db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 2})
+		case 3:
+			pid := p.ID
+			db.Create(&database.TenantComanda{OrderID: 1, SessionID: 1, ProductID: &pid, ProductName: "x", Quantity: 1, UnitPrice: 1})
 		}
 	}
 
@@ -378,11 +374,11 @@ func TestBulkDeleteRestaurant_MixedBatchPartialResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Deleted) != 5 {
-		t.Fatalf("deleted=%d want 5", len(res.Deleted))
+	if len(res.Deleted) != 8 {
+		t.Fatalf("deleted=%d want 8", len(res.Deleted))
 	}
-	if len(res.Blocked) != 5 {
-		t.Fatalf("blocked=%d want 5", len(res.Blocked))
+	if len(res.Blocked) != 2 {
+		t.Fatalf("blocked=%d want 2", len(res.Blocked))
 	}
 	for _, id := range validIDs {
 		var n int64
@@ -397,5 +393,64 @@ func TestBulkDeleteRestaurant_MixedBatchPartialResult(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("blocked id %d should remain", id)
 		}
+	}
+}
+
+func TestCreate_RestoresSoftDeletedByCode(t *testing.T) {
+	db := setupBulkDeleteTestDB(t)
+	p := createCatalogProduct(t, db, "REST-001", "Oculto")
+	svc := NewProductService(db)
+	if err := svc.Delete(p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := svc.Create(ProductInput{
+		Code:               "REST-001",
+		Name:               "Reactivado",
+		Type:               "product",
+		Unit:               "NIU",
+		SalePrice:          25,
+		TaxRate:            18,
+		IgvAffectationType: "10",
+		Active:             true,
+	})
+	if err != nil {
+		t.Fatalf("Create restore: %v", err)
+	}
+	if restored.ID != p.ID {
+		t.Fatalf("id=%d want %d (same row restored)", restored.ID, p.ID)
+	}
+	if restored.Name != "Reactivado" {
+		t.Fatalf("name=%q", restored.Name)
+	}
+}
+
+func TestBulkImportCatalog_RestoresSoftDeletedByCode(t *testing.T) {
+	db := setupBulkDeleteTestDB(t)
+	p := createCatalogProduct(t, db, "IMP-777", "Import oculto")
+	svc := NewProductService(db)
+	if err := svc.Delete(p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.BulkImportCatalog([]BulkImportItem{{
+		RowNumber: 2,
+		Name:      "Reimportado",
+		Code:      "IMP-777",
+		SalePrice: 19.9,
+		Unit:      "NIU",
+	}}, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Updated != 1 || res.Created != 0 {
+		t.Fatalf("updated=%d created=%d", res.Updated, res.Created)
+	}
+	got, err := svc.GetByID(p.ID)
+	if err != nil || got == nil {
+		t.Fatal("product should be visible again")
+	}
+	if got.Name != "Reimportado" {
+		t.Fatalf("name=%q", got.Name)
 	}
 }
