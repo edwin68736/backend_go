@@ -94,3 +94,42 @@ func TestBulkImport_InitialStockWithoutManageStockFailsRow(t *testing.T) {
 		t.Fatalf("error: got %q", res.Failed[0].Error)
 	}
 }
+
+func TestBulkImport_CatalogManageStockCreatesBranchLinkAtZero(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	if err := db.AutoMigrate(
+		&database.TenantBranch{},
+		&database.TenantProductStock{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	branch := database.TenantBranch{Name: "Local 1", Active: true, IsMain: true}
+	if err := db.Create(&branch).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewProductService(db)
+	res, err := svc.BulkImportCatalog([]BulkImportItem{
+		{
+			RowNumber:   2,
+			Name:        "Producto catálogo",
+			Code:        "CAT-001",
+			SalePrice:   10,
+			ManageStock: true,
+		},
+	}, branch.ID, 1)
+	if err != nil {
+		t.Fatalf("BulkImportCatalog: %v", err)
+	}
+	if res.Created != 1 {
+		t.Fatalf("created: got %d, want 1", res.Created)
+	}
+
+	var stock database.TenantProductStock
+	if err := db.Where("branch_id = ?", branch.ID).First(&stock).Error; err != nil {
+		t.Fatalf("stock row: %v", err)
+	}
+	if stock.Quantity != 0 {
+		t.Fatalf("quantity: got %v, want 0", stock.Quantity)
+	}
+}

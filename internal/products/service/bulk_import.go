@@ -288,9 +288,14 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 				productID = p.ID
 			}
 			if item.InitialStock > 0 && manageStock && opts.BranchID > 0 && isNewProduct {
-				return inv.RecordInitialStock(
+				if err := inv.RecordInitialStock(
 					productID, opts.BranchID, item.InitialStock, opts.UserID, opts.StockNotes,
-				)
+				); err != nil {
+					return err
+				}
+			}
+			if manageStock && opts.BranchID > 0 {
+				return inv.EnsureProductBranchLink(productID, opts.BranchID)
 			}
 			if isRestaurant && opts.BranchID > 0 {
 				return inv.EnsureProductBranchLink(productID, opts.BranchID)

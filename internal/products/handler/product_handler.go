@@ -306,6 +306,11 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 			_ = service.NewProductService(db(c)).Delete(p.ID)
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
+	} else if p.ManageStock && berr == nil && branchID > 0 {
+		if err := invsvc.NewInventoryService(db(c)).EnsureProductBranchLink(p.ID, branchID); err != nil {
+			_ = service.NewProductService(db(c)).Delete(p.ID)
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	return c.Status(201).JSON(fiber.Map{"data": p})
 }
