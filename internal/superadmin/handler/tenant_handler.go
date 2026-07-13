@@ -20,6 +20,7 @@ import (
 	"tukifac/pkg/fiscal"
 	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
+	"tukifac/pkg/taxregime"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -337,32 +338,32 @@ func (h *TenantHandler) GetSunatConfigAPI(c fiber.Ctx) error {
 		}
 	}
 	return c.JSON(fiber.Map{
-		"sunat_enabled":          cfg.SunatEnabled,
-		"automatic_send":         cfg.AutomaticSend,
-		"sunat_env_mode":         fiscal.NormalizeSunatEnvMode(cfg.SunatEnvMode),
-		"tax_rate":               cfg.TaxRate,
-		"igv_regime":             cfg.IgvRegime,
-		"tax_benefit_zone":       cfg.TaxBenefitZone,
-		"ruc":                    cfg.RUC,
-		"business_name":          cfg.BusinessName,
-		"send_mode":              sendMode,
-		"fiscal_provider":        provider,
-		"connection_type":        connType,
-		"connection_status":      connStatus,
-		"fiscal_last_sync_at":    cfg.FiscalLastSyncAt,
-		"sunat_connected":        cfg.SunatConnected,
+		"sunat_enabled":           cfg.SunatEnabled,
+		"automatic_send":          cfg.AutomaticSend,
+		"sunat_env_mode":          fiscal.NormalizeSunatEnvMode(cfg.SunatEnvMode),
+		"tax_rate":                cfg.TaxRate,
+		"igv_regime":              cfg.IgvRegime,
+		"tax_benefit_zone":        cfg.TaxBenefitZone,
+		"ruc":                     cfg.RUC,
+		"business_name":           cfg.BusinessName,
+		"send_mode":               sendMode,
+		"fiscal_provider":         provider,
+		"connection_type":         connType,
+		"connection_status":       connStatus,
+		"fiscal_last_sync_at":     cfg.FiscalLastSyncAt,
+		"sunat_connected":         cfg.SunatConnected,
 		"pse_base_url_configured": pseBaseURLConfigured,
-		"pse_base_url":           pseBaseURL,
-		"pse_token_configured":   pseTokenConfigured,
-		"sol_configured":         solConfigured,
-		"certificate_configured": certificateConfigured,
-		"sunat_sol_user":         sunatSolUser,
-		"pse_user":                 pseUser,
-		"certificate_file":       certificateFile,
-		"logo_file":              logoFile,
-		"logo_configured":        logoFile != "",
-		"gre_client_configured":  greClientConfigured,
-		"gre_client_id":          greClientID,
+		"pse_base_url":            pseBaseURL,
+		"pse_token_configured":    pseTokenConfigured,
+		"sol_configured":          solConfigured,
+		"certificate_configured":  certificateConfigured,
+		"sunat_sol_user":          sunatSolUser,
+		"pse_user":                pseUser,
+		"certificate_file":        certificateFile,
+		"logo_file":               logoFile,
+		"logo_configured":         logoFile != "",
+		"gre_client_configured":   greClientConfigured,
+		"gre_client_id":           greClientID,
 	})
 }
 
@@ -378,25 +379,26 @@ func (h *TenantHandler) UpdateSunatConfigAPI(c fiber.Ctx) error {
 	}
 	defer database.ReleaseTenantDB(dbName)
 	var body struct {
-		SunatEnabled   bool    `json:"sunat_enabled"`
-		AutomaticSend  *bool   `json:"automatic_send"`
-		SunatSolUser   string  `json:"sunat_sol_user"`
-		SunatSolPass   string  `json:"sunat_sol_pass"`
-		Certificate    string  `json:"certificate"`
-		SunatEnvMode   string  `json:"sunat_env_mode"`
-		TaxRate        float64 `json:"tax_rate"`
-		IgvRegime      string  `json:"igv_regime"`
-		TaxBenefitZone bool    `json:"tax_benefit_zone"`
-		SendMode       string  `json:"send_mode"`
-		PSEProvider    string  `json:"pse_provider"`
-		FiscalProvider string  `json:"fiscal_provider"`
-		ConnectionType string  `json:"connection_type"`
-		PSEBaseURL     string  `json:"pse_base_url"`
-		PSEToken       string  `json:"pse_token"`
-		PSEUser        string  `json:"pse_user"`
-		PSEPassword    string  `json:"pse_password"`
-		GreClientID    string  `json:"gre_client_id"`
-		GreClientSecret string `json:"gre_client_secret"`
+		SunatEnabled    bool    `json:"sunat_enabled"`
+		AutomaticSend   *bool   `json:"automatic_send"`
+		SunatSolUser    string  `json:"sunat_sol_user"`
+		SunatSolPass    string  `json:"sunat_sol_pass"`
+		Certificate     string  `json:"certificate"`
+		SunatEnvMode    string  `json:"sunat_env_mode"`
+		TaxRate         float64 `json:"tax_rate"`
+		IgvRegime       string  `json:"igv_regime"`
+		TaxBenefitZone  bool    `json:"tax_benefit_zone"`
+		SendMode        string  `json:"send_mode"`
+		PSEProvider     string  `json:"pse_provider"`
+		FiscalProvider  string  `json:"fiscal_provider"`
+		ConnectionType  string  `json:"connection_type"`
+		PSEBaseURL      string  `json:"pse_base_url"`
+		PSEToken        string  `json:"pse_token"`
+		PSEUser         string  `json:"pse_user"`
+		PSEPassword     string  `json:"pse_password"`
+		GreClientID     string  `json:"gre_client_id"`
+		GreClientSecret string  `json:"gre_client_secret"`
+		TaxpayerRegime  string  `json:"taxpayer_regime"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -450,8 +452,14 @@ func (h *TenantHandler) UpdateSunatConfigAPI(c fiber.Ctx) error {
 		body.SunatEnabled,
 		body.TaxRate, body.IgvRegime, body.TaxBenefitZone,
 		body.AutomaticSend,
+		body.TaxpayerRegime,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	// Espejo del régimen en el registro central del tenant (fuente para el alta/edición).
+	if strings.TrimSpace(body.TaxpayerRegime) != "" {
+		database.CentralDB.Model(&database.Tenant{}).Where("id = ?", id).
+			Update("taxpayer_regime", string(taxregime.Normalize(body.TaxpayerRegime)))
 	}
 
 	certB64 := ""
@@ -559,6 +567,7 @@ func (h *TenantHandler) PatchSunatEnvAPI(c fiber.Ctx) error {
 		cfg.SunatEnabled,
 		float64(cfg.TaxRate), cfg.IgvRegime, cfg.TaxBenefitZone,
 		nil,
+		cfg.TaxpayerRegime,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -644,9 +653,9 @@ func (h *TenantHandler) ListConectadosSunatAPI(c fiber.Ctx) error {
 		AmbienteLycet    string     `json:"ambiente_lycet,omitempty"`
 		SendMode         string     `json:"send_mode,omitempty"`
 		Provider         string     `json:"provider,omitempty"`
-		ConexionTipo       string     `json:"conexion_tipo"` // SUNAT | PSE
-		ConnectionStatus   string     `json:"connection_status,omitempty"`
-		PseConfigured      bool       `json:"pse_configured"`
+		ConexionTipo     string     `json:"conexion_tipo"` // SUNAT | PSE
+		ConnectionStatus string     `json:"connection_status,omitempty"`
+		PseConfigured    bool       `json:"pse_configured"`
 		Enabled          bool       `json:"enabled"`
 	}
 	out := make([]item, 0, len(empresasLycet))
@@ -678,8 +687,8 @@ func (h *TenantHandler) ListConectadosSunatAPI(c fiber.Ctx) error {
 				AmbienteLycet:    ambiente,
 				SendMode:         entry.SendMode,
 				Provider:         entry.Provider,
-				ConexionTipo:       conexion,
-				ConnectionStatus:   entry.ConnectionStatus,
+				ConexionTipo:     conexion,
+				ConnectionStatus: entry.ConnectionStatus,
 				PseConfigured:    pseConfigured,
 				Enabled:          entry.Enabled,
 			})
@@ -694,8 +703,8 @@ func (h *TenantHandler) ListConectadosSunatAPI(c fiber.Ctx) error {
 				AmbienteLycet:    ambiente,
 				SendMode:         entry.SendMode,
 				Provider:         entry.Provider,
-				ConexionTipo:       conexion,
-				ConnectionStatus:   entry.ConnectionStatus,
+				ConexionTipo:     conexion,
+				ConnectionStatus: entry.ConnectionStatus,
 				PseConfigured:    pseConfigured,
 				Enabled:          entry.Enabled,
 			})
@@ -1189,4 +1198,3 @@ func (h *TenantHandler) TogglePSEEmpresaAPI(c fiber.Ctx) error {
 		},
 	})
 }
-

@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	BulkImportMaxItems    = 2000
-	BulkImportBatchPause  = 15 * time.Millisecond // pausa ligera entre lotes para no saturar MySQL
-	BulkImportBatchSize   = 50
+	BulkImportMaxItems   = 2000
+	BulkImportBatchPause = 15 * time.Millisecond // pausa ligera entre lotes para no saturar MySQL
+	BulkImportBatchSize  = 50
 )
 
 // ErrInitialStockWithoutManageStock conflicto control_stock=no con stock_inicial>0 (alias legible).
@@ -287,11 +287,28 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 				}
 				productID = p.ID
 			}
-			if item.InitialStock > 0 && manageStock && opts.BranchID > 0 && isNewProduct {
-				if err := inv.RecordInitialStock(
-					productID, opts.BranchID, item.InitialStock, opts.UserID, opts.StockNotes,
-				); err != nil {
-					return err
+			if item.InitialStock > 0 && manageStock && opts.BranchID > 0 {
+				if isNewProduct {
+					// Producto nuevo: registra el stock inicial (entrada al kardex).
+					if err := inv.RecordInitialStock(
+						productID, opts.BranchID, item.InitialStock, opts.UserID, opts.StockNotes,
+					); err != nil {
+						return err
+					}
+				} else {
+					// Producto existente: fija el stock al valor del Excel (ajuste a valor absoluto).
+					if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+						ProductID:     productID,
+						BranchID:      opts.BranchID,
+						Type:          "adjustment",
+						Quantity:      item.InitialStock,
+						Reference:     "STOCK_INICIAL",
+						Notes:         opts.StockNotes + " (ajuste a valor de importación)",
+						UserID:        opts.UserID,
+						OperationCode: "INITIAL_STOCK",
+					}); err != nil {
+						return err
+					}
 				}
 			}
 			if manageStock && opts.BranchID > 0 {
@@ -315,7 +332,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 		} else {
 			result.Created++
 		}
-		if isNewProduct && item.InitialStock > 0 && manageStock {
+		if item.InitialStock > 0 && manageStock {
 			result.StockRegistered++
 		}
 		_ = productID
@@ -367,7 +384,7 @@ func (s *ProductService) resolveCategoryIDByName(name string, cache map[string]u
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
-		created, err := s.CreateCategory(strings.TrimSpace(name), "", nil)
+	created, err := s.CreateCategory(strings.TrimSpace(name), "", nil)
 	if err != nil {
 		return 0, fmt.Errorf("crear categoría %q: %w", name, err)
 	}

@@ -5,17 +5,18 @@ import (
 	"fmt"
 	"strings"
 
-	"tukifac/internal/fiscal/salecontext"
 	detraccionsvc "tukifac/internal/detraccion"
+	"tukifac/internal/fiscal/salecontext"
 	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/numeroletras"
 	"tukifac/pkg/paymentcondition"
-	"tukifac/pkg/tax"
-	"tukifac/pkg/taxpayment"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
 	sunatpre "tukifac/pkg/sunat/prepayment"
+	"tukifac/pkg/tax"
+	"tukifac/pkg/taxpayment"
+	"tukifac/pkg/taxregime"
 
 	"gorm.io/gorm"
 )
@@ -23,17 +24,17 @@ import (
 // PrintData estructura para impresión inmediata del comprobante (web PDF o Tauri impresora POS).
 type PrintData struct {
 	// Comprobante
-	DocType   string `json:"doc_type"`
-	SunatCode string `json:"sunat_code"`
-	Series    string `json:"series"`
-	Number    string `json:"number"`
-	IssueDate string `json:"issue_date"`
-	IssueTime string `json:"issue_time,omitempty"` // HH:mm:ss
-	Currency  string `json:"currency"`
-	ExchangeRate *float64 `json:"exchange_rate,omitempty"`
-	OperationTypeCode string `json:"operation_type_code,omitempty"`
-	SunatHash string `json:"sunat_hash,omitempty"` // Hash firma XML (cuando ya enviado a SUNAT)
-	QRData    string `json:"qr_data"`              // String para generar QR según SUNAT
+	DocType           string   `json:"doc_type"`
+	SunatCode         string   `json:"sunat_code"`
+	Series            string   `json:"series"`
+	Number            string   `json:"number"`
+	IssueDate         string   `json:"issue_date"`
+	IssueTime         string   `json:"issue_time,omitempty"` // HH:mm:ss
+	Currency          string   `json:"currency"`
+	ExchangeRate      *float64 `json:"exchange_rate,omitempty"`
+	OperationTypeCode string   `json:"operation_type_code,omitempty"`
+	SunatHash         string   `json:"sunat_hash,omitempty"` // Hash firma XML (cuando ya enviado a SUNAT)
+	QRData            string   `json:"qr_data"`              // String para generar QR según SUNAT
 
 	// Cliente
 	Client *PrintClient `json:"client"`
@@ -48,9 +49,9 @@ type PrintData struct {
 	Items []PrintItem `json:"items"`
 
 	// Totales
-	Subtotal  float64 `json:"subtotal"`
-	TaxAmount float64 `json:"tax_amount"`
-	Total     float64 `json:"total"`
+	Subtotal             float64 `json:"subtotal"`
+	TaxAmount            float64 `json:"tax_amount"`
+	Total                float64 `json:"total"`
 	GlobalDiscountAmount float64 `json:"global_discount_amount,omitempty"`
 	LineDiscountTotal    float64 `json:"line_discount_total,omitempty"`
 
@@ -65,17 +66,17 @@ type PrintData struct {
 
 	// Nota de crédito/débito (07/08): documento afectado según SUNAT (misma info que Lycet).
 	AffectedDocSunatCode string `json:"affected_doc_sunat_code,omitempty"` // 01 factura, 03 boleta
-	AffectedDocNumber    string `json:"affected_doc_number,omitempty"`   // ej. B001-4
-	CreditNoteReason     string `json:"credit_note_reason,omitempty"`    // desMotivo
+	AffectedDocNumber    string `json:"affected_doc_number,omitempty"`     // ej. B001-4
+	CreditNoteReason     string `json:"credit_note_reason,omitempty"`      // desMotivo
 
 	// Vuelto cuando el cliente pagó de más (p. ej. efectivo).
 	ChangeAmount float64 `json:"change_amount,omitempty"`
 
-	SellerName         string             `json:"seller_name,omitempty"`
-	PaymentCondition   string             `json:"payment_condition,omitempty"` // Contado, Crédito
+	SellerName         string                   `json:"seller_name,omitempty"`
+	PaymentCondition   string                   `json:"payment_condition,omitempty"` // Contado, Crédito
 	CreditInstallments []PrintCreditInstallment `json:"credit_installments,omitempty"`
-	BankAccounts       []PrintBankAccount `json:"bank_accounts,omitempty"`
-	PaymentWallet      *PrintPaymentWallet `json:"payment_wallet,omitempty"`
+	BankAccounts       []PrintBankAccount       `json:"bank_accounts,omitempty"`
+	PaymentWallet      *PrintPaymentWallet      `json:"payment_wallet,omitempty"`
 
 	// Información adicional fiscal (retención operativa, O/C, guías — no altera total SUNAT del XML).
 	Fiscal *PrintFiscalContext `json:"fiscal,omitempty"`
@@ -87,30 +88,30 @@ type PrintData struct {
 
 // PrintFiscalContext datos adicionales para impresión/PDF.
 type PrintFiscalContext struct {
-	PurchaseOrderNumber string         `json:"purchase_order_number,omitempty"`
-	FiscalObservations  string         `json:"fiscal_observations,omitempty"`
-	Guias               []PrintGuiaRef `json:"guias,omitempty"`
-	HasIgvRetention     bool           `json:"has_igv_retention,omitempty"`
-	IgvRetentionAmount  float64        `json:"igv_retention_amount,omitempty"`
-	NetCollectible      float64        `json:"net_collectible,omitempty"`
-	RetentionApplied    bool           `json:"retention_applied,omitempty"`
-	HasDetraccion       bool           `json:"has_detraccion,omitempty"`
-	DetraccionGoodCode  string         `json:"detraccion_good_code,omitempty"`
-	DetraccionGoodLabel string         `json:"detraccion_good_label,omitempty"`
-	DetraccionRatePercent float64      `json:"detraccion_rate_percent,omitempty"`
-	DetraccionAmount    float64        `json:"detraccion_amount,omitempty"`
-	DetraccionBankAccount string       `json:"detraccion_bank_account,omitempty"`
-	DetraccionPaymentMethodCode string `json:"detraccion_payment_method_code,omitempty"`
-	DetraccionNetPayable float64       `json:"detraccion_net_payable,omitempty"`
-	HasPrepaymentEmit    bool           `json:"has_prepayment_emit,omitempty"`
-	PrepaymentLabel      string         `json:"prepayment_label,omitempty"`
-	PrepaymentAffectationGroup string   `json:"prepayment_affectation_group,omitempty"`
-	PrepaymentRelatedDocType   string   `json:"prepayment_related_doc_type,omitempty"`
-	HasPrepaymentDeduction     bool     `json:"has_prepayment_deduction,omitempty"`
-	PrepaymentDeductionTotal   float64  `json:"prepayment_deduction_total,omitempty"`
-	PrepaymentDeductions       []PrintPrepaymentDeduction `json:"prepayment_deductions,omitempty"`
-	ShowTermsConditions bool           `json:"show_terms_conditions,omitempty"`
-	TermsText           string         `json:"terms_text,omitempty"`
+	PurchaseOrderNumber         string                     `json:"purchase_order_number,omitempty"`
+	FiscalObservations          string                     `json:"fiscal_observations,omitempty"`
+	Guias                       []PrintGuiaRef             `json:"guias,omitempty"`
+	HasIgvRetention             bool                       `json:"has_igv_retention,omitempty"`
+	IgvRetentionAmount          float64                    `json:"igv_retention_amount,omitempty"`
+	NetCollectible              float64                    `json:"net_collectible,omitempty"`
+	RetentionApplied            bool                       `json:"retention_applied,omitempty"`
+	HasDetraccion               bool                       `json:"has_detraccion,omitempty"`
+	DetraccionGoodCode          string                     `json:"detraccion_good_code,omitempty"`
+	DetraccionGoodLabel         string                     `json:"detraccion_good_label,omitempty"`
+	DetraccionRatePercent       float64                    `json:"detraccion_rate_percent,omitempty"`
+	DetraccionAmount            float64                    `json:"detraccion_amount,omitempty"`
+	DetraccionBankAccount       string                     `json:"detraccion_bank_account,omitempty"`
+	DetraccionPaymentMethodCode string                     `json:"detraccion_payment_method_code,omitempty"`
+	DetraccionNetPayable        float64                    `json:"detraccion_net_payable,omitempty"`
+	HasPrepaymentEmit           bool                       `json:"has_prepayment_emit,omitempty"`
+	PrepaymentLabel             string                     `json:"prepayment_label,omitempty"`
+	PrepaymentAffectationGroup  string                     `json:"prepayment_affectation_group,omitempty"`
+	PrepaymentRelatedDocType    string                     `json:"prepayment_related_doc_type,omitempty"`
+	HasPrepaymentDeduction      bool                       `json:"has_prepayment_deduction,omitempty"`
+	PrepaymentDeductionTotal    float64                    `json:"prepayment_deduction_total,omitempty"`
+	PrepaymentDeductions        []PrintPrepaymentDeduction `json:"prepayment_deductions,omitempty"`
+	ShowTermsConditions         bool                       `json:"show_terms_conditions,omitempty"`
+	TermsText                   string                     `json:"terms_text,omitempty"`
 }
 
 type PrintGuiaRef struct {
@@ -127,11 +128,11 @@ type PrintPrepaymentDeduction struct {
 }
 
 type PrintPaymentWallet struct {
-	Provider       string `json:"provider"` // yape | plin
-	Phone          string `json:"phone"`
-	QrURL          string `json:"qr_url"`
-	ShowOnA4       bool   `json:"show_on_a4"`
-	ShowOnTicket   bool   `json:"show_on_ticket"`
+	Provider     string `json:"provider"` // yape | plin
+	Phone        string `json:"phone"`
+	QrURL        string `json:"qr_url"`
+	ShowOnA4     bool   `json:"show_on_a4"`
+	ShowOnTicket bool   `json:"show_on_ticket"`
 }
 
 type PrintClient struct {
@@ -143,15 +144,17 @@ type PrintClient struct {
 }
 
 type PrintCompany struct {
-	RUC              string `json:"ruc"`
-	BusinessName     string `json:"business_name"`
-	TradeName        string `json:"trade_name,omitempty"`
-	Address          string `json:"address,omitempty"`
-	Phone            string `json:"phone,omitempty"`
-	Email            string `json:"email,omitempty"`
-	Website          string `json:"website,omitempty"`
-	LogoURL          string `json:"logo_url,omitempty"`
-	AdditionalNotes  string `json:"additional_notes,omitempty"`
+	RUC             string `json:"ruc"`
+	BusinessName    string `json:"business_name"`
+	TradeName       string `json:"trade_name,omitempty"`
+	Address         string `json:"address,omitempty"`
+	Phone           string `json:"phone,omitempty"`
+	Email           string `json:"email,omitempty"`
+	Website         string `json:"website,omitempty"`
+	LogoURL         string `json:"logo_url,omitempty"`
+	AdditionalNotes string `json:"additional_notes,omitempty"`
+	// Discriminar IGV/valor de venta en el impreso. Nuevo RUS = false (solo total).
+	ShowIgvBreakdown bool `json:"show_igv_breakdown"`
 }
 
 type PrintBankAccount struct {
@@ -167,19 +170,19 @@ type PrintBranch struct {
 }
 
 type PrintItem struct {
-	Code          string  `json:"code"`
-	Description   string  `json:"description"`
-	Unit          string  `json:"unit"`
-	Quantity      float64 `json:"quantity"`
-	UnitPrice     float64 `json:"unit_price"`
-	Discount      float64 `json:"discount"`
+	Code                   string  `json:"code"`
+	Description            string  `json:"description"`
+	Unit                   string  `json:"unit"`
+	Quantity               float64 `json:"quantity"`
+	UnitPrice              float64 `json:"unit_price"`
+	Discount               float64 `json:"discount"`
 	LineDiscountSubtotal   float64 `json:"line_discount_subtotal,omitempty"`
 	GlobalDiscountSubtotal float64 `json:"global_discount_subtotal,omitempty"`
-	Subtotal      float64 `json:"subtotal"`
-	TaxAmount     float64 `json:"tax_amount"`
-	Total         float64 `json:"total"`
-	IgvAffectationType string `json:"igv_affectation_type,omitempty"`
-	ModifiersJSON string  `json:"modifiers_json,omitempty"`
+	Subtotal               float64 `json:"subtotal"`
+	TaxAmount              float64 `json:"tax_amount"`
+	Total                  float64 `json:"total"`
+	IgvAffectationType     string  `json:"igv_affectation_type,omitempty"`
+	ModifiersJSON          string  `json:"modifiers_json,omitempty"`
 }
 
 type PrintAffectTotal struct {
@@ -207,19 +210,19 @@ type PrintCreditInstallment struct {
 // BuildPrintData construye la estructura print_data para una venta.
 func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.TenantSaleItem, payments []PrintPaymentInput, sunatHash string) (*PrintData, error) {
 	pd := &PrintData{
-		DocType:   sale.DocType,
-		Series:    sale.Series,
-		Number:    sale.Number,
-		IssueDate: sale.IssueDate.Format("02/01/2006"),
-		IssueTime: sale.IssueDate.Format("15:04:05"),
-		Currency:  sale.Currency,
-		ExchangeRate: sale.ExchangeRate,
-		OperationTypeCode: sale.OperationTypeCode,
-		Subtotal:  sale.Subtotal,
-		TaxAmount: sale.TaxAmount,
-		Total:     sale.Total,
+		DocType:              sale.DocType,
+		Series:               sale.Series,
+		Number:               sale.Number,
+		IssueDate:            sale.IssueDate.Format("02/01/2006"),
+		IssueTime:            sale.IssueDate.Format("15:04:05"),
+		Currency:             sale.Currency,
+		ExchangeRate:         sale.ExchangeRate,
+		OperationTypeCode:    sale.OperationTypeCode,
+		Subtotal:             sale.Subtotal,
+		TaxAmount:            sale.TaxAmount,
+		Total:                sale.Total,
 		GlobalDiscountAmount: sale.GlobalDiscountAmount,
-		SunatHash: sunatHash,
+		SunatHash:            sunatHash,
 	}
 
 	// Leyenda en letras construida igual que para Lycet (monto total e ISO moneda)
@@ -290,6 +293,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			Website:         strings.TrimSpace(company.Website),
 			LogoURL:         company.LogoURL,
 			AdditionalNotes: strings.TrimSpace(company.AdditionalNotes),
+			// Nuevo RUS: la boleta no discrimina IGV en el impreso (Reglamento CP Art. 8).
+			ShowIgvBreakdown: taxregime.For(company.TaxpayerRegime).ShowIgvBreakdown,
 		}
 		provider := strings.TrimSpace(strings.ToLower(company.WalletProvider))
 		phone := strings.TrimSpace(company.WalletPhone)
@@ -373,19 +378,19 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	for i, it := range items {
 		lineDiscSum = money.RoundSunat(lineDiscSum + it.LineDiscountSubtotal)
 		pd.Items[i] = PrintItem{
-			Code:          it.Code,
-			Description:   it.Description,
-			Unit:          it.Unit,
-			Quantity:      it.Quantity,
-			UnitPrice:     it.UnitPrice,
-			Discount:      it.Discount,
+			Code:                   it.Code,
+			Description:            it.Description,
+			Unit:                   it.Unit,
+			Quantity:               it.Quantity,
+			UnitPrice:              it.UnitPrice,
+			Discount:               it.Discount,
 			LineDiscountSubtotal:   it.LineDiscountSubtotal,
 			GlobalDiscountSubtotal: it.GlobalDiscountSubtotal,
-			Subtotal:      it.Subtotal,
-			TaxAmount:     it.TaxAmount,
-			Total:         it.Total,
-			IgvAffectationType: it.IgvAffectationType,
-			ModifiersJSON: it.ModifiersJSON,
+			Subtotal:               it.Subtotal,
+			TaxAmount:              it.TaxAmount,
+			Total:                  it.Total,
+			IgvAffectationType:     it.IgvAffectationType,
+			ModifiersJSON:          it.ModifiersJSON,
 		}
 	}
 	pd.LineDiscountTotal = money.RoundSunat(lineDiscSum)

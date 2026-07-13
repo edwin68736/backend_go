@@ -7,24 +7,25 @@ import (
 	"strings"
 	"time"
 
+	cashbanksvc "tukifac/internal/cashbank/service"
+	detraccionsvc "tukifac/internal/detraccion"
+	salecontext "tukifac/internal/fiscal/salecontext"
+	invsvc "tukifac/internal/inventory/service"
+	prepaymentsvc "tukifac/internal/prepayment"
+	"tukifac/internal/sales/nvdisplay"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/money"
 	"tukifac/pkg/paymentcondition"
-	"tukifac/pkg/taxpayment"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/salescope"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
 	sunatpre "tukifac/pkg/sunat/prepayment"
 	"tukifac/pkg/tax"
-	cashbanksvc "tukifac/internal/cashbank/service"
-	detraccionsvc "tukifac/internal/detraccion"
-	prepaymentsvc "tukifac/internal/prepayment"
-	invsvc "tukifac/internal/inventory/service"
-	salecontext "tukifac/internal/fiscal/salecontext"
-	"tukifac/internal/sales/nvdisplay"
+	"tukifac/pkg/taxpayment"
+	"tukifac/pkg/taxregime"
 
 	"gorm.io/gorm"
 )
@@ -52,20 +53,20 @@ func productIsCatalogService(p *database.TenantProduct) bool {
 }
 
 type SaleItemInput struct {
-	ProductID          *uint   `json:"product_id"`
-	Code               string  `json:"code"`
-	Description        string  `json:"description"`
-	Unit               string  `json:"unit"`
-	Quantity           float64 `json:"quantity"`
-	UnitPrice          float64 `json:"unit_price"`
-	Discount           float64 `json:"discount"`
-	LineDiscountMode   string  `json:"line_discount_mode"`
-	LineDiscountValue  float64 `json:"line_discount_value"`
-	TaxRate            float64 `json:"tax_rate"`             // ignorado en cálculo; se usa IgvAffectationType + config empresa
-	IgvAffectationType string  `json:"igv_affectation_type"` // catálogo SUNAT N°07
-	PriceIncludesIgv   bool    `json:"price_includes_igv"`   // si el precio ya incluye IGV
-	ModifiersJSON      string  `json:"modifiers_json"`       // detalle de modificadores para ticket
-	Serials            []string `json:"serials"`             // números de serie elegidos (productos con ManageSeries)
+	ProductID          *uint    `json:"product_id"`
+	Code               string   `json:"code"`
+	Description        string   `json:"description"`
+	Unit               string   `json:"unit"`
+	Quantity           float64  `json:"quantity"`
+	UnitPrice          float64  `json:"unit_price"`
+	Discount           float64  `json:"discount"`
+	LineDiscountMode   string   `json:"line_discount_mode"`
+	LineDiscountValue  float64  `json:"line_discount_value"`
+	TaxRate            float64  `json:"tax_rate"`             // ignorado en cálculo; se usa IgvAffectationType + config empresa
+	IgvAffectationType string   `json:"igv_affectation_type"` // catálogo SUNAT N°07
+	PriceIncludesIgv   bool     `json:"price_includes_igv"`   // si el precio ya incluye IGV
+	ModifiersJSON      string   `json:"modifiers_json"`       // detalle de modificadores para ticket
+	Serials            []string `json:"serials"`              // números de serie elegidos (productos con ManageSeries)
 }
 
 // PaymentInput representa un pago individual (método + monto + referencia opcional).
@@ -76,35 +77,35 @@ type PaymentInput struct {
 }
 
 type CreateSaleInput struct {
-	BranchID      uint
-	ContactID     *uint
-	UserID        uint
-	CashSessionID *uint
-	SeriesID      uint
-	DocType       string
-	IssueDate     time.Time
-	DueDate       *time.Time
-	Currency          string
-	OperationTypeCode string
-	ExchangeRate      *float64
-	PaymentMethod     string   // legacy: si Payments vacío, se usa para el total
-	Payments      []PaymentInput `json:"payments"` // múltiples métodos de pago
-	PaymentConditionCode string                 `json:"payment_condition_code"` // cash | credit
+	BranchID             uint
+	ContactID            *uint
+	UserID               uint
+	CashSessionID        *uint
+	SeriesID             uint
+	DocType              string
+	IssueDate            time.Time
+	DueDate              *time.Time
+	Currency             string
+	OperationTypeCode    string
+	ExchangeRate         *float64
+	PaymentMethod        string                   // legacy: si Payments vacío, se usa para el total
+	Payments             []PaymentInput           `json:"payments"`               // múltiples métodos de pago
+	PaymentConditionCode string                   `json:"payment_condition_code"` // cash | credit
 	CreditInstallments   []CreditInstallmentInput `json:"credit_installments"`
-	Notes         string
-	Items         []SaleItemInput
-	GlobalDiscountMode  string  `json:"global_discount_mode"`
-	GlobalDiscountValue float64 `json:"global_discount_value"`
-	TaxConfig     tax.Config // configuración tributaria de la empresa
+	Notes                string
+	Items                []SaleItemInput
+	GlobalDiscountMode   string     `json:"global_discount_mode"`
+	GlobalDiscountValue  float64    `json:"global_discount_value"`
+	TaxConfig            tax.Config // configuración tributaria de la empresa
 	// Emisión desde nota de venta (no descontar inventario ni duplicar caja/bancos).
-	SkipInventory             bool
-	SkipPaymentDistribution   bool
-	IssuedFromNotaSaleID      *uint // ID de la NV origen; se guarda en la nueva venta 01/03
-	IssuedFromQuotationID     *uint // ID de la cotización origen
-	CentralTenantID           uint  // tenant SaaS (cupo de documentos electrónicos)
-	FiscalContext             *salecontext.FiscalContextInput
-	Detraccion                *detraccionsvc.SaleInput
-	Prepayment                *prepaymentsvc.SaleInput
+	SkipInventory           bool
+	SkipPaymentDistribution bool
+	IssuedFromNotaSaleID    *uint // ID de la NV origen; se guarda en la nueva venta 01/03
+	IssuedFromQuotationID   *uint // ID de la cotización origen
+	CentralTenantID         uint  // tenant SaaS (cupo de documentos electrónicos)
+	FiscalContext           *salecontext.FiscalContextInput
+	Detraccion              *detraccionsvc.SaleInput
+	Prepayment              *prepaymentsvc.SaleInput
 }
 
 // NextCorrelative retorna el siguiente correlativo para una serie y lo incrementa (transacción con bloqueo de fila).
@@ -234,8 +235,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// Validaciones SUNAT: Factura 01 solo con RUC de 11 dígitos; doc. tipo 0 máximo S/ 700 en boleta/nota de venta
 	if sunatCode == "01" || sunatCode == "03" {
 		var companyCfg database.TenantCompanyConfig
-		if err := s.db.Select("sunat_enabled").First(&companyCfg).Error; err != nil || !companyCfg.SunatEnabled {
+		if err := s.db.Select("sunat_enabled", "taxpayer_regime").First(&companyCfg).Error; err != nil || !companyCfg.SunatEnabled {
 			return nil, errors.New("la facturación electrónica no está habilitada para este tenant; solo puede emitir notas de venta (SUNAT 00)")
+		}
+		// Gate por régimen tributario: p. ej. el Nuevo RUS no puede emitir factura (01).
+		if !taxregime.For(companyCfg.TaxpayerRegime).CanEmit(sunatCode) {
+			return nil, errors.New("el régimen tributario de la empresa no permite emitir este tipo de comprobante (el Nuevo RUS no emite facturas)")
 		}
 	}
 	var contact *database.TenantContact
@@ -451,31 +456,31 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 
 	sale := &database.TenantSale{
-		BranchID:             input.BranchID,
-		ContactID:            input.ContactID,
-		UserID:               input.UserID,
-		CashSessionID:        input.CashSessionID,
-		SeriesID:             input.SeriesID,
-		DocType:              input.DocType,
-		IssueDate:            input.IssueDate,
-		DueDate:              input.DueDate,
-		Subtotal:             money.RoundSunat(subtotal),
-		TaxAmount:            money.RoundSunat(taxAmount),
-		Total:                money.RoundSunat(total),
-		GlobalDiscountAmount: money.RoundSunat(globalDiscAmt),
-		GlobalDiscountMode:   globalDiscMode,
-		GlobalDiscountValue:  globalDiscValue,
-		Currency:             currency,
-		OperationTypeCode:    opCode,
-		ExchangeRate:         exchangeRate,
-		PaymentMethod:        primaryMethod,
-		PaymentConditionCode: payCond,
-		SaleOrigin:           saleOrigin,
-		Notes:                input.Notes,
-		Status:               saleStatus,
-		BillingStatus:        "pending",
-		IssuedFromNotaSaleID:    input.IssuedFromNotaSaleID,
-		IssuedFromQuotationID:   input.IssuedFromQuotationID,
+		BranchID:              input.BranchID,
+		ContactID:             input.ContactID,
+		UserID:                input.UserID,
+		CashSessionID:         input.CashSessionID,
+		SeriesID:              input.SeriesID,
+		DocType:               input.DocType,
+		IssueDate:             input.IssueDate,
+		DueDate:               input.DueDate,
+		Subtotal:              money.RoundSunat(subtotal),
+		TaxAmount:             money.RoundSunat(taxAmount),
+		Total:                 money.RoundSunat(total),
+		GlobalDiscountAmount:  money.RoundSunat(globalDiscAmt),
+		GlobalDiscountMode:    globalDiscMode,
+		GlobalDiscountValue:   globalDiscValue,
+		Currency:              currency,
+		OperationTypeCode:     opCode,
+		ExchangeRate:          exchangeRate,
+		PaymentMethod:         primaryMethod,
+		PaymentConditionCode:  payCond,
+		SaleOrigin:            saleOrigin,
+		Notes:                 input.Notes,
+		Status:                saleStatus,
+		BillingStatus:         "pending",
+		IssuedFromNotaSaleID:  input.IssuedFromNotaSaleID,
+		IssuedFromQuotationID: input.IssuedFromQuotationID,
 	}
 
 	// Emisión electrónica desde NV: misma operación comercial; nunca repetir stock/seriales ni caja/bancos.
@@ -636,7 +641,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 					if err := tx.Model(&database.TenantProductSerial{}).
 						Where("product_id = ? AND branch_id = ? AND serial = ?", *item.ProductID, input.BranchID, serial).
 						Updates(map[string]interface{}{
-							"status":        "sold",
+							"status":       "sold",
 							"sale_item_id": saleItemID,
 							"updated_at":   time.Now(),
 						}).Error; err != nil {
@@ -881,18 +886,18 @@ type SaleListParams struct {
 
 // SaleListSummary totales sobre todas las ventas que cumplen los filtros (no solo la página).
 type SaleListSummary struct {
-	SumTotal       float64 `json:"sum_total"`
-	SumSubtotal    float64 `json:"sum_subtotal"`
-	SumTax         float64 `json:"sum_tax"`
-	SumCancelled   float64 `json:"sum_cancelled"`
-	SumActive      float64 `json:"sum_active"`
-	CountCancelled int64   `json:"count_cancelled"`
-	CountActive    int64   `json:"count_active"`
-	SumDetraccion  float64 `json:"sum_detraccion"`
-	SumNetPayable  float64 `json:"sum_net_payable"`
-	CountDetraccion int64  `json:"count_detraccion"`
-	SpotTotal      float64 `json:"spot_total"`
-	PaymentTotals  []struct {
+	SumTotal        float64 `json:"sum_total"`
+	SumSubtotal     float64 `json:"sum_subtotal"`
+	SumTax          float64 `json:"sum_tax"`
+	SumCancelled    float64 `json:"sum_cancelled"`
+	SumActive       float64 `json:"sum_active"`
+	CountCancelled  int64   `json:"count_cancelled"`
+	CountActive     int64   `json:"count_active"`
+	SumDetraccion   float64 `json:"sum_detraccion"`
+	SumNetPayable   float64 `json:"sum_net_payable"`
+	CountDetraccion int64   `json:"count_detraccion"`
+	SpotTotal       float64 `json:"spot_total"`
+	PaymentTotals   []struct {
 		Method string  `json:"method"`
 		Total  float64 `json:"total"`
 	} `json:"payment_totals"`
@@ -1261,11 +1266,11 @@ type SalesByProductRow struct {
 
 // SalesByProductSummary totales del período (mismos filtros que las filas).
 type SalesByProductSummary struct {
-	TotalAmount     float64 `json:"total_amount"`
-	TotalQuantity   float64 `json:"total_quantity"`
-	LineItems       int64   `json:"line_items"`
-	DistinctSales   int64   `json:"distinct_sales"`
-	ProductsCount   int     `json:"products_count"`
+	TotalAmount   float64 `json:"total_amount"`
+	TotalQuantity float64 `json:"total_quantity"`
+	LineItems     int64   `json:"line_items"`
+	DistinctSales int64   `json:"distinct_sales"`
+	ProductsCount int     `json:"products_count"`
 }
 
 // SalesByProductParams filtros para el reporte de ventas por producto.
@@ -1379,11 +1384,11 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 	})
 
 	summary := SalesByProductSummary{
-		TotalAmount:    sumAmt,
-		TotalQuantity:  sumQty,
-		LineItems:      meta.LineItems,
-		DistinctSales:  meta.DistinctSales,
-		ProductsCount:  len(out),
+		TotalAmount:   sumAmt,
+		TotalQuantity: sumQty,
+		LineItems:     meta.LineItems,
+		DistinctSales: meta.DistinctSales,
+		ProductsCount: len(out),
 	}
 	return out, summary, nil
 }
@@ -1512,9 +1517,9 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 				if err := tx.Model(&database.TenantProductSerial{}).
 					Where("sale_item_id = ?", item.ID).
 					Updates(map[string]interface{}{
-						"status":      "available",
+						"status":       "available",
 						"sale_item_id": nil,
-						"updated_at":  time.Now(),
+						"updated_at":   time.Now(),
 					}).Error; err != nil {
 					return err
 				}
@@ -1711,8 +1716,12 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		return nil, errors.New("la serie destino debe ser factura (01) o boleta (03)")
 	}
 	var companyCfg database.TenantCompanyConfig
-	if err := s.db.Select("sunat_enabled").First(&companyCfg).Error; err != nil || !companyCfg.SunatEnabled {
+	if err := s.db.Select("sunat_enabled", "taxpayer_regime").First(&companyCfg).Error; err != nil || !companyCfg.SunatEnabled {
 		return nil, errors.New("la facturación electrónica no está habilitada para este tenant")
+	}
+	// Gate por régimen tributario: p. ej. el Nuevo RUS no puede emitir factura (01).
+	if !taxregime.For(companyCfg.TaxpayerRegime).CanEmit(code) {
+		return nil, errors.New("el régimen tributario de la empresa no permite emitir este tipo de comprobante (el Nuevo RUS no emite facturas)")
 	}
 	if target.BranchID != nota.BranchID {
 		return nil, errors.New("la serie debe pertenecer a la misma sucursal que la nota de venta")
@@ -1830,7 +1839,7 @@ func (s *SaleService) SummaryStats(branchID uint, from, to time.Time) map[string
 	q.Select("COALESCE(SUM(total), 0)").Scan(&totalAmount)
 
 	return map[string]interface{}{
-		"count":  count,
-		"total":  totalAmount,
+		"count": count,
+		"total": totalAmount,
 	}
 }

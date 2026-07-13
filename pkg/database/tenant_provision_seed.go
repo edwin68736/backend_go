@@ -10,15 +10,16 @@ import (
 
 // TenantSeedInput datos del formulario de alta para seed inicial del tenant.
 type TenantSeedInput struct {
-	AdminEmail    string
-	AdminPassword string
-	CompanyName   string
-	RUC           string
-	Address       string
-	Ubigeo        string
-	Phone         string
-	Email         string
-	Rubro         string // general | gastronomico
+	AdminEmail     string
+	AdminPassword  string
+	CompanyName    string
+	RUC            string
+	Address        string
+	Ubigeo         string
+	Phone          string
+	Email          string
+	Rubro          string // general | gastronomico
+	TaxpayerRegime string // general | nrus — régimen tributario del contribuyente
 }
 
 // ProvisionTenantSeed inicializa BD tenant en una transacción (sucursal, empresa, POS, admin, series).
@@ -151,15 +152,15 @@ func seedCompanyConfig(tx *gorm.DB, in TenantSeedInput, branchID, walkInID uint)
 	if cfgCount > 0 {
 		return tx.Model(&TenantCompanyConfig{}).Where("id > 0").Limit(1).
 			Updates(map[string]interface{}{
-				"business_name":             strings.TrimSpace(in.CompanyName),
-				"ruc":                       strings.TrimSpace(in.RUC),
-				"address":                   addr,
-				"ubigeo":                    ubi,
-				"phone":                     strings.TrimSpace(in.Phone),
-				"email":                     strings.TrimSpace(in.Email),
-				"currency":                  "PEN",
-				"tax_rate":                  18.00,
-				"default_branch_id":         bid,
+				"business_name":              strings.TrimSpace(in.CompanyName),
+				"ruc":                        strings.TrimSpace(in.RUC),
+				"address":                    addr,
+				"ubigeo":                     ubi,
+				"phone":                      strings.TrimSpace(in.Phone),
+				"email":                      strings.TrimSpace(in.Email),
+				"currency":                   "PEN",
+				"tax_rate":                   18.00,
+				"default_branch_id":          bid,
 				"default_walk_in_contact_id": wid,
 			}).Error
 	}
@@ -175,6 +176,7 @@ func seedCompanyConfig(tx *gorm.DB, in TenantSeedInput, branchID, walkInID uint)
 		Currency:               "PEN",
 		TaxRate:                18.00,
 		SunatEnvMode:           "demo",
+		TaxpayerRegime:         in.TaxpayerRegime,
 	}
 	return tx.Create(&cfg).Error
 }

@@ -9,28 +9,29 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/fiscal"
+	"tukifac/pkg/taxregime"
 
 	"gorm.io/gorm"
 )
 
 // FiscalSyncInput credenciales transitivas panel central → facturador (no se persisten en tenant ERP).
 type FiscalSyncInput struct {
-	SendMode       string
-	Provider       string
-	ConnectionType string
-	SOLUser        string
-	SOLPass        string
-	CertificateB64 string
-	LogoB64        string
-	CertPassword   string
-	PSEBaseURL     string
-	PSEUser        string
-	PSEPassword    string
-	PSEToken       string
-	PSESecondary   string
-	GreClientID    string
+	SendMode        string
+	Provider        string
+	ConnectionType  string
+	SOLUser         string
+	SOLPass         string
+	CertificateB64  string
+	LogoB64         string
+	CertPassword    string
+	PSEBaseURL      string
+	PSEUser         string
+	PSEPassword     string
+	PSEToken        string
+	PSESecondary    string
+	GreClientID     string
 	GreClientSecret string
-	Enabled        bool
+	Enabled         bool
 }
 
 func normalizeSendMode(mode string) string {
@@ -170,6 +171,7 @@ func (s *CompanyService) SaveFiscalMetadataCentral(
 	igvRegime string,
 	taxBenefitZone bool,
 	automaticSend *bool,
+	taxpayerRegime string,
 ) error {
 	var existing database.TenantCompanyConfig
 	if err := s.db.First(&existing).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -193,6 +195,11 @@ func (s *CompanyService) SaveFiscalMetadataCentral(
 	}
 	if automaticSend != nil {
 		updates["automatic_send"] = *automaticSend
+	}
+	// Régimen tributario del contribuyente: solo se actualiza si viene informado
+	// (evita pisar el valor existente con vacío en sincronizaciones parciales).
+	if strings.TrimSpace(taxpayerRegime) != "" {
+		updates["taxpayer_regime"] = string(taxregime.Normalize(taxpayerRegime))
 	}
 	return s.db.Model(&existing).Updates(updates).Error
 }

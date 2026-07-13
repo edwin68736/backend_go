@@ -7,15 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/config"
 	authsvc "tukifac/internal/auth/service"
 	usersvc "tukifac/internal/users/service"
-	"tukifac/config"
 	"tukifac/pkg/database"
 	"tukifac/pkg/database/engine"
 	"tukifac/pkg/domains"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
+	"tukifac/pkg/taxregime"
 	"tukifac/pkg/tenantrubro"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/utils"
@@ -46,6 +47,7 @@ type CreateTenantInput struct {
 	AdminPassword      string `json:"admin_password"`
 	SubscriptionMonths int    `json:"subscription_months"` // duración en meses de la suscripción al crear (0 = no crear suscripción automática)
 	Rubro              string `json:"rubro"`               // general | gastronomico
+	TaxpayerRegime     string `json:"taxpayer_regime"`     // general | nrus — régimen tributario del contribuyente
 }
 
 // Create provisioning completo y transaccional (rollback automático si falla cualquier paso).
@@ -84,10 +86,12 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	dbName := "saas_tenant_" + slug
 	trialEnd := time.Now().AddDate(0, 0, 30)
 	rubro := tenantrubro.Normalize(input.Rubro)
+	regime := string(taxregime.Normalize(input.TaxpayerRegime))
 	tenant = &database.Tenant{
 		Name: input.Name, Slug: slug, DBName: dbName, Plan: plan, Status: "active",
 		Email: input.Email, Phone: input.Phone, RUC: input.RUC, Rubro: rubro,
-		Address: input.Address, Ubigeo: input.Ubigeo, TrialEndsAt: &trialEnd,
+		TaxpayerRegime: regime,
+		Address:        input.Address, Ubigeo: input.Ubigeo, TrialEndsAt: &trialEnd,
 	}
 
 	defer func() {
@@ -107,7 +111,8 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 		CompanyName: input.Name, RUC: input.RUC,
 		Address: input.Address, Ubigeo: input.Ubigeo,
 		Phone: input.Phone, Email: input.Email,
-		Rubro: rubro,
+		Rubro:          rubro,
+		TaxpayerRegime: regime,
 	}
 
 	// 2–4. BD vacía + migraciones versionadas + seed
@@ -253,11 +258,11 @@ func (s *TenantService) GetByID(id uint) (*database.Tenant, error) {
 }
 
 func (s *TenantService) Update(id uint, input database.Tenant) error {
-	// Obtener plan actual para detectar si cambió
+	// Obtener plan y db actuales (plan para detectar cambio; db_name para propagar el régimen).
 	var current database.Tenant
-	s.db.Select("plan").First(&current, id)
+	s.db.Select("plan", "db_name").First(&current, id)
 
-	err := s.db.Model(&database.Tenant{}).Where("id = ?", id).Updates(map[string]interface{}{
+	updates := map[string]interface{}{
 		"name":    input.Name,
 		"email":   input.Email,
 		"phone":   input.Phone,
@@ -266,9 +271,24 @@ func (s *TenantService) Update(id uint, input database.Tenant) error {
 		"status":  input.Status,
 		"address": input.Address,
 		"ubigeo":  input.Ubigeo,
-	}).Error
+	}
+	// Régimen tributario: se persiste en el tenant central y se propaga a la config
+	// del tenant (fuente que lee el gate de emisión y las capabilities del frontend).
+	regime := ""
+	if strings.TrimSpace(input.TaxpayerRegime) != "" {
+		regime = string(taxregime.Normalize(input.TaxpayerRegime))
+		updates["taxpayer_regime"] = regime
+	}
+	err := s.db.Model(&database.Tenant{}).Where("id = ?", id).Updates(updates).Error
 	if err != nil {
 		return err
+	}
+	if regime != "" && strings.TrimSpace(current.DBName) != "" {
+		if tdb, e := database.GetTenantDB(current.DBName); e == nil {
+			_ = tdb.Model(&database.TenantCompanyConfig{}).Where("id > 0").
+				Update("taxpayer_regime", regime).Error
+			database.ReleaseTenantDB(current.DBName)
+		}
 	}
 
 	// Si el plan cambió, sincronizar módulos automáticamente

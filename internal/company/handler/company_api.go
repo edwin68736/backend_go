@@ -13,6 +13,7 @@ import (
 	"tukifac/internal/company/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
+	"tukifac/pkg/taxregime"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
 
@@ -230,6 +231,10 @@ func (h *CompanyHandler) GetSunatAPI(c fiber.Ctx) error {
 		"tax_rate":         cfg.TaxRate,
 		"igv_regime":       cfg.IgvRegime,
 		"tax_benefit_zone": cfg.TaxBenefitZone,
+		// Régimen tributario del contribuyente + capacidades resueltas. Los
+		// frontends consumen `capabilities` y no reimplementan reglas del régimen.
+		"taxpayer_regime": taxregime.Normalize(cfg.TaxpayerRegime),
+		"capabilities":    taxregime.CapabilitiesFor(cfg.TaxpayerRegime),
 	})
 }
 
@@ -244,9 +249,9 @@ func (h *CompanyHandler) GetInvoicingAPI(c fiber.Ctx) error {
 		sendMode = "sunat_direct"
 	}
 	return c.JSON(fiber.Map{
-		"send_mode":          sendMode,
-		"fiscal_enabled":     cfg.SunatEnabled,
-		"connection_status":  cfg.FiscalConnectionStatus,
+		"send_mode":         sendMode,
+		"fiscal_enabled":    cfg.SunatEnabled,
+		"connection_status": cfg.FiscalConnectionStatus,
 	})
 }
 
@@ -403,8 +408,8 @@ func (h *CompanyHandler) ListSeriesDocumentTypesAPI(c fiber.Ctx) error {
 	restaurant := strings.TrimSpace(strings.ToLower(c.Query("context"))) == "restaurant"
 	types := docseries.ListFormDocumentTypes(svc.IsSunatEnabled(), restaurant)
 	return c.JSON(fiber.Map{
-		"data":             types,
-		"category_labels":  docseries.CategoryLabels(),
+		"data":            types,
+		"category_labels": docseries.CategoryLabels(),
 	})
 }
 
