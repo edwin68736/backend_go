@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/config"
 	"tukifac/internal/restaurant/service"
 	"tukifac/internal/restaurant/staff"
 	billingsvc "tukifac/internal/billing/service"
@@ -36,6 +37,25 @@ func activeBranch(c fiber.Ctx) (uint, error) {
 	return id, nil
 }
 func svc(c fiber.Ctx) *service.RestaurantService { return service.New(db(c)) }
+
+// buildRestaurantPrintData arma print_data reutilizando el `sale` YA en memoria
+// (evita el re-fetch completo de BuildPrintDataForSale: venta + billing status + pagos + invoice).
+// Solo consulta los ítems una vez, igual que el flujo de ventas de TukiFac. El sunatHash va
+// vacío porque a la hora de imprimir el CDR aún no existe (envío fiscal asíncrono), idéntico
+// a lo que devolvía BuildPrintDataForSale en este punto.
+func buildRestaurantPrintData(gdb *gorm.DB, sale *database.TenantSale, payments []service.PaymentInput) *salesvc.PrintData {
+	items, _ := salesvc.NewSaleService(gdb).GetItems(sale.ID)
+	printPayments := make([]salesvc.PrintPaymentInput, 0, len(payments))
+	for _, p := range payments {
+		printPayments = append(printPayments, salesvc.PrintPaymentInput{
+			Method:    p.Method,
+			Amount:    p.Amount,
+			Reference: p.Reference,
+		})
+	}
+	pd, _ := salesvc.BuildPrintData(gdb, sale, items, printPayments, "")
+	return pd
+}
 
 func resolveSessionStaffID(c fiber.Ctx, requested *uint) *uint {
 	staffSvc := staff.New(db(c))
@@ -511,7 +531,8 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		}
 	}
 
-	taxCfg := tax.LoadFromDB(db(c))
+	dbc := db(c)
+	taxCfg := tax.LoadFromDB(dbc)
 	et := ""
 	if claims, ok := c.Locals("tenant_claims").(*middleware.TenantClaims); ok && claims != nil {
 		et = claims.EmployeeType
@@ -520,7 +541,7 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
 		centralTenantID = tenant.ID
 	}
-	sale, err := svc(c).BillTable(service.BillInput{
+	sale, err := service.New(dbc).BillTable(service.BillInput{
 		SessionID:       sessionID,
 		UserID:          uid(c),
 		EmployeeType:    et,
@@ -547,9 +568,121 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		return c.Status(st).JSON(payload)
 	}
 	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
-		_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(db(c), tenant, sale.ID)
+		_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(dbc, tenant, sale.ID)
 	}
-	printData, _ := salesvc.BuildPrintDataForSale(db(c), sale.ID)
+	printData := buildRestaurantPrintData(dbc, sale, body.Payments)
+	return c.Status(201).JSON(fiber.Map{"success": true, "data": sale, "print_data": printData})
+}
+
+// POST /api/restaurant/pos/checkout
+// Checkout compuesto EXCLUSIVO del POS de venta rápida: encapsula en el servidor
+// OpenSession → AddOrder → BillTable (vía RestaurantPOSCheckoutService) y devuelve la
+// venta + print_data en una sola respuesta, eliminando 3 round-trips HTTP. No modifica
+// el flujo de mesas/comandas/cocina. Protegido por el feature flag POS_FAST_CHECKOUT_ENABLED.
+func (h *RestaurantHandler) POSCheckout(c fiber.Ctx) error {
+	if config.AppConfig == nil || !config.AppConfig.POSFastCheckoutEnabled {
+		return c.Status(403).JSON(fiber.Map{"error": "POS fast checkout deshabilitado", "code": "POS_FAST_CHECKOUT_DISABLED"})
+	}
+	var body struct {
+		SessionID      *uint                  `json:"session_id"`
+		OrderType      string                 `json:"order_type"`
+		Guests         int                    `json:"guests"`
+		Notes          string                 `json:"notes"`
+		ContactID         *uint                  `json:"contact_id"`
+		CustomerName      string                 `json:"customer_name"`
+		CustomerPhone     string                 `json:"customer_phone"`
+		DeliveryDriverID  *uint                  `json:"delivery_driver_id"`
+		DeliveryAddress   string                 `json:"delivery_address"`
+		DeliveryReference string                 `json:"delivery_reference"`
+		EstimatedMinutes  int                    `json:"estimated_minutes"`
+		StaffID           *uint                  `json:"staff_id"`
+		Items             []service.NewOrderItem `json:"items"`
+		SeriesID       uint                   `json:"series_id"`
+		DocType        string                 `json:"doc_type"`
+		Currency       string                 `json:"currency"`
+		IssueDate      string                 `json:"issue_date"`
+		CashSessionID  *uint                  `json:"cash_session_id"`
+		DiscountMode   string                 `json:"discount_mode"`
+		DiscountValue  float64                `json:"discount_value"`
+		DiscountAmount float64                `json:"discount_amount"`
+		Payments       []service.PaymentInput `json:"payments"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	if len(body.Payments) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "se requiere al menos un método de pago"})
+	}
+	if body.SeriesID == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "se requiere una serie de documento"})
+	}
+
+	dbc := db(c)
+
+	bid, err := activeBranch(c)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchRequired})
+	}
+
+	issueDate := saas.NowLima()
+	if body.IssueDate != "" {
+		if t, parseErr := time.ParseInLocation("2006-01-02", body.IssueDate, saas.LimaLocation()); parseErr == nil {
+			issueDate = time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, saas.LimaLocation())
+		}
+	}
+
+	taxCfg := tax.LoadFromDB(dbc)
+	et := ""
+	if claims, ok := c.Locals("tenant_claims").(*middleware.TenantClaims); ok && claims != nil {
+		et = claims.EmployeeType
+	}
+	var centralTenantID uint
+	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
+		centralTenantID = tenant.ID
+	}
+	staffID := resolveSessionStaffID(c, body.StaffID)
+
+	sale, err := service.NewRestaurantPOSCheckoutService(dbc).Checkout(service.POSCheckoutInput{
+		SessionID:       body.SessionID,
+		BranchID:        bid,
+		UserID:          uid(c),
+		EmployeeType:    et,
+		StaffID:         staffID,
+		OrderType:       body.OrderType,
+		Guests:          body.Guests,
+		Notes:           body.Notes,
+		ContactID:         body.ContactID,
+		CustomerName:      body.CustomerName,
+		CustomerPhone:     body.CustomerPhone,
+		DeliveryDriverID:  body.DeliveryDriverID,
+		DeliveryAddress:   body.DeliveryAddress,
+		DeliveryReference: body.DeliveryReference,
+		EstimatedMinutes:  body.EstimatedMinutes,
+		Items:             body.Items,
+		SeriesID:        body.SeriesID,
+		DocType:         body.DocType,
+		Currency:        body.Currency,
+		IssueDate:       issueDate,
+		CashSessionID:   body.CashSessionID,
+		DiscountMode:    body.DiscountMode,
+		DiscountValue:   body.DiscountValue,
+		DiscountAmount:  body.DiscountAmount,
+		Payments:        body.Payments,
+		CentralTenantID: centralTenantID,
+	}, taxCfg)
+	if err != nil {
+		st := fiber.StatusBadRequest
+		payload := fiber.Map{"error": err.Error()}
+		if errors.Is(err, docusage.ErrQuotaExceeded) {
+			st = fiber.StatusPaymentRequired
+			payload["code"] = "DOCUMENT_QUOTA_EXCEEDED"
+		}
+		return c.Status(st).JSON(payload)
+	}
+	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
+		_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(dbc, tenant, sale.ID)
+	}
+	printData := buildRestaurantPrintData(dbc, sale, body.Payments)
 	return c.Status(201).JSON(fiber.Map{"success": true, "data": sale, "print_data": printData})
 }
 

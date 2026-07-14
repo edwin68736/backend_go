@@ -59,6 +59,9 @@ type Config struct {
 	RedisMinIdleConns int
 	RedisMaxRetries  int
 
+	// Feature flag: endpoint compuesto de checkout para el POS de venta rápida.
+	POSFastCheckoutEnabled bool
+
 	// Billing async queue (Redis LIST)
 	BillingAsyncEnabled   bool
 	BillingQueueWorkers   int
@@ -202,6 +205,8 @@ func Load() error {
 		TenantPoolIdleTTL:       getEnvDuration("TENANT_POOL_IDLE_TTL", "25m"),
 		TenantPoolMaxActive:     getEnvInt("TENANT_POOL_MAX_ACTIVE", 200),
 		TenantPoolEvictInterval: getEnvDuration("TENANT_POOL_EVICT_INTERVAL", "2m"),
+
+		POSFastCheckoutEnabled: getEnvBool("POS_FAST_CHECKOUT_ENABLED", true),
 
 		BillingAsyncEnabled:   getEnvBool("BILLING_ASYNC_ENABLED", true),
 		BillingQueueWorkers:   getEnvInt("BILLING_QUEUE_WORKERS", 4),

@@ -165,8 +165,9 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
 	}
 
-	taxCfg := tax.LoadFromDB(db(c))
-	svc := service.NewSaleService(db(c))
+	dbc := db(c)
+	taxCfg := tax.LoadFromDB(dbc)
+	svc := service.NewSaleService(dbc)
 	var centralTenantID uint
 	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
 		centralTenantID = tenant.ID
@@ -213,13 +214,13 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 	if body.FromQuotationID != nil && *body.FromQuotationID > 0 {
 		target := "nota_venta"
 		var ser database.TenantDocumentSeries
-		if db(c).First(&ser, sale.SeriesID).Error == nil {
+		if dbc.First(&ser, sale.SeriesID).Error == nil {
 			code := strings.TrimSpace(ser.SunatCode)
 			if code == "01" || code == "03" {
 				target = code
 			}
 		}
-		_ = quotationsvc.NewQuotationService(db(c)).MarkConverted(*body.FromQuotationID, sale.ID, target)
+		_ = quotationsvc.NewQuotationService(dbc).MarkConverted(*body.FromQuotationID, sale.ID, target)
 	}
 
 	triggerAutoFiscalEnqueue(c, sale)
@@ -238,7 +239,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 	} else if body.PaymentMethod != "" && sale.Total > 0 {
 		printPayments = []service.PrintPaymentInput{{Method: body.PaymentMethod, Amount: sale.Total}}
 	}
-	printData, _ := service.BuildPrintData(db(c), sale, items, printPayments, "")
+	printData, _ := service.BuildPrintData(dbc, sale, items, printPayments, "")
 
 	resp := fiber.Map{
 		"success":    true,
