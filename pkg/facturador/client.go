@@ -138,6 +138,46 @@ func (c *Client) GetEmpresa(ruc string) (*EmpresaEntry, error) {
 	}
 	return &entry, nil
 }
+
+// SetEmpresaEnabled habilita/deshabilita una empresa YA registrada en Lycet mediante
+// upsert parcial (POST /api/v1/empresas). No modifica credenciales SOL, certificado ni logo:
+// Lycet solo actualiza los campos enviados. Si la empresa no existe en Lycet, la creación
+// exigiría SOL_USER/SOL_PASS y Lycet devolverá error (usar "Sincronizar" en ese caso).
+func (c *Client) SetEmpresaEnabled(ruc string, enabled bool) error {
+	ruc = strings.TrimSpace(ruc)
+	if ruc == "" {
+		return fmt.Errorf("ruc requerido")
+	}
+	payload := map[string]interface{}{
+		"empresas": map[string]interface{}{
+			ruc: map[string]interface{}{"enabled": enabled},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", c.addToken("/empresas"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("empresas upsert: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &errBody)
+		if errBody.Error == "" {
+			errBody.Error = string(raw)
+		}
+		return fmt.Errorf("facturador empresas %d: %s", resp.StatusCode, errBody.Error)
+	}
+	return nil
+}
 type EmpresaEntry struct {
 	SOLUser        string `json:"SOL_USER"`
 	SOLPass        string `json:"SOL_PASS"`

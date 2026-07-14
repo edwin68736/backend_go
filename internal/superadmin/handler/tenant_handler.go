@@ -1198,3 +1198,30 @@ func (h *TenantHandler) TogglePSEEmpresaAPI(c fiber.Ctx) error {
 		},
 	})
 }
+
+// PATCH /api/superadmin/tenants/facturador-enabled
+// Habilita/deshabilita en el facturador (Lycet) la empresa identificada por RUC.
+// Cuerpo: { "ruc": "20xxxxxxxxx", "enabled": true|false }.
+// Corrige el caso "Empresa fiscal deshabilitada o no registrada" cuando la empresa
+// existe en Lycet pero quedó con enabled=false. Si no existe en Lycet, Lycet exige
+// credenciales y el error se propaga (usar Sincronizar en ese caso).
+func (h *TenantHandler) SetFacturadorEnabledAPI(c fiber.Ctx) error {
+	if config.AppConfig.FacturadorBaseURL == "" || config.AppConfig.FacturadorToken == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "facturador no configurado"})
+	}
+	var body struct {
+		RUC     string `json:"ruc"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	ruc := strings.TrimSpace(body.RUC)
+	if len(ruc) != 11 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "RUC inválido (11 dígitos)"})
+	}
+	if err := facturador.Shared().SetEmpresaEnabled(ruc, body.Enabled); err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "ruc": ruc, "enabled": body.Enabled})
+}

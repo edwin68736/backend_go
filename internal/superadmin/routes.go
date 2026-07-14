@@ -38,6 +38,7 @@ func RegisterRoutes(app *fiber.App) {
 	saAPI.Get("/tenants", tenantHandler.ListAPI)
 	saAPI.Get("/tenants/conectados-sunat", tenantHandler.ListConectadosSunatAPI)
 	saAPI.Get("/tenants/conectados-facturador", tenantHandler.ListConectadosSunatAPI)
+	saAPI.Patch("/tenants/facturador-enabled", tenantHandler.SetFacturadorEnabledAPI)
 	saAPI.Get("/pse/empresas", tenantHandler.ListPSEEmpresasAPI)
 	saAPI.Get("/pse/empresas/:id", tenantHandler.GetPSEEmpresaAPI)
 	saAPI.Post("/pse/empresas", tenantHandler.CreatePSEEmpresaAPI)
