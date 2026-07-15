@@ -281,10 +281,13 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			}
 		}
 	}
-	if contact != nil && contact.DocType == "0" && (sunatCode == "03" || sunatCode == "00") {
+	// Tope SUNAT de S/ 700 con cliente sin RUC: aplica solo a la boleta electrónica (03),
+	// que sí se declara. La nota de venta (00) es un documento interno que nunca llega a
+	// SUNAT, así que no tiene por qué heredar su límite.
+	if contact != nil && contact.DocType == "0" && sunatCode == "03" {
 		totalPEN := salecurrency.TotalInPEN(currency, total, exchangeRate)
 		if totalPEN > SunatMaxMontoClienteSinRUC {
-			return nil, fmt.Errorf("según SUNAT, con cliente sin RUC (doc. tipo 0) el monto máximo permitido es S/ %d para boleta o nota de venta. Total equivalente: S/ %.2f", SunatMaxMontoClienteSinRUC, totalPEN)
+			return nil, fmt.Errorf("según SUNAT, con cliente sin RUC (doc. tipo 0) el monto máximo permitido es S/ %d para la boleta. Total equivalente: S/ %.2f", SunatMaxMontoClienteSinRUC, totalPEN)
 		}
 	}
 
