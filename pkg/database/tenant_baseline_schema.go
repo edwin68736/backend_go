@@ -30,6 +30,8 @@ func ApplyBaselineSchema(db *gorm.DB) error {
 		&TenantModifierGroup{},
 		&TenantModifierOption{},
 		&TenantProductModifierGroup{},
+		&TenantComboGroup{},
+		&TenantComboGroupItem{},
 		&TenantSale{},
 		&TenantSaleItem{},
 		&TenantInvoice{},

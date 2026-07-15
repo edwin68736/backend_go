@@ -394,25 +394,36 @@ func (s *RestaurantService) GetPrecuenta(sessionID uint) (*PrecuentaPayload, err
 	lines := make([]PrecuentaLine, 0)
 	var subtotal, taxAmount, total float64
 	for _, ord := range detail.Orders {
+		active := make([]database.TenantComanda, 0, len(ord.Comandas))
 		for _, c := range ord.Comandas {
-			if c.CancelledAt != nil {
-				continue
+			if c.CancelledAt == nil {
+				active = append(active, c)
 			}
-			affType, priceIncludes := comandaIgvForCalc(s.db, &c)
-			payable := tax.CalcItemPayableTotal(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
+		}
+		// Mismo colapso que al facturar: un combo es una línea con su precio fijo, no sus
+		// componentes a 0. La precuenta debe cuadrar con lo que el cliente terminará pagando.
+		for _, line := range comandasToBillLines(active) {
+			affType, priceIncludes := line.IgvAffectationType, line.PriceIncludesIgv
+			if !line.IsCombo {
+				affType, priceIncludes = comandaIgvForCalc(s.db, line.Comanda)
+			}
+			if strings.TrimSpace(affType) == "" {
+				affType = "10"
+			}
+			payable := tax.CalcItemPayableTotal(line.UnitPrice, line.Quantity, 0, affType, priceIncludes, taxCfg)
 			if !tax.IsBonificacionGravada(affType) {
-				lineSub, lineTax, _ := tax.CalcItem(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
+				lineSub, lineTax, _ := tax.CalcItem(line.UnitPrice, line.Quantity, 0, affType, priceIncludes, taxCfg)
 				subtotal += lineSub
 				taxAmount += lineTax
 			}
 			total += payable
 			lines = append(lines, PrecuentaLine{
-				ProductName:   c.ProductName,
-				Quantity:      c.Quantity,
-				UnitPrice:     c.UnitPrice,
+				ProductName:   line.Name,
+				Quantity:      line.Quantity,
+				UnitPrice:     line.UnitPrice,
 				LineTotal:     payable,
-				Notes:         c.Notes,
-				ModifiersJSON: strings.TrimSpace(c.ModifiersJSON),
+				Notes:         line.Notes,
+				ModifiersJSON: line.ModifiersJSON,
 			})
 		}
 	}

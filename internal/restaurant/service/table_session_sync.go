@@ -14,6 +14,11 @@ import (
 
 const sessionStatusOpen = "open"
 
+// sessionStatusBilling estado transitorio mientras se cobra: solo vive dentro de la transacción
+// de BillTable. Al confirmar pasa a "billed" (cobro total) o vuelve a "open" (cobro parcial);
+// si la transacción falla, el rollback lo devuelve a "open" solo.
+const sessionStatusBilling = "billing"
+
 // findOpenSessionForTableLocked devuelve la sesión open más reciente para la mesa (requiere tx).
 func (s *RestaurantService) findOpenSessionForTableLocked(tx *gorm.DB, tableID uint) (*database.TenantTableSession, error) {
 	var sess database.TenantTableSession

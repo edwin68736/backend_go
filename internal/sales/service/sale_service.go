@@ -69,6 +69,13 @@ type SaleItemInput struct {
 	Serials            []string `json:"serials"`              // números de serie elegidos (productos con ManageSeries)
 }
 
+// ExtraStockMovement salida de kardex de un producto que no es línea de la venta
+// (componentes de un combo). La cantidad ya viene multiplicada por lo vendido.
+type ExtraStockMovement struct {
+	ProductID uint
+	Quantity  float64
+}
+
 // PaymentInput representa un pago individual (método + monto + referencia opcional).
 type PaymentInput struct {
 	Method    string  `json:"method"` // código: cash, yape, plin, etc.
@@ -97,6 +104,10 @@ type CreateSaleInput struct {
 	GlobalDiscountMode   string     `json:"global_discount_mode"`
 	GlobalDiscountValue  float64    `json:"global_discount_value"`
 	TaxConfig            tax.Config // configuración tributaria de la empresa
+	// ExtraStockMovements: salidas de kardex que no corresponden a una línea de la venta.
+	// Caso de uso: un combo se factura como una línea, pero el stock sale de sus componentes.
+	// Se registran dentro de la misma transacción que la venta.
+	ExtraStockMovements []ExtraStockMovement
 	// Emisión desde nota de venta (no descontar inventario ni duplicar caja/bancos).
 	SkipInventory           bool
 	SkipPaymentDistribution bool
@@ -590,6 +601,10 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			if tx.First(&product, *item.ProductID).Error != nil {
 				continue
 			}
+			// Un combo no tiene stock propio: sale el de sus componentes (ExtraStockMovements).
+			if product.HasCombo {
+				continue
+			}
 			if !product.ManageStock || productIsCatalogService(&product) {
 				continue
 			}
@@ -647,6 +662,32 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 						}).Error; err != nil {
 						return err
 					}
+				}
+			}
+
+			// Componentes de combo: el stock sale de ellos, no de la línea facturada.
+			// Va en la misma transacción que la venta: o sale todo, o no sale nada.
+			for _, mv := range input.ExtraStockMovements {
+				if mv.ProductID == 0 || mv.Quantity <= 0 {
+					continue
+				}
+				var comp database.TenantProduct
+				if tx.First(&comp, mv.ProductID).Error != nil {
+					continue
+				}
+				if !comp.ManageStock || productIsCatalogService(&comp) {
+					continue
+				}
+				if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+					ProductID:     mv.ProductID,
+					BranchID:      input.BranchID,
+					Type:          "out",
+					Quantity:      mv.Quantity,
+					Reference:     "VENTA/" + sale.Number,
+					UserID:        input.UserID,
+					OperationCode: "SALE",
+				}); err != nil {
+					return err
 				}
 			}
 		}

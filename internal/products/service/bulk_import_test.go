@@ -12,7 +12,12 @@ func TestBulkImport_InitialStockRegistersKardex(t *testing.T) {
 		&database.TenantBranch{},
 		&database.TenantProductStock{},
 		&database.TenantStockMovement{},
+		// Todo movimiento de kardex resuelve su tipo de operación en este catálogo.
+		&database.TenantInventoryOperationType{},
 	); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SeedInventoryOperationTypes(db); err != nil {
 		t.Fatal(err)
 	}
 	branch := database.TenantBranch{Name: "Local 1", Active: true, IsMain: true}

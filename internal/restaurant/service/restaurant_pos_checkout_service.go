@@ -68,6 +68,13 @@ func NewRestaurantPOSCheckoutService(db *gorm.DB) *RestaurantPOSCheckoutService 
 // La construcción de print_data y el encolado fiscal se hacen en el handler (igual
 // que en BillSession), para mantener este servicio enfocado en el dominio del POS.
 func (s *RestaurantPOSCheckoutService) Checkout(in POSCheckoutInput, taxCfg tax.Config) (*database.TenantSale, error) {
+	// Venta directa: sin mesa ni cocina, así que no hay nada que gestionar. Se emite con el
+	// mismo servicio que el panel ERP, en una sola transacción, en vez de crear sesión +
+	// pedido + comandas para borrarlas al facturar.
+	if isDirectSaleCheckout(in) {
+		return s.checkoutDirect(in, taxCfg)
+	}
+
 	// 1) Sesión: reutilizar la existente o abrir una nueva (venta rápida sin mesa).
 	var sessionID uint
 	if in.SessionID != nil && *in.SessionID > 0 {

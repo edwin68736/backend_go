@@ -33,6 +33,8 @@ type ProductListParams struct {
 	ManageStockOnly    bool // solo productos con manage_stock (para transferencias/inventario)
 	NoManageStockOnly  bool // solo productos sin control de stock (reporte restaurante)
 	RestaurantOnly       bool // solo productos con is_restaurant (para panel restaurante)
+	CombosOnly           bool // solo combos (has_combo)
+	ExcludeCombos        bool // sin combos: candidatos a componente de un combo
 	PreparationArea      string // filtrar por slug (legacy)
 	PreparationAreaID    uint   // filtrar por FK
 	StockLessThan    *float64
@@ -102,6 +104,12 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	}
 	if params.RestaurantOnly {
 		q = q.Where(p+"is_restaurant = ?", true)
+	}
+	// has_combo puede ser NULL en filas anteriores a V099: tratarlas como no-combo.
+	if params.CombosOnly {
+		q = q.Where(p+"has_combo = ?", true)
+	} else if params.ExcludeCombos {
+		q = q.Where("COALESCE("+p+"has_combo, ?) = ?", false, false)
 	}
 	if params.PreparationAreaID > 0 {
 		q = q.Where(p+"preparation_area_id = ?", params.PreparationAreaID)
@@ -469,6 +477,7 @@ type ProductInput struct {
 	HasExpiryDate      bool
 	ExpiryDate         *time.Time
 	ImageURL           string
+	ImageURLSet        bool // si true, Update actualiza image_url; si no, conserva la imagen actual
 	Active             bool
 	ActiveSet          bool // si true, Update actualiza el campo active
 	BranchID           uint // sucursal dueña (platos restaurante)
@@ -476,6 +485,8 @@ type ProductInput struct {
 	ModifierGroupIDs *[]uint
 	// nil = no tocar presentaciones; no-nil = reemplazar lista del producto.
 	Presentations *[]ProductPresentationInput
+	// nil = no tocar combo; no-nil = reemplazar grupos (slice vacío = deja de ser combo).
+	ComboGroups *[]ComboGroupInput
 }
 
 // ProductPresentationInput fila de presentación propia del producto (no es grupo global).
@@ -581,6 +592,11 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 			return nil, err
 		}
 	}
+	if input.ComboGroups != nil {
+		if err := s.syncComboGroups(p, *input.ComboGroups); err != nil {
+			return nil, err
+		}
+	}
 
 	return p, nil
 }
@@ -613,6 +629,8 @@ func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput)
 	input.Unit = unit
 	input.Active = true
 	input.ActiveSet = true
+	// Alta que reactiva una fila oculta: la imagen del alta manda sobre la que tuviera antes.
+	input.ImageURLSet = true
 
 	if err := s.restoreSoftDeletedProduct(id); err != nil {
 		return nil, err
@@ -753,7 +771,11 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		"min_stock":            draft.MinStock,
 		"has_expiry_date":      draft.HasExpiryDate,
 		"expiry_date":          draft.ExpiryDate,
-		"image_url":            input.ImageURL,
+	}
+	// Omitir image_url en el body significa «no tocar la imagen», no borrarla. Para quitarla
+	// hay que enviarla explícitamente vacía.
+	if input.ImageURLSet {
+		upd["image_url"] = input.ImageURL
 	}
 	if input.ActiveSet {
 		upd["active"] = input.Active
@@ -772,6 +794,11 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 	}
 	if input.Presentations != nil {
 		if err := s.syncPresentations(id, *input.Presentations); err != nil {
+			return err
+		}
+	}
+	if input.ComboGroups != nil {
+		if err := s.syncComboGroups(&existing, *input.ComboGroups); err != nil {
 			return err
 		}
 	}

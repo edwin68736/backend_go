@@ -195,7 +195,8 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 			Name      string  `json:"name"`
 			SalePrice float64 `json:"sale_price"`
 		} `json:"presentations"`
-		InitialStock float64 `json:"initial_stock"`
+		ComboGroups  []comboGroupBody `json:"combo_groups"`
+		InitialStock float64          `json:"initial_stock"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -260,6 +261,10 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 			input.Presentations = &pres
 			input.HasVariants = true
 		}
+	}
+	if len(body.ComboGroups) > 0 {
+		groups := toComboGroupInputs(body.ComboGroups)
+		input.ComboGroups = &groups
 	}
 	branchID, berr := branch.ResolveWriteBranchID(c, 0)
 	if body.IsRestaurant {
@@ -342,13 +347,16 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		IsRestaurant       bool    `json:"is_restaurant"`
 		PreparationAreaID  *uint   `json:"preparation_area_id"`
 		PreparationArea    string  `json:"preparation_area"`
-		ImageURL           string  `json:"image_url"`
+		// nil = conservar la imagen actual; "" = quitarla.
+		ImageURL           *string `json:"image_url"`
 		Active             *bool   `json:"active"`
 		ModifierGroupIDs *[]uint `json:"modifier_group_ids"`
 		Presentations    *[]struct {
 			Name      string  `json:"name"`
 			SalePrice float64 `json:"sale_price"`
 		} `json:"presentations"`
+		// nil = no tocar el combo; [] = deja de ser combo.
+		ComboGroups *[]comboGroupBody `json:"combo_groups"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -392,8 +400,11 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		IsRestaurant:       body.IsRestaurant,
 		PreparationAreaID:  body.PreparationAreaID,
 		PreparationArea:    body.PreparationArea,
-		ImageURL:           body.ImageURL,
 		ModifierGroupIDs:   body.ModifierGroupIDs,
+	}
+	if body.ImageURL != nil {
+		input.ImageURL = *body.ImageURL
+		input.ImageURLSet = true
 	}
 	if body.Active != nil {
 		input.Active = *body.Active
@@ -414,6 +425,10 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		if len(pres) > 0 {
 			input.HasVariants = true
 		}
+	}
+	if body.ComboGroups != nil {
+		groups := toComboGroupInputs(*body.ComboGroups)
+		input.ComboGroups = &groups
 	}
 	if err := svc.Update(uint(id), input); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -497,6 +512,8 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		ManageStockOnly:    c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1",
 		NoManageStockOnly:  c.Query("no_manage_stock_only") == "true" || c.Query("no_manage_stock_only") == "1",
 		RestaurantOnly:     c.Query("restaurant_only") == "true" || c.Query("restaurant_only") == "1",
+		CombosOnly:         c.Query("combos_only") == "true" || c.Query("combos_only") == "1",
+		ExcludeCombos:      c.Query("exclude_combos") == "true" || c.Query("exclude_combos") == "1",
 		PreparationArea:    c.Query("preparation_area"),
 	}
 	if prepAreaID, err := strconv.ParseUint(c.Query("preparation_area_id"), 10, 32); err == nil && prepAreaID > 0 {
@@ -583,11 +600,20 @@ func (h *ProductHandler) GetAPI(c fiber.Ctx) error {
 	}
 	modIds := svc.GetProductModifierGroupIDs(p.ID)
 	presentations, _ := svc.ListProductPresentations(p.ID)
-	return c.JSON(fiber.Map{
+	comboGroups, _ := svc.ListComboGroups(p.ID)
+	resp := fiber.Map{
 		"data":               p,
 		"modifier_group_ids": modIds,
 		"presentations":      presentations,
-	})
+		"combo_groups":       comboGroups,
+	}
+	if p.HasCombo {
+		// Referencia para mostrar el ahorro frente al precio fijo del combo.
+		if total, err := svc.ComboComponentsTotal(p.ID); err == nil {
+			resp["combo_components_total"] = total
+		}
+	}
+	return c.JSON(resp)
 }
 
 // ProductSerialsAPI devuelve los números de serie del producto (todas las sucursales) para el detalle.
@@ -906,7 +932,9 @@ func buildProductInput(c fiber.Ctx, taxCfg tax.Config) service.ProductInput {
 		HasModifiers:       c.FormValue("has_modifiers") == "1",
 		MinStock:           minStock,
 		ImageURL:           c.FormValue("image_url"),
-		Active:             c.FormValue("active") == "1",
-		ModifierGroupIDs:   &modGroupIDs,
+		// El form siempre trae el campo (aunque sea vacío): conserva el comportamiento previo.
+		ImageURLSet:      true,
+		Active:           c.FormValue("active") == "1",
+		ModifierGroupIDs: &modGroupIDs,
 	}
 }

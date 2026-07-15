@@ -54,26 +54,34 @@ func isExtraModifierGroup(g database.TenantModifierGroup) bool {
 
 // resolveRestaurantOrderItem valida producto/modificadores y canonicaliza modifiers_json.
 // Si el cliente envía unit_price > 0 (precio acordado en caja/mesa), se conserva; si no, se usa el catálogo.
-func resolveRestaurantOrderItem(tx *gorm.DB, item *NewOrderItem) error {
+// Devuelve el producto del catálogo (nil en ítems manuales) para que quien siga —combos,
+// área de preparación— no tenga que releer la misma fila.
+func resolveRestaurantOrderItem(tx *gorm.DB, item *NewOrderItem) (*database.TenantProduct, error) {
 	if item.ProductID == nil || *item.ProductID == 0 {
 		if strings.TrimSpace(item.IgvAffectationType) == "" {
 			item.IgvAffectationType = "10"
 		}
-		return nil
+		return nil, nil
 	}
 
 	var product database.TenantProduct
 	if err := tx.First(&product, *item.ProductID).Error; err != nil {
-		return errors.New("producto no encontrado")
+		return nil, errors.New("producto no encontrado")
 	}
 	if !product.Active {
-		return errors.New("producto inactivo")
+		return nil, errors.New("producto inactivo")
+	}
+	// Un combo no tiene presentaciones ni extras: su precio es fijo + los sobreprecios de las
+	// opciones elegidas. Lo resuelve resolveComboOrderItem, que necesita el unit_price del
+	// cliente intacto para distinguir un precio acordado en caja de uno sin fijar.
+	if product.HasCombo {
+		return &product, nil
 	}
 
 	clientUnit := money.RoundDisplay(item.UnitPrice)
 	unit, canonJSON, err := calcRestaurantUnitPrice(tx, &product, item.ModifiersJSON)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	item.ModifiersJSON = canonJSON
 	if clientUnit > 0 {
@@ -95,7 +103,7 @@ func resolveRestaurantOrderItem(tx *gorm.DB, item *NewOrderItem) error {
 		}
 	}
 	item.PriceIncludesIgv = product.PriceIncludesIgv
-	return nil
+	return &product, nil
 }
 
 func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modifiersJSON string) (float64, string, error) {
@@ -104,6 +112,14 @@ func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modif
 	entries, err := parseModifierPayload(modifiersJSON)
 	if err != nil {
 		return 0, "", err
+	}
+
+	// Producto llano sin nada elegido (el caso mayoritario: una gaseosa, un pan). Sin
+	// presentaciones ni extras no hay nada que sumar, y validateRequiredSelections tampoco
+	// puede fallar: solo se queja por variantes (HasVariants) o por un grupo de extras
+	// requerido (HasModifiers). Cargarlas serían 3 consultas por ítem que no cambian nada.
+	if len(entries) == 0 && !product.HasVariants && !product.HasModifiers {
+		return base, "", nil
 	}
 
 	presentations, err := loadProductPresentations(tx, product.ID)

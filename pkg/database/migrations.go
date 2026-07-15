@@ -610,6 +610,7 @@ type TenantProduct struct {
 	ManageSeries       bool           `gorm:"default:false" json:"manage_series"`
 	HasVariants        bool           `gorm:"default:false" json:"has_variants"`
 	HasModifiers       bool           `gorm:"default:false" json:"has_modifiers"`
+	HasCombo           bool           `gorm:"default:false" json:"has_combo"`
 	IsRestaurant       bool           `gorm:"default:false" json:"is_restaurant"`
 	BranchID           uint           `gorm:"index" json:"branch_id"` // platos Tukichef: sucursal dueña del catálogo
 	PreparationAreaID  *uint          `gorm:"index" json:"preparation_area_id"`
@@ -677,6 +678,49 @@ type TenantProductModifierGroup struct {
 	ID        uint `gorm:"primaryKey" json:"id"`
 	ProductID uint `gorm:"not null;uniqueIndex:product_modifier_uidx" json:"product_id"`
 	GroupID   uint `gorm:"not null;uniqueIndex:product_modifier_uidx" json:"group_id"`
+}
+
+// Tipos de selección de un grupo de combo (TenantComboGroup.SelectionType).
+const (
+	ComboSelectionFixed    = "fixed"    // componente obligatorio, sin elección (ej: 1 pollo a la brasa)
+	ComboSelectionSingle   = "single"   // el cliente escoge exactamente una opción (ej: tu bebida)
+	ComboSelectionMultiple = "multiple" // el cliente escoge entre min_select y max_select opciones
+)
+
+// TenantComboGroup: sección de un combo (producto con has_combo). El precio del combo es fijo
+// y vive en tenant_products.sale_price; los items solo aportan extra_price opcional.
+type TenantComboGroup struct {
+	ID            uint           `gorm:"primaryKey" json:"id"`
+	ProductID     uint           `gorm:"not null;index" json:"product_id"` // el combo dueño
+	Name          string         `gorm:"size:120;not null" json:"name"`
+	SelectionType string         `gorm:"size:20;default:'fixed';index" json:"selection_type"` // fixed | single | multiple
+	MinSelect     int            `gorm:"default:1" json:"min_select"`
+	MaxSelect     int            `gorm:"default:1" json:"max_select"`
+	AllowQuantity bool           `gorm:"default:false" json:"allow_quantity"` // el cliente puede subir cantidad dentro del grupo
+	SortOrder     int            `gorm:"default:0" json:"sort_order"`
+	Active        bool           `gorm:"default:true" json:"active"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantComboGroupItem: producto candidato dentro de un grupo de combo.
+// PreparationAreaID es snapshot del área del producto componente al momento de armar el combo:
+// la comanda se rutea por este id (cocina, bar, etc.) al explotar el combo.
+type TenantComboGroupItem struct {
+	ID                uint           `gorm:"primaryKey" json:"id"`
+	GroupID           uint           `gorm:"not null;index" json:"group_id"`
+	ProductID         uint           `gorm:"not null;index" json:"product_id"` // componente real (pollo, agua mineral)
+	PreparationAreaID *uint          `gorm:"index" json:"preparation_area_id"`
+	DefaultQuantity   float64        `gorm:"type:decimal(15,3);default:1" json:"default_quantity"`
+	MaxQuantity       float64        `gorm:"type:decimal(15,3);default:1" json:"max_quantity"`
+	ExtraPrice        float64        `gorm:"type:decimal(15,2);default:0" json:"extra_price"` // sobreprecio si es opción premium
+	IsDefault         bool           `gorm:"default:false" json:"is_default"`
+	SortOrder         int            `gorm:"default:0" json:"sort_order"`
+	Active            bool           `gorm:"default:true" json:"active"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	DeletedAt         gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type TenantProductStock struct {
@@ -1516,11 +1560,14 @@ type TenantComanda struct {
 	ProductID          *uint      `gorm:"index" json:"product_id"`
 	ProductCode        string     `gorm:"size:100" json:"product_code"`
 	ProductName        string     `gorm:"size:255;not null" json:"product_name"`
-	PreparationArea    string     `gorm:"size:50" json:"preparation_area"` // snapshot al enviar (cocina, bar, etc.)
+	PreparationArea    string     `gorm:"size:50" json:"preparation_area"`     // snapshot slug al enviar (cocina, bar, etc.)
+	PreparationAreaID  *uint      `gorm:"index" json:"preparation_area_id"`    // vínculo estable al área (el slug puede renombrarse)
 	Quantity           float64    `gorm:"type:decimal(15,3);not null" json:"quantity"`
 	UnitPrice          float64    `gorm:"type:decimal(15,2);not null" json:"unit_price"`
 	Notes              string     `gorm:"size:500" json:"notes"`           // instrucciones especiales (sin cebolla, etc.)
 	ModifiersJSON      string     `gorm:"type:text" json:"modifiers_json"` // variantes y extras [{ option_id, option_name, extra_price, type, ... }]
+	ComboParentKey     string     `gorm:"size:64;index" json:"combo_parent_key"` // agrupa las N comandas explotadas de un mismo combo
+	ComboJSON          string     `gorm:"type:text" json:"combo_json"`           // snapshot del combo dueño [{ combo_id, combo_name, group_id, ... }]
 	IgvAffectationType string     `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
 	PriceIncludesIgv   bool       `gorm:"default:true" json:"price_includes_igv"`
 	Status             string     `gorm:"size:20;default:'pendiente'" json:"status"` // pendiente, preparacion, lista, entregada

@@ -472,6 +472,9 @@ type NewOrderItem struct {
 	ModifiersJSON      string  `json:"modifiers_json"`
 	IgvAffectationType string  `json:"igv_affectation_type"`
 	PriceIncludesIgv   bool    `json:"price_includes_igv"`
+	// ComboJSON: elección del cliente por grupo cuando el producto es un combo.
+	// [{ group_id, items: [{ product_id, quantity }] }]. Los grupos fijos no hace falta enviarlos.
+	ComboJSON string `json:"combo_json"`
 }
 
 // comandaIgvForCalc devuelve afectación e «incluye IGV» de la línea (snapshot en comanda).
@@ -540,10 +543,27 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 		taxCfg := tax.LoadFromDB(tx)
 		for i := range items {
 			item := &items[i]
-			if err := resolveRestaurantOrderItem(tx, item); err != nil {
+			product, err := resolveRestaurantOrderItem(tx, item)
+			if err != nil {
 				return err
 			}
-			prepArea := resolveProductPreparationArea(tx, item.ProductID)
+			comboDrafts, err := resolveComboOrderItem(tx, item, product)
+			if err != nil {
+				return err
+			}
+			if len(comboDrafts) > 0 {
+				comboComandas, err := createComboComandas(tx, order.ID, sessionID, item, comboDrafts)
+				if err != nil {
+					return err
+				}
+				comandas = append(comandas, comboComandas...)
+				// El combo cobra una sola vez su precio fijo: las comandas de componentes van a 0.
+				sessionTotal += money.RoundSunat(tax.CalcItemPayableTotal(
+					item.UnitPrice, item.Quantity, 0, item.IgvAffectationType, item.PriceIncludesIgv, taxCfg,
+				))
+				continue
+			}
+			prepArea := resolveProductPreparationArea(tx, item.ProductID, product)
 			affType := strings.TrimSpace(item.IgvAffectationType)
 			if affType == "" {
 				affType = "10"
@@ -747,12 +767,16 @@ func (s *RestaurantService) CancelAllComandas(sessionID uint, orderID *uint, pin
 	return result, nil
 }
 
-func resolveProductPreparationArea(tx *gorm.DB, productID *uint) string {
+// El producto ya viene resuelto por resolveRestaurantOrderItem; solo se relee si no lo
+// tenemos (ítem manual o llamador sin producto a mano).
+func resolveProductPreparationArea(tx *gorm.DB, productID *uint, resolved *database.TenantProduct) string {
 	if productID == nil || *productID == 0 {
 		return "cocina"
 	}
 	var p database.TenantProduct
-	if err := tx.Select("preparation_area_id", "preparation_area").First(&p, *productID).Error; err != nil {
+	if resolved != nil && resolved.ID == *productID {
+		p = *resolved
+	} else if err := tx.Select("preparation_area_id", "preparation_area").First(&p, *productID).Error; err != nil {
 		return "cocina"
 	}
 	if p.PreparationAreaID != nil && *p.PreparationAreaID > 0 {
@@ -1035,24 +1059,30 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		ModifiersJSON      string
 	}
 	itemMap := make(map[string]*saleItemData)
-	for _, c := range comandas {
-		key := comandaSaleLineKey(c)
-		if existing, ok := itemMap[key]; ok {
-			existing.Quantity += c.Quantity
-		} else {
-			affType, priceIncludesIgv := comandaIgvForCalc(s.db, &c)
-			itemMap[key] = &saleItemData{
-				ProductID:          c.ProductID,
-				Code:               c.ProductCode,
-				Description:        c.ProductName,
-				Unit:               "NIU",
-				Quantity:           c.Quantity,
-				UnitPrice:          c.UnitPrice,
-				TaxRate:            taxCfg.EffectiveRate(affType),
-				IgvAffectationType: affType,
-				PriceIncludesIgv:   priceIncludesIgv,
-				ModifiersJSON:      strings.TrimSpace(c.ModifiersJSON),
-			}
+	// Las N comandas de un combo colapsan en una sola línea con su precio fijo.
+	for _, line := range comandasToBillLines(comandas) {
+		if existing, ok := itemMap[line.Key]; ok {
+			existing.Quantity += line.Quantity
+			continue
+		}
+		affType, priceIncludesIgv := line.IgvAffectationType, line.PriceIncludesIgv
+		if !line.IsCombo {
+			affType, priceIncludesIgv = comandaIgvForCalc(s.db, line.Comanda)
+		}
+		if strings.TrimSpace(affType) == "" {
+			affType = "10"
+		}
+		itemMap[line.Key] = &saleItemData{
+			ProductID:          line.ProductID,
+			Code:               line.Code,
+			Description:        line.Name,
+			Unit:               "NIU",
+			Quantity:           line.Quantity,
+			UnitPrice:          line.UnitPrice,
+			TaxRate:            taxCfg.EffectiveRate(affType),
+			IgvAffectationType: affType,
+			PriceIncludesIgv:   priceIncludesIgv,
+			ModifiersJSON:      line.ModifiersJSON,
 		}
 	}
 
@@ -1164,6 +1194,20 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			return errors.New("la sesión ya está cerrada o facturada")
 		}
 
+		// Reclamo atómico de la sesión. El FOR UPDATE de arriba solo bloquea la fila en
+		// MySQL/InnoDB; este UPDATE guardado no depende del motor: si otra transacción ya
+		// reclamó la sesión, afecta 0 filas y ese cobro se rechaza. Es lo que impide cobrar
+		// dos veces la misma mesa.
+		claim := tx.Model(&database.TenantTableSession{}).
+			Where("id = ? AND status = ?", input.SessionID, sessionStatusOpen).
+			Update("status", sessionStatusBilling)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected == 0 {
+			return errors.New("la sesión ya está cerrada o facturada")
+		}
+
 		var err error
 		correlative, seriesRow, err = docseries.ReserveNext(tx, input.SeriesID)
 		if err != nil {
@@ -1194,6 +1238,10 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			if tx.First(&product, *item.ProductID).Error != nil {
 				continue
 			}
+			// Un combo no tiene stock propio: lo mueven sus componentes (abajo).
+			if product.HasCombo {
+				continue
+			}
 			if !product.ManageStock {
 				continue
 			}
@@ -1208,6 +1256,16 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			}); err != nil {
 				return err
 			}
+		}
+		// Combos: el movimiento se toma de las comandas de componentes, que ya llevan el
+		// producto real y la cantidad ya multiplicada por los combos pedidos. Solo descuenta
+		// el componente que tenga control de stock activado; el resto no toca el kardex.
+		if err := recordComboComponentStock(tx, inv, comandas, comboStockContext{
+			BranchID:  sess.BranchID,
+			Reference: "VENTA/" + sale.Number,
+			UserID:    input.UserID,
+		}); err != nil {
+			return err
 		}
 
 		// Registrar pagos múltiples: distribuir a caja o cuenta bancaria según método
@@ -1253,6 +1311,12 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			tx.Where("session_id = ?", input.SessionID).Delete(&database.TenantComanda{})
 		} else {
 			// Generar venta pero mantener mesa abierta: descontar lo facturado del total de la sesión
+			// y soltar el reclamo (vuelve a "open") para que la mesa siga operativa.
+			if err := tx.Model(&database.TenantTableSession{}).
+				Where("id = ?", input.SessionID).
+				Update("status", sessionStatusOpen).Error; err != nil {
+				return err
+			}
 			tx.Model(&lockedSess).UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", total))
 			// Marcar solo las comandas facturadas en este cobro (evita doble facturación en cobros parciales)
 			billedIDs := make([]uint, 0, len(comandas))
