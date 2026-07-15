@@ -480,6 +480,10 @@ type TenantCompanyConfig struct {
 	Email                  string `gorm:"size:255" json:"email"`
 	Website                string `gorm:"size:255" json:"website"`
 	LogoURL                string `gorm:"type:longtext" json:"logo_url"`
+	// LogoDataURL: el logo embebido, calculado al leer la config (no se guarda en BD).
+	// Evita que cada dispositivo tenga que descargar /uploads por su cuenta para imprimirlo:
+	// con fetch entran en juego CORS y el origen, y ahí es donde se perdía el logo.
+	LogoDataURL            string `gorm:"-" json:"logo_data_url,omitempty"`
 	Currency               string `gorm:"size:10;default:'PEN'" json:"currency"`
 	// Impuestos — configurable por empresa/régimen
 	TaxRate        float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"` // IGV vigente de la empresa

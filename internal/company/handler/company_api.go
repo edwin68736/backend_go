@@ -26,6 +26,11 @@ func (h *CompanyHandler) GetConfigAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	// El logo viaja embebido: así cualquier dispositivo lo tiene al iniciar sesión y no
+	// depende de poder descargar /uploads por su cuenta.
+	if ruc, rucErr := tenantstorage.ResolveTenantRUC(c); rucErr == nil {
+		attachLogoDataURL(ruc, cfg)
+	}
 	return c.JSON(cfg)
 }
 
@@ -192,6 +197,7 @@ func (h *CompanyHandler) UploadCompanyLogoAPI(c fiber.Ctx) error {
 		}
 	}
 	cfg, _ := svc.GetConfig()
+	attachLogoDataURL(ruc, cfg)
 	return c.JSON(fiber.Map{"success": true, "logo_url": storedURL, "data": cfg})
 }
 
