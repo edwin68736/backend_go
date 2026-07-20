@@ -237,12 +237,18 @@ func ResolveGroupSelection(
 
 	switch g.SelectionType {
 	case database.ComboSelectionFixed:
-		// Sin elección: el componente va siempre, en su cantidad por defecto.
+		// Sin elección: TODOS los componentes del grupo van siempre, en su cantidad por
+		// defecto. Antes solo entraba el primero, mientras el precio de referencia
+		// (comboReferencePrice) ya sumaba todos: el combo cobraba por más de lo que
+		// entregaba y el panel mostraba componentes que nunca se descontaban.
 		if len(catalog) == 0 {
 			return nil, fmt.Errorf("el grupo «%s» no tiene componente configurado", g.Name)
 		}
-		it := catalog[0]
-		return []ChosenComponent{newChosen(g, it, it.Item.DefaultQuantity)}, nil
+		out := make([]ChosenComponent, 0, len(catalog))
+		for _, it := range catalog {
+			out = append(out, newChosen(g, it, it.Item.DefaultQuantity))
+		}
+		return out, nil
 
 	case database.ComboSelectionSingle:
 		if len(picks) != 1 {
