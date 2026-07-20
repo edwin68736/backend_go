@@ -146,7 +146,10 @@ type SaasPayment struct {
 	PaymentMethod      string     `gorm:"size:30" json:"payment_method"` // yape, plin, transfer, deposit
 	PaymentDate        *time.Time `json:"payment_date,omitempty"`
 	Reference          string     `gorm:"size:120" json:"reference"`
-	ReceiptURL         string     `gorm:"size:500" json:"receipt_url"`
+	ReceiptURL         string     `gorm:"size:500" json:"receipt_url"` // voucher que sube el cliente
+	// FiscalDocURL boleta/factura que la empresa emite AL cliente por este pago. La sube el
+	// superadmin tras aprobar y el tenant la descarga desde el mismo pago en su panel.
+	FiscalDocURL       string     `gorm:"size:500" json:"fiscal_doc_url"`
 	Status             string     `gorm:"size:30;default:'pending_review';index" json:"status"`
 	ProvisionalApplied bool       `gorm:"default:false" json:"provisional_applied"`
 	Notes              string     `gorm:"size:500" json:"notes"`

@@ -249,6 +249,63 @@ func (s *TenantService) BillingEnabledByTenantIDs(ids []uint) (map[uint]bool, er
 	return out, nil
 }
 
+// TenantPlanRef identifica el plan de un tenant contra el catálogo SaaS.
+// La columna tenants.plan es texto libre; el vínculo real es saas_subscriptions.plan_id.
+type TenantPlanRef struct {
+	PlanID   uint   `json:"plan_id"`
+	PlanName string `json:"plan_name"`
+}
+
+// PlanRefsByTenantIDs resuelve el plan de cada tenant en dos consultas (sin N+1).
+//
+// Prioriza la suscripción vigente, que es la fuente de verdad del SaaS; si el tenant no
+// tiene ninguna (datos antiguos), cae al nombre guardado en tenants.plan resuelto contra
+// el catálogo. Sin esto el panel no puede preseleccionar el plan por identidad.
+func (s *TenantService) PlanRefsByTenantIDs(ids []uint, planNames map[uint]string) (map[uint]TenantPlanRef, error) {
+	out := make(map[uint]TenantPlanRef)
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	var plans []database.SaasPlan
+	if err := s.db.Find(&plans).Error; err != nil {
+		return nil, err
+	}
+	byID := make(map[uint]database.SaasPlan, len(plans))
+	byLowerName := make(map[string]database.SaasPlan, len(plans))
+	for _, p := range plans {
+		byID[p.ID] = p
+		byLowerName[strings.ToLower(strings.TrimSpace(p.Name))] = p
+	}
+
+	var subs []database.SaasSubscription
+	if err := s.db.Where("tenant_id IN ?", ids).
+		Where("status NOT IN ?", []string{database.SaasSubCancelled}).
+		Order("created_at desc").Find(&subs).Error; err != nil {
+		return nil, err
+	}
+	for _, sub := range subs {
+		if _, seen := out[sub.TenantID]; seen {
+			continue // Order desc: la primera es la vigente.
+		}
+		if p, ok := byID[sub.PlanID]; ok {
+			out[sub.TenantID] = TenantPlanRef{PlanID: p.ID, PlanName: p.Name}
+		}
+	}
+
+	// Respaldo por nombre para tenants sin suscripción registrada.
+	for _, id := range ids {
+		if _, ok := out[id]; ok {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(planNames[id]))
+		if p, ok := byLowerName[name]; ok {
+			out[id] = TenantPlanRef{PlanID: p.ID, PlanName: p.Name}
+		}
+	}
+	return out, nil
+}
+
 func (s *TenantService) GetByID(id uint) (*database.Tenant, error) {
 	var tenant database.Tenant
 	if err := s.db.First(&tenant, id).Error; err != nil {
@@ -262,15 +319,38 @@ func (s *TenantService) Update(id uint, input database.Tenant) error {
 	var current database.Tenant
 	s.db.Select("plan", "db_name").First(&current, id)
 
+	// El plan se valida contra el catálogo antes de escribir nada: antes se guardaba
+	// cualquier texto y syncModulesByPlanName fallaba en silencio, dejando al tenant con
+	// un plan inexistente y sin módulos actualizados.
+	var newPlan *database.SaasPlan
+	if strings.TrimSpace(input.Plan) != "" {
+		var plan database.SaasPlan
+		if err := s.db.Where("LOWER(name) = LOWER(?)", strings.TrimSpace(input.Plan)).
+			First(&plan).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("el plan %q no existe en el catálogo SaaS", input.Plan)
+			}
+			return err
+		}
+		if !plan.Active {
+			return fmt.Errorf("el plan %q está inactivo", plan.Name)
+		}
+		newPlan = &plan
+	}
+
 	updates := map[string]interface{}{
 		"name":    input.Name,
 		"email":   input.Email,
 		"phone":   input.Phone,
 		"ruc":     input.RUC,
-		"plan":    input.Plan,
 		"status":  input.Status,
 		"address": input.Address,
 		"ubigeo":  input.Ubigeo,
+	}
+	if newPlan != nil {
+		// Nombre canónico del catálogo, no el que mandó el formulario: así deja de haber
+		// mezcla de mayúsculas ("Basic" vs "basic") en la misma columna.
+		updates["plan"] = newPlan.Name
 	}
 	// Régimen tributario: se persiste en el tenant central y se propaga a la config
 	// del tenant (fuente que lee el gate de emisión y las capabilities del frontend).
@@ -291,9 +371,14 @@ func (s *TenantService) Update(id uint, input database.Tenant) error {
 		}
 	}
 
-	// Si el plan cambió, sincronizar módulos automáticamente
-	if input.Plan != "" && input.Plan != current.Plan {
-		s.syncModulesByPlanName(id, input.Plan)
+	// Si el plan cambió: módulos y suscripción vigente. Sin repuntar la suscripción, la
+	// vista de Empresas mostraba un plan y la de Suscripciones otro, porque el vínculo
+	// real (saas_subscriptions.plan_id) se quedaba en el plan anterior.
+	if newPlan != nil && !strings.EqualFold(newPlan.Name, current.Plan) {
+		s.syncModulesByPlanName(id, newPlan.Name)
+		if err := s.repointActiveSubscription(id, newPlan.ID); err != nil {
+			return err
+		}
 	}
 
 	var updated database.Tenant
@@ -301,6 +386,30 @@ func (s *TenantService) Update(id uint, input database.Tenant) error {
 		middleware.InvalidateTenantCache(updated.Slug)
 	}
 	return nil
+}
+
+// repointActiveSubscription apunta la suscripción vigente al nuevo plan.
+//
+// Solo cambia plan_id: fechas, ciclo y estado se conservan, porque cambiar el plan desde
+// Empresas es una corrección administrativa, no un cobro. Si el tenant no tiene ninguna
+// suscripción no se inventa una: ese alta pertenece al flujo de pagos.
+func (s *TenantService) repointActiveSubscription(tenantID, planID uint) error {
+	var sub database.SaasSubscription
+	err := s.db.Where("tenant_id = ?", tenantID).
+		Where("status NOT IN ?", []string{database.SaasSubCancelled}).
+		Order("created_at desc").First(&sub).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if sub.PlanID == planID {
+		return nil
+	}
+	return s.db.Model(&database.SaasSubscription{}).
+		Where("id = ?", sub.ID).
+		Update("plan_id", planID).Error
 }
 
 // syncModulesByPlanName encuentra el SaasPlan correspondiente al nombre y sincroniza TenantModule

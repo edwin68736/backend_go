@@ -51,10 +51,16 @@ func (h *TenantHandler) ListAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	billingByTenant, _ := h.svc.BillingEnabledByTenantIDs(tenantIDs(tenants))
+	ids := tenantIDs(tenants)
+	billingByTenant, _ := h.svc.BillingEnabledByTenantIDs(ids)
+	planNames := make(map[uint]string, len(tenants))
+	for _, t := range tenants {
+		planNames[t.ID] = t.Plan
+	}
+	planRefs, _ := h.svc.PlanRefsByTenantIDs(ids, planNames)
 	out := make([]fiber.Map, 0, len(tenants))
 	for _, t := range tenants {
-		m := enrichTenantMap(&t)
+		m := withPlanRef(enrichTenantMap(&t), planRefs[t.ID])
 		m["billing_enabled"] = billingByTenant[t.ID]
 		out = append(out, m)
 	}
@@ -86,7 +92,11 @@ func (h *TenantHandler) GetAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Tenant no encontrado"})
 	}
 	modules, _ := h.svc.GetModules(uint(id))
-	return c.JSON(fiber.Map{"data": tenant, "modules": modules})
+	planRefs, _ := h.svc.PlanRefsByTenantIDs([]uint{uint(id)}, map[uint]string{uint(id): tenant.Plan})
+	return c.JSON(fiber.Map{
+		"data":    withPlanRef(enrichTenantMap(tenant), planRefs[uint(id)]),
+		"modules": modules,
+	})
 }
 
 // POST /api/superadmin/tenants

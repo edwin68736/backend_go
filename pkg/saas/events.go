@@ -10,4 +10,5 @@ const (
 	EventSuspended          = "SUSPENDED"
 	EventReactivated        = "REACTIVATED"
 	EventValidityAdjusted   = "VALIDITY_ADJUSTED"
+	EventInvoiceIssued      = "INVOICE_ISSUED"
 )

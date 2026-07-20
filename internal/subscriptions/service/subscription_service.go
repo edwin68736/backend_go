@@ -174,7 +174,9 @@ type AdjustValidityInput struct {
 	Reason  string `json:"reason"`
 }
 
-// AdjustValidity corrige end_date sin alterar plan, módulos ni ciclos de facturación.
+// AdjustValidity corrige end_date sin alterar plan ni módulos. El ciclo de facturación
+// pendiente sí se realinea al nuevo vencimiento (ver más abajo): dejarlo desfasado hacía
+// que el tenant viera una fecha de próximo pago que ya no correspondía.
 func (s *SubscriptionService) AdjustValidity(id, saUserID uint, clientIP string, input AdjustValidityInput) (*database.SaasSubscription, error) {
 	reason := strings.TrimSpace(input.Reason)
 	if reason == "" {
@@ -204,6 +206,17 @@ func (s *SubscriptionService) AdjustValidity(id, saUserID uint, clientIP string,
 		return nil, err
 	}
 	sub.EndDate = newEnd
+
+	// El ciclo de facturación pendiente de ESTA suscripción tiene que seguir al nuevo
+	// vencimiento. Sin esto conservaba el due_date original y el panel del tenant seguía
+	// mostrando la fecha anterior como «próximo pago» pese al ajuste.
+	// Solo se tocan los ciclos impagos: uno ya pagado es un hecho consumado.
+	if err := database.CentralDB.Model(&database.SaasBillingCycle{}).
+		Where("subscription_id = ? AND status IN ?", sub.ID,
+			[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).
+		Updates(map[string]interface{}{"period_end": newEnd, "due_date": newEnd}).Error; err != nil {
+		return nil, err
+	}
 
 	cfg, _ := saas.LoadSettings()
 	now := saas.NowLima()
