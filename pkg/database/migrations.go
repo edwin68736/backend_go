@@ -872,6 +872,8 @@ type TenantSale struct {
 
 	// ContactName se rellena al listar (join con tenant_contacts), no es columna en BD
 	ContactName string `gorm:"-" json:"contact_name"`
+	// ContactDocNumber (RUC/DNI del cliente) se rellena al listar, no es columna en BD.
+	ContactDocNumber string `gorm:"-" json:"contact_doc_number,omitempty"`
 	// UserName se rellena al listar (usuario que registró la venta).
 	UserName string `gorm:"-" json:"user_name,omitempty"`
 	// ID de la venta electrónica (01/03) emitida desde esta NV; solo listados NV.

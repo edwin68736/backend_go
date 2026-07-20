@@ -201,6 +201,73 @@ func TestResolveDirectSaleItems_RejectsInvalidCombo(t *testing.T) {
 	}
 }
 
+// TestCheckoutDirect_ComboAloneDeductsComponentStock: regresión. Una venta directa de un combo
+// SOLO (sin ninguna otra línea) debe descontar el stock de sus componentes. El bug: el descuento
+// de ExtraStockMovements vivía dentro del bucle de ítems, después del `continue` del combo, así
+// que con un combo solo no corría nunca y el stock de los componentes quedaba intacto.
+func TestCheckoutDirect_ComboAloneDeductsComponentStock(t *testing.T) {
+	db, f := setupDirectCheckoutDB(t)
+	if err := db.AutoMigrate(&database.TenantSale{}, &database.TenantSaleItem{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantCompanyConfig{SunatEnabled: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	series := database.TenantDocumentSeries{
+		BranchID: 1, DocType: "Boleta", SunatCode: "03", Series: "B001", Correlative: 1, Active: true,
+	}
+	if err := db.Create(&series).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Los dos componentes controlan stock y arrancan con 10 en la sucursal.
+	db.Model(&database.TenantProduct{}).Where("id IN ?", []uint{f.Pollo.ID, f.Agua.ID}).Update("manage_stock", true)
+	for _, pid := range []uint{f.Pollo.ID, f.Agua.ID} {
+		if err := db.Create(&database.TenantProductStock{ProductID: pid, BranchID: 1, Quantity: 10}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := NewRestaurantPOSCheckoutService(db)
+	comboID := f.Combo.ID
+	in := POSCheckoutInput{
+		BranchID: 1, UserID: 1, OrderType: OrderTypeQuickSale, SeriesID: series.ID, DocType: "03",
+		Items: []NewOrderItem{{
+			ProductID: &comboID, Quantity: 2,
+			ComboJSON: comboSelectionJSON(t, f.BebidaG.ID, f.Agua.ID, 1),
+		}},
+		Payments: []PaymentInput{{Method: "card", Amount: 40}},
+	}
+
+	sale, err := svc.Checkout(in, tax.DefaultConfig())
+	if err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+
+	// 2 combos = 2 pollos + 2 aguas: el stock de cada componente baja de 10 a 8.
+	stockOf := func(pid uint) float64 {
+		var s database.TenantProductStock
+		db.Where("product_id = ? AND branch_id = ?", pid, 1).First(&s)
+		return s.Quantity
+	}
+	if got := stockOf(f.Pollo.ID); got != 8 {
+		t.Errorf("stock del pollo = %g, want 8 (10 - 2 combos)", got)
+	}
+	if got := stockOf(f.Agua.ID); got != 8 {
+		t.Errorf("stock del agua = %g, want 8 (10 - 2 combos)", got)
+	}
+
+	// El combo no tiene stock propio: no debe existir un asiento de kardex a su nombre.
+	var comboMoves int64
+	db.Model(&database.TenantStockMovement{}).Where("product_id = ?", comboID).Count(&comboMoves)
+	if comboMoves != 0 {
+		t.Errorf("el combo no debe generar kardex propio, got %d movimientos", comboMoves)
+	}
+	if sale == nil || sale.ID == 0 {
+		t.Fatal("esperaba una venta creada")
+	}
+}
+
 // TestCheckoutDirect_CreatesNoSessionNorComandas: el corazón del cambio. Una venta directa
 // no debe dejar sesión, pedido ni comandas: era trabajo que se creaba para borrarlo.
 func TestCheckoutDirect_CreatesNoSessionNorComandas(t *testing.T) {

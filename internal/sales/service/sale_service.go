@@ -668,30 +668,35 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				}
 			}
 
-			// Componentes de combo: el stock sale de ellos, no de la línea facturada.
-			// Va en la misma transacción que la venta: o sale todo, o no sale nada.
-			for _, mv := range input.ExtraStockMovements {
-				if mv.ProductID == 0 || mv.Quantity <= 0 {
-					continue
-				}
-				var comp database.TenantProduct
-				if tx.First(&comp, mv.ProductID).Error != nil {
-					continue
-				}
-				if !comp.ManageStock || productIsCatalogService(&comp) {
-					continue
-				}
-				if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-					ProductID:     mv.ProductID,
-					BranchID:      input.BranchID,
-					Type:          "out",
-					Quantity:      mv.Quantity,
-					Reference:     "VENTA/" + sale.Number,
-					UserID:        input.UserID,
-					OperationCode: "SALE",
-				}); err != nil {
-					return err
-				}
+		}
+
+		// Componentes de combo: el stock sale de ellos, no de la línea facturada.
+		// Va FUERA del bucle de ítems a propósito: un combo se factura como una sola línea con
+		// product.HasCombo, que hace `continue` arriba. Si este descuento viviera dentro del
+		// bucle, no correría nunca cuando se vende un combo solo (todos los ítems saltan) y se
+		// duplicaría cuando hay varios ítems con stock. Debe correr una vez por venta.
+		// Misma transacción que la venta: o sale todo, o no sale nada.
+		for _, mv := range input.ExtraStockMovements {
+			if mv.ProductID == 0 || mv.Quantity <= 0 {
+				continue
+			}
+			var comp database.TenantProduct
+			if tx.First(&comp, mv.ProductID).Error != nil {
+				continue
+			}
+			if !comp.ManageStock || productIsCatalogService(&comp) {
+				continue
+			}
+			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+				ProductID:     mv.ProductID,
+				BranchID:      input.BranchID,
+				Type:          "out",
+				Quantity:      mv.Quantity,
+				Reference:     "VENTA/" + sale.Number,
+				UserID:        input.UserID,
+				OperationCode: "SALE",
+			}); err != nil {
+				return err
 			}
 		}
 		if err := s.persistFiscalContextTx(tx, sale, input, seriesLocked); err != nil {
@@ -1078,16 +1083,22 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 			var contacts []struct {
 				ID           uint
 				BusinessName string
+				DocNumber    string
 			}
-			if s.db.Table("tenant_contacts").Select("id, business_name").Where("id IN ?", idList).Find(&contacts).Error == nil {
-				byID := make(map[uint]string, len(contacts))
+			if s.db.Table("tenant_contacts").Select("id, business_name, doc_number").Where("id IN ?", idList).Find(&contacts).Error == nil {
+				nameByID := make(map[uint]string, len(contacts))
+				docByID := make(map[uint]string, len(contacts))
 				for _, c := range contacts {
-					byID[c.ID] = c.BusinessName
+					nameByID[c.ID] = c.BusinessName
+					docByID[c.ID] = c.DocNumber
 				}
 				for i := range sales {
 					if sales[i].ContactID != nil {
-						if name, ok := byID[*sales[i].ContactID]; ok {
+						if name, ok := nameByID[*sales[i].ContactID]; ok {
 							sales[i].ContactName = name
+						}
+						if doc, ok := docByID[*sales[i].ContactID]; ok {
+							sales[i].ContactDocNumber = doc
 						}
 					}
 				}
