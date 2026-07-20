@@ -11,7 +11,7 @@ import (
 // V074PaymentMethodKinds repara catálogo financiero idempotente (sin columna kind legacy).
 type V074PaymentMethodKinds struct{}
 
-func (V074PaymentMethodKinds) Version() int  { return 74 }
+func (V074PaymentMethodKinds) Version() int { return 74 }
 func (V074PaymentMethodKinds) Name() string { return "payment_method_kinds" }
 
 func (V074PaymentMethodKinds) Up(db *gorm.DB) error {

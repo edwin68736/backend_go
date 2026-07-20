@@ -11,7 +11,7 @@ import (
 // V067SaleCurrencyOperation moneda, tipo de cambio y tipo operación en cabecera de venta.
 type V067SaleCurrencyOperation struct{}
 
-func (V067SaleCurrencyOperation) Version() int  { return 67 }
+func (V067SaleCurrencyOperation) Version() int { return 67 }
 func (V067SaleCurrencyOperation) Name() string { return "sale_currency_operation" }
 
 func (V067SaleCurrencyOperation) Up(db *gorm.DB) error {

@@ -31,7 +31,7 @@ func (v092CreditInstallment) TableName() string { return "tenant_sale_credit_ins
 // V092SaleCreditInstallments condición de pago en venta y cuotas a crédito.
 type V092SaleCreditInstallments struct{}
 
-func (V092SaleCreditInstallments) Version() int  { return 92 }
+func (V092SaleCreditInstallments) Version() int { return 92 }
 func (V092SaleCreditInstallments) Name() string { return "sale_credit_installments" }
 
 func (V092SaleCreditInstallments) Up(db *gorm.DB) error {

@@ -11,7 +11,7 @@ import (
 // V073Quotations tablas de cotizaciones, enlace venta←cotización y series por defecto.
 type V073Quotations struct{}
 
-func (V073Quotations) Version() int  { return 73 }
+func (V073Quotations) Version() int { return 73 }
 func (V073Quotations) Name() string { return "quotations" }
 
 func (V073Quotations) Up(db *gorm.DB) error {

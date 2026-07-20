@@ -11,7 +11,7 @@ import (
 // V070ReceivablesP3 confirmación BN en detracción y método crédito (CxC).
 type V070ReceivablesP3 struct{}
 
-func (V070ReceivablesP3) Version() int  { return 70 }
+func (V070ReceivablesP3) Version() int { return 70 }
 func (V070ReceivablesP3) Name() string { return "receivables_p3" }
 
 func (V070ReceivablesP3) Up(db *gorm.DB) error {

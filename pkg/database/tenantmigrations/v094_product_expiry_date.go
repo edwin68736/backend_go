@@ -18,7 +18,7 @@ func (v094Product) TableName() string { return "tenant_products" }
 // V094ProductExpiryDate agrega control de vencimiento por producto.
 type V094ProductExpiryDate struct{}
 
-func (V094ProductExpiryDate) Version() int  { return 94 }
+func (V094ProductExpiryDate) Version() int { return 94 }
 func (V094ProductExpiryDate) Name() string { return "product_expiry_date" }
 
 func (V094ProductExpiryDate) Up(db *gorm.DB) error {

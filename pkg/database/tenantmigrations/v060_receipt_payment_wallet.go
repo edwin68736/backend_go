@@ -7,11 +7,11 @@ import (
 )
 
 type v060CompanyConfig struct {
-	WalletProvider      string `gorm:"column:wallet_provider;size:20"`
-	WalletPhone         string `gorm:"column:wallet_phone;size:30"`
-	WalletQrURL         string `gorm:"column:wallet_qr_url;type:longtext"`
-	WalletShowOnA4      bool   `gorm:"column:wallet_show_on_a4;default:false"`
-	WalletShowOnTicket  bool   `gorm:"column:wallet_show_on_ticket;default:false"`
+	WalletProvider     string `gorm:"column:wallet_provider;size:20"`
+	WalletPhone        string `gorm:"column:wallet_phone;size:30"`
+	WalletQrURL        string `gorm:"column:wallet_qr_url;type:longtext"`
+	WalletShowOnA4     bool   `gorm:"column:wallet_show_on_a4;default:false"`
+	WalletShowOnTicket bool   `gorm:"column:wallet_show_on_ticket;default:false"`
 }
 
 func (v060CompanyConfig) TableName() string { return "tenant_company_configs" }

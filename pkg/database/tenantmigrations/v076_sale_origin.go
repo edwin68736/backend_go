@@ -12,7 +12,7 @@ import (
 // V076SaleOrigin clasifica origen comercial de ventas y backfill desde issued_from_nota_sale_id.
 type V076SaleOrigin struct{}
 
-func (V076SaleOrigin) Version() int  { return 76 }
+func (V076SaleOrigin) Version() int { return 76 }
 func (V076SaleOrigin) Name() string { return "sale_origin" }
 
 func (V076SaleOrigin) Up(db *gorm.DB) error {

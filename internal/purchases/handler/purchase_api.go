@@ -53,18 +53,18 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 	}
 
 	type PurchaseItem struct {
-		ID               uint                              `json:"id"`
-		DocType          string                            `json:"doc_type"`
-		Series           string                            `json:"series"`
-		Number           string                            `json:"number"`
-		IssueDate        string                            `json:"issue_date"`
-		SupplierName     string                            `json:"supplier_name"`
-		Currency         string                            `json:"currency"`
-		Subtotal         float64                           `json:"subtotal"`
-		TaxAmount        float64                           `json:"tax_amount"`
-		Total            float64                           `json:"total"`
-		Status           string                            `json:"status"`
-		LinkedRetention  *billingsvc.LinkedFiscalDocSummary `json:"linked_retention,omitempty"`
+		ID              uint                               `json:"id"`
+		DocType         string                             `json:"doc_type"`
+		Series          string                             `json:"series"`
+		Number          string                             `json:"number"`
+		IssueDate       string                             `json:"issue_date"`
+		SupplierName    string                             `json:"supplier_name"`
+		Currency        string                             `json:"currency"`
+		Subtotal        float64                            `json:"subtotal"`
+		TaxAmount       float64                            `json:"tax_amount"`
+		Total           float64                            `json:"total"`
+		Status          string                             `json:"status"`
+		LinkedRetention *billingsvc.LinkedFiscalDocSummary `json:"linked_retention,omitempty"`
 	}
 	purchaseIDs := make([]uint, 0, len(purchases))
 	for _, p := range purchases {
@@ -83,18 +83,18 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 			linked = &summary
 		}
 		out = append(out, PurchaseItem{
-			ID:           p.ID,
-			DocType:      p.DocType,
-			Series:       p.Series,
-			Number:       p.Number,
-			IssueDate:    p.IssueDate.Format("2006-01-02"),
-			SupplierName: sname,
-			Currency:     p.Currency,
-			Subtotal:     p.Subtotal,
-			TaxAmount:    p.TaxAmount,
-			Total:            p.Total,
-			Status:           p.Status,
-			LinkedRetention:  linked,
+			ID:              p.ID,
+			DocType:         p.DocType,
+			Series:          p.Series,
+			Number:          p.Number,
+			IssueDate:       p.IssueDate.Format("2006-01-02"),
+			SupplierName:    sname,
+			Currency:        p.Currency,
+			Subtotal:        p.Subtotal,
+			TaxAmount:       p.TaxAmount,
+			Total:           p.Total,
+			Status:          p.Status,
+			LinkedRetention: linked,
 		})
 	}
 	return c.JSON(fiber.Map{"data": out, "total": total})
@@ -118,30 +118,36 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 	type itemRow struct {
 		ID                 uint     `json:"id"`
 		ProductID          *uint    `json:"product_id"`
-		Code               string  `json:"code"`
-		Description        string  `json:"description"`
-		Unit               string  `json:"unit"`
-		Quantity           float64 `json:"quantity"`
-		UnitCost           float64 `json:"unit_cost"`
-		Subtotal           float64 `json:"subtotal"`
-		TaxAmount          float64 `json:"tax_amount"`
-		Total              float64 `json:"total"`
+		Code               string   `json:"code"`
+		Description        string   `json:"description"`
+		Unit               string   `json:"unit"`
+		Quantity           float64  `json:"quantity"`
+		UnitCost           float64  `json:"unit_cost"`
+		TaxRate            float64  `json:"tax_rate"`
+		IgvAffectationType string   `json:"igv_affectation_type"`
+		PriceIncludesIgv   bool     `json:"price_includes_igv"`
+		Subtotal           float64  `json:"subtotal"`
+		TaxAmount          float64  `json:"tax_amount"`
+		Total              float64  `json:"total"`
 		Serials            []string `json:"serials"`
 	}
 	itemsWithSerials := make([]itemRow, 0, len(items))
 	for _, it := range items {
 		row := itemRow{
-			ID:          it.ID,
-			ProductID:   it.ProductID,
-			Code:        it.Code,
-			Description: it.Description,
-			Unit:        it.Unit,
-			Quantity:    it.Quantity,
-			UnitCost:    it.UnitCost,
-			Subtotal:    it.Subtotal,
-			TaxAmount:   it.TaxAmount,
-			Total:       it.Total,
-			Serials:     []string{},
+			ID:                 it.ID,
+			ProductID:          it.ProductID,
+			Code:               it.Code,
+			Description:        it.Description,
+			Unit:               it.Unit,
+			Quantity:           it.Quantity,
+			UnitCost:           it.UnitCost,
+			TaxRate:            it.TaxRate,
+			IgvAffectationType: it.IgvAffectationType,
+			PriceIncludesIgv:   it.PriceIncludesIgv,
+			Subtotal:           it.Subtotal,
+			TaxAmount:          it.TaxAmount,
+			Total:              it.Total,
+			Serials:            []string{},
 		}
 		var serials []database.TenantProductSerial
 		if tdb.Where("purchase_item_id = ?", it.ID).Find(&serials).Error == nil {
@@ -163,21 +169,22 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"data": fiber.Map{
-			"id":            p.ID,
-			"branch_id":     p.BranchID,
-			"doc_type":      p.DocType,
-			"series":        p.Series,
-			"number":        p.Number,
-			"issue_date":    p.IssueDate.Format("2006-01-02"),
-			"contact_id":    p.ContactID,
-			"supplier_name": supplierName,
-			"currency":      p.Currency,
-			"subtotal":      p.Subtotal,
-			"tax_amount":    p.TaxAmount,
-			"total":         p.Total,
-			"status":        p.Status,
-			"notes":         p.Notes,
-			"items":         itemsWithSerials,
+			"id":                 p.ID,
+			"branch_id":          p.BranchID,
+			"doc_type":           p.DocType,
+			"series":             p.Series,
+			"number":             p.Number,
+			"issue_date":         p.IssueDate.Format("2006-01-02"),
+			"contact_id":         p.ContactID,
+			"supplier_name":      supplierName,
+			"currency":           p.Currency,
+			"subtotal":           p.Subtotal,
+			"tax_amount":         p.TaxAmount,
+			"total":              p.Total,
+			"status":             p.Status,
+			"notes":              p.Notes,
+			"price_includes_igv": p.PriceIncludesIgv,
+			"items":              itemsWithSerials,
 			"linked_retention": func() any {
 				if linked, _ := billingsvc.NewBillingService(tdb).GetLinkedRetentionByPurchaseID(p.ID); linked != nil {
 					return linked
@@ -193,16 +200,18 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 	tdb := db(c)
 
 	var body struct {
-		BranchID       uint                        `json:"branch_id"`
-		ContactID      *uint                       `json:"contact_id"`
-		DocType        string                      `json:"doc_type"`
-		Series         string                      `json:"series"`
-		Number         string                      `json:"number"`
-		IssueDate      string                      `json:"issue_date"`
-		Currency       string                      `json:"currency"`
-		PaymentMethod  string                      `json:"payment_method"`
-		Notes          string                      `json:"notes"`
-		Items          []service.PurchaseItemInput `json:"items"`
+		BranchID      uint   `json:"branch_id"`
+		ContactID     *uint  `json:"contact_id"`
+		DocType       string `json:"doc_type"`
+		Series        string `json:"series"`
+		Number        string `json:"number"`
+		IssueDate     string `json:"issue_date"`
+		Currency      string `json:"currency"`
+		PaymentMethod string `json:"payment_method"`
+		Notes         string `json:"notes"`
+		// PriceIncludesIgv: criterio global de la compra (el costo tecleado ya trae IGV).
+		PriceIncludesIgv bool                        `json:"price_includes_igv"`
+		Items            []service.PurchaseItemInput `json:"items"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -220,18 +229,19 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 	}
 
 	input := service.CreatePurchaseInput{
-		BranchID:      branchID,
-		ContactID:     body.ContactID,
-		UserID:        userID(c),
-		DocType:       body.DocType,
-		Series:        body.Series,
-		Number:        body.Number,
-		IssueDate:     issueDate,
-		Currency:      body.Currency,
-		PaymentMethod: body.PaymentMethod,
-		Notes:         body.Notes,
-		Items:         body.Items,
-		TaxConfig:     taxCfg,
+		BranchID:         branchID,
+		ContactID:        body.ContactID,
+		UserID:           userID(c),
+		DocType:          body.DocType,
+		Series:           body.Series,
+		Number:           body.Number,
+		IssueDate:        issueDate,
+		Currency:         body.Currency,
+		PaymentMethod:    body.PaymentMethod,
+		Notes:            body.Notes,
+		PriceIncludesIgv: body.PriceIncludesIgv,
+		Items:            body.Items,
+		TaxConfig:        taxCfg,
 	}
 
 	purchase, err := service.NewPurchaseService(tdb).Create(input)

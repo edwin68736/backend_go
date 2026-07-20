@@ -21,7 +21,7 @@ func (v091Quotation) TableName() string { return "tenant_quotations" }
 // V091CompanyTermsConditions términos globales de empresa y flag por cotización.
 type V091CompanyTermsConditions struct{}
 
-func (V091CompanyTermsConditions) Version() int  { return 91 }
+func (V091CompanyTermsConditions) Version() int { return 91 }
 func (V091CompanyTermsConditions) Name() string { return "company_terms_conditions" }
 
 func (V091CompanyTermsConditions) Up(db *gorm.DB) error {

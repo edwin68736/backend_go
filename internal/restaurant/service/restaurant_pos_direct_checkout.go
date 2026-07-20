@@ -68,31 +68,11 @@ func (s *RestaurantPOSCheckoutService) resolveDirectSaleItems(
 	cart []NewOrderItem,
 ) ([]salesvc.SaleItemInput, []salesvc.ExtraStockMovement, error) {
 	items := make([]salesvc.SaleItemInput, 0, len(cart))
-	stockByProduct := map[uint]float64{}
-	stockOrder := make([]uint, 0)
 
 	for i := range cart {
 		item := &cart[i]
-		product, err := resolveRestaurantOrderItem(s.rs.db, item)
-		if err != nil {
+		if _, err := resolveRestaurantOrderItem(s.rs.db, item); err != nil {
 			return nil, nil, err
-		}
-		comboDrafts, err := resolveComboOrderItem(s.rs.db, item, product)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		modifiersJSON := strings.TrimSpace(item.ModifiersJSON)
-		if len(comboDrafts) > 0 {
-			// El combo se factura como una línea con su precio fijo; los componentes viajan
-			// como detalle y son los que mueven stock.
-			modifiersJSON = comboDraftsSnapshot(comboDrafts)
-			for _, d := range comboDrafts {
-				if _, seen := stockByProduct[d.ProductID]; !seen {
-					stockOrder = append(stockOrder, d.ProductID)
-				}
-				stockByProduct[d.ProductID] += item.Quantity * d.Quantity
-			}
 		}
 
 		affType := strings.TrimSpace(item.IgvAffectationType)
@@ -108,18 +88,15 @@ func (s *RestaurantPOSCheckoutService) resolveDirectSaleItems(
 			UnitPrice:          item.UnitPrice,
 			IgvAffectationType: affType,
 			PriceIncludesIgv:   item.PriceIncludesIgv,
-			ModifiersJSON:      modifiersJSON,
+			ModifiersJSON:      strings.TrimSpace(item.ModifiersJSON),
+			// El combo lo resuelve SaleService (precio, validación y stock de componentes):
+			// un solo punto de resolución, el mismo que usa el ERP.
+			ComboJSON: strings.TrimSpace(item.ComboJSON),
 		})
 	}
 
-	extra := make([]salesvc.ExtraStockMovement, 0, len(stockOrder))
-	for _, productID := range stockOrder {
-		extra = append(extra, salesvc.ExtraStockMovement{
-			ProductID: productID,
-			Quantity:  stockByProduct[productID],
-		})
-	}
-	return items, extra, nil
+	// Sin movimientos extra aquí: los de componentes de combo los produce SaleService.
+	return items, nil, nil
 }
 
 // isDirectSaleCheckout: venta rápida sin sesión previa. Es el único caso que puede saltarse

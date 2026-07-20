@@ -6,8 +6,8 @@ import (
 
 	"tukifac/pkg/money"
 	"tukifac/pkg/paymentcondition"
-	"tukifac/pkg/taxpayment"
 	sunatdet "tukifac/pkg/sunat/detraccion"
+	"tukifac/pkg/taxpayment"
 )
 
 // PrepareDetractionSalePayments normaliza pagos directos contra net_payable_pen y añade la línea detraccion_bn (contado).

@@ -40,20 +40,23 @@ type PurchaseItemInput struct {
 }
 
 type CreatePurchaseInput struct {
-	BranchID       uint
-	ContactID      *uint
-	UserID         uint
-	DocType        string
-	Series         string
-	Number         string
-	IssueDate      time.Time
-	DueDate        *time.Time
-	Currency       string
-	PaymentMethod  string
-	Status         string
-	Notes          string
-	Items          []PurchaseItemInput
-	TaxConfig      tax.Config
+	BranchID      uint
+	ContactID     *uint
+	UserID        uint
+	DocType       string
+	Series        string
+	Number        string
+	IssueDate     time.Time
+	DueDate       *time.Time
+	Currency      string
+	PaymentMethod string
+	Status        string
+	Notes         string
+	// PriceIncludesIgv: criterio global elegido en el formulario. Se guarda como referencia
+	// de cómo se registró la compra; el cálculo real usa el flag de cada ítem.
+	PriceIncludesIgv bool
+	Items            []PurchaseItemInput
+	TaxConfig        tax.Config
 }
 
 // validatePurchaseItems valida reglas de negocio de ítems antes de persistir la compra.
@@ -166,6 +169,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			UnitCost:           item.UnitCost,
 			TaxRate:            effectiveRate,
 			IgvAffectationType: affType,
+			PriceIncludesIgv:   item.PriceIncludesIgv,
 			Subtotal:           itemSub,
 			TaxAmount:          itemTax,
 			Total:              itemTotal,
@@ -182,21 +186,22 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		status = "received"
 	}
 	purchase := &database.TenantPurchase{
-		BranchID:      input.BranchID,
-		ContactID:     input.ContactID,
-		UserID:        input.UserID,
-		DocType:       input.DocType,
-		Series:        input.Series,
-		Number:        input.Number,
-		IssueDate:     input.IssueDate,
-		DueDate:       input.DueDate,
-		Subtotal:      subtotal,
-		TaxAmount:     taxAmount,
-		Total:         total,
-		Currency:      currency,
-		PaymentMethod: input.PaymentMethod,
-		Notes:         input.Notes,
-		Status:        status,
+		BranchID:         input.BranchID,
+		ContactID:        input.ContactID,
+		UserID:           input.UserID,
+		DocType:          input.DocType,
+		Series:           input.Series,
+		Number:           input.Number,
+		IssueDate:        input.IssueDate,
+		DueDate:          input.DueDate,
+		Subtotal:         subtotal,
+		TaxAmount:        taxAmount,
+		Total:            total,
+		Currency:         currency,
+		PaymentMethod:    input.PaymentMethod,
+		Notes:            input.Notes,
+		PriceIncludesIgv: input.PriceIncludesIgv,
+		Status:           status,
 	}
 	docNumber := input.Series + "-" + input.Number
 

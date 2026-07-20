@@ -11,7 +11,7 @@ import (
 // V068SaleDetraccion cuenta BN en empresa y tabla tenant_sale_detraccion.
 type V068SaleDetraccion struct{}
 
-func (V068SaleDetraccion) Version() int  { return 68 }
+func (V068SaleDetraccion) Version() int { return 68 }
 func (V068SaleDetraccion) Name() string { return "sale_detraccion" }
 
 func (V068SaleDetraccion) Up(db *gorm.DB) error {

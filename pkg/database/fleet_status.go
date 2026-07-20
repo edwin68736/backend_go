@@ -7,21 +7,21 @@ import (
 
 // FleetMigrationSummary métricas agregadas del fleet.
 type FleetMigrationSummary struct {
-	Total               int64  `json:"total"`
-	Completed           int64  `json:"completed"`
-	Pending             int64  `json:"pending"`
-	Failed              int64  `json:"failed"`
-	Running             int64  `json:"running"`
-	Paused              int64  `json:"paused"`
-	Blocked             int64  `json:"blocked"`
-	Drifted             int64  `json:"drifted"`
-	Outdated            int64  `json:"outdated"`
-	AvgMigrationMs      int64  `json:"avg_migration_duration_ms"`
+	Total               int64      `json:"total"`
+	Completed           int64      `json:"completed"`
+	Pending             int64      `json:"pending"`
+	Failed              int64      `json:"failed"`
+	Running             int64      `json:"running"`
+	Paused              int64      `json:"paused"`
+	Blocked             int64      `json:"blocked"`
+	Drifted             int64      `json:"drifted"`
+	Outdated            int64      `json:"outdated"`
+	AvgMigrationMs      int64      `json:"avg_migration_duration_ms"`
 	LastFleetRunAt      *time.Time `json:"last_fleet_run_at,omitempty"`
-	SchemaTargetVersion int    `json:"schema_target_version"`
-	WithoutRegistry     int64  `json:"without_registry"`
-	CircuitOpen         bool   `json:"circuit_open"`
-	CircuitReason       string `json:"circuit_reason,omitempty"`
+	SchemaTargetVersion int        `json:"schema_target_version"`
+	WithoutRegistry     int64      `json:"without_registry"`
+	CircuitOpen         bool       `json:"circuit_open"`
+	CircuitReason       string     `json:"circuit_reason,omitempty"`
 }
 
 // FleetMigrationSummaryQuery calcula resumen desde BD central.

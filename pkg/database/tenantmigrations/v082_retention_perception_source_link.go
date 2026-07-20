@@ -9,7 +9,7 @@ import (
 // V082RetentionPerceptionSourceLink vincula CRE/CPE con compra o venta origen (trazabilidad ERP).
 type V082RetentionPerceptionSourceLink struct{}
 
-func (V082RetentionPerceptionSourceLink) Version() int  { return 82 }
+func (V082RetentionPerceptionSourceLink) Version() int { return 82 }
 func (V082RetentionPerceptionSourceLink) Name() string { return "retention_perception_source_link" }
 
 type v082RetentionPurchaseID struct {

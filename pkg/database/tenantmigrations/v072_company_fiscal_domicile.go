@@ -11,7 +11,7 @@ import (
 // V072CompanyFiscalDomicile backfill ubigeo/dirección fiscal para emisión SUNAT.
 type V072CompanyFiscalDomicile struct{}
 
-func (V072CompanyFiscalDomicile) Version() int  { return 72 }
+func (V072CompanyFiscalDomicile) Version() int { return 72 }
 func (V072CompanyFiscalDomicile) Name() string { return "company_fiscal_domicile" }
 
 func (V072CompanyFiscalDomicile) Up(db *gorm.DB) error {

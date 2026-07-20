@@ -11,7 +11,7 @@ import (
 // V096PrepaymentVoucherDefinitive campos definitivos e índices para vouchers de anticipo.
 type V096PrepaymentVoucherDefinitive struct{}
 
-func (V096PrepaymentVoucherDefinitive) Version() int  { return 96 }
+func (V096PrepaymentVoucherDefinitive) Version() int { return 96 }
 func (V096PrepaymentVoucherDefinitive) Name() string { return "prepayment_voucher_definitive" }
 
 func (V096PrepaymentVoucherDefinitive) Up(db *gorm.DB) error {

@@ -12,7 +12,7 @@ import (
 // V071SunatUnitCodes corrige unidades comerciales (ej. LT) a códigos catálogo SUNAT 03.
 type V071SunatUnitCodes struct{}
 
-func (V071SunatUnitCodes) Version() int  { return 71 }
+func (V071SunatUnitCodes) Version() int { return 71 }
 func (V071SunatUnitCodes) Name() string { return "sunat_unit_codes" }
 
 func (V071SunatUnitCodes) Up(db *gorm.DB) error {

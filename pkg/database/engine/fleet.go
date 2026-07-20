@@ -23,10 +23,10 @@ type FleetOptions struct {
 
 // FleetSummary resultado del lote.
 type FleetSummary struct {
-	Success          []string
-	Failed           []database.TenantMigrateFailure
-	CircuitTripped   bool
-	CircuitReason    string
+	Success        []string
+	Failed         []database.TenantMigrateFailure
+	CircuitTripped bool
+	CircuitReason  string
 }
 
 // RunFleetMigrate migra tenants pendientes con workers concurrentes (no bloqueante global).

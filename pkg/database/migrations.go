@@ -483,8 +483,8 @@ type TenantCompanyConfig struct {
 	// LogoDataURL: el logo embebido, calculado al leer la config (no se guarda en BD).
 	// Evita que cada dispositivo tenga que descargar /uploads por su cuenta para imprimirlo:
 	// con fetch entran en juego CORS y el origen, y ahí es donde se perdía el logo.
-	LogoDataURL            string `gorm:"-" json:"logo_data_url,omitempty"`
-	Currency               string `gorm:"size:10;default:'PEN'" json:"currency"`
+	LogoDataURL string `gorm:"-" json:"logo_data_url,omitempty"`
+	Currency    string `gorm:"size:10;default:'PEN'" json:"currency"`
 	// Impuestos — configurable por empresa/régimen
 	TaxRate        float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"` // IGV vigente de la empresa
 	IgvRegime      string  `gorm:"size:30;default:'standard'" json:"igv_regime"`    // standard | reduced | exonerated (régimen de TASA IGV, no del contribuyente)
@@ -913,6 +913,9 @@ type TenantSaleItem struct {
 	TaxAmount              float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
 	Total                  float64 `gorm:"type:decimal(15,2);not null" json:"total"`
 	ModifiersJSON          string  `gorm:"type:text" json:"modifiers_json"` // JSON array de { option_id, name, extra_price } para el detalle
+	// ItemNote nota libre de esta línea (p. ej. "segundo uso"). Queda en el snapshot de la
+	// venta; NO modifica el producto del catálogo.
+	ItemNote string `gorm:"size:255" json:"item_note"`
 }
 
 // TenantSaleFiscalProfile información adicional fiscal de una venta (1:1).
@@ -1074,6 +1077,8 @@ type TenantQuotationItem struct {
 	TaxAmount          float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
 	Total              float64 `gorm:"type:decimal(15,2);not null" json:"total"`
 	ModifiersJSON      string  `gorm:"type:text" json:"modifiers_json"`
+	// ItemNote nota libre de esta línea; queda en el snapshot de la cotización.
+	ItemNote string `gorm:"size:255" json:"item_note"`
 }
 
 func (TenantQuotationItem) TableName() string { return "tenant_quotation_items" }
@@ -1273,25 +1278,28 @@ type TenantSunatReversion struct {
 }
 
 type TenantPurchase struct {
-	ID            uint           `gorm:"primaryKey" json:"id"`
-	BranchID      uint           `gorm:"not null;index" json:"branch_id"`
-	ContactID     *uint          `gorm:"index" json:"contact_id"`
-	UserID        uint           `gorm:"not null;index" json:"user_id"`
-	DocType       string         `gorm:"size:50;not null" json:"doc_type"`
-	Series        string         `gorm:"size:20;not null" json:"series"`
-	Number        string         `gorm:"size:50;not null" json:"number"`
-	IssueDate     time.Time      `gorm:"not null" json:"issue_date"`
-	DueDate       *time.Time     `json:"due_date"`
-	Subtotal      float64        `gorm:"type:decimal(15,2);not null" json:"subtotal"`
-	TaxAmount     float64        `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
-	Total         float64        `gorm:"type:decimal(15,2);not null" json:"total"`
-	Currency      string         `gorm:"size:10;default:'PEN'" json:"currency"`
-	PaymentMethod string         `gorm:"size:50" json:"payment_method"`
-	Notes         string         `gorm:"type:text" json:"notes"`
-	Status        string         `gorm:"size:30;default:'received'" json:"status"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	BranchID      uint       `gorm:"not null;index" json:"branch_id"`
+	ContactID     *uint      `gorm:"index" json:"contact_id"`
+	UserID        uint       `gorm:"not null;index" json:"user_id"`
+	DocType       string     `gorm:"size:50;not null" json:"doc_type"`
+	Series        string     `gorm:"size:20;not null" json:"series"`
+	Number        string     `gorm:"size:50;not null" json:"number"`
+	IssueDate     time.Time  `gorm:"not null" json:"issue_date"`
+	DueDate       *time.Time `json:"due_date"`
+	Subtotal      float64    `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount     float64    `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total         float64    `gorm:"type:decimal(15,2);not null" json:"total"`
+	Currency      string     `gorm:"size:10;default:'PEN'" json:"currency"`
+	PaymentMethod string     `gorm:"size:50" json:"payment_method"`
+	Notes         string     `gorm:"type:text" json:"notes"`
+	Status        string     `gorm:"size:30;default:'received'" json:"status"`
+	// PriceIncludesIgv: criterio con el que se registró la compra. Si es true, los unit_cost
+	// tecleados ya traían IGV y se desagregó; si es false, el IGV se sumó encima.
+	PriceIncludesIgv bool           `gorm:"default:false" json:"price_includes_igv"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	DeletedAt        gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type TenantPurchaseItem struct {
@@ -1305,6 +1313,7 @@ type TenantPurchaseItem struct {
 	UnitCost           float64 `gorm:"type:decimal(15,2);not null" json:"unit_cost"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
+	PriceIncludesIgv   bool    `gorm:"default:false" json:"price_includes_igv"`
 	Subtotal           float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
 	TaxAmount          float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
 	Total              float64 `gorm:"type:decimal(15,2);not null" json:"total"`
@@ -1566,12 +1575,12 @@ type TenantComanda struct {
 	ProductID          *uint      `gorm:"index" json:"product_id"`
 	ProductCode        string     `gorm:"size:100" json:"product_code"`
 	ProductName        string     `gorm:"size:255;not null" json:"product_name"`
-	PreparationArea    string     `gorm:"size:50" json:"preparation_area"`     // snapshot slug al enviar (cocina, bar, etc.)
-	PreparationAreaID  *uint      `gorm:"index" json:"preparation_area_id"`    // vínculo estable al área (el slug puede renombrarse)
+	PreparationArea    string     `gorm:"size:50" json:"preparation_area"`  // snapshot slug al enviar (cocina, bar, etc.)
+	PreparationAreaID  *uint      `gorm:"index" json:"preparation_area_id"` // vínculo estable al área (el slug puede renombrarse)
 	Quantity           float64    `gorm:"type:decimal(15,3);not null" json:"quantity"`
 	UnitPrice          float64    `gorm:"type:decimal(15,2);not null" json:"unit_price"`
-	Notes              string     `gorm:"size:500" json:"notes"`           // instrucciones especiales (sin cebolla, etc.)
-	ModifiersJSON      string     `gorm:"type:text" json:"modifiers_json"` // variantes y extras [{ option_id, option_name, extra_price, type, ... }]
+	Notes              string     `gorm:"size:500" json:"notes"`                 // instrucciones especiales (sin cebolla, etc.)
+	ModifiersJSON      string     `gorm:"type:text" json:"modifiers_json"`       // variantes y extras [{ option_id, option_name, extra_price, type, ... }]
 	ComboParentKey     string     `gorm:"size:64;index" json:"combo_parent_key"` // agrupa las N comandas explotadas de un mismo combo
 	ComboJSON          string     `gorm:"type:text" json:"combo_json"`           // snapshot del combo dueño [{ combo_id, combo_name, group_id, ... }]
 	IgvAffectationType string     `gorm:"size:10;default:'10'" json:"igv_affectation_type"`

@@ -9,7 +9,7 @@ import (
 // V083InventoryIngressEgress tablas ingreso/egreso, catálogo de operaciones y series de almacén.
 type V083InventoryIngressEgress struct{}
 
-func (V083InventoryIngressEgress) Version() int  { return 83 }
+func (V083InventoryIngressEgress) Version() int { return 83 }
 func (V083InventoryIngressEgress) Name() string { return "inventory_ingress_egress" }
 
 func (V083InventoryIngressEgress) Up(db *gorm.DB) error {

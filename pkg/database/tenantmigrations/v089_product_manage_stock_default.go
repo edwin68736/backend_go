@@ -15,7 +15,7 @@ func (v089ProductManageStock) TableName() string { return "tenant_products" }
 // V089ProductManageStockDefault alinea manage_stock: por defecto no controla inventario (solo si el usuario lo activa).
 type V089ProductManageStockDefault struct{}
 
-func (V089ProductManageStockDefault) Version() int  { return 89 }
+func (V089ProductManageStockDefault) Version() int { return 89 }
 func (V089ProductManageStockDefault) Name() string { return "product_manage_stock_default_false" }
 
 func (V089ProductManageStockDefault) Up(db *gorm.DB) error {

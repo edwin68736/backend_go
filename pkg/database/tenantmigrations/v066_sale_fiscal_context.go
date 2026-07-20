@@ -11,7 +11,7 @@ import (
 // V066SaleFiscalContext tablas de información adicional fiscal por venta.
 type V066SaleFiscalContext struct{}
 
-func (V066SaleFiscalContext) Version() int  { return 66 }
+func (V066SaleFiscalContext) Version() int { return 66 }
 func (V066SaleFiscalContext) Name() string { return "sale_fiscal_context" }
 
 func (V066SaleFiscalContext) Up(db *gorm.DB) error {

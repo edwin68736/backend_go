@@ -1,7 +1,6 @@
 package service
 
 import (
-	"strings"
 	"testing"
 
 	"tukifac/pkg/database"
@@ -93,113 +92,33 @@ func TestResolveDirectSaleItems_PlainProducts(t *testing.T) {
 	}
 }
 
-// TestResolveDirectSaleItems_ComboBecomesOneLine: el combo se factura como una sola línea a
-// su precio fijo, y el stock sale de los componentes.
-func TestResolveDirectSaleItems_ComboBecomesOneLine(t *testing.T) {
-	db, f := setupDirectCheckoutDB(t)
-	svc := NewRestaurantPOSCheckoutService(db)
-
-	comboID := f.Combo.ID
-	items, extra, err := svc.resolveDirectSaleItems([]NewOrderItem{{
-		ProductID: &comboID, Quantity: 2,
-		ComboJSON: comboSelectionJSON(t, f.BebidaG.ID, f.Agua.ID, 1),
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(items) != 1 {
-		t.Fatalf("el combo es una sola línea facturable, got %d", len(items))
-	}
-	line := items[0]
-	if line.ProductID == nil || *line.ProductID != comboID {
-		t.Errorf("la línea debe apuntar al combo, got %v", line.ProductID)
-	}
-	if line.UnitPrice != 18 || line.Quantity != 2 {
-		t.Errorf("esperaba 2 x 18.00, got %g x %.2f", line.Quantity, line.UnitPrice)
-	}
-	// Los componentes viajan como detalle de la línea, igual que en el flujo de mesas.
-	if !strings.Contains(line.ModifiersJSON, "Pollo a la brasa") ||
-		!strings.Contains(line.ModifiersJSON, "Agua mineral") {
-		t.Errorf("esperaba los componentes en el detalle, got %s", line.ModifiersJSON)
-	}
-
-	// 2 combos = 2 pollos + 2 aguas de almacén, aunque la venta tenga una sola línea.
-	if len(extra) != 2 {
-		t.Fatalf("esperaba kardex de 2 componentes, got %d", len(extra))
-	}
-	byProduct := map[uint]float64{}
-	for _, mv := range extra {
-		byProduct[mv.ProductID] = mv.Quantity
-	}
-	if byProduct[f.Pollo.ID] != 2 || byProduct[f.Agua.ID] != 2 {
-		t.Errorf("esperaba 2 de cada componente, got %+v", byProduct)
-	}
-	if _, ok := byProduct[comboID]; ok {
-		t.Error("el combo no tiene stock propio: no debe generar kardex")
-	}
-}
-
-// TestResolveDirectSaleItems_ComboExtraPrice: elegir la opción premium sube el precio, igual
-// que en el flujo de mesas.
-func TestResolveDirectSaleItems_ComboExtraPrice(t *testing.T) {
-	db, f := setupDirectCheckoutDB(t)
-	svc := NewRestaurantPOSCheckoutService(db)
-
-	comboID := f.Combo.ID
-	items, _, err := svc.resolveDirectSaleItems([]NewOrderItem{{
-		ProductID: &comboID, Quantity: 1,
-		ComboJSON: comboSelectionJSON(t, f.BebidaG.ID, f.Gaseosa.ID, 1),
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if items[0].UnitPrice != 19.50 {
-		t.Errorf("precio = %.2f, want 19.50 (18 + 1.50 de la gaseosa)", items[0].UnitPrice)
-	}
-}
-
-// TestResolveDirectSaleItems_ComboComponentsAccumulate: el mismo componente en dos líneas
-// deja un solo asiento de kardex con la cantidad sumada.
-func TestResolveDirectSaleItems_ComboComponentsAccumulate(t *testing.T) {
+// TestResolveDirectSaleItems_ComboJSONLlegaASaleService: el combo ya no se resuelve aquí.
+// Esta capa solo traduce el carrito y propaga la elección; el precio, la validación y el
+// stock de componentes los resuelve SaleService, el mismo punto que usa el ERP. Así no hay
+// dos motores de precio que puedan divergir.
+func TestResolveDirectSaleItems_ComboJSONLlegaASaleService(t *testing.T) {
 	db, f := setupDirectCheckoutDB(t)
 	svc := NewRestaurantPOSCheckoutService(db)
 
 	comboID := f.Combo.ID
 	sel := comboSelectionJSON(t, f.BebidaG.ID, f.Agua.ID, 1)
-	_, extra, err := svc.resolveDirectSaleItems([]NewOrderItem{
-		{ProductID: &comboID, Quantity: 1, ComboJSON: sel},
-		{ProductID: &comboID, Quantity: 2, ComboJSON: sel},
-	})
+	items, extra, err := svc.resolveDirectSaleItems([]NewOrderItem{{
+		ProductID: &comboID, Quantity: 2, ComboJSON: sel,
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	byProduct := map[uint]float64{}
-	for _, mv := range extra {
-		byProduct[mv.ProductID] += mv.Quantity
+	if len(items) != 1 {
+		t.Fatalf("esperaba 1 línea, got %d", len(items))
 	}
-	if len(extra) != 2 {
-		t.Fatalf("esperaba un asiento por componente, got %d", len(extra))
+	if items[0].ComboJSON != sel {
+		t.Errorf("la elección del combo debe llegar intacta a SaleService, got %q", items[0].ComboJSON)
 	}
-	if byProduct[f.Pollo.ID] != 3 {
-		t.Errorf("1 + 2 combos = 3 pollos, got %g", byProduct[f.Pollo.ID])
+	if len(extra) != 0 {
+		t.Errorf("el kardex de componentes lo produce SaleService, no esta capa: got %d", len(extra))
 	}
 }
 
-// TestResolveDirectSaleItems_RejectsInvalidCombo: la validación del combo sigue viva en la
-// venta directa; no se puede colar una selección inválida por saltarse AddOrder.
-func TestResolveDirectSaleItems_RejectsInvalidCombo(t *testing.T) {
-	db, f := setupDirectCheckoutDB(t)
-	svc := NewRestaurantPOSCheckoutService(db)
-
-	comboID := f.Combo.ID
-	_, _, err := svc.resolveDirectSaleItems([]NewOrderItem{{
-		ProductID: &comboID, Quantity: 1, ComboJSON: "",
-	}})
-	if err == nil || !strings.Contains(err.Error(), "debe elegir una opción") {
-		t.Fatalf("esperaba rechazo por no elegir bebida, got %v", err)
-	}
-}
 
 // TestCheckoutDirect_ComboAloneDeductsComponentStock: regresión. Una venta directa de un combo
 // SOLO (sin ninguna otra línea) debe descontar el stock de sus componentes. El bug: el descuento

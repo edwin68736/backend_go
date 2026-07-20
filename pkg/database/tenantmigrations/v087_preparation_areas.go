@@ -45,7 +45,7 @@ var v087DefaultPreparationAreas = []struct {
 // V087PreparationAreas crea tenant_preparation_areas, vincula productos existentes por slug.
 type V087PreparationAreas struct{}
 
-func (V087PreparationAreas) Version() int  { return 87 }
+func (V087PreparationAreas) Version() int { return 87 }
 func (V087PreparationAreas) Name() string { return "preparation_areas" }
 
 func (V087PreparationAreas) Up(db *gorm.DB) error {

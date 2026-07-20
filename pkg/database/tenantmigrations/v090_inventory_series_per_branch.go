@@ -12,7 +12,7 @@ import (
 // que impedía repetir esos códigos internos de almacén en cada sucursal.
 type V090InventorySeriesPerBranch struct{}
 
-func (V090InventorySeriesPerBranch) Version() int  { return 90 }
+func (V090InventorySeriesPerBranch) Version() int { return 90 }
 func (V090InventorySeriesPerBranch) Name() string { return "inventory_series_per_branch" }
 
 func (V090InventorySeriesPerBranch) Up(db *gorm.DB) error {

@@ -36,34 +36,35 @@ type QuotationItemInput struct {
 	IgvAffectationType string  `json:"igv_affectation_type"`
 	PriceIncludesIgv   bool    `json:"price_includes_igv"`
 	ModifiersJSON      string  `json:"modifiers_json"`
+	ItemNote           string  `json:"item_note"`
 }
 
 type CreateQuotationInput struct {
-	BranchID     uint
-	ContactID    *uint
-	UserID       uint
-	SeriesID     uint
-	IssueDate    time.Time
-	ValidUntil   *time.Time
-	Currency     string
-	ExchangeRate *float64
-	Notes                string
-	ShowTermsConditions  bool
-	Items                []QuotationItemInput
-	TaxConfig    tax.Config
+	BranchID            uint
+	ContactID           *uint
+	UserID              uint
+	SeriesID            uint
+	IssueDate           time.Time
+	ValidUntil          *time.Time
+	Currency            string
+	ExchangeRate        *float64
+	Notes               string
+	ShowTermsConditions bool
+	Items               []QuotationItemInput
+	TaxConfig           tax.Config
 }
 
 type UpdateQuotationInput struct {
-	ContactID    *uint
-	SeriesID     uint
-	IssueDate    time.Time
-	ValidUntil   *time.Time
-	Currency     string
-	ExchangeRate *float64
-	Notes                string
-	ShowTermsConditions  bool
-	Items                []QuotationItemInput
-	TaxConfig    tax.Config
+	ContactID           *uint
+	SeriesID            uint
+	IssueDate           time.Time
+	ValidUntil          *time.Time
+	Currency            string
+	ExchangeRate        *float64
+	Notes               string
+	ShowTermsConditions bool
+	Items               []QuotationItemInput
+	TaxConfig           tax.Config
 }
 
 type QuotationListParams struct {
@@ -138,6 +139,7 @@ func (s *QuotationService) buildItems(inputItems []QuotationItemInput, taxCfg ta
 			TaxAmount:          itemTax,
 			Total:              itemTotal,
 			ModifiersJSON:      item.ModifiersJSON,
+			ItemNote:           item.ItemNote,
 		})
 	}
 	return out, subtotal, taxAmount, total, nil
@@ -179,17 +181,17 @@ func (s *QuotationService) Create(input CreateQuotationInput) (*database.TenantQ
 	}
 
 	q := &database.TenantQuotation{
-		BranchID:     input.BranchID,
-		ContactID:    input.ContactID,
-		UserID:       input.UserID,
-		SeriesID:     input.SeriesID,
-		IssueDate:    input.IssueDate,
-		ValidUntil:   input.ValidUntil,
-		Subtotal:     money.RoundSunat(subtotal),
-		TaxAmount:    money.RoundSunat(taxAmount),
-		Total:        money.RoundSunat(total),
-		Currency:     currency,
-		ExchangeRate: exchangeRate,
+		BranchID:            input.BranchID,
+		ContactID:           input.ContactID,
+		UserID:              input.UserID,
+		SeriesID:            input.SeriesID,
+		IssueDate:           input.IssueDate,
+		ValidUntil:          input.ValidUntil,
+		Subtotal:            money.RoundSunat(subtotal),
+		TaxAmount:           money.RoundSunat(taxAmount),
+		Total:               money.RoundSunat(total),
+		Currency:            currency,
+		ExchangeRate:        exchangeRate,
 		Notes:               input.Notes,
 		ShowTermsConditions: input.ShowTermsConditions,
 		Status:              "draft",
@@ -329,17 +331,17 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&q).Updates(map[string]interface{}{
-			"contact_id":    input.ContactID,
-			"series_id":     input.SeriesID,
-			"issue_date":    input.IssueDate,
-			"valid_until":   input.ValidUntil,
-			"currency":      currency,
-			"exchange_rate": exchangeRate,
+			"contact_id":            input.ContactID,
+			"series_id":             input.SeriesID,
+			"issue_date":            input.IssueDate,
+			"valid_until":           input.ValidUntil,
+			"currency":              currency,
+			"exchange_rate":         exchangeRate,
 			"notes":                 input.Notes,
 			"show_terms_conditions": input.ShowTermsConditions,
 			"subtotal":              money.RoundSunat(subtotal),
-			"tax_amount":    money.RoundSunat(taxAmount),
-			"total":         money.RoundSunat(total),
+			"tax_amount":            money.RoundSunat(taxAmount),
+			"total":                 money.RoundSunat(total),
 		}).Error; err != nil {
 			return err
 		}
@@ -466,6 +468,7 @@ func (s *QuotationService) ConvertToSale(quotationID uint, input ConvertInput) (
 			IgvAffectationType: it.IgvAffectationType,
 			PriceIncludesIgv:   it.PriceIncludesIgv,
 			ModifiersJSON:      it.ModifiersJSON,
+			ItemNote:           it.ItemNote,
 		})
 	}
 

@@ -23,7 +23,7 @@ func (v081CashMovement) TableName() string { return "tenant_cash_movements" }
 // V081FinancialMovementReversal vincula movimientos compensatorios con el movimiento original.
 type V081FinancialMovementReversal struct{}
 
-func (V081FinancialMovementReversal) Version() int  { return 81 }
+func (V081FinancialMovementReversal) Version() int { return 81 }
 func (V081FinancialMovementReversal) Name() string { return "financial_movement_reversal" }
 
 func (V081FinancialMovementReversal) Up(db *gorm.DB) error {

@@ -11,7 +11,7 @@ import (
 // V075SplitFinancialDomains separa métodos, condiciones y conceptos tributarios en tablas propias.
 type V075SplitFinancialDomains struct{}
 
-func (V075SplitFinancialDomains) Version() int  { return 75 }
+func (V075SplitFinancialDomains) Version() int { return 75 }
 func (V075SplitFinancialDomains) Name() string { return "split_financial_domains" }
 
 func (V075SplitFinancialDomains) Up(db *gorm.DB) error {

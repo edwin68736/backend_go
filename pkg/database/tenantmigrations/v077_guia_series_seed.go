@@ -10,7 +10,7 @@ import (
 // Solo provisioning/migración — nunca durante la emisión.
 type V077GuiaSeriesSeed struct{}
 
-func (V077GuiaSeriesSeed) Version() int  { return 77 }
+func (V077GuiaSeriesSeed) Version() int { return 77 }
 func (V077GuiaSeriesSeed) Name() string { return "guia_series_seed" }
 
 func (V077GuiaSeriesSeed) Up(db *gorm.DB) error {

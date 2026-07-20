@@ -53,20 +53,25 @@ func productIsCatalogService(p *database.TenantProduct) bool {
 }
 
 type SaleItemInput struct {
-	ProductID          *uint    `json:"product_id"`
-	Code               string   `json:"code"`
-	Description        string   `json:"description"`
-	Unit               string   `json:"unit"`
-	Quantity           float64  `json:"quantity"`
-	UnitPrice          float64  `json:"unit_price"`
-	Discount           float64  `json:"discount"`
-	LineDiscountMode   string   `json:"line_discount_mode"`
-	LineDiscountValue  float64  `json:"line_discount_value"`
-	TaxRate            float64  `json:"tax_rate"`             // ignorado en cálculo; se usa IgvAffectationType + config empresa
-	IgvAffectationType string   `json:"igv_affectation_type"` // catálogo SUNAT N°07
-	PriceIncludesIgv   bool     `json:"price_includes_igv"`   // si el precio ya incluye IGV
-	ModifiersJSON      string   `json:"modifiers_json"`       // detalle de modificadores para ticket
-	Serials            []string `json:"serials"`              // números de serie elegidos (productos con ManageSeries)
+	ProductID          *uint   `json:"product_id"`
+	Code               string  `json:"code"`
+	Description        string  `json:"description"`
+	Unit               string  `json:"unit"`
+	Quantity           float64 `json:"quantity"`
+	UnitPrice          float64 `json:"unit_price"`
+	Discount           float64 `json:"discount"`
+	LineDiscountMode   string  `json:"line_discount_mode"`
+	LineDiscountValue  float64 `json:"line_discount_value"`
+	TaxRate            float64 `json:"tax_rate"`             // ignorado en cálculo; se usa IgvAffectationType + config empresa
+	IgvAffectationType string  `json:"igv_affectation_type"` // catálogo SUNAT N°07
+	PriceIncludesIgv   bool    `json:"price_includes_igv"`   // si el precio ya incluye IGV
+	ModifiersJSON      string  `json:"modifiers_json"`       // detalle de modificadores para ticket
+	ItemNote           string  `json:"item_note"`            // nota libre de la línea; no toca el catálogo
+	// ComboJSON: elección del cliente cuando el producto es un combo/promoción.
+	// [{ group_id, items: [{ product_id, quantity }] }]. El servicio resuelve el precio,
+	// valida la selección y descuenta el stock de los componentes.
+	ComboJSON string   `json:"combo_json"`
+	Serials   []string `json:"serials"` // números de serie elegidos (productos con ManageSeries)
 }
 
 // ExtraStockMovement salida de kardex de un producto que no es línea de la venta
@@ -131,6 +136,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	if input.BranchID == 0 || input.UserID == 0 {
 		return nil, errors.New("sucursal y usuario son requeridos")
 	}
+
+	// Combos/promociones: fija el precio del grupo y añade las salidas de almacén de sus
+	// componentes. Debe ir antes de calcular totales y stock. Si no hay combos, no toca nada.
+	resolvedItems, comboStock, err := resolveComboItems(s.db, input.Items)
+	if err != nil {
+		return nil, err
+	}
+	input.Items = resolvedItems
+	input.ExtraStockMovements = append(input.ExtraStockMovements, comboStock...)
 
 	series, err := docseries.ValidateForBranch(s.db, input.SeriesID, input.BranchID)
 	if err != nil {
@@ -1805,6 +1819,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 			IgvAffectationType: it.IgvAffectationType,
 			PriceIncludesIgv:   inferPriceIncludesIgvFromSaleItem(s.db, it, taxCfg),
 			ModifiersJSON:      it.ModifiersJSON,
+			ItemNote:           it.ItemNote,
 		})
 	}
 	paymentsDB, err := s.GetPayments(nota.ID)

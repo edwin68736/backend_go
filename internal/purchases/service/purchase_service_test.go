@@ -577,3 +577,81 @@ func TestPurchaseCreate_RollbackWhenCatalogPriceUpdateFails(t *testing.T) {
 			loaded.PurchasePrice, loaded.SalePrice)
 	}
 }
+
+// createPurchaseWithIgvFlag registra una compra de 1 unidad a 118 con la afectación dada.
+func createPurchaseWithIgvFlag(t *testing.T, affectation string, priceIncludesIgv bool) *database.TenantPurchase {
+	t.Helper()
+	db := setupPurchaseServiceTestDB(t)
+	svc := NewPurchaseService(db)
+
+	p, err := svc.Create(CreatePurchaseInput{
+		BranchID:         1,
+		UserID:           1,
+		DocType:          "FACTURA",
+		Series:           "F001",
+		Number:           "1",
+		IssueDate:        time.Now(),
+		Currency:         "PEN",
+		PriceIncludesIgv: priceIncludesIgv,
+		Items: []PurchaseItemInput{
+			{
+				Description:        "Item",
+				Unit:               "NIU",
+				Quantity:           1,
+				UnitCost:           118,
+				IgvAffectationType: affectation,
+				PriceIncludesIgv:   priceIncludesIgv,
+			},
+		},
+		TaxConfig: tax.Config{TaxRate: 18},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return p
+}
+
+// Con el check marcado el costo ya trae IGV: 118 se desagrega en 100 + 18.
+func TestPurchaseCreate_PriceIncludesIgvDecomposes(t *testing.T) {
+	p := createPurchaseWithIgvFlag(t, "10", true)
+	if p.Subtotal != 100 {
+		t.Fatalf("subtotal: got %.2f want 100.00", p.Subtotal)
+	}
+	if p.TaxAmount != 18 {
+		t.Fatalf("tax_amount: got %.2f want 18.00", p.TaxAmount)
+	}
+	if p.Total != 118 {
+		t.Fatalf("total: got %.2f want 118.00", p.Total)
+	}
+	if !p.PriceIncludesIgv {
+		t.Fatal("price_includes_igv debe persistirse como true")
+	}
+}
+
+// Sin el check el IGV se suma encima: 118 pasa a 118 + 21.24.
+func TestPurchaseCreate_PriceExcludesIgvAddsOnTop(t *testing.T) {
+	p := createPurchaseWithIgvFlag(t, "10", false)
+	if p.Subtotal != 118 {
+		t.Fatalf("subtotal: got %.2f want 118.00", p.Subtotal)
+	}
+	if p.TaxAmount != 21.24 {
+		t.Fatalf("tax_amount: got %.2f want 21.24", p.TaxAmount)
+	}
+	if p.Total != 139.24 {
+		t.Fatalf("total: got %.2f want 139.24", p.Total)
+	}
+	if p.PriceIncludesIgv {
+		t.Fatal("price_includes_igv debe persistirse como false")
+	}
+}
+
+// En exonerados el flag no debe alterar nada: el costo se respeta tal cual.
+func TestPurchaseCreate_PriceIncludesIgvIgnoredWhenExonerated(t *testing.T) {
+	for _, includes := range []bool{true, false} {
+		p := createPurchaseWithIgvFlag(t, "20", includes)
+		if p.Subtotal != 118 || p.TaxAmount != 0 || p.Total != 118 {
+			t.Fatalf("exonerado con includes=%v: got %.2f/%.2f/%.2f want 118.00/0.00/118.00",
+				includes, p.Subtotal, p.TaxAmount, p.Total)
+		}
+	}
+}

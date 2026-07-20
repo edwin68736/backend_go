@@ -7,10 +7,10 @@ import (
 )
 
 type v065TenantContact struct {
-	EsAgenteDeRetencion            bool `gorm:"column:es_agente_de_retencion;default:false"`
-	EsAgenteDePercepcion           bool `gorm:"column:es_agente_de_percepcion;default:false"`
+	EsAgenteDeRetencion             bool `gorm:"column:es_agente_de_retencion;default:false"`
+	EsAgenteDePercepcion            bool `gorm:"column:es_agente_de_percepcion;default:false"`
 	EsAgenteDePercepcionCombustible bool `gorm:"column:es_agente_de_percepcion_combustible;default:false"`
-	EsBuenContribuyente            bool `gorm:"column:es_buen_contribuyente;default:false"`
+	EsBuenContribuyente             bool `gorm:"column:es_buen_contribuyente;default:false"`
 }
 
 func (v065TenantContact) TableName() string { return "tenant_contacts" }
@@ -18,8 +18,8 @@ func (v065TenantContact) TableName() string { return "tenant_contacts" }
 // V065ContactFiscalFlags flags fiscales del contacto (agente retención/percepción, buen contribuyente).
 type V065ContactFiscalFlags struct{}
 
-func (V065ContactFiscalFlags) Version() int  { return 65 }
-func (V065ContactFiscalFlags) Name() string    { return "contact_fiscal_flags" }
+func (V065ContactFiscalFlags) Version() int { return 65 }
+func (V065ContactFiscalFlags) Name() string { return "contact_fiscal_flags" }
 
 func (V065ContactFiscalFlags) Up(db *gorm.DB) error {
 	mig := db.Migrator()

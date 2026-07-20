@@ -12,7 +12,7 @@ import (
 // V064TableOpenSessionUnique: una sola sesión open por mesa (dedupe + restricción física portable).
 type V064TableOpenSessionUnique struct{}
 
-func (V064TableOpenSessionUnique) Version() int  { return 64 }
+func (V064TableOpenSessionUnique) Version() int { return 64 }
 func (V064TableOpenSessionUnique) Name() string { return "table_open_session_unique" }
 
 const (

@@ -16,7 +16,7 @@ func (v086Category) TableName() string { return "tenant_categories" }
 // V086CategorySortOrder agrega sort_order a tenant_categories (orden en POS y panel).
 type V086CategorySortOrder struct{}
 
-func (V086CategorySortOrder) Version() int  { return 86 }
+func (V086CategorySortOrder) Version() int { return 86 }
 func (V086CategorySortOrder) Name() string { return "category_sort_order" }
 
 func (V086CategorySortOrder) Up(db *gorm.DB) error {

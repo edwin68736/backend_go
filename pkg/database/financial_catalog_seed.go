@@ -245,8 +245,8 @@ func SplitFinancialDomainsFromLegacy(db *gorm.DB) error {
 		switch code {
 		case "credito", "credit":
 			if err := ensurePaymentCondition(db, TenantPaymentCondition{
-				Code: paymentcondition.CodeCredit,
-				Name: firstNonEmpty(row.Name, paymentcondition.NameCredit),
+				Code:   paymentcondition.CodeCredit,
+				Name:   firstNonEmpty(row.Name, paymentcondition.NameCredit),
 				Active: row.Active,
 			}); err != nil {
 				return err
@@ -256,8 +256,8 @@ func SplitFinancialDomainsFromLegacy(db *gorm.DB) error {
 			}
 		case taxpayment.CodeDetraccionBN:
 			if err := ensureTaxPaymentType(db, TenantTaxPaymentType{
-				Code: taxpayment.CodeDetraccionBN,
-				Name: firstNonEmpty(row.Name, taxpayment.NameDetraccionBN),
+				Code:   taxpayment.CodeDetraccionBN,
+				Name:   firstNonEmpty(row.Name, taxpayment.NameDetraccionBN),
 				Active: row.Active,
 			}); err != nil {
 				return err

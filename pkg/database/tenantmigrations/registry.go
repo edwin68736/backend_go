@@ -72,6 +72,8 @@ var TenantMigrations = []TenantMigration{
 	V097PrepaymentApplications{},
 	V098TaxpayerRegime{},
 	V099Combos{},
+	V100PurchasePriceIncludesIgv{},
+	V101SaleItemNote{},
 }
 
 // ByVersion mapa versión → migración.

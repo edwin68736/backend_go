@@ -18,7 +18,7 @@ func (v079Product) TableName() string { return "tenant_products" }
 // (branch_id → V061; resto en baseline V001 para tenants nuevos).
 type V079ProductPreparationArea struct{}
 
-func (V079ProductPreparationArea) Version() int  { return 79 }
+func (V079ProductPreparationArea) Version() int { return 79 }
 func (V079ProductPreparationArea) Name() string { return "product_preparation_area" }
 
 func (V079ProductPreparationArea) Up(db *gorm.DB) error {

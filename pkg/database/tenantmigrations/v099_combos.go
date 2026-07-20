@@ -70,7 +70,7 @@ func (v099Comanda) TableName() string { return "tenant_comandas" }
 // slug denormalizado) y lo backfillea desde tenant_preparation_areas.slug.
 type V099Combos struct{}
 
-func (V099Combos) Version() int  { return 99 }
+func (V099Combos) Version() int { return 99 }
 func (V099Combos) Name() string { return "combos" }
 
 func (V099Combos) Up(db *gorm.DB) error {

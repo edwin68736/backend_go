@@ -71,6 +71,7 @@ func buildSaleLinesFromEngine(input CreateSaleInput, taxCfg tax.Config, db *gorm
 			TaxAmount:              lr.TaxAmount,
 			Total:                  lr.Total,
 			ModifiersJSON:          item.ModifiersJSON,
+			ItemNote:               item.ItemNote,
 		})
 	}
 	return result.Subtotal, result.TaxAmount, result.Total, saleItems, result.GlobalDiscountAmount,
@@ -127,6 +128,7 @@ func buildSaleLinesLegacy(input CreateSaleInput, taxCfg tax.Config, db *gorm.DB)
 			TaxAmount:          itemTax,
 			Total:              chargeableTotal,
 			ModifiersJSON:      item.ModifiersJSON,
+			ItemNote:           item.ItemNote,
 		})
 	}
 	return subtotal, taxAmount, total, saleItems

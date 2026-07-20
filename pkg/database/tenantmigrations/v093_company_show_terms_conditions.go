@@ -15,7 +15,7 @@ func (v093CompanyConfig) TableName() string { return "tenant_company_configs" }
 // V093CompanyShowTermsConditions preferencia global: mostrar términos en ventas futuras.
 type V093CompanyShowTermsConditions struct{}
 
-func (V093CompanyShowTermsConditions) Version() int  { return 93 }
+func (V093CompanyShowTermsConditions) Version() int { return 93 }
 func (V093CompanyShowTermsConditions) Name() string { return "company_show_terms_conditions" }
 
 func (V093CompanyShowTermsConditions) Up(db *gorm.DB) error {

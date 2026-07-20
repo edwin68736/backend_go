@@ -11,7 +11,7 @@ import (
 // V085InventoryDocumentSource agrega columna source en documentos y tipos de ajuste de inventario.
 type V085InventoryDocumentSource struct{}
 
-func (V085InventoryDocumentSource) Version() int  { return 85 }
+func (V085InventoryDocumentSource) Version() int { return 85 }
 func (V085InventoryDocumentSource) Name() string { return "inventory_document_source" }
 
 func (V085InventoryDocumentSource) Up(db *gorm.DB) error {

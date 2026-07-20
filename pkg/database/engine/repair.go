@@ -9,10 +9,10 @@ import (
 
 // RepairOptions configuración del comando repair-tenant-migrations.
 type RepairOptions struct {
-	Slug           string
-	Limit          int
-	DryRun         bool
-	ReconcileOnly  bool // solo reconciliar drift, sin ejecutar migraciones
+	Slug          string
+	Limit         int
+	DryRun        bool
+	ReconcileOnly bool // solo reconciliar drift, sin ejecutar migraciones
 }
 
 // RepairTenantOutcome resultado por tenant.
@@ -24,7 +24,7 @@ type RepairTenantOutcome struct {
 	ProvenAfter     int
 	InvalidatedFrom int
 	RowsInvalidated int64
-	DriftDetected  bool
+	DriftDetected   bool
 	Issues          []string
 	Migrated        bool
 	MigrateError    string

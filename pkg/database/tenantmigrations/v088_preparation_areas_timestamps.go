@@ -19,7 +19,7 @@ func (v088PreparationArea) TableName() string { return "tenant_preparation_areas
 // v087 creó la tabla sin deleted_at; GORM filtra deleted_at IS NULL y falla en tenants ya migrados.
 type V088PreparationAreasTimestamps struct{}
 
-func (V088PreparationAreasTimestamps) Version() int  { return 88 }
+func (V088PreparationAreasTimestamps) Version() int { return 88 }
 func (V088PreparationAreasTimestamps) Name() string { return "preparation_areas_timestamps" }
 
 func (V088PreparationAreasTimestamps) Up(db *gorm.DB) error {

@@ -17,7 +17,7 @@ func (v061Product) TableName() string { return "tenant_products" }
 // V061ProductBranchID catálogo de restaurante por sucursal (branch_id en producto).
 type V061ProductBranchID struct{}
 
-func (V061ProductBranchID) Version() int  { return 61 }
+func (V061ProductBranchID) Version() int { return 61 }
 func (V061ProductBranchID) Name() string { return "product_branch_id" }
 
 func (V061ProductBranchID) Up(db *gorm.DB) error {

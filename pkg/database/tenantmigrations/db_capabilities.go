@@ -12,10 +12,10 @@ import (
 type dbEngine string
 
 const (
-	engineMySQL    dbEngine = "mysql"
-	engineMariaDB  dbEngine = "mariadb"
-	engineSQLite   dbEngine = "sqlite"
-	engineUnknown  dbEngine = "unknown"
+	engineMySQL   dbEngine = "mysql"
+	engineMariaDB dbEngine = "mariadb"
+	engineSQLite  dbEngine = "sqlite"
+	engineUnknown dbEngine = "unknown"
 )
 
 // dbCapabilities resume motor, versión y estrategias de índice soportadas.

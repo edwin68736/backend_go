@@ -26,7 +26,7 @@ func (v080SaleItem) TableName() string { return "tenant_sale_items" }
 // V080SaleDiscountBreakdown agrega columnas de desglose de descuentos global/por línea.
 type V080SaleDiscountBreakdown struct{}
 
-func (V080SaleDiscountBreakdown) Version() int  { return 80 }
+func (V080SaleDiscountBreakdown) Version() int { return 80 }
 func (V080SaleDiscountBreakdown) Name() string { return "sale_discount_breakdown" }
 
 func (V080SaleDiscountBreakdown) Up(db *gorm.DB) error {

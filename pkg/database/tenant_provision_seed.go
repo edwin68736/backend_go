@@ -193,6 +193,10 @@ func seedDocumentSeries(tx *gorm.DB, branchID uint) error {
 		{BranchID: branchID, DocType: "FACTURA", SunatCode: "01", Category: "venta", Series: "F001", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "BOLETA", SunatCode: "03", Category: "venta", Series: "B001", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "NOTA DE VENTA", SunatCode: "00", Category: "venta", Series: "NV001", Correlative: 1, Active: true},
+		// La cotización no es documento SUNAT, pero necesita serie y correlativo propios.
+		// V073 la siembra para tenants existentes; aquí, porque esa migración corre antes
+		// de que exista la sucursal y no alcanza a crearla en un tenant nuevo.
+		{BranchID: branchID, DocType: "Cotización", SunatCode: "QT", Category: "cotizacion", Series: "COT01", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "NOTA_CREDITO", SunatCode: "07", Category: "nota_credito", Series: "FC01", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "NOTA_CREDITO", SunatCode: "07", Category: "nota_credito", Series: "BC01", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "NOTA_DEBITO", SunatCode: "08", Category: "nota_debito", Series: "FD01", Correlative: 1, Active: true},

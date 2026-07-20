@@ -14,7 +14,7 @@ type FleetMigrationState struct {
 	CircuitReason          string     `gorm:"type:text"`
 	OpenedAt               *time.Time `json:"opened_at,omitempty"`
 	LastFleetRunAt         *time.Time `json:"last_fleet_run_at,omitempty"`
-	AvgMigrationDurationMs int64    `gorm:"not null;default:0" json:"avg_migration_duration_ms"`
+	AvgMigrationDurationMs int64      `gorm:"not null;default:0" json:"avg_migration_duration_ms"`
 	UpdatedAt              time.Time
 }
 
@@ -93,7 +93,7 @@ func RecordFleetRunComplete(avgDurationMs int64) {
 	now := time.Now()
 	updates := map[string]interface{}{
 		"last_fleet_run_at": now,
-		"updated_at":      now,
+		"updated_at":        now,
 	}
 	if avgDurationMs > 0 {
 		updates["avg_migration_duration_ms"] = avgDurationMs

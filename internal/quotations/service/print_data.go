@@ -5,6 +5,7 @@ import (
 
 	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/datespe"
 	"tukifac/pkg/money"
 	"tukifac/pkg/numeroletras"
 
@@ -33,15 +34,17 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 		Series:    strings.TrimSpace(q.Series),
 		Number:    strings.TrimSpace(q.Number),
 		IssueDate: q.IssueDate.Format("02/01/2006"),
-		IssueTime: q.IssueDate.Format("15:04:05"),
-		Currency:  q.Currency,
+		// La hora sale de CreatedAt, no de IssueDate: esa fecha se fija a las 12:00 a
+		// propósito y hacía que toda cotización se imprimiera con «12:00:00».
+		IssueTime:    datespe.IssueTime(q.CreatedAt),
+		Currency:     q.Currency,
 		ExchangeRate: q.ExchangeRate,
-		Subtotal:  q.Subtotal,
-		TaxAmount: q.TaxAmount,
-		Total:     q.Total,
-		Notes:     strings.TrimSpace(q.Notes),
-		Payments:  []salessvc.PrintPayment{},
-		QRData:    "",
+		Subtotal:     q.Subtotal,
+		TaxAmount:    q.TaxAmount,
+		Total:        q.Total,
+		Notes:        strings.TrimSpace(q.Notes),
+		Payments:     []salessvc.PrintPayment{},
+		QRData:       "",
 	}
 
 	if q.ValidUntil != nil {
@@ -115,6 +118,7 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 			TaxAmount:     it.TaxAmount,
 			Total:         it.Total,
 			ModifiersJSON: it.ModifiersJSON,
+			ItemNote:      it.ItemNote,
 		}
 		code := strings.TrimSpace(it.IgvAffectationType)
 		if code == "" {

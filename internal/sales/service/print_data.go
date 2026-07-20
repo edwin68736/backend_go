@@ -9,6 +9,7 @@ import (
 	"tukifac/internal/fiscal/salecontext"
 	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/pkg/database"
+	"tukifac/pkg/datespe"
 	"tukifac/pkg/money"
 	"tukifac/pkg/numeroletras"
 	"tukifac/pkg/paymentcondition"
@@ -183,6 +184,7 @@ type PrintItem struct {
 	Total                  float64 `json:"total"`
 	IgvAffectationType     string  `json:"igv_affectation_type,omitempty"`
 	ModifiersJSON          string  `json:"modifiers_json,omitempty"`
+	ItemNote               string  `json:"item_note,omitempty"`
 }
 
 type PrintAffectTotal struct {
@@ -214,7 +216,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		Series:               sale.Series,
 		Number:               sale.Number,
 		IssueDate:            sale.IssueDate.Format("02/01/2006"),
-		IssueTime:            sale.IssueDate.Format("15:04:05"),
+		IssueTime:            datespe.IssueTime(sale.CreatedAt),
 		Currency:             sale.Currency,
 		ExchangeRate:         sale.ExchangeRate,
 		OperationTypeCode:    sale.OperationTypeCode,
@@ -391,6 +393,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			Total:                  it.Total,
 			IgvAffectationType:     it.IgvAffectationType,
 			ModifiersJSON:          it.ModifiersJSON,
+			ItemNote:               it.ItemNote,
 		}
 	}
 	pd.LineDiscountTotal = money.RoundSunat(lineDiscSum)

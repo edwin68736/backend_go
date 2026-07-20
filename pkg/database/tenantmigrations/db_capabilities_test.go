@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseMariaDBVersion(t *testing.T) {
 	tests := []struct {
-		raw           string
+		raw                 string
 		major, minor, patch int
 	}{
 		{"10.11.6-MariaDB", 10, 11, 6},
@@ -21,9 +21,9 @@ func TestParseMariaDBVersion(t *testing.T) {
 
 func TestDBCapabilitiesSupports(t *testing.T) {
 	cases := []struct {
-		cap  dbCapabilities
-		fn   bool
-		gen  bool
+		cap dbCapabilities
+		fn  bool
+		gen bool
 	}{
 		{dbCapabilities{Engine: engineMySQL, Major: 8, Minor: 0, Patch: 12}, false, true},
 		{dbCapabilities{Engine: engineMySQL, Major: 8, Minor: 0, Patch: 13}, true, true},
