@@ -9,9 +9,11 @@ import (
 
 	"tukifac/config"
 	authsvc "tukifac/internal/auth/service"
+	restaurantsvc "tukifac/internal/restaurant/service"
 	usersvc "tukifac/internal/users/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/database/engine"
+	"tukifac/pkg/database/tenantbackfills"
 	"tukifac/pkg/domains"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/pagination"
@@ -521,6 +523,86 @@ func (s *TenantService) RunMigrationsAll() (database.MigrateSummary, error) {
 		}
 	}
 	return summary, nil
+}
+
+// BackfillInfo describe un backfill disponible para el panel central.
+type BackfillInfo struct {
+	Version int    `json:"version"`
+	Name    string `json:"name"`
+}
+
+// ListBackfills backfills registrados (run-once, idempotentes).
+func (s *TenantService) ListBackfills() []BackfillInfo {
+	out := make([]BackfillInfo, 0, len(tenantbackfills.TenantBackfills))
+	for _, b := range tenantbackfills.TenantBackfills {
+		out = append(out, BackfillInfo{Version: b.Version(), Name: b.Name()})
+	}
+	return out
+}
+
+// RunBackfill ejecuta un backfill en un tenant. version <= 0 = todos los registrados.
+// Idempotente: el runner salta los ya aplicados en ese tenant.
+func (s *TenantService) RunBackfill(tenantID uint, version int) error {
+	tenant, err := s.GetByID(tenantID)
+	if err != nil {
+		return err
+	}
+	summary := engine.RunBackfillFleet(engine.BackfillOptions{
+		Version:    version,
+		TenantSlug: tenant.Slug,
+		Workers:    1,
+	})
+	for _, f := range summary.Failed {
+		return f.Err
+	}
+	return nil
+}
+
+// RunBackfillAll ejecuta un backfill en toda la flota. version <= 0 = todos los registrados.
+func (s *TenantService) RunBackfillAll(version int) database.MigrateSummary {
+	esummary := engine.RunBackfillFleet(engine.BackfillOptions{
+		Version:    version,
+		ActiveOnly: true,
+	})
+	return database.MigrateSummary{Success: esummary.Success, Failed: esummary.Failed}
+}
+
+// CleanupAbandonedQuickSales cancela las ventas rápidas abandonadas de un tenant y saca sus
+// comandas de la cocina. Re-ejecutable (mantenimiento recurrente). Devuelve cuántas se
+// cancelaron.
+func (s *TenantService) CleanupAbandonedQuickSales(tenantID uint) (int64, error) {
+	tenant, err := s.GetByID(tenantID)
+	if err != nil {
+		return 0, err
+	}
+	tdb, err := database.GetTenantDB(tenant.DBName)
+	if err != nil {
+		return 0, fmt.Errorf("conectando BD del tenant: %w", err)
+	}
+	defer database.ReleaseTenantDB(tenant.DBName)
+	return restaurantsvc.New(tdb).CleanupAbandonedQuickSales()
+}
+
+// CleanupAbandonedQuickSalesFleet corre la limpieza en todos los tenants activos.
+// No se detiene en el primero que falle; reporta el total cancelado y los que fallaron.
+func (s *TenantService) CleanupAbandonedQuickSalesFleet() (cleaned int64, failed []string) {
+	var tenants []database.Tenant
+	s.db.Where("status = ?", "active").Find(&tenants)
+	for _, t := range tenants {
+		tdb, err := database.GetTenantDB(t.DBName)
+		if err != nil {
+			failed = append(failed, t.Slug)
+			continue
+		}
+		n, err := restaurantsvc.New(tdb).CleanupAbandonedQuickSales()
+		database.ReleaseTenantDB(t.DBName)
+		if err != nil {
+			failed = append(failed, t.Slug)
+			continue
+		}
+		cleaned += n
+	}
+	return cleaned, failed
 }
 
 func (s *TenantService) Stats() (map[string]int64, error) {

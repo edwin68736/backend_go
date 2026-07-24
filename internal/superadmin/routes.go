@@ -54,6 +54,11 @@ func RegisterRoutes(app *fiber.App) {
 	saAPI.Post("/tenants/:id/modules", tenantHandler.SetModuleAPI)
 	saAPI.Post("/tenants/:id/migrate", tenantHandler.MigrateAPI)
 	saAPI.Post("/tenants/migrate-all", tenantHandler.MigrateAllAPI)
+	saAPI.Get("/backfills", tenantHandler.ListBackfillsAPI)
+	saAPI.Post("/tenants/:id/backfill", tenantHandler.RunBackfillAPI)
+	saAPI.Post("/backfills/run-all", tenantHandler.RunBackfillAllAPI)
+	saAPI.Post("/tenants/:id/cleanup-abandoned-orders", tenantHandler.CleanupAbandonedOrdersAPI)
+	saAPI.Post("/maintenance/cleanup-abandoned-orders", tenantHandler.CleanupAbandonedOrdersAllAPI)
 
 	saAPI.Get("/migrations", migrationHandler.ListAPI)
 	saAPI.Get("/migrations/summary", migrationHandler.SummaryAPI)

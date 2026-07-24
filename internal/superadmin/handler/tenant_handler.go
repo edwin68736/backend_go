@@ -1235,3 +1235,69 @@ func (h *TenantHandler) SetFacturadorEnabledAPI(c fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"success": true, "ruc": ruc, "enabled": body.Enabled})
 }
+
+// GET /api/superadmin/backfills — backfills disponibles (run-once, idempotentes).
+func (h *TenantHandler) ListBackfillsAPI(c fiber.Ctx) error {
+	return c.JSON(fiber.Map{"data": h.svc.ListBackfills()})
+}
+
+// backfillVersionFromQuery: ?version=33; 0/ausente = todos los registrados.
+func backfillVersionFromQuery(c fiber.Ctx) int {
+	v, _ := strconv.Atoi(c.Query("version"))
+	return v
+}
+
+// POST /api/superadmin/tenants/:id/backfill?version= — corre backfill en un tenant.
+func (h *TenantHandler) RunBackfillAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := h.svc.RunBackfill(uint(id), backfillVersionFromQuery(c)); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "message": "Backfill ejecutado"})
+}
+
+// POST /api/superadmin/backfills/run-all?version= — corre backfill en toda la flota.
+func (h *TenantHandler) RunBackfillAllAPI(c fiber.Ctx) error {
+	summary := h.svc.RunBackfillAll(backfillVersionFromQuery(c))
+	resp := fiber.Map{
+		"success":  len(summary.Failed) == 0,
+		"aplicado": len(summary.Success),
+		"failed":   len(summary.Failed),
+	}
+	if len(summary.Failed) > 0 {
+		failed := make([]string, 0, len(summary.Failed))
+		for _, f := range summary.Failed {
+			failed = append(failed, f.Slug)
+		}
+		resp["failed_tenants"] = failed
+	}
+	return c.JSON(resp)
+}
+
+// POST /api/superadmin/tenants/:id/cleanup-abandoned-orders — cancela ventas rápidas
+// abandonadas de un tenant (mantenimiento re-ejecutable).
+func (h *TenantHandler) CleanupAbandonedOrdersAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	n, err := h.svc.CleanupAbandonedQuickSales(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "cancelled": n})
+}
+
+// POST /api/superadmin/maintenance/cleanup-abandoned-orders — flota completa.
+func (h *TenantHandler) CleanupAbandonedOrdersAllAPI(c fiber.Ctx) error {
+	cleaned, failed := h.svc.CleanupAbandonedQuickSalesFleet()
+	return c.JSON(fiber.Map{
+		"success":        len(failed) == 0,
+		"cancelled":      cleaned,
+		"failed":         len(failed),
+		"failed_tenants": failed,
+	})
+}

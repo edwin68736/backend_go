@@ -19,6 +19,21 @@ const sessionStatusOpen = "open"
 // si la transacción falla, el rollback lo devuelve a "open" solo.
 const sessionStatusBilling = "billing"
 
+// Estados terminales de una sesión (ya no bloquean operar/eliminar la mesa).
+const (
+	sessionStatusBilled = "billed" // cobro total confirmado; mesa liberada y comandas borradas
+	sessionStatusClosed = "closed" // cerrada sin cobro (liberada a mano)
+)
+
+// Estados de un pedido de mesa (tenant_table_orders).
+const (
+	tableOrderActive    = "active"
+	tableOrderCancelled = "cancelled"
+	// tableOrderClosed: pedido finalizado al facturar. Antes no existía y los pedidos
+	// quedaban "active" para siempre, bloqueando la eliminación de la mesa.
+	tableOrderClosed = "closed"
+)
+
 // findOpenSessionForTableLocked devuelve la sesión open más reciente para la mesa (requiere tx).
 func (s *RestaurantService) findOpenSessionForTableLocked(tx *gorm.DB, tableID uint) (*database.TenantTableSession, error) {
 	var sess database.TenantTableSession

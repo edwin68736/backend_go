@@ -8,15 +8,15 @@ import (
 	"strings"
 	"time"
 
-	"tukifac/internal/restaurant/staff"
+	cashbanksvc "tukifac/internal/cashbank/service"
 	invsvc "tukifac/internal/inventory/service"
+	"tukifac/internal/restaurant/staff"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/money"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
-	cashbanksvc "tukifac/internal/cashbank/service"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -301,9 +301,14 @@ func (s *RestaurantService) tableDeleteBlockReason(table *database.TenantRestaur
 		return "la mesa tiene un pedido abierto; anúlelo o ciérrelo antes de eliminar la mesa"
 	}
 
+	// Solo las sesiones realmente en curso bloquean: 'open' (abierta) y 'billing' (cobro en
+	// proceso). 'billed' es una operación TERMINADA —la mesa ya se liberó y las comandas se
+	// borraron— así que no debe bloquear; antes sí lo hacía (se usaba "billed" en vez de
+	// "billing"), y como los pedidos quedaban 'active' para siempre, ninguna mesa cobrada
+	// podía eliminarse.
 	var sessionIDs []uint
 	if err := s.db.Model(&database.TenantTableSession{}).
-		Where("table_id = ? AND status IN ?", table.ID, []string{"open", "billed"}).
+		Where("table_id = ? AND status IN ?", table.ID, []string{sessionStatusOpen, sessionStatusBilling}).
 		Pluck("id", &sessionIDs).Error; err != nil {
 		return "no se pudo verificar operaciones vinculadas a la mesa"
 	}
@@ -313,7 +318,7 @@ func (s *RestaurantService) tableDeleteBlockReason(table *database.TenantRestaur
 
 	var activeOrders int64
 	s.db.Model(&database.TenantTableOrder{}).
-		Where("session_id IN ? AND status = ?", sessionIDs, "active").
+		Where("session_id IN ? AND status = ?", sessionIDs, tableOrderActive).
 		Count(&activeOrders)
 	if activeOrders > 0 {
 		return fmt.Sprintf("la mesa tiene %d pedido(s) activo(s); finalice o anule la operación antes de eliminarla", activeOrders)
@@ -347,6 +352,57 @@ func (s *RestaurantService) DeleteTable(id uint) error {
 		return err
 	}
 	return nil
+}
+
+// CleanupAbandonedQuickSales cancela ventas rápidas abandonadas y saca sus comandas de la
+// cocina.
+//
+// Abandonada = sesión abierta, sin mesa (quick_sale/takeaway/delivery), sin venta generada
+// (sale_id nulo) y abierta ANTES de hoy. El corte por día evita tocar una operación del
+// turno actual que todavía no se ha cobrado. Devuelve cuántas sesiones se cancelaron.
+//
+// Re-ejecutable: es un mantenimiento recurrente (estas ventas se siguen abandonando y no
+// hay cierre automático), no una corrección de una sola vez.
+func (s *RestaurantService) CleanupAbandonedQuickSales() (int64, error) {
+	if !s.db.Migrator().HasTable("tenant_table_sessions") {
+		return 0, nil
+	}
+
+	// Corte "inicio de hoy" calculado en Go (portable: SQLite en tests no tiene CURDATE).
+	now := time.Now()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	// Sesión abierta, sin mesa, sin venta, abierta antes de hoy.
+	var sessionIDs []uint
+	if err := s.db.Model(&database.TenantTableSession{}).
+		Where("status = 'open' AND table_id IS NULL AND sale_id IS NULL AND opened_at < ?", startOfToday).
+		Pluck("id", &sessionIDs).Error; err != nil {
+		return 0, err
+	}
+	if len(sessionIDs) == 0 {
+		return 0, nil
+	}
+
+	if err := s.db.Model(&database.TenantComanda{}).
+		Where("session_id IN ? AND cancelled_at IS NULL", sessionIDs).
+		Updates(map[string]interface{}{
+			"cancelled_at":  now,
+			"cancel_reason": "Venta rápida abandonada (limpieza)",
+		}).Error; err != nil {
+		return 0, err
+	}
+
+	if err := s.db.Model(&database.TenantTableSession{}).
+		Where("id IN ?", sessionIDs).
+		Updates(map[string]interface{}{
+			"status":       "cancelled",
+			"order_status": "cancelled",
+			"closed_at":    now,
+		}).Error; err != nil {
+		return 0, err
+	}
+
+	return int64(len(sessionIDs)), nil
 }
 
 // ============================= SESIONES DE MESA =============================
@@ -579,9 +635,9 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 				UnitPrice:          item.UnitPrice,
 				Notes:              item.Notes,
 				ModifiersJSON:      strings.TrimSpace(item.ModifiersJSON),
-				IgvAffectationType:   affType,
+				IgvAffectationType: affType,
 				PriceIncludesIgv:   item.PriceIncludesIgv,
-				Status:               "pendiente",
+				Status:             "pendiente",
 			}
 			if err := tx.Create(&c).Error; err != nil {
 				return err
@@ -837,18 +893,18 @@ func (s *RestaurantService) MarkTableOrderPrinted(tableOrderID uint, userID uint
 
 // KitchenSessionMeta contexto del pedido para la vista de cocina.
 type KitchenSessionMeta struct {
-	OrderCode       string     `json:"order_code"`
-	OrderType       string     `json:"order_type"`
-	OrderStatus     string     `json:"order_status"`
-	TableID         *uint      `json:"table_id"`
-	TableName       string     `json:"table_name"`
-	FloorName       string     `json:"floor_name"`
-	CustomerName    string     `json:"customer_name"`
-	CustomerPhone   string     `json:"customer_phone"`
-	DeliveryAddress string     `json:"delivery_address"`
-	WaiterName      string     `json:"waiter_name"`
-	DriverName      string     `json:"driver_name"`
-	OpenedAt        time.Time  `json:"session_opened_at"`
+	OrderCode       string    `json:"order_code"`
+	OrderType       string    `json:"order_type"`
+	OrderStatus     string    `json:"order_status"`
+	TableID         *uint     `json:"table_id"`
+	TableName       string    `json:"table_name"`
+	FloorName       string    `json:"floor_name"`
+	CustomerName    string    `json:"customer_name"`
+	CustomerPhone   string    `json:"customer_phone"`
+	DeliveryAddress string    `json:"delivery_address"`
+	WaiterName      string    `json:"waiter_name"`
+	DriverName      string    `json:"driver_name"`
+	OpenedAt        time.Time `json:"session_opened_at"`
 }
 
 // KitchenComandaView línea de cocina con datos del pedido y de la ronda.
@@ -961,21 +1017,21 @@ func (s *RestaurantService) kitchenSessionMetaMap(sessionIDs []uint) map[uint]Ki
 // ============================= COBRO Y CIERRE =============================
 
 type BillInput struct {
-	SessionID      uint
-	UserID         uint
-	EmployeeType   string // staff restaurante: bloquea efectivo a waiter
-	SeriesID       uint
-	DocType        string
-	IssueDate      time.Time
-	Currency       string
-	ContactID      *uint
-	Payments       []PaymentInput
-	CashSessionID  *uint
-	CloseSession      bool // si es false, genera la venta pero no cierra la mesa (cliente puede seguir consumiendo)
-	DiscountAmount    float64 // descuento global en moneda sobre base imponible (subtotal)
-	DiscountMode      string  // "percent" | "amount" (opcional; recalcula descuento en servidor)
-	DiscountValue     float64 // valor del descuento (% o monto según DiscountMode)
-	CentralTenantID   uint    // tenant SaaS (cupo documentos electrónicos)
+	SessionID       uint
+	UserID          uint
+	EmployeeType    string // staff restaurante: bloquea efectivo a waiter
+	SeriesID        uint
+	DocType         string
+	IssueDate       time.Time
+	Currency        string
+	ContactID       *uint
+	Payments        []PaymentInput
+	CashSessionID   *uint
+	CloseSession    bool    // si es false, genera la venta pero no cierra la mesa (cliente puede seguir consumiendo)
+	DiscountAmount  float64 // descuento global en moneda sobre base imponible (subtotal)
+	DiscountMode    string  // "percent" | "amount" (opcional; recalcula descuento en servidor)
+	DiscountValue   float64 // valor del descuento (% o monto según DiscountMode)
+	CentralTenantID uint    // tenant SaaS (cupo documentos electrónicos)
 }
 
 type PaymentInput struct {
@@ -1161,24 +1217,24 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	var saleNumber string
 
 	sale = &database.TenantSale{
-		BranchID:            sess.BranchID,
-		UserID:              input.UserID,
-		ContactID:           input.ContactID,
-		RestaurantSessionID: &input.SessionID,
-		CashSessionID:       input.CashSessionID,
-		SeriesID:            input.SeriesID,
-		DocType:             input.DocType,
-		IssueDate:     input.IssueDate,
-		Subtotal:      money.RoundSunat(subtotal),
-		TaxAmount:     money.RoundSunat(taxAmount),
-		Total:         money.RoundSunat(total),
+		BranchID:             sess.BranchID,
+		UserID:               input.UserID,
+		ContactID:            input.ContactID,
+		RestaurantSessionID:  &input.SessionID,
+		CashSessionID:        input.CashSessionID,
+		SeriesID:             input.SeriesID,
+		DocType:              input.DocType,
+		IssueDate:            input.IssueDate,
+		Subtotal:             money.RoundSunat(subtotal),
+		TaxAmount:            money.RoundSunat(taxAmount),
+		Total:                money.RoundSunat(total),
 		GlobalDiscountAmount: money.RoundSunat(discountAmount),
 		GlobalDiscountMode:   globalMode,
 		GlobalDiscountValue:  globalValue,
-		Currency:      currency,
-		PaymentMethod: input.Payments[0].Method, // método principal
-		Status:        "paid",
-		BillingStatus: "pending",
+		Currency:             currency,
+		PaymentMethod:        input.Payments[0].Method, // método principal
+		Status:               "paid",
+		BillingStatus:        "pending",
 	}
 
 	now := time.Now()
@@ -1299,7 +1355,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		if input.CloseSession {
 			// Cerrar sesión y liberar mesa
 			tx.Model(&lockedSess).Updates(map[string]interface{}{
-				"status": "billed", "closed_at": now, "sale_id": sale.ID,
+				"status": sessionStatusBilled, "closed_at": now, "sale_id": sale.ID,
 				"order_status": OrderStatusPaid, "paid_at": now,
 			})
 			if lockedSess.TableID != nil {
@@ -1307,6 +1363,11 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 					return err
 				}
 			}
+			// Finalizar los pedidos de la sesión. Sin esto quedaban "active" para siempre y
+			// bloqueaban eliminar la mesa aunque estuviera libre y ya cobrada.
+			tx.Model(&database.TenantTableOrder{}).
+				Where("session_id = ? AND status = ?", input.SessionID, tableOrderActive).
+				Update("status", tableOrderClosed)
 			// Eliminar comandas de la sesión cerrada (ya facturadas en la venta; no aparecen en cocina)
 			tx.Where("session_id = ?", input.SessionID).Delete(&database.TenantComanda{})
 		} else {
@@ -1505,4 +1566,3 @@ func (s *RestaurantService) resolveCashSessionForSale(
 	}
 	return cbSvc.ResolveCashSessionForSale(branchID, userID, cashSessionID, payLines)
 }
-

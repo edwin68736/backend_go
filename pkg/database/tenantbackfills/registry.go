@@ -4,6 +4,7 @@ package tenantbackfills
 var TenantBackfills = []TenantBackfill{
 	V031BranchBackfill{},
 	V032RestaurantOrdersBackfill{},
+	V033FinalizeOrphanTableOrders{},
 }
 
 // ByVersion mapa versión → backfill.

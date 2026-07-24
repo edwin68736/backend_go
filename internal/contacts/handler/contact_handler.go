@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tukifac/internal/contacts/service"
+	"tukifac/pkg/pagination"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
 
@@ -194,11 +195,34 @@ func bodyToInput(b contactBody) service.ContactInput {
 
 func (h *ContactHandler) SearchAPI(c fiber.Ctx) error {
 	svc := service.NewContactService(db(c))
-	contacts, _ := svc.List(service.ContactListParams{
+	params := service.ContactListParams{
 		Query:  c.Query("q"),
 		Type:   c.Query("type"),
 		Status: c.Query("status"),
-	})
+	}
+
+	// Paginación opt-in: solo cuando el cliente manda per_page. Sin él se devuelve todo, que
+	// es lo que necesitan los selectores del POS/ventas (retrocompatible).
+	perPage, _ := strconv.Atoi(c.Query("per_page"))
+	if perPage > 0 {
+		page, _ := strconv.Atoi(c.Query("page"))
+		if page < 1 {
+			page = 1
+		}
+		contacts, total, err := svc.ListPaged(params, page, perPage)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{
+			"data":        contacts,
+			"total":       total,
+			"page":        page,
+			"per_page":    perPage,
+			"total_pages": pagination.TotalPages(total, perPage),
+		})
+	}
+
+	contacts, _ := svc.List(params)
 	return c.JSON(fiber.Map{"data": contacts})
 }
 
