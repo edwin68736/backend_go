@@ -53,11 +53,11 @@ type Config struct {
 	TenantPoolEvictInterval time.Duration
 
 	// Redis (resuelto en Load desde REDIS_URL / REDIS_ADDR / REDIS_HOST+PORT)
-	Redis            RedisSettings
-	RedisURL         string // URL canónica (compatibilidad)
-	RedisPoolSize    int
+	Redis             RedisSettings
+	RedisURL          string // URL canónica (compatibilidad)
+	RedisPoolSize     int
 	RedisMinIdleConns int
-	RedisMaxRetries  int
+	RedisMaxRetries   int
 
 	// Feature flag: endpoint compuesto de checkout para el POS de venta rápida.
 	POSFastCheckoutEnabled bool
@@ -69,13 +69,13 @@ type Config struct {
 	BillingRetryBaseDelay time.Duration
 
 	// Migraciones CLI (lotes)
-	MigrationBatchSize  int
-	MigrationBatchPause time.Duration
-	MigrationAlertWebhook string
-	MigrationAlertEmail   string
-	FleetFailedThreshold          int
-	FleetCircuitBreakerThreshold  int
-	InternalAPIKey                string
+	MigrationBatchSize           int
+	MigrationBatchPause          time.Duration
+	MigrationAlertWebhook        string
+	MigrationAlertEmail          string
+	FleetFailedThreshold         int
+	FleetCircuitBreakerThreshold int
+	InternalAPIKey               string
 
 	// SMTP opcional (alertas migración)
 	SMTPHost     string
@@ -104,17 +104,17 @@ type Config struct {
 	SAJWTSecret string
 
 	// Servidor HTTP
-	ServerPort      string
-	BodyLimitBytes  int
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	IdleTimeout     time.Duration
+	ServerPort     string
+	BodyLimitBytes int
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	IdleTimeout    time.Duration
 
 	// Facturación electrónica externa
-	FacturadorBaseURL         string
-	FacturadorToken           string
-	FiscalQueueWorkers        int
-	InvoiceStoragePath        string
+	FacturadorBaseURL          string
+	FacturadorToken            string
+	FiscalQueueWorkers         int
+	InvoiceStoragePath         string
 	ValidaPSEManagementBaseURL string
 	ValidaPSEManagementToken   string
 
@@ -189,8 +189,8 @@ func Load() error {
 
 		DBCentralMaxOpen:  getEnvInt("DB_CENTRAL_MAX_OPEN", 25),
 		DBCentralMaxIdle:  getEnvInt("DB_CENTRAL_MAX_IDLE", 10),
-		DBTenantMaxOpen:   getEnvInt("DB_TENANT_MAX_OPEN", 2),
-		DBTenantMaxIdle:   getEnvInt("DB_TENANT_MAX_IDLE", 1),
+		DBTenantMaxOpen:   getEnvInt("DB_TENANT_MAX_OPEN", 6),
+		DBTenantMaxIdle:   getEnvInt("DB_TENANT_MAX_IDLE", 3),
 		DBConnMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", "30m"),
 		DBConnMaxIdleTime: getEnvDuration("DB_CONN_MAX_IDLE_TIME", "5m"),
 		DBReadTimeout:     getEnvDuration("DB_READ_TIMEOUT", "3s"),
@@ -208,14 +208,14 @@ func Load() error {
 
 		POSFastCheckoutEnabled: getEnvBool("POS_FAST_CHECKOUT_ENABLED", true),
 
-		BillingAsyncEnabled:   getEnvBool("BILLING_ASYNC_ENABLED", true),
-		BillingQueueWorkers:   getEnvInt("BILLING_QUEUE_WORKERS", 4),
-		BillingMaxRetries:     getEnvInt("BILLING_MAX_RETRIES", 5),
-		BillingRetryBaseDelay: getEnvDuration("BILLING_RETRY_BASE_DELAY", "30s"),
-		MigrationBatchSize:    getEnvInt("MIGRATION_BATCH_SIZE", 50),
-		MigrationBatchPause:   getEnvDuration("MIGRATION_BATCH_PAUSE", "2s"),
-		MigrationAlertWebhook: getEnv("MIGRATION_ALERT_WEBHOOK", ""),
-		MigrationAlertEmail:   getEnv("MIGRATION_ALERT_EMAIL", ""),
+		BillingAsyncEnabled:          getEnvBool("BILLING_ASYNC_ENABLED", true),
+		BillingQueueWorkers:          getEnvInt("BILLING_QUEUE_WORKERS", 4),
+		BillingMaxRetries:            getEnvInt("BILLING_MAX_RETRIES", 5),
+		BillingRetryBaseDelay:        getEnvDuration("BILLING_RETRY_BASE_DELAY", "30s"),
+		MigrationBatchSize:           getEnvInt("MIGRATION_BATCH_SIZE", 50),
+		MigrationBatchPause:          getEnvDuration("MIGRATION_BATCH_PAUSE", "2s"),
+		MigrationAlertWebhook:        getEnv("MIGRATION_ALERT_WEBHOOK", ""),
+		MigrationAlertEmail:          getEnv("MIGRATION_ALERT_EMAIL", ""),
 		FleetFailedThreshold:         getEnvInt("FLEET_FAILED_THRESHOLD", 25),
 		FleetCircuitBreakerThreshold: getEnvInt("FLEET_CIRCUIT_BREAKER_THRESHOLD", 10),
 		InternalAPIKey:               getEnv("INTERNAL_API_KEY", ""),

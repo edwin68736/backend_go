@@ -79,8 +79,22 @@ func CycleMonthsFromBilling(cycle string) int {
 	}
 }
 
-// GetTenantView calcula estado efectivo desde BD central (fechas en America/Lima).
+// GetTenantView estado efectivo del tenant. Cachea el resultado una ventana breve
+// (tenantViewCacheTTL) para no repetir ~8 consultas a la BD central por cada request ERP.
+// La caché se invalida al instante en cambios vía InvalidateTenantCache.
 func GetTenantView(tenantID uint) (TenantSubscriptionView, error) {
+	if v, ok := getCachedTenantView(tenantID); ok {
+		return v, nil
+	}
+	v, err := computeTenantView(tenantID)
+	if err == nil {
+		setCachedTenantView(tenantID, v)
+	}
+	return v, err
+}
+
+// computeTenantView calcula estado efectivo desde BD central (fechas en America/Lima).
+func computeTenantView(tenantID uint) (TenantSubscriptionView, error) {
 	cfg, _ := LoadSettings()
 	strikeMax := EffectiveStrikeMax(cfg)
 	v := TenantSubscriptionView{
@@ -235,6 +249,7 @@ func ResolveEffectiveStatus(sub *database.SaasSubscription, tenant *database.Ten
 
 // InvalidateTenantCache tras cambios de suscripción/pago.
 func InvalidateTenantCache(tenantID uint) {
+	clearCachedTenantView(tenantID)
 	var t database.Tenant
 	if database.CentralDB.First(&t, tenantID).Error == nil {
 		tenantcache.Invalidate(t.Slug)
