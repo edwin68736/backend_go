@@ -81,6 +81,7 @@ func (s *RestaurantPOSCheckoutService) resolveDirectSaleItems(
 		}
 		items = append(items, salesvc.SaleItemInput{
 			ProductID:          item.ProductID,
+			PresentationID:     item.PresentationID,
 			Code:               item.ProductCode,
 			Description:        item.ProductName,
 			Unit:               "NIU",
@@ -107,4 +108,3 @@ func isDirectSaleCheckout(in POSCheckoutInput) bool {
 	}
 	return normalizeOrderType(in.OrderType, nil) == OrderTypeQuickSale
 }
-

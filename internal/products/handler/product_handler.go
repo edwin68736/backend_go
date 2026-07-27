@@ -12,9 +12,9 @@ import (
 	"tukifac/internal/products/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
-	"tukifac/pkg/tax"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -78,7 +78,7 @@ func (h *ProductHandler) CreateForm(c fiber.Ctx) error {
 	taxCfg := tax.LoadFromDB(db(c))
 	input := buildProductInput(c, taxCfg)
 
-	if _, err := svc.Create(input); err != nil {
+	if _, _, err := svc.Create(input); err != nil {
 		cats, _ := svc.ListCategories()
 		modGroups, _ := svc.ListModifierGroups()
 		return c.Render("products/form", fiber.Map{
@@ -136,7 +136,7 @@ func (h *ProductHandler) UpdateForm(c fiber.Ctx) error {
 	taxCfg := tax.LoadFromDB(db(c))
 	input := buildProductInput(c, taxCfg)
 
-	if err := svc.Update(uint(id), input); err != nil {
+	if _, err := svc.Update(uint(id), input); err != nil {
 		cats, _ := svc.ListCategories()
 		modGroups, _ := svc.ListModifierGroups()
 		p, _ := svc.GetByID(uint(id))
@@ -169,31 +169,33 @@ func (h *ProductHandler) DeleteForm(c fiber.Ctx) error {
 // CreateAPI crea un producto vía JSON.
 func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	var body struct {
-		CategoryID         *uint   `json:"category_id"`
-		Code               string  `json:"code"`
-		Name               string  `json:"name"`
-		Description        string  `json:"description"`
-		Type               string  `json:"type"`
-		Unit               string  `json:"unit"`
-		SalePrice          float64 `json:"sale_price"`
-		PurchasePrice      float64 `json:"purchase_price"`
-		IgvAffectationType string  `json:"igv_affectation_type"`
-		PriceIncludesIgv   bool    `json:"price_includes_igv"`
-		ManageStock        bool    `json:"manage_stock"`
-		ManageSeries       bool    `json:"manage_series"`
-		HasVariants        bool    `json:"has_variants"`
-		HasModifiers       bool    `json:"has_modifiers"`
-		MinStock           float64 `json:"min_stock"`
-		HasExpiryDate      bool    `json:"has_expiry_date"`
-		ExpiryDate         string  `json:"expiry_date"`
-		IsRestaurant       bool    `json:"is_restaurant"`
-		PreparationAreaID  *uint   `json:"preparation_area_id"`
-		PreparationArea    string  `json:"preparation_area"`
-		ImageURL           string  `json:"image_url"`
-		ModifierGroupIDs   []uint  `json:"modifier_group_ids"`
-		Presentations      []struct {
-			Name      string  `json:"name"`
-			SalePrice float64 `json:"sale_price"`
+		CategoryID           *uint   `json:"category_id"`
+		Code                 string  `json:"code"`
+		Name                 string  `json:"name"`
+		Description          string  `json:"description"`
+		Type                 string  `json:"type"`
+		Unit                 string  `json:"unit"`
+		SalePrice            float64 `json:"sale_price"`
+		PurchasePrice        float64 `json:"purchase_price"`
+		IgvAffectationType   string  `json:"igv_affectation_type"`
+		PriceIncludesIgv     bool    `json:"price_includes_igv"`
+		ManageStock          bool    `json:"manage_stock"`
+		ManageSeries         bool    `json:"manage_series"`
+		HasVariants          bool    `json:"has_variants"`
+		HasModifiers         bool    `json:"has_modifiers"`
+		MinStock             float64 `json:"min_stock"`
+		HasExpiryDate        bool    `json:"has_expiry_date"`
+		ExpiryDate           string  `json:"expiry_date"`
+		IsRestaurant         bool    `json:"is_restaurant"`
+		ShowInDigitalCatalog bool    `json:"show_in_digital_catalog"`
+		PreparationAreaID    *uint   `json:"preparation_area_id"`
+		PreparationArea      string  `json:"preparation_area"`
+		ImageURL             string  `json:"image_url"`
+		ModifierGroupIDs     []uint  `json:"modifier_group_ids"`
+		Presentations        []struct {
+			Name         string  `json:"name"`
+			SalePrice    float64 `json:"sale_price"`
+			InitialStock float64 `json:"initial_stock"`
 		} `json:"presentations"`
 		ComboGroups  []comboGroupBody `json:"combo_groups"`
 		InitialStock float64          `json:"initial_stock"`
@@ -221,30 +223,31 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		igvType = "10"
 	}
 	input := service.ProductInput{
-		CategoryID:         body.CategoryID,
-		Code:               body.Code,
-		Name:               body.Name,
-		Description:        body.Description,
-		Type:               body.Type,
-		Unit:               body.Unit,
-		SalePrice:          body.SalePrice,
-		PurchasePrice:      body.PurchasePrice,
-		TaxRate:            taxCfg.EffectiveRate(igvType),
-		IgvAffectationType: igvType,
-		PriceIncludesIgv:   body.PriceIncludesIgv,
-		ManageStock:        manageStock,
-		ManageSeries:       body.ManageSeries,
-		HasVariants:        body.HasVariants,
-		HasModifiers:       body.HasModifiers,
-		MinStock:           body.MinStock,
-		HasExpiryDate:      body.HasExpiryDate,
-		ExpiryDate:         expiryDate,
-		IsRestaurant:       body.IsRestaurant,
-		PreparationAreaID:  body.PreparationAreaID,
-		PreparationArea:    body.PreparationArea,
-		ImageURL:           body.ImageURL,
-		Active:             true,
-		ModifierGroupIDs: &body.ModifierGroupIDs,
+		CategoryID:           body.CategoryID,
+		Code:                 body.Code,
+		Name:                 body.Name,
+		Description:          body.Description,
+		Type:                 body.Type,
+		Unit:                 body.Unit,
+		SalePrice:            body.SalePrice,
+		PurchasePrice:        body.PurchasePrice,
+		TaxRate:              taxCfg.EffectiveRate(igvType),
+		IgvAffectationType:   igvType,
+		PriceIncludesIgv:     body.PriceIncludesIgv,
+		ManageStock:          manageStock,
+		ManageSeries:         body.ManageSeries,
+		HasVariants:          body.HasVariants,
+		HasModifiers:         body.HasModifiers,
+		MinStock:             body.MinStock,
+		HasExpiryDate:        body.HasExpiryDate,
+		ExpiryDate:           expiryDate,
+		IsRestaurant:         body.IsRestaurant,
+		ShowInDigitalCatalog: body.ShowInDigitalCatalog,
+		PreparationAreaID:    body.PreparationAreaID,
+		PreparationArea:      body.PreparationArea,
+		ImageURL:             body.ImageURL,
+		Active:               true,
+		ModifierGroupIDs:     &body.ModifierGroupIDs,
 	}
 	if len(body.Presentations) > 0 {
 		pres := make([]service.ProductPresentationInput, 0, len(body.Presentations))
@@ -252,9 +255,16 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 			if strings.TrimSpace(row.Name) == "" {
 				continue
 			}
+			if row.InitialStock < 0 {
+				return c.Status(400).JSON(fiber.Map{"error": "el stock inicial de una presentación no puede ser negativo"})
+			}
+			if row.InitialStock > 0 && !body.ManageStock {
+				return c.Status(400).JSON(fiber.Map{"error": service.InitialStockRequiresManageStock})
+			}
 			pres = append(pres, service.ProductPresentationInput{
-				Name:      strings.TrimSpace(row.Name),
-				SalePrice: row.SalePrice,
+				Name:         strings.TrimSpace(row.Name),
+				SalePrice:    row.SalePrice,
+				InitialStock: row.InitialStock,
 			})
 		}
 		if len(pres) > 0 {
@@ -273,7 +283,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		}
 		input.BranchID = branchID
 	}
-	p, err := service.NewProductService(db(c)).Create(input)
+	p, presResults, err := service.NewProductService(db(c)).Create(input)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -317,6 +327,23 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
+	// Stock inicial por presentación (ej. Rojo: 5, Azul: 3, Amarillo: 2): solo tiene sentido con
+	// una sucursal resuelta; si no hay una (berr != nil), las presentaciones quedan en 0 y el
+	// tenant las ajusta después con "Ajustar stock".
+	if p.ManageStock && berr == nil && branchID > 0 {
+		inv := invsvc.NewInventoryService(db(c))
+		uid, _ := c.Locals("user_id").(uint)
+		for _, res := range presResults {
+			if !res.IsNew || res.InitialStock <= 0 {
+				continue
+			}
+			if err := inv.RecordInitialPresentationStock(
+				p.ID, res.Presentation.ID, branchID, res.InitialStock, uid, "Stock inicial — alta de producto",
+			); err != nil {
+				return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("presentación '%s': %s", res.Presentation.Name, err.Error())})
+			}
+		}
+	}
 	return c.Status(201).JSON(fiber.Map{"data": p})
 }
 
@@ -327,33 +354,38 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	var body struct {
-		CategoryID         *uint   `json:"category_id"`
-		Code               string  `json:"code"`
-		Name               string  `json:"name"`
-		Description        string  `json:"description"`
-		Type               string  `json:"type"`
-		Unit               string  `json:"unit"`
-		SalePrice          float64 `json:"sale_price"`
-		PurchasePrice      float64 `json:"purchase_price"`
-		IgvAffectationType string  `json:"igv_affectation_type"`
-		PriceIncludesIgv   bool    `json:"price_includes_igv"`
-		ManageStock        bool    `json:"manage_stock"`
-		ManageSeries       bool    `json:"manage_series"`
-		HasVariants        bool    `json:"has_variants"`
-		HasModifiers       bool    `json:"has_modifiers"`
-		MinStock           float64 `json:"min_stock"`
-		HasExpiryDate      bool    `json:"has_expiry_date"`
-		ExpiryDate         string  `json:"expiry_date"`
-		IsRestaurant       bool    `json:"is_restaurant"`
-		PreparationAreaID  *uint   `json:"preparation_area_id"`
-		PreparationArea    string  `json:"preparation_area"`
+		CategoryID           *uint   `json:"category_id"`
+		Code                 string  `json:"code"`
+		Name                 string  `json:"name"`
+		Description          string  `json:"description"`
+		Type                 string  `json:"type"`
+		Unit                 string  `json:"unit"`
+		SalePrice            float64 `json:"sale_price"`
+		PurchasePrice        float64 `json:"purchase_price"`
+		IgvAffectationType   string  `json:"igv_affectation_type"`
+		PriceIncludesIgv     bool    `json:"price_includes_igv"`
+		ManageStock          bool    `json:"manage_stock"`
+		ManageSeries         bool    `json:"manage_series"`
+		HasVariants          bool    `json:"has_variants"`
+		HasModifiers         bool    `json:"has_modifiers"`
+		MinStock             float64 `json:"min_stock"`
+		HasExpiryDate        bool    `json:"has_expiry_date"`
+		ExpiryDate           string  `json:"expiry_date"`
+		IsRestaurant         bool    `json:"is_restaurant"`
+		ShowInDigitalCatalog bool    `json:"show_in_digital_catalog"`
+		PreparationAreaID    *uint   `json:"preparation_area_id"`
+		PreparationArea      string  `json:"preparation_area"`
 		// nil = conservar la imagen actual; "" = quitarla.
-		ImageURL           *string `json:"image_url"`
-		Active             *bool   `json:"active"`
+		ImageURL         *string `json:"image_url"`
+		Active           *bool   `json:"active"`
 		ModifierGroupIDs *[]uint `json:"modifier_group_ids"`
 		Presentations    *[]struct {
+			ID        uint    `json:"id"`
 			Name      string  `json:"name"`
 			SalePrice float64 `json:"sale_price"`
+			// InitialStock: solo aplica a filas nuevas (sin ID) agregadas durante la edición;
+			// las existentes ya tienen su stock y se corrigen con "Ajustar stock".
+			InitialStock float64 `json:"initial_stock"`
 		} `json:"presentations"`
 		// nil = no tocar el combo; [] = deja de ser combo.
 		ComboGroups *[]comboGroupBody `json:"combo_groups"`
@@ -379,28 +411,29 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		igvType = "10"
 	}
 	input := service.ProductInput{
-		CategoryID:         body.CategoryID,
-		Code:               body.Code,
-		Name:               body.Name,
-		Description:        body.Description,
-		Type:               body.Type,
-		Unit:               body.Unit,
-		SalePrice:          body.SalePrice,
-		PurchasePrice:      body.PurchasePrice,
-		TaxRate:            taxCfg.EffectiveRate(igvType),
-		IgvAffectationType: igvType,
-		PriceIncludesIgv:   body.PriceIncludesIgv,
-		ManageStock:        body.ManageStock,
-		ManageSeries:       body.ManageSeries,
-		HasVariants:        body.HasVariants,
-		HasModifiers:       body.HasModifiers,
-		MinStock:           body.MinStock,
-		HasExpiryDate:      body.HasExpiryDate,
-		ExpiryDate:         expiryDate,
-		IsRestaurant:       body.IsRestaurant,
-		PreparationAreaID:  body.PreparationAreaID,
-		PreparationArea:    body.PreparationArea,
-		ModifierGroupIDs:   body.ModifierGroupIDs,
+		CategoryID:           body.CategoryID,
+		Code:                 body.Code,
+		Name:                 body.Name,
+		Description:          body.Description,
+		Type:                 body.Type,
+		Unit:                 body.Unit,
+		SalePrice:            body.SalePrice,
+		PurchasePrice:        body.PurchasePrice,
+		TaxRate:              taxCfg.EffectiveRate(igvType),
+		IgvAffectationType:   igvType,
+		PriceIncludesIgv:     body.PriceIncludesIgv,
+		ManageStock:          body.ManageStock,
+		ManageSeries:         body.ManageSeries,
+		HasVariants:          body.HasVariants,
+		HasModifiers:         body.HasModifiers,
+		MinStock:             body.MinStock,
+		HasExpiryDate:        body.HasExpiryDate,
+		ExpiryDate:           expiryDate,
+		IsRestaurant:         body.IsRestaurant,
+		ShowInDigitalCatalog: body.ShowInDigitalCatalog,
+		PreparationAreaID:    body.PreparationAreaID,
+		PreparationArea:      body.PreparationArea,
+		ModifierGroupIDs:     body.ModifierGroupIDs,
 	}
 	if body.ImageURL != nil {
 		input.ImageURL = *body.ImageURL
@@ -416,10 +449,22 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 			if strings.TrimSpace(row.Name) == "" {
 				continue
 			}
-			pres = append(pres, service.ProductPresentationInput{
-				Name:      strings.TrimSpace(row.Name),
-				SalePrice: row.SalePrice,
-			})
+			if row.InitialStock < 0 {
+				return c.Status(400).JSON(fiber.Map{"error": "el stock inicial de una presentación no puede ser negativo"})
+			}
+			if row.InitialStock > 0 && !body.ManageStock {
+				return c.Status(400).JSON(fiber.Map{"error": service.InitialStockRequiresManageStock})
+			}
+			p := service.ProductPresentationInput{
+				Name:         strings.TrimSpace(row.Name),
+				SalePrice:    row.SalePrice,
+				InitialStock: row.InitialStock,
+			}
+			if row.ID > 0 {
+				rid := row.ID
+				p.ID = &rid
+			}
+			pres = append(pres, p)
 		}
 		input.Presentations = &pres
 		if len(pres) > 0 {
@@ -430,7 +475,8 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		groups := toComboGroupInputs(*body.ComboGroups)
 		input.ComboGroups = &groups
 	}
-	if err := svc.Update(uint(id), input); err != nil {
+	presResults, err := svc.Update(uint(id), input)
+	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	if body.IsRestaurant || existing.IsRestaurant {
@@ -441,6 +487,26 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		if branchID > 0 {
 			if err := invsvc.NewInventoryService(db(c)).EnsureProductBranchLink(uint(id), branchID); err != nil {
 				return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+			}
+		}
+	}
+	// Stock inicial para presentaciones nuevas agregadas en esta edición (ej. se agrega un color
+	// "Verde" a un producto ya existente): solo tiene sentido con una sucursal resuelta; si no hay
+	// una, la presentación queda en 0 y el tenant la ajusta después con "Ajustar stock".
+	if body.ManageStock && len(presResults) > 0 {
+		branchID, berr := branch.ResolveWriteBranchID(c, 0)
+		if berr == nil && branchID > 0 {
+			inv := invsvc.NewInventoryService(db(c))
+			uid, _ := c.Locals("user_id").(uint)
+			for _, res := range presResults {
+				if !res.IsNew || res.InitialStock <= 0 {
+					continue
+				}
+				if err := inv.RecordInitialPresentationStock(
+					uint(id), res.Presentation.ID, branchID, res.InitialStock, uid, "Stock inicial — alta de producto",
+				); err != nil {
+					return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("presentación '%s': %s", res.Presentation.Name, err.Error())})
+				}
 			}
 		}
 	}
@@ -504,17 +570,17 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 	}
 	report := c.Query("report") == "true" || c.Query("report") == "1"
 	params := service.ProductListParams{
-		Query:           c.Query("q"),
-		CategoryID:      uint(catID),
-		Type:            c.Query("type"),
-		ActiveOnly:      !inactiveOnly && (activeOnly == "true" || activeOnly == "1"),
-		InactiveOnly:    inactiveOnly,
-		ManageStockOnly:    c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1",
-		NoManageStockOnly:  c.Query("no_manage_stock_only") == "true" || c.Query("no_manage_stock_only") == "1",
-		RestaurantOnly:     c.Query("restaurant_only") == "true" || c.Query("restaurant_only") == "1",
-		CombosOnly:         c.Query("combos_only") == "true" || c.Query("combos_only") == "1",
-		ExcludeCombos:      c.Query("exclude_combos") == "true" || c.Query("exclude_combos") == "1",
-		PreparationArea:    c.Query("preparation_area"),
+		Query:             c.Query("q"),
+		CategoryID:        uint(catID),
+		Type:              c.Query("type"),
+		ActiveOnly:        !inactiveOnly && (activeOnly == "true" || activeOnly == "1"),
+		InactiveOnly:      inactiveOnly,
+		ManageStockOnly:   c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1",
+		NoManageStockOnly: c.Query("no_manage_stock_only") == "true" || c.Query("no_manage_stock_only") == "1",
+		RestaurantOnly:    c.Query("restaurant_only") == "true" || c.Query("restaurant_only") == "1",
+		CombosOnly:        c.Query("combos_only") == "true" || c.Query("combos_only") == "1",
+		ExcludeCombos:     c.Query("exclude_combos") == "true" || c.Query("exclude_combos") == "1",
+		PreparationArea:   c.Query("preparation_area"),
 	}
 	if prepAreaID, err := strconv.ParseUint(c.Query("preparation_area_id"), 10, 32); err == nil && prepAreaID > 0 {
 		params.PreparationAreaID = uint(prepAreaID)
@@ -630,6 +696,7 @@ func (h *ProductHandler) ProductSerialsAPI(c fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"data": serials})
 }
+
 // POST /api/products/:id/image — multipart/form-data, campo "image".
 const maxProductImageSize = uploadlimits.MaxFileBytes
 
@@ -916,9 +983,9 @@ func buildProductInput(c fiber.Ctx, taxCfg tax.Config) service.ProductInput {
 	}
 
 	return service.ProductInput{
-		CategoryID: catID,
-		Code:       c.FormValue("code"),
-		Name:       c.FormValue("name"),
+		CategoryID:         catID,
+		Code:               c.FormValue("code"),
+		Name:               c.FormValue("name"),
 		Description:        c.FormValue("description"),
 		Type:               c.FormValue("type"),
 		Unit:               c.FormValue("unit"),

@@ -74,6 +74,14 @@ var TenantMigrations = []TenantMigration{
 	V099Combos{},
 	V100PurchasePriceIncludesIgv{},
 	V101SaleItemNote{},
+	V103Ecommerce{},
+	V104EcommerceBannerText{},
+	V105EcommerceCategoryStyle{},
+	V106EcommerceOrderConversion{},
+	V107PresentationStock{},
+	V108TransferKardexLinks{},
+	V109ComandaPresentation{},
+	V110QuotationItemPresentation{},
 }
 
 // ByVersion mapa versión → migración.

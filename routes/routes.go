@@ -7,37 +7,38 @@ import (
 	"strings"
 
 	"tukifac/config"
-	"tukifac/pkg/corspolicy"
-	"tukifac/pkg/logger"
-	authHandler "tukifac/internal/auth/handler"
 	"tukifac/internal/auth"
+	authHandler "tukifac/internal/auth/handler"
 	"tukifac/internal/billing"
 	"tukifac/internal/cashbank"
+	catalogs "tukifac/internal/catalogs"
 	"tukifac/internal/company"
 	consultaHandler "tukifac/internal/consulta/handler"
-	catalogs "tukifac/internal/catalogs"
 	"tukifac/internal/contacts"
 	"tukifac/internal/dashboard"
+	"tukifac/internal/ecommerce"
+	"tukifac/internal/fiscal"
 	"tukifac/internal/fleet"
 	"tukifac/internal/inventory"
 	"tukifac/internal/memberships"
 	"tukifac/internal/modules"
 	"tukifac/internal/paymentcatalog"
+	"tukifac/internal/prepayment"
 	"tukifac/internal/products"
 	"tukifac/internal/purchases"
 	"tukifac/internal/quotations"
 	"tukifac/internal/receivables"
 	"tukifac/internal/restaurant"
 	"tukifac/internal/sales"
-	"tukifac/internal/prepayment"
-	"tukifac/internal/tenantportal"
 	superadmin "tukifac/internal/superadmin"
-	"tukifac/internal/fiscal"
+	"tukifac/internal/tenantportal"
 	"tukifac/internal/ubigeo"
 	"tukifac/internal/users"
+	"tukifac/pkg/corspolicy"
 	"tukifac/pkg/database"
 	"tukifac/pkg/domains"
 	"tukifac/pkg/health"
+	"tukifac/pkg/logger"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/storagepaths"
 	"tukifac/pkg/tenantstorage"
@@ -168,6 +169,9 @@ func Setup(app *fiber.App) {
 	// Restaurante: config y PIN (sin JWT, con tenant)
 	restaurant.RegisterPublicRoutes(app.Group("/api"))
 
+	// Catálogo Digital: tienda pública (sin JWT, con tenant + módulo + suscripción activa)
+	ecommerce.RegisterPublicRoutes(app.Group("/api"))
+
 	// Utilidades de desarrollo
 	if config.AppConfig.IsDev() {
 		app.Get("/dev/enter/:slug", func(c fiber.Ctx) error {
@@ -217,6 +221,7 @@ func Setup(app *fiber.App) {
 	users.RegisterRoutes(tenantAPI)
 	contacts.RegisterRoutes(tenantAPI)
 	products.RegisterRoutes(tenantAPI)
+	ecommerce.RegisterRoutes(tenantAPI)
 	inventory.RegisterRoutes(tenantAPI)
 	sales.RegisterRoutes(tenantAPI)
 	prepayment.RegisterRoutes(tenantAPI)

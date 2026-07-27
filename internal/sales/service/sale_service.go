@@ -53,7 +53,11 @@ func productIsCatalogService(p *database.TenantProduct) bool {
 }
 
 type SaleItemInput struct {
-	ProductID          *uint   `json:"product_id"`
+	ProductID *uint `json:"product_id"`
+	// PresentationID: variante/presentación elegida (ej. color) cuando el producto vende por
+	// presentación con stock propio (product.HasVariants). nil = producto sin variantes o venta
+	// que no distingue cuál se descuenta (comportamiento previo).
+	PresentationID     *uint   `json:"presentation_id"`
 	Code               string  `json:"code"`
 	Description        string  `json:"description"`
 	Unit               string  `json:"unit"`
@@ -318,10 +322,18 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 			if product.ManageStock && !productIsCatalogService(&product) {
-				var stock database.TenantProductStock
-				s.db.Where("product_id = ? AND branch_id = ?", *item.ProductID, input.BranchID).First(&stock)
-				if stock.Quantity < item.Quantity {
-					return nil, fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f", item.Description, item.Quantity, stock.Quantity)
+				if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
+					var pstock database.TenantProductPresentationStock
+					s.db.Where("presentation_id = ? AND branch_id = ?", *item.PresentationID, input.BranchID).First(&pstock)
+					if pstock.Quantity < item.Quantity {
+						return nil, fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f", item.Description, item.Quantity, pstock.Quantity)
+					}
+				} else {
+					var stock database.TenantProductStock
+					s.db.Where("product_id = ? AND branch_id = ?", *item.ProductID, input.BranchID).First(&stock)
+					if stock.Quantity < item.Quantity {
+						return nil, fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f", item.Description, item.Quantity, stock.Quantity)
+					}
 				}
 			}
 			if product.ManageSeries && !productIsCatalogService(&product) {
@@ -626,14 +638,21 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 
+			var itemPresentationID *uint
+			if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
+				itemPresentationID = item.PresentationID
+			}
+			currentSaleItemID := saleItems[i].ID
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:     *item.ProductID,
-				BranchID:      input.BranchID,
-				Type:          "out",
-				Quantity:      item.Quantity,
-				Reference:     "VENTA/" + sale.Number,
-				UserID:        input.UserID,
-				OperationCode: "SALE",
+				ProductID:      *item.ProductID,
+				PresentationID: itemPresentationID,
+				BranchID:       input.BranchID,
+				Type:           "out",
+				Quantity:       item.Quantity,
+				Reference:      "VENTA/" + sale.Number,
+				UserID:         input.UserID,
+				OperationCode:  "SALE",
+				SaleItemID:     &currentSaleItemID,
 			}); err != nil {
 				return err
 			}
@@ -1569,14 +1588,19 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 				continue
 			}
 
+			var restorePresentationID *uint
+			if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
+				restorePresentationID = item.PresentationID
+			}
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:     *item.ProductID,
-				BranchID:      sale.BranchID,
-				Type:          "in",
-				Quantity:      item.Quantity,
-				Reference:     ref,
-				UserID:        sale.UserID,
-				OperationCode: "SALE",
+				ProductID:      *item.ProductID,
+				PresentationID: restorePresentationID,
+				BranchID:       sale.BranchID,
+				Type:           "in",
+				Quantity:       item.Quantity,
+				Reference:      ref,
+				UserID:         sale.UserID,
+				OperationCode:  "SALE",
 			}); err != nil {
 				return err
 			}
@@ -1641,14 +1665,19 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 			if !product.ManageStock || productIsCatalogService(&product) {
 				continue
 			}
+			var restorePresentationID *uint
+			if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
+				restorePresentationID = item.PresentationID
+			}
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:     *item.ProductID,
-				BranchID:      sale.BranchID,
-				Type:          "in",
-				Quantity:      item.Quantity,
-				Reference:     ref,
-				UserID:        sale.UserID,
-				OperationCode: "SALE",
+				ProductID:      *item.ProductID,
+				PresentationID: restorePresentationID,
+				BranchID:       sale.BranchID,
+				Type:           "in",
+				Quantity:       item.Quantity,
+				Reference:      ref,
+				UserID:         sale.UserID,
+				OperationCode:  "SALE",
 			}); err != nil {
 				return err
 			}

@@ -26,7 +26,11 @@ func NewQuotationService(db *gorm.DB) *QuotationService {
 }
 
 type QuotationItemInput struct {
-	ProductID          *uint   `json:"product_id"`
+	ProductID *uint `json:"product_id"`
+	// PresentationID: variante/presentación elegida (ej. color) cuando el producto vende por
+	// presentación con stock propio (product.HasVariants). Se conserva como snapshot y se propaga
+	// a la venta al convertir la cotización, para descontar la presentación correcta.
+	PresentationID     *uint   `json:"presentation_id"`
 	Code               string  `json:"code"`
 	Description        string  `json:"description"`
 	Unit               string  `json:"unit"`
@@ -126,6 +130,7 @@ func (s *QuotationService) buildItems(inputItems []QuotationItemInput, taxCfg ta
 
 		out = append(out, database.TenantQuotationItem{
 			ProductID:          item.ProductID,
+			PresentationID:     item.PresentationID,
 			Code:               item.Code,
 			Description:        item.Description,
 			Unit:               sunat.NormalizeUnit(item.Unit, itemType),
@@ -459,6 +464,7 @@ func (s *QuotationService) ConvertToSale(quotationID uint, input ConvertInput) (
 	for _, it := range items {
 		saleItems = append(saleItems, salessvc.SaleItemInput{
 			ProductID:          it.ProductID,
+			PresentationID:     it.PresentationID,
 			Code:               it.Code,
 			Description:        it.Description,
 			Unit:               it.Unit,

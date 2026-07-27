@@ -57,6 +57,7 @@ func buildSaleLinesFromEngine(input CreateSaleInput, taxCfg tax.Config, db *gorm
 		itemType := resolveSaleItemType(db, item)
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:              item.ProductID,
+			PresentationID:         item.PresentationID,
 			Code:                   item.Code,
 			Description:            item.Description,
 			Unit:                   sunat.NormalizeUnit(item.Unit, itemType),
@@ -116,6 +117,7 @@ func buildSaleLinesLegacy(input CreateSaleInput, taxCfg tax.Config, db *gorm.DB)
 		}
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:          item.ProductID,
+			PresentationID:     item.PresentationID,
 			Code:               item.Code,
 			Description:        item.Description,
 			Unit:               sunat.NormalizeUnit(item.Unit, resolveSaleItemType(db, item)),

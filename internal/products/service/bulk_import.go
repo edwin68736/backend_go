@@ -276,12 +276,12 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 						return err
 					}
 				}
-				if err := ps.Update(existing.ID, input); err != nil {
+				if _, err := ps.Update(existing.ID, input); err != nil {
 					return err
 				}
 				productID = existing.ID
 			} else {
-				p, err := ps.Create(input)
+				p, _, err := ps.Create(input)
 				if err != nil {
 					return err
 				}

@@ -20,7 +20,12 @@ func NewInventoryService(db *gorm.DB) *InventoryService {
 }
 
 type MovementInput struct {
-	ProductID           uint
+	ProductID uint
+	// PresentationID: cuando se informa, el movimiento afecta el stock de esa variante/presentación
+	// (TenantProductPresentationStock) en vez del stock agregado del producto (TenantProductStock).
+	// El producto debe tener HasVariants=true; ProductID sigue siendo obligatorio (queda en el
+	// kardex para poder listar movimientos por producto sin importar la variante).
+	PresentationID      *uint
 	BranchID            uint
 	Type                string // in, out, adjustment, transfer
 	Quantity            float64
@@ -31,6 +36,10 @@ type MovementInput struct {
 	OperationCode       string // código interno del catálogo (PURCHASE, SALE, TRANSFER, …)
 	OperationTypeID     *uint
 	InventoryDocumentID *uint
+	// TransferID / SaleItemID: enlace directo al origen del movimiento, para poder resolver en el
+	// Kardex qué números de serie participaron sin inferirlo por referencia/fecha.
+	TransferID *uint
+	SaleItemID *uint
 }
 
 func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *MovementInput) error {
@@ -51,6 +60,8 @@ func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *Move
 }
 
 // RecordMovementTx registra un movimiento y actualiza stock dentro de una transacción existente.
+// Si input.PresentationID viene informado, el saldo afectado es el de esa variante
+// (TenantProductPresentationStock) en vez del agregado del producto (TenantProductStock).
 func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) error {
 	if input.ProductID == 0 || input.BranchID == 0 {
 		return errors.New("producto y sucursal son requeridos")
@@ -61,14 +72,26 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	if err := s.resolveMovementOperationType(tx, &input); err != nil {
 		return err
 	}
+
+	byPresentation := input.PresentationID != nil && *input.PresentationID > 0
+
+	var currentQty float64
 	var stock database.TenantProductStock
-	tx.Where("product_id = ? AND branch_id = ?", input.ProductID, input.BranchID).First(&stock)
+	var pstock database.TenantProductPresentationStock
+	if byPresentation {
+		tx.Where("presentation_id = ? AND branch_id = ?", *input.PresentationID, input.BranchID).First(&pstock)
+		currentQty = pstock.Quantity
+	} else {
+		tx.Where("product_id = ? AND branch_id = ?", input.ProductID, input.BranchID).First(&stock)
+		currentQty = stock.Quantity
+	}
+
 	var newBalance float64
 	switch input.Type {
 	case "in", "adjustment_in":
-		newBalance = stock.Quantity + input.Quantity
+		newBalance = currentQty + input.Quantity
 	case "out", "adjustment_out":
-		newBalance = stock.Quantity - input.Quantity
+		newBalance = currentQty - input.Quantity
 		if newBalance < 0 {
 			return errors.New("stock insuficiente")
 		}
@@ -77,15 +100,28 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	default:
 		return errors.New("tipo de movimiento inválido")
 	}
+
 	movement := database.TenantStockMovement{
-		ProductID: input.ProductID, BranchID: input.BranchID, Type: input.Type,
+		ProductID: input.ProductID, PresentationID: input.PresentationID, BranchID: input.BranchID, Type: input.Type,
 		Quantity: input.Quantity, UnitCost: input.UnitCost, Balance: newBalance,
 		Reference: input.Reference, Notes: input.Notes, UserID: input.UserID,
 		OperationTypeID: input.OperationTypeID, InventoryDocumentID: input.InventoryDocumentID,
+		TransferID: input.TransferID, SaleItemID: input.SaleItemID,
 		CreatedAt: time.Now(),
 	}
 	if err := tx.Create(&movement).Error; err != nil {
 		return err
+	}
+
+	if byPresentation {
+		if pstock.ID == 0 {
+			return tx.Create(&database.TenantProductPresentationStock{
+				PresentationID: *input.PresentationID, BranchID: input.BranchID, Quantity: newBalance,
+			}).Error
+		}
+		return tx.Model(&pstock).Updates(map[string]interface{}{
+			"quantity": newBalance, "updated_at": time.Now(),
+		}).Error
 	}
 	if stock.ID == 0 {
 		return tx.Create(&database.TenantProductStock{
@@ -137,70 +173,42 @@ func (s *InventoryService) RecordInitialStock(productID, branchID uint, quantity
 	})
 }
 
-// RecordMovement registra un movimiento de inventario y actualiza el stock.
+// RecordInitialPresentationStock: mismo propósito que RecordInitialStock pero para el stock
+// inicial de una variante/presentación puntual (ej. "Rojo: 5 unidades" al crear el producto).
+func (s *InventoryService) RecordInitialPresentationStock(productID, presentationID, branchID uint, quantity float64, userID uint, notes string) error {
+	if quantity <= 0 {
+		return nil
+	}
+	if notes == "" {
+		notes = "Stock inicial"
+	}
+	return s.RecordMovement(MovementInput{
+		ProductID:      productID,
+		PresentationID: &presentationID,
+		BranchID:       branchID,
+		Type:           "in",
+		Quantity:       quantity,
+		Reference:      "STOCK_INICIAL",
+		Notes:          notes,
+		UserID:         userID,
+		OperationCode:  "INITIAL_STOCK",
+	})
+}
+
+// GetPresentationStockByBranch saldo actual de una variante/presentación en una sucursal.
+func (s *InventoryService) GetPresentationStockByBranch(presentationID, branchID uint) float64 {
+	var qty float64
+	s.db.Model(&database.TenantProductPresentationStock{}).
+		Where("presentation_id = ? AND branch_id = ?", presentationID, branchID).
+		Select("COALESCE(quantity, 0)").Scan(&qty)
+	return qty
+}
+
+// RecordMovement registra un movimiento de inventario y actualiza el stock (fuera de una
+// transacción existente). Envuelve RecordMovementTx en su propia transacción.
 func (s *InventoryService) RecordMovement(input MovementInput) error {
-	if input.ProductID == 0 || input.BranchID == 0 {
-		return errors.New("producto y sucursal son requeridos")
-	}
-	if input.Quantity <= 0 {
-		return errors.New("la cantidad debe ser mayor a cero")
-	}
-
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := s.resolveMovementOperationType(tx, &input); err != nil {
-			return err
-		}
-		// Obtener stock actual
-		var stock database.TenantProductStock
-		tx.Where("product_id = ? AND branch_id = ?", input.ProductID, input.BranchID).First(&stock)
-
-		// Calcular nuevo balance
-		var newBalance float64
-		switch input.Type {
-		case "in", "adjustment_in":
-			newBalance = stock.Quantity + input.Quantity
-		case "out", "adjustment_out":
-			newBalance = stock.Quantity - input.Quantity
-			if newBalance < 0 {
-				return errors.New("stock insuficiente")
-			}
-		case "adjustment":
-			newBalance = input.Quantity // valor absoluto
-		default:
-			return errors.New("tipo de movimiento inválido")
-		}
-
-		// Guardar movimiento en kardex
-		movement := database.TenantStockMovement{
-			ProductID: input.ProductID,
-			BranchID:  input.BranchID,
-			Type:      input.Type,
-			Quantity:  input.Quantity,
-			UnitCost:  input.UnitCost,
-			Balance:   newBalance,
-			Reference: input.Reference,
-			Notes:     input.Notes,
-			UserID:    input.UserID,
-			OperationTypeID:     input.OperationTypeID,
-			InventoryDocumentID: input.InventoryDocumentID,
-			CreatedAt: time.Now(),
-		}
-		if err := tx.Create(&movement).Error; err != nil {
-			return err
-		}
-
-		// Actualizar o crear registro de stock
-		if stock.ID == 0 {
-			return tx.Create(&database.TenantProductStock{
-				ProductID: input.ProductID,
-				BranchID:  input.BranchID,
-				Quantity:  newBalance,
-			}).Error
-		}
-		return tx.Model(&stock).Updates(map[string]interface{}{
-			"quantity":   newBalance,
-			"updated_at": time.Now(),
-		}).Error
+		return s.RecordMovementTx(tx, input)
 	})
 }
 
@@ -404,7 +412,10 @@ func (s *InventoryService) ListTransferLogs(limit int) ([]database.TenantTransfe
 // TransferLineInput es una línea al crear una transferencia (flujo por estados).
 type TransferLineInput struct {
 	ProductID uint
-	Quantity  float64
+	// PresentationID: variante/presentación a transferir (ej. color), cuando el producto tiene
+	// presentaciones con stock propio (product.HasVariants).
+	PresentationID *uint
+	Quantity       float64
 }
 
 // CreateTransferWithLines crea una transferencia en estado pending: descuenta solo en origen; series quedan in_transit. Destino no se toca hasta ConfirmTransfer.
@@ -443,6 +454,9 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 			if !product.ManageStock {
 				return errors.New("el producto no controla stock: " + product.Name)
 			}
+			if line.PresentationID != nil && *line.PresentationID > 0 && !product.HasVariants {
+				return errors.New("el producto no tiene presentaciones: " + product.Name)
+			}
 
 			var serialsJSON string
 			qty := line.Quantity
@@ -478,23 +492,24 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 
 			// Salida en origen
 			if err := s.RecordMovementTx(tx, MovementInput{
-				ProductID: line.ProductID, BranchID: fromBranchID, Type: "out",
+				ProductID: line.ProductID, PresentationID: line.PresentationID, BranchID: fromBranchID, Type: "out",
 				Quantity: qty, Reference: ref, Notes: notes, UserID: userID,
-				OperationCode: "TRANSFER",
+				OperationCode: "TRANSFER", TransferID: &tr.ID,
 			}); err != nil {
 				return err
 			}
 
 			logRow := database.TenantTransferLog{
-				TransferID:   &tr.ID,
-				ProductID:    line.ProductID,
-				FromBranchID: fromBranchID,
-				ToBranchID:   toBranchID,
-				Quantity:     qty,
-				SerialsJSON:  serialsJSON,
-				UserID:       userID,
-				Notes:        notes,
-				CreatedAt:    time.Now(),
+				TransferID:     &tr.ID,
+				ProductID:      line.ProductID,
+				PresentationID: line.PresentationID,
+				FromBranchID:   fromBranchID,
+				ToBranchID:     toBranchID,
+				Quantity:       qty,
+				SerialsJSON:    serialsJSON,
+				UserID:         userID,
+				Notes:          notes,
+				CreatedAt:      time.Now(),
 			}
 			if err := tx.Create(&logRow).Error; err != nil {
 				return err
@@ -547,9 +562,9 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 			}
 			// Entrada en destino
 			if err := s.RecordMovementTx(tx, MovementInput{
-				ProductID: logRow.ProductID, BranchID: logRow.ToBranchID, Type: "in",
+				ProductID: logRow.ProductID, PresentationID: logRow.PresentationID, BranchID: logRow.ToBranchID, Type: "in",
 				Quantity: logRow.Quantity, Reference: ref, Notes: logRow.Notes, UserID: userID,
-				OperationCode: "TRANSFER",
+				OperationCode: "TRANSFER", TransferID: &transferID,
 			}); err != nil {
 				return err
 			}
@@ -597,9 +612,9 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 			}
 			// Devolver stock al origen (entrada en origen = revertir la salida)
 			if err := s.RecordMovementTx(tx, MovementInput{
-				ProductID: logRow.ProductID, BranchID: logRow.FromBranchID, Type: "in",
+				ProductID: logRow.ProductID, PresentationID: logRow.PresentationID, BranchID: logRow.FromBranchID, Type: "in",
 				Quantity: logRow.Quantity, Reference: ref, Notes: "Cancelación transferencia", UserID: userID,
-				OperationCode: "TRANSFER",
+				OperationCode: "TRANSFER", TransferID: &transferID,
 			}); err != nil {
 				return err
 			}
@@ -656,6 +671,28 @@ func (s *InventoryService) StockTotalsByProductIDs(productIDs []uint, branchID u
 	for _, r := range rows {
 		out[r.ProductID] = r.Total
 	}
+
+	// Productos con variantes: el stock vive por presentación, no en tenant_product_stocks.
+	var variantIDs []uint
+	s.db.Model(&database.TenantProduct{}).Where("id IN ? AND has_variants = ?", productIDs, true).Pluck("id", &variantIDs)
+	if len(variantIDs) > 0 {
+		var prows []row
+		pq := s.db.Table("tenant_product_presentation_stocks AS ps").
+			Select("pr.product_id, COALESCE(SUM(ps.quantity), 0) as total").
+			Joins("JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL").
+			Where("pr.product_id IN ?", variantIDs)
+		if branchID > 0 {
+			pq = pq.Where("ps.branch_id = ?", branchID)
+		}
+		_ = pq.Group("pr.product_id").Scan(&prows).Error
+		for _, id := range variantIDs {
+			out[id] = 0
+		}
+		for _, r := range prows {
+			out[r.ProductID] = r.Total
+		}
+	}
+
 	for _, id := range productIDs {
 		if _, ok := out[id]; !ok {
 			out[id] = 0
@@ -735,11 +772,14 @@ func (s *InventoryService) WeightedAverageUnitCosts(productIDs []uint, branchID 
 // AdjustmentInput para ajuste de inventario (desde API).
 type AdjustmentInput struct {
 	ProductID uint
-	BranchID  uint
-	Type      string   // "in" o "out"
-	Quantity  float64
-	Notes     string
-	Serials   []string // Para productos con series: al in = nuevos seriales; al out = seriales a retirar
+	// PresentationID: variante/presentación a ajustar (ej. color), cuando el producto tiene
+	// presentaciones con stock propio (product.HasVariants).
+	PresentationID *uint
+	BranchID       uint
+	Type           string // "in" o "out"
+	Quantity       float64
+	Notes          string
+	Serials        []string // Para productos con series: al in = nuevos seriales; al out = seriales a retirar
 }
 
 // RecordAdjustment registra un ajuste vía documento de inventario (compatibilidad API).
@@ -820,21 +860,21 @@ func (s *InventoryService) adjustmentOutWithSerials(productID, branchID uint, se
 }
 
 type KardexParams struct {
-	ProductID         uint
-	ProductSearch     string
-	CategoryID        uint
-	BranchID          uint
-	DateFrom          *time.Time
-	DateTo            *time.Time
-	MovementKind      string
-	TextSearch        string
-	OperationTypeID   uint
-	OperationCode     string
+	ProductID          uint
+	ProductSearch      string
+	CategoryID         uint
+	BranchID           uint
+	DateFrom           *time.Time
+	DateTo             *time.Time
+	MovementKind       string
+	TextSearch         string
+	OperationTypeID    uint
+	OperationCode      string
 	OperationDirection string // IN | OUT (join catálogo)
-	SunatCode         string
-	RestaurantOnly    bool
-	Limit             int
-	Offset            int
+	SunatCode          string
+	RestaurantOnly     bool
+	Limit              int
+	Offset             int
 }
 
 // GetKardex lista movimientos de kardex con filtros opcionales y paginación (Limit>0).

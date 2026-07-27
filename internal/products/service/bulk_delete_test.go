@@ -270,7 +270,7 @@ func TestBulkDeleteRestaurant_ReuseCodeAfterPhysicalDelete(t *testing.T) {
 		t.Fatalf("Unscoped rows with code %q: got %d want 0 before recreate", code, totalWithCode)
 	}
 
-	created, err := svc.Create(ProductInput{
+	created, _, err := svc.Create(ProductInput{
 		Code:         code,
 		Name:         "Plato reutilizado",
 		Type:         "product",
@@ -404,7 +404,7 @@ func TestCreate_RestoresSoftDeletedByCode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := svc.Create(ProductInput{
+	restored, _, err := svc.Create(ProductInput{
 		Code:               "REST-001",
 		Name:               "Reactivado",
 		Type:               "product",

@@ -27,7 +27,7 @@ func TestProductCreate_ManageStockFalsePersistsInDB(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code:               "TST-NO-STOCK",
 		Name:               "Sin control stock",
 		Type:               "product",
@@ -58,7 +58,7 @@ func TestProductList_NoManageStockOnly(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	branchID := uint(1)
-	_, err := svc.Create(ProductInput{
+	_, _, err := svc.Create(ProductInput{
 		Code: "WITH-STK", Name: "Con stock", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		ManageStock: true, IsRestaurant: true, BranchID: branchID, Active: true,
@@ -66,7 +66,7 @@ func TestProductList_NoManageStockOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.Create(ProductInput{
+	_, _, err = svc.Create(ProductInput{
 		Code: "NO-STK", Name: "Sin stock", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		ManageStock: false, IsRestaurant: true, BranchID: branchID, Active: true,
@@ -97,7 +97,7 @@ func TestProductCreate_DefaultManageStockFalseWhenOmitted(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code:               "TST-DEFAULT-NO-STOCK",
 		Name:               "Producto sin flag explícito",
 		Type:               "product",
@@ -127,7 +127,7 @@ func TestProductCreate_ManageStockTruePersistsInDB(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code:               "TST-WITH-STOCK",
 		Name:               "Con control stock",
 		Type:               "product",
@@ -158,7 +158,7 @@ func TestProductCreate_NonRestaurantClearsPreparationArea(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code: "ERP-1", Name: "Producto ERP", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		IsRestaurant: false, PreparationArea: "cocina", Active: true,
@@ -175,7 +175,7 @@ func TestProductCreate_ManageStockFalseClearsMinStock(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code: "NO-MIN", Name: "Sin min", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		ManageStock: false, MinStock: 5, Active: true,
@@ -192,7 +192,7 @@ func TestProductUpdate_DemoteRestaurantClearsPreparationArea(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code: "REST-1", Name: "Plato", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		IsRestaurant: true, PreparationArea: "bar", BranchID: 1, Active: true,
@@ -200,7 +200,7 @@ func TestProductUpdate_DemoteRestaurantClearsPreparationArea(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Update(p.ID, ProductInput{
+	if _, err := svc.Update(p.ID, ProductInput{
 		Code: p.Code, Name: p.Name, Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		IsRestaurant: false, PreparationArea: "bar", ManageStock: true,
@@ -221,7 +221,7 @@ func TestProductList_DefaultSortByIDDesc(t *testing.T) {
 	svc := NewProductService(db)
 	branchID := uint(1)
 	for i, name := range []string{"Primero", "Segundo", "Tercero"} {
-		_, err := svc.Create(ProductInput{
+		_, _, err := svc.Create(ProductInput{
 			Code: fmt.Sprintf("P%d", i+1), Name: name, Type: "product", Unit: "NIU",
 			SalePrice: float64(i+1) * 10, TaxRate: 18, IgvAffectationType: "10",
 			IsRestaurant: true, BranchID: branchID, Active: true,
@@ -252,7 +252,7 @@ func TestProductList_SortByNameAsc(t *testing.T) {
 	svc := NewProductService(db)
 	branchID := uint(1)
 	for _, name := range []string{"Zeta", "Alpha"} {
-		_, err := svc.Create(ProductInput{
+		_, _, err := svc.Create(ProductInput{
 			Code: name, Name: name, Type: "product", Unit: "NIU",
 			SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 			IsRestaurant: true, BranchID: branchID, Active: true,
@@ -316,7 +316,7 @@ func TestCategoryCRUD_sortOrderAndDeleteGuard(t *testing.T) {
 	}
 
 	cid := c2.ID
-	if _, err := svc.Create(ProductInput{
+	if _, _, err := svc.Create(ProductInput{
 		Code: "P1", Name: "Prod", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		CategoryID: &cid, Active: true,
@@ -337,7 +337,7 @@ func TestPreparationAreaCRUD_linksProductByID(t *testing.T) {
 		t.Fatal(err)
 	}
 	aid := area.ID
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code: "R1", Name: "Plato", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		IsRestaurant: true, PreparationAreaID: &aid, Active: true,
@@ -349,7 +349,7 @@ func TestPreparationAreaCRUD_linksProductByID(t *testing.T) {
 		t.Fatalf("product area: id=%v slug=%q", p.PreparationAreaID, p.PreparationArea)
 	}
 
-	if _, err := svc.Create(ProductInput{
+	if _, _, err := svc.Create(ProductInput{
 		Code: "R2", Name: "Otro", Type: "product", Unit: "NIU",
 		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
 		IsRestaurant: true, PreparationAreaID: &aid, Active: true,

@@ -68,7 +68,7 @@ func TestComboFamiliar_CreateWithFixedGroups(t *testing.T) {
 		{Name: "Bebida", SelectionType: database.ComboSelectionFixed,
 			Items: []ComboGroupItemInput{{ProductID: agua.ID, DefaultQuantity: 1}}},
 	}
-	combo, err := svc.Create(ProductInput{
+	combo, _, err := svc.Create(ProductInput{
 		Code:               "COMBO-FAM",
 		Name:               "Combo Familiar",
 		Type:               "product",
@@ -158,7 +158,7 @@ func TestComboGroups_SingleAndMultipleSelection(t *testing.T) {
 				{ProductID: ensalada.ID, DefaultQuantity: 1, MaxQuantity: 2},
 			}},
 	}
-	combo, err := svc.Create(ProductInput{
+	combo, _, err := svc.Create(ProductInput{
 		Code: "COMBO-ARMA", Name: "Arma tu combo", Type: "product", Unit: "NIU",
 		SalePrice: 25, IgvAffectationType: "10", IsRestaurant: true, BranchID: 1,
 		Active: true, ComboGroups: &groups,
@@ -210,7 +210,7 @@ func TestComboGroups_MultipleDefaultsMaxToItemCount(t *testing.T) {
 		Name: "Guarniciones", SelectionType: database.ComboSelectionMultiple,
 		Items: []ComboGroupItemInput{{ProductID: a.ID}, {ProductID: b.ID}},
 	}}
-	combo, err := svc.Create(ProductInput{
+	combo, _, err := svc.Create(ProductInput{
 		Code: "C1", Name: "Combo", Type: "product", Unit: "NIU", SalePrice: 10,
 		IgvAffectationType: "10", IsRestaurant: true, BranchID: 1, Active: true,
 		ComboGroups: &groups,
@@ -238,7 +238,7 @@ func TestComboGroups_Validations(t *testing.T) {
 	// Un combo ya existente, para probar el anidamiento.
 	nested := []ComboGroupInput{{Name: "Plato", SelectionType: database.ComboSelectionFixed,
 		Items: []ComboGroupItemInput{{ProductID: pollo.ID}}}}
-	otroCombo, err := svc.Create(ProductInput{
+	otroCombo, _, err := svc.Create(ProductInput{
 		Code: "COMBO-X", Name: "Otro combo", Type: "product", Unit: "NIU", SalePrice: 15,
 		IgvAffectationType: "10", IsRestaurant: true, BranchID: 1, Active: true,
 		ComboGroups: &nested,
@@ -336,7 +336,7 @@ func TestComboGroups_Validations(t *testing.T) {
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			groups := tc.groups
-			_, err := svc.Create(ProductInput{
+			_, _, err := svc.Create(ProductInput{
 				Code: fmt.Sprintf("COMBO-INV-%d", i), Name: "Combo inválido", Type: "product",
 				Unit: "NIU", SalePrice: 18, IgvAffectationType: "10",
 				IsRestaurant: true, BranchID: 1, Active: true, ComboGroups: &groups,
@@ -358,7 +358,7 @@ func TestComboGroups_SelfReferenceRejected(t *testing.T) {
 	pollo := comboSeedProduct(t, db, "Pollo", 20, 1, uptr(1))
 	groups := []ComboGroupInput{{Name: "Plato", SelectionType: database.ComboSelectionFixed,
 		Items: []ComboGroupItemInput{{ProductID: pollo.ID}}}}
-	combo, err := svc.Create(ProductInput{
+	combo, _, err := svc.Create(ProductInput{
 		Code: "COMBO-SELF", Name: "Combo", Type: "product", Unit: "NIU", SalePrice: 18,
 		IgvAffectationType: "10", IsRestaurant: true, BranchID: 1, Active: true,
 		ComboGroups: &groups,
@@ -369,7 +369,7 @@ func TestComboGroups_SelfReferenceRejected(t *testing.T) {
 
 	self := []ComboGroupInput{{Name: "Plato", SelectionType: database.ComboSelectionFixed,
 		Items: []ComboGroupItemInput{{ProductID: combo.ID}}}}
-	err = svc.Update(combo.ID, ProductInput{
+	_, err = svc.Update(combo.ID, ProductInput{
 		Code: "COMBO-SELF", Name: "Combo", Type: "product", Unit: "NIU", SalePrice: 18,
 		IgvAffectationType: "10", IsRestaurant: true, ComboGroups: &self,
 	})
@@ -393,7 +393,7 @@ func TestComboGroups_UpdateReplacesAndClears(t *testing.T) {
 		{Name: "Bebida", SelectionType: database.ComboSelectionFixed,
 			Items: []ComboGroupItemInput{{ProductID: agua.ID}}},
 	}
-	combo, err := svc.Create(ProductInput{
+	combo, _, err := svc.Create(ProductInput{
 		Code: "COMBO-UPD", Name: "Combo", Type: "product", Unit: "NIU", SalePrice: 18,
 		IgvAffectationType: "10", IsRestaurant: true, BranchID: 1, Active: true,
 		ComboGroups: &groups,
@@ -408,7 +408,7 @@ func TestComboGroups_UpdateReplacesAndClears(t *testing.T) {
 	}
 
 	// nil: el combo no se toca.
-	if err := svc.Update(combo.ID, base); err != nil {
+	if _, err := svc.Update(combo.ID, base); err != nil {
 		t.Fatal(err)
 	}
 	if views, _ := svc.ListComboGroups(combo.ID); len(views) != 2 {
@@ -425,7 +425,7 @@ func TestComboGroups_UpdateReplacesAndClears(t *testing.T) {
 			Items: []ComboGroupItemInput{{ProductID: agua.ID, IsDefault: true}, {ProductID: gaseosa.ID}}},
 	}
 	replaced.ComboGroups = &newGroups
-	if err := svc.Update(combo.ID, replaced); err != nil {
+	if _, err := svc.Update(combo.ID, replaced); err != nil {
 		t.Fatal(err)
 	}
 	views, _ := svc.ListComboGroups(combo.ID)
@@ -440,7 +440,7 @@ func TestComboGroups_UpdateReplacesAndClears(t *testing.T) {
 	cleared := base
 	empty := []ComboGroupInput{}
 	cleared.ComboGroups = &empty
-	if err := svc.Update(combo.ID, cleared); err != nil {
+	if _, err := svc.Update(combo.ID, cleared); err != nil {
 		t.Fatal(err)
 	}
 	if views, _ := svc.ListComboGroups(combo.ID); len(views) != 0 {
@@ -459,7 +459,7 @@ func TestProductUpdate_ImageURLPreservedWhenOmitted(t *testing.T) {
 	db := setupComboTestDB(t)
 	svc := NewProductService(db)
 
-	p, err := svc.Create(ProductInput{
+	p, _, err := svc.Create(ProductInput{
 		Code: "IMG-1", Name: "Combo con foto", Type: "product", Unit: "NIU",
 		SalePrice: 18, IgvAffectationType: "10", IsRestaurant: true, BranchID: 1,
 		Active: true, ImageURL: "/uploads/combo.jpg",
@@ -474,7 +474,7 @@ func TestProductUpdate_ImageURLPreservedWhenOmitted(t *testing.T) {
 	}
 
 	// Sin ImageURLSet: la imagen se conserva.
-	if err := svc.Update(p.ID, base); err != nil {
+	if _, err := svc.Update(p.ID, base); err != nil {
 		t.Fatal(err)
 	}
 	var stored database.TenantProduct
@@ -490,7 +490,7 @@ func TestProductUpdate_ImageURLPreservedWhenOmitted(t *testing.T) {
 	replaced := base
 	replaced.ImageURL = "/uploads/otra.jpg"
 	replaced.ImageURLSet = true
-	if err := svc.Update(p.ID, replaced); err != nil {
+	if _, err := svc.Update(p.ID, replaced); err != nil {
 		t.Fatal(err)
 	}
 	db.First(&stored, p.ID)
@@ -502,7 +502,7 @@ func TestProductUpdate_ImageURLPreservedWhenOmitted(t *testing.T) {
 	cleared := base
 	cleared.ImageURL = ""
 	cleared.ImageURLSet = true
-	if err := svc.Update(p.ID, cleared); err != nil {
+	if _, err := svc.Update(p.ID, cleared); err != nil {
 		t.Fatal(err)
 	}
 	db.First(&stored, p.ID)
@@ -520,7 +520,7 @@ func TestComboListFilters(t *testing.T) {
 
 	groups := []ComboGroupInput{{Name: "Plato", SelectionType: database.ComboSelectionFixed,
 		Items: []ComboGroupItemInput{{ProductID: pollo.ID}}}}
-	if _, err := svc.Create(ProductInput{
+	if _, _, err := svc.Create(ProductInput{
 		Code: "COMBO-F", Name: "Combo Familiar", Type: "product", Unit: "NIU", SalePrice: 18,
 		IgvAffectationType: "10", IsRestaurant: true, BranchID: 1, Active: true,
 		ComboGroups: &groups,

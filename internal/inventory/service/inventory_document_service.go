@@ -41,9 +41,12 @@ func NewInventoryDocumentService(db *gorm.DB) *InventoryDocumentService {
 // DocumentLineInput línea de detalle para crear/actualizar documentos.
 type DocumentLineInput struct {
 	ProductID uint
-	Quantity  float64
-	UnitCost  float64
-	Serials   []string
+	// PresentationID: variante/presentación afectada (ej. color), cuando el producto vende por
+	// presentación con stock propio (product.HasVariants).
+	PresentationID *uint
+	Quantity       float64
+	UnitCost       float64
+	Serials        []string
 }
 
 // CreateDocumentInput datos para crear un borrador.
@@ -261,10 +264,15 @@ func (s *InventoryDocumentService) RecordAdjustmentViaDocument(input AdjustmentI
 		}
 	}
 
+	if input.PresentationID != nil && *input.PresentationID > 0 && !product.HasVariants {
+		return errors.New("el producto no tiene presentaciones")
+	}
+
 	line := DocumentLineInput{
-		ProductID: input.ProductID,
-		Quantity:  input.Quantity,
-		Serials:   input.Serials,
+		ProductID:      input.ProductID,
+		PresentationID: input.PresentationID,
+		Quantity:       input.Quantity,
+		Serials:        input.Serials,
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -478,12 +486,13 @@ func replaceDocumentLines(tx *gorm.DB, documentID uint, lines []DocumentLineInpu
 			}
 		}
 		row := database.TenantInventoryDocumentDetail{
-			DocumentID:  documentID,
-			ProductID:   line.ProductID,
-			Quantity:    line.Quantity,
-			UnitCost:    line.UnitCost,
-			SerialsJSON: serialsJSON,
-			SortOrder:   i,
+			DocumentID:     documentID,
+			ProductID:      line.ProductID,
+			PresentationID: line.PresentationID,
+			Quantity:       line.Quantity,
+			UnitCost:       line.UnitCost,
+			SerialsJSON:    serialsJSON,
+			SortOrder:      i,
 		}
 		if err := tx.Create(&row).Error; err != nil {
 			return err
@@ -625,10 +634,16 @@ func applyDocumentLineMovement(
 		_ = json.Unmarshal([]byte(line.SerialsJSON), &serials)
 	}
 
+	var presentationID *uint
+	if product.HasVariants && line.PresentationID != nil && *line.PresentationID > 0 {
+		presentationID = line.PresentationID
+	}
+
 	opTypeID := opID
 	docRefID := docID
 	movInput := MovementInput{
 		ProductID:           line.ProductID,
+		PresentationID:      presentationID,
 		BranchID:            doc.BranchID,
 		Type:                movType,
 		Quantity:            line.Quantity,
@@ -648,10 +663,18 @@ func applyDocumentLineMovement(
 	}
 
 	if movType == "out" {
-		var stock database.TenantProductStock
-		tx.Where("product_id = ? AND branch_id = ?", line.ProductID, doc.BranchID).First(&stock)
-		if stock.Quantity < line.Quantity {
-			return errors.New("stock insuficiente")
+		if presentationID != nil {
+			var pstock database.TenantProductPresentationStock
+			tx.Where("presentation_id = ? AND branch_id = ?", *presentationID, doc.BranchID).First(&pstock)
+			if pstock.Quantity < line.Quantity {
+				return errors.New("stock insuficiente")
+			}
+		} else {
+			var stock database.TenantProductStock
+			tx.Where("product_id = ? AND branch_id = ?", line.ProductID, doc.BranchID).First(&stock)
+			if stock.Quantity < line.Quantity {
+				return errors.New("stock insuficiente")
+			}
 		}
 	}
 	return inv.RecordMovementTx(tx, movInput)
@@ -675,10 +698,16 @@ func applyDocumentLineVoid(
 	if line.SerialsJSON != "" {
 		_ = json.Unmarshal([]byte(line.SerialsJSON), &serials)
 	}
+	var presentationID *uint
+	if product.HasVariants && line.PresentationID != nil && *line.PresentationID > 0 {
+		presentationID = line.PresentationID
+	}
+
 	opTypeID := opID
 	docRefID := docID
 	movInput := MovementInput{
 		ProductID:           line.ProductID,
+		PresentationID:      presentationID,
 		BranchID:            doc.BranchID,
 		Type:                reverseType,
 		Quantity:            line.Quantity,
@@ -700,10 +729,18 @@ func applyDocumentLineVoid(
 		return applySerialsInTx(tx, inv, movInput, serials)
 	}
 	if reverseType == "out" {
-		var stock database.TenantProductStock
-		tx.Where("product_id = ? AND branch_id = ?", line.ProductID, doc.BranchID).First(&stock)
-		if stock.Quantity < line.Quantity {
-			return errors.New("stock insuficiente para anular")
+		if presentationID != nil {
+			var pstock database.TenantProductPresentationStock
+			tx.Where("presentation_id = ? AND branch_id = ?", *presentationID, doc.BranchID).First(&pstock)
+			if pstock.Quantity < line.Quantity {
+				return errors.New("stock insuficiente para anular")
+			}
+		} else {
+			var stock database.TenantProductStock
+			tx.Where("product_id = ? AND branch_id = ?", line.ProductID, doc.BranchID).First(&stock)
+			if stock.Quantity < line.Quantity {
+				return errors.New("stock insuficiente para anular")
+			}
 		}
 	}
 	return inv.RecordMovementTx(tx, movInput)

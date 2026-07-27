@@ -519,9 +519,12 @@ func (s *RestaurantService) GetActiveSessionByTable(tableID uint) (*database.Ten
 // ============================= PEDIDOS Y COMANDAS =============================
 
 type NewOrderItem struct {
-	ProductID          *uint   `json:"product_id"`
-	ProductCode        string  `json:"product_code"`
-	ProductName        string  `json:"product_name"`
+	ProductID   *uint  `json:"product_id"`
+	ProductCode string `json:"product_code"`
+	ProductName string `json:"product_name"`
+	// PresentationID: se resuelve en resolveRestaurantOrderItem a partir de modifiers_json
+	// (entrada type:"variant"); no lo envía el cliente directamente.
+	PresentationID     *uint   `json:"-"`
 	Quantity           float64 `json:"quantity"`
 	UnitPrice          float64 `json:"unit_price"`
 	Notes              string  `json:"notes"`
@@ -628,6 +631,7 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 				OrderID:            order.ID,
 				SessionID:          sessionID,
 				ProductID:          item.ProductID,
+				PresentationID:     item.PresentationID,
 				ProductCode:        item.ProductCode,
 				ProductName:        item.ProductName,
 				PreparationArea:    prepArea,
@@ -1104,6 +1108,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	// Construir ítems de venta desde las comandas (con tipo de afectación IGV para Lycet)
 	type saleItemData struct {
 		ProductID          *uint
+		PresentationID     *uint
 		Code               string
 		Description        string
 		Unit               string
@@ -1128,8 +1133,13 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		if strings.TrimSpace(affType) == "" {
 			affType = "10"
 		}
+		var presentationID *uint
+		if line.Comanda != nil {
+			presentationID = line.Comanda.PresentationID
+		}
 		itemMap[line.Key] = &saleItemData{
 			ProductID:          line.ProductID,
+			PresentationID:     presentationID,
 			Code:               line.Code,
 			Description:        line.Name,
 			Unit:               "NIU",
@@ -1178,6 +1188,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		lr := calcResult.Lines[i]
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:              item.ProductID,
+			PresentationID:         item.PresentationID,
 			Code:                   item.Code,
 			Description:            item.Description,
 			Unit:                   item.Unit,
@@ -1301,14 +1312,21 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			if !product.ManageStock {
 				continue
 			}
+			var itemPresentationID *uint
+			if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
+				itemPresentationID = item.PresentationID
+			}
+			currentItemID := item.ID
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:     *item.ProductID,
-				BranchID:      sess.BranchID,
-				Type:          "out",
-				Quantity:      item.Quantity,
-				Reference:     "VENTA/" + sale.Number,
-				UserID:        input.UserID,
-				OperationCode: "SALE",
+				ProductID:      *item.ProductID,
+				PresentationID: itemPresentationID,
+				BranchID:       sess.BranchID,
+				Type:           "out",
+				Quantity:       item.Quantity,
+				Reference:      "VENTA/" + sale.Number,
+				UserID:         input.UserID,
+				OperationCode:  "SALE",
+				SaleItemID:     &currentItemID,
 			}); err != nil {
 				return err
 			}

@@ -135,18 +135,18 @@ type SaasSubscription struct {
 
 // SaasPayment — pagos manuales con comprobante (solo BD central).
 type SaasPayment struct {
-	ID                 uint       `gorm:"primaryKey" json:"id"`
-	TenantID           uint       `gorm:"not null;index" json:"tenant_id"`
-	SubscriptionID     *uint      `gorm:"index" json:"subscription_id"`
-	BillingCycleID     *uint      `gorm:"index" json:"billing_cycle_id"`
-	Amount             float64    `gorm:"not null;default:0" json:"amount"`
-	ReconnectionFee    float64    `gorm:"default:0" json:"reconnection_fee"`
-	Currency           string     `gorm:"size:10;default:'PEN'" json:"currency"`
-	PeriodMonths       int        `gorm:"default:1" json:"period_months"`
-	PaymentMethod      string     `gorm:"size:30" json:"payment_method"` // yape, plin, transfer, deposit
-	PaymentDate        *time.Time `json:"payment_date,omitempty"`
-	Reference          string     `gorm:"size:120" json:"reference"`
-	ReceiptURL         string     `gorm:"size:500" json:"receipt_url"` // voucher que sube el cliente
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	TenantID        uint       `gorm:"not null;index" json:"tenant_id"`
+	SubscriptionID  *uint      `gorm:"index" json:"subscription_id"`
+	BillingCycleID  *uint      `gorm:"index" json:"billing_cycle_id"`
+	Amount          float64    `gorm:"not null;default:0" json:"amount"`
+	ReconnectionFee float64    `gorm:"default:0" json:"reconnection_fee"`
+	Currency        string     `gorm:"size:10;default:'PEN'" json:"currency"`
+	PeriodMonths    int        `gorm:"default:1" json:"period_months"`
+	PaymentMethod   string     `gorm:"size:30" json:"payment_method"` // yape, plin, transfer, deposit
+	PaymentDate     *time.Time `json:"payment_date,omitempty"`
+	Reference       string     `gorm:"size:120" json:"reference"`
+	ReceiptURL      string     `gorm:"size:500" json:"receipt_url"` // voucher que sube el cliente
 	// FiscalDocURL boleta/factura que la empresa emite AL cliente por este pago. La sube el
 	// superadmin tras aprobar y el tenant la descarga desde el mismo pago en su panel.
 	FiscalDocURL       string     `gorm:"size:500" json:"fiscal_doc_url"`
@@ -601,35 +601,97 @@ type TenantPreparationArea struct {
 }
 
 type TenantProduct struct {
-	ID                 uint           `gorm:"primaryKey" json:"id"`
-	CategoryID         *uint          `gorm:"index" json:"category_id"`
-	Code               string         `gorm:"size:100;not null;index" json:"code"`
-	Name               string         `gorm:"size:255;not null" json:"name"`
-	Description        string         `gorm:"type:text" json:"description"`
-	Type               string         `gorm:"size:20;default:'product'" json:"type"` // product, service
-	Unit               string         `gorm:"size:50;default:'NIU'" json:"unit"`
-	SalePrice          float64        `gorm:"type:decimal(15,2);not null" json:"sale_price"`
-	PurchasePrice      float64        `gorm:"type:decimal(15,2)" json:"purchase_price"`
-	TaxRate            float64        `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"`
-	IgvAffectationType string         `gorm:"size:10;default:'10'" json:"igv_affectation_type"` // Catálogo SUNAT N°7
-	PriceIncludesIgv   bool           `gorm:"default:true" json:"price_includes_igv"`
-	ManageStock        bool           `gorm:"default:false" json:"manage_stock"`
-	ManageSeries       bool           `gorm:"default:false" json:"manage_series"`
-	HasVariants        bool           `gorm:"default:false" json:"has_variants"`
-	HasModifiers       bool           `gorm:"default:false" json:"has_modifiers"`
-	HasCombo           bool           `gorm:"default:false" json:"has_combo"`
-	IsRestaurant       bool           `gorm:"default:false" json:"is_restaurant"`
-	BranchID           uint           `gorm:"index" json:"branch_id"` // platos Tukichef: sucursal dueña del catálogo
-	PreparationAreaID  *uint          `gorm:"index" json:"preparation_area_id"`
-	PreparationArea    string         `gorm:"size:50" json:"preparation_area"` // slug denormalizado (comandas, impresoras)
-	MinStock           float64        `gorm:"type:decimal(15,3);default:0" json:"min_stock"`
-	HasExpiryDate      bool           `gorm:"default:false" json:"has_expiry_date"`
-	ExpiryDate         *time.Time     `gorm:"type:date" json:"expiry_date"`
-	ImageURL           string         `gorm:"size:255" json:"image_url"`
-	Active             bool           `gorm:"default:true" json:"active"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
-	DeletedAt          gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                 uint    `gorm:"primaryKey" json:"id"`
+	CategoryID         *uint   `gorm:"index" json:"category_id"`
+	Code               string  `gorm:"size:100;not null;index" json:"code"`
+	Name               string  `gorm:"size:255;not null" json:"name"`
+	Description        string  `gorm:"type:text" json:"description"`
+	Type               string  `gorm:"size:20;default:'product'" json:"type"` // product, service
+	Unit               string  `gorm:"size:50;default:'NIU'" json:"unit"`
+	SalePrice          float64 `gorm:"type:decimal(15,2);not null" json:"sale_price"`
+	PurchasePrice      float64 `gorm:"type:decimal(15,2)" json:"purchase_price"`
+	TaxRate            float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"`
+	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"` // Catálogo SUNAT N°7
+	PriceIncludesIgv   bool    `gorm:"default:true" json:"price_includes_igv"`
+	ManageStock        bool    `gorm:"default:false" json:"manage_stock"`
+	ManageSeries       bool    `gorm:"default:false" json:"manage_series"`
+	HasVariants        bool    `gorm:"default:false" json:"has_variants"`
+	HasModifiers       bool    `gorm:"default:false" json:"has_modifiers"`
+	HasCombo           bool    `gorm:"default:false" json:"has_combo"`
+	IsRestaurant       bool    `gorm:"default:false" json:"is_restaurant"`
+	// Canales de difusión — independientes de IsRestaurant (que es del módulo Restaurante/comandas).
+	ShowInDigitalCatalog bool `gorm:"default:false" json:"show_in_digital_catalog"`
+	// Reservado para el futuro Menú Digital; sin UI todavía.
+	ShowInDigitalMenu bool           `gorm:"default:false" json:"show_in_digital_menu"`
+	BranchID          uint           `gorm:"index" json:"branch_id"` // platos Tukichef: sucursal dueña del catálogo
+	PreparationAreaID *uint          `gorm:"index" json:"preparation_area_id"`
+	PreparationArea   string         `gorm:"size:50" json:"preparation_area"` // slug denormalizado (comandas, impresoras)
+	MinStock          float64        `gorm:"type:decimal(15,3);default:0" json:"min_stock"`
+	HasExpiryDate     bool           `gorm:"default:false" json:"has_expiry_date"`
+	ExpiryDate        *time.Time     `gorm:"type:date" json:"expiry_date"`
+	ImageURL          string         `gorm:"size:255" json:"image_url"`
+	Active            bool           `gorm:"default:true" json:"active"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	DeletedAt         gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantEcommerceSettings config del Catálogo Digital (fila única, id=1, patrón TenantCompanyConfig).
+// El theming es completamente independiente del tema del panel (--p50…--p900): estos campos
+// alimentan variables CSS propias namespaced, aplicadas solo dentro del contenedor de la tienda.
+type TenantEcommerceSettings struct {
+	ID                 uint   `gorm:"primaryKey" json:"id"`
+	Enabled            bool   `gorm:"default:false" json:"enabled"`
+	StoreName          string `gorm:"size:150" json:"store_name"`
+	Tagline            string `gorm:"size:255" json:"tagline"`
+	Description        string `gorm:"type:text" json:"description"`
+	LogoURL            string `gorm:"size:255" json:"logo_url"`
+	BackgroundImageURL string `gorm:"size:255" json:"background_image_url"`
+	// nil = usar tenant_company_configs.phone; si viene con valor, sobreescribe solo para la tienda.
+	WhatsAppNumber *string `gorm:"column:whatsapp_number;size:30" json:"whatsapp_number"`
+	TemplateKey    string  `gorm:"size:30;default:'moderno'" json:"template_key"`
+	PrimaryColor   string  `gorm:"size:20;default:'#16a34a'" json:"primary_color"`
+	SecondaryColor string  `gorm:"size:20;default:'#0f172a'" json:"secondary_color"`
+	FontFamily     string  `gorm:"size:60;default:'Inter'" json:"font_family"`
+	CardStyle      string  `gorm:"size:30;default:'rounded'" json:"card_style"`
+	// CategoryStyle: 'circles' (íconos redondos) | 'pills' (botones de texto). Define cómo se
+	// navega por categorías en la tienda pública.
+	CategoryStyle string    `gorm:"size:20;default:'circles'" json:"category_style"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// TenantEcommerceSlider imagen del carrusel principal de la tienda pública.
+type TenantEcommerceSlider struct {
+	ID         uint           `gorm:"primaryKey" json:"id"`
+	ImageURL   string         `gorm:"size:255;not null" json:"image_url"`
+	LinkURL    string         `gorm:"size:255" json:"link_url"`
+	Title      string         `gorm:"size:150" json:"title"`
+	Subtitle   string         `gorm:"size:255" json:"subtitle"`
+	ButtonText string         `gorm:"size:60" json:"button_text"`
+	SortOrder  int            `gorm:"default:0" json:"sort_order"`
+	Active     bool           `gorm:"default:true" json:"active"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantEcommerceOrder registro del pedido armado en la tienda pública. El checkout real ocurre
+// por WhatsApp (no hay pasarela de pago); esta fila es solo el historial/seguimiento interno.
+type TenantEcommerceOrder struct {
+	ID            uint    `gorm:"primaryKey" json:"id"`
+	CustomerName  string  `gorm:"size:150" json:"customer_name"`
+	CustomerPhone string  `gorm:"size:30" json:"customer_phone"`
+	ItemsJSON     string  `gorm:"type:text;not null" json:"items_json"`
+	Total         float64 `gorm:"type:decimal(15,2);not null" json:"total"`
+	Status        string  `gorm:"size:20;default:'nuevo';index" json:"status"` // nuevo | atendido | cerrado | cancelado
+	Notes         string  `gorm:"type:text" json:"notes"`
+	// ConvertedSaleID: cuando el pedido se convierte en una venta real (nota de venta/boleta/
+	// factura) desde el panel. nil = todavía no convertido.
+	ConvertedSaleID *uint      `gorm:"index" json:"converted_sale_id"`
+	ConvertedAt     *time.Time `json:"converted_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // TenantProductSerial rastrea números de serie individuales por producto y sucursal.
@@ -738,20 +800,41 @@ type TenantProductStock struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TenantProductPresentationStock: saldo de stock POR VARIANTE (ej. color/talla) de un producto
+// con presentaciones (TenantProduct.HasVariants=true). Cuando el producto vende por variante,
+// esta tabla reemplaza a TenantProductStock como fuente de verdad — el "stock total" del producto
+// se calcula como la suma de sus presentaciones (ver ProductService.GetStock).
+type TenantProductPresentationStock struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	PresentationID uint      `gorm:"not null;index" json:"presentation_id"`
+	BranchID       uint      `gorm:"not null;index" json:"branch_id"`
+	Quantity       float64   `gorm:"type:decimal(15,3);default:0" json:"quantity"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type TenantStockMovement struct {
-	ID                  uint      `gorm:"primaryKey" json:"id"`
-	ProductID           uint      `gorm:"not null;index" json:"product_id"`
-	BranchID            uint      `gorm:"not null;index" json:"branch_id"`
-	Type                string    `gorm:"size:30;not null" json:"type"` // in, out, transfer, adjustment
-	Quantity            float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost            float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
-	Balance             float64   `gorm:"type:decimal(15,3)" json:"balance"`
-	Reference           string    `gorm:"size:100" json:"reference"`
-	Notes               string    `gorm:"type:text" json:"notes"`
-	OperationTypeID     *uint     `gorm:"index" json:"operation_type_id,omitempty"`
-	InventoryDocumentID *uint     `gorm:"index" json:"inventory_document_id,omitempty"`
-	UserID              uint      `gorm:"index" json:"user_id"`
-	CreatedAt           time.Time `json:"created_at"`
+	ID        uint `gorm:"primaryKey" json:"id"`
+	ProductID uint `gorm:"not null;index" json:"product_id"`
+	// PresentationID: cuando el producto vende por variante (color/talla/presentación con stock
+	// propio), el movimiento afecta esa presentación en vez del stock agregado del producto.
+	// nil = producto sin variantes (comportamiento de siempre).
+	PresentationID      *uint   `gorm:"index" json:"presentation_id,omitempty"`
+	BranchID            uint    `gorm:"not null;index" json:"branch_id"`
+	Type                string  `gorm:"size:30;not null" json:"type"` // in, out, transfer, adjustment
+	Quantity            float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitCost            float64 `gorm:"type:decimal(15,2)" json:"unit_cost"`
+	Balance             float64 `gorm:"type:decimal(15,3)" json:"balance"`
+	Reference           string  `gorm:"size:100" json:"reference"`
+	Notes               string  `gorm:"type:text" json:"notes"`
+	OperationTypeID     *uint   `gorm:"index" json:"operation_type_id,omitempty"`
+	InventoryDocumentID *uint   `gorm:"index" json:"inventory_document_id,omitempty"`
+	// TransferID / SaleItemID: enlace directo al origen del movimiento (transferencia entre
+	// sucursales o línea de venta), para poder mostrar en el Kardex qué números de serie
+	// participaron sin tener que inferirlo por referencia/fecha.
+	TransferID *uint     `gorm:"index" json:"transfer_id,omitempty"`
+	SaleItemID *uint     `gorm:"index" json:"sale_item_id,omitempty"`
+	UserID     uint      `gorm:"index" json:"user_id"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // TenantInventoryOperationType catálogo de tipos de operación (Tabla 12 SUNAT). Seed por migración; sin CRUD.
@@ -795,14 +878,17 @@ type TenantInventoryDocument struct {
 
 // TenantInventoryDocumentDetail línea de un documento de inventario.
 type TenantInventoryDocumentDetail struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	DocumentID  uint      `gorm:"not null;index" json:"document_id"`
-	ProductID   uint      `gorm:"not null;index" json:"product_id"`
-	Quantity    float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost    float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
-	SerialsJSON string    `gorm:"type:text" json:"serials_json,omitempty"`
-	SortOrder   int       `gorm:"not null;default:0" json:"sort_order"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         uint `gorm:"primaryKey" json:"id"`
+	DocumentID uint `gorm:"not null;index" json:"document_id"`
+	ProductID  uint `gorm:"not null;index" json:"product_id"`
+	// PresentationID: variante/presentación afectada (ej. color), cuando el producto vende por
+	// presentación con stock propio.
+	PresentationID *uint     `gorm:"index" json:"presentation_id,omitempty"`
+	Quantity       float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitCost       float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
+	SerialsJSON    string    `gorm:"type:text" json:"serials_json,omitempty"`
+	SortOrder      int       `gorm:"not null;default:0" json:"sort_order"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // TenantTransfer cabecera de transferencia entre sucursales. Flujo: pending → confirmada en destino; solo se puede cancelar si pending.
@@ -821,17 +907,20 @@ type TenantTransfer struct {
 // TenantTransferLog línea de una transferencia (producto + cantidad/series). Con transfer_id agrupado por cabecera.
 // Sin transfer_id = registro legacy (flujo antiguo sin estados).
 type TenantTransferLog struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`
-	TransferID   *uint      `gorm:"index" json:"transfer_id"` // nil = legacy
-	ProductID    uint       `gorm:"not null;index" json:"product_id"`
-	FromBranchID uint       `gorm:"not null;index" json:"from_branch_id"`
-	ToBranchID   uint       `gorm:"not null;index" json:"to_branch_id"`
-	Quantity     float64    `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	SerialsJSON  string     `gorm:"type:text" json:"serials_json"` // JSON array de strings; vacío si no es producto con series
-	UserID       uint       `gorm:"not null;index" json:"user_id"`
-	Notes        string     `gorm:"type:text" json:"notes"`
-	CreatedAt    time.Time  `json:"created_at"`
-	RevertedAt   *time.Time `gorm:"index" json:"reverted_at"` // legacy: si no nil, anulada (flujo antiguo)
+	ID         uint  `gorm:"primaryKey" json:"id"`
+	TransferID *uint `gorm:"index" json:"transfer_id"` // nil = legacy
+	ProductID  uint  `gorm:"not null;index" json:"product_id"`
+	// PresentationID: variante/presentación transferida (ej. color), cuando el producto vende por
+	// presentación con stock propio.
+	PresentationID *uint      `gorm:"index" json:"presentation_id,omitempty"`
+	FromBranchID   uint       `gorm:"not null;index" json:"from_branch_id"`
+	ToBranchID     uint       `gorm:"not null;index" json:"to_branch_id"`
+	Quantity       float64    `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	SerialsJSON    string     `gorm:"type:text" json:"serials_json"` // JSON array de strings; vacío si no es producto con series
+	UserID         uint       `gorm:"not null;index" json:"user_id"`
+	Notes          string     `gorm:"type:text" json:"notes"`
+	CreatedAt      time.Time  `json:"created_at"`
+	RevertedAt     *time.Time `gorm:"index" json:"reverted_at"` // legacy: si no nil, anulada (flujo antiguo)
 }
 
 type TenantSale struct {
@@ -899,9 +988,11 @@ type TenantSale struct {
 }
 
 type TenantSaleItem struct {
-	ID                     uint    `gorm:"primaryKey" json:"id"`
-	SaleID                 uint    `gorm:"not null;index" json:"sale_id"`
-	ProductID              *uint   `gorm:"index" json:"product_id"`
+	ID        uint  `gorm:"primaryKey" json:"id"`
+	SaleID    uint  `gorm:"not null;index" json:"sale_id"`
+	ProductID *uint `gorm:"index" json:"product_id"`
+	// PresentationID: variante/presentación descontada (ej. color), cuando aplica.
+	PresentationID         *uint   `gorm:"index" json:"presentation_id,omitempty"`
 	Code                   string  `gorm:"size:100" json:"code"`
 	Description            string  `gorm:"size:255;not null" json:"description"`
 	Unit                   string  `gorm:"size:50" json:"unit"`
@@ -1067,6 +1158,7 @@ type TenantQuotationItem struct {
 	ID                 uint    `gorm:"primaryKey" json:"id"`
 	QuotationID        uint    `gorm:"not null;index" json:"quotation_id"`
 	ProductID          *uint   `gorm:"index" json:"product_id"`
+	PresentationID     *uint   `gorm:"index" json:"presentation_id"`
 	Code               string  `gorm:"size:100" json:"code"`
 	Description        string  `gorm:"size:255;not null" json:"description"`
 	Unit               string  `gorm:"size:50" json:"unit"`
@@ -1572,10 +1664,14 @@ type TenantTableOrder struct {
 
 // TenantComanda representa un ítem individual dentro de un pedido.
 type TenantComanda struct {
-	ID                 uint       `gorm:"primaryKey" json:"id"`
-	OrderID            uint       `gorm:"not null;index" json:"order_id"`
-	SessionID          uint       `gorm:"not null;index" json:"session_id"`
-	ProductID          *uint      `gorm:"index" json:"product_id"`
+	ID        uint  `gorm:"primaryKey" json:"id"`
+	OrderID   uint  `gorm:"not null;index" json:"order_id"`
+	SessionID uint  `gorm:"not null;index" json:"session_id"`
+	ProductID *uint `gorm:"index" json:"product_id"`
+	// PresentationID: variante/presentación elegida (ej. color), cuando el producto vende por
+	// presentación con stock propio. Se resuelve del mismo modifiers_json (type:"variant") y se
+	// persiste aparte para no tener que reparsear JSON al facturar/descontar stock.
+	PresentationID     *uint      `gorm:"index" json:"presentation_id,omitempty"`
 	ProductCode        string     `gorm:"size:100" json:"product_code"`
 	ProductName        string     `gorm:"size:255;not null" json:"product_name"`
 	PreparationArea    string     `gorm:"size:50" json:"preparation_area"`  // snapshot slug al enviar (cocina, bar, etc.)

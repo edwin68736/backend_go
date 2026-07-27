@@ -25,24 +25,27 @@ func NewProductService(db *gorm.DB) *ProductService {
 }
 
 type ProductListParams struct {
-	Query            string
-	CategoryID       uint
-	Type             string
-	ActiveOnly       bool
-	InactiveOnly     bool // solo productos inactivos (panel restaurante)
-	ManageStockOnly    bool // solo productos con manage_stock (para transferencias/inventario)
-	NoManageStockOnly  bool // solo productos sin control de stock (reporte restaurante)
-	RestaurantOnly       bool // solo productos con is_restaurant (para panel restaurante)
-	CombosOnly           bool // solo combos (has_combo)
-	ExcludeCombos        bool // sin combos: candidatos a componente de un combo
-	PreparationArea      string // filtrar por slug (legacy)
-	PreparationAreaID    uint   // filtrar por FK
-	StockLessThan    *float64
-	BranchID         uint // >0: restaurante → tenant_products.branch_id; inventario ERP → stock en sucursal
-	Limit            int // 0 = sin límite (comportamiento anterior)
-	Offset           int
-	SortBy           string // id, code, name, category, price, stock
-	SortDir          string // asc, desc
+	Query                    string
+	CategoryID               uint
+	Type                     string
+	ActiveOnly               bool
+	InactiveOnly             bool   // solo productos inactivos (panel restaurante)
+	ManageStockOnly          bool   // solo productos con manage_stock (para transferencias/inventario)
+	NoManageStockOnly        bool   // solo productos sin control de stock (reporte restaurante)
+	RestaurantOnly           bool   // solo productos con is_restaurant (para panel restaurante)
+	CombosOnly               bool   // solo combos (has_combo)
+	ExcludeCombos            bool   // sin combos: candidatos a componente de un combo
+	PreparationArea          string // filtrar por slug (legacy)
+	PreparationAreaID        uint   // filtrar por FK
+	StockLessThan            *float64
+	MinPrice                 *float64 // filtro de rango de precio (tienda pública)
+	MaxPrice                 *float64
+	ShowInDigitalCatalogOnly bool // solo productos publicados en el Catálogo Digital (tienda pública)
+	BranchID                 uint // >0: restaurante → tenant_products.branch_id; inventario ERP → stock en sucursal
+	Limit                    int  // 0 = sin límite (comportamiento anterior)
+	Offset                   int
+	SortBy                   string // id, code, name, category, price, stock
+	SortDir                  string // asc, desc
 }
 
 const maxReportSerialsPerProduct = 120
@@ -105,6 +108,15 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	if params.RestaurantOnly {
 		q = q.Where(p+"is_restaurant = ?", true)
 	}
+	if params.ShowInDigitalCatalogOnly {
+		q = q.Where(p+"show_in_digital_catalog = ?", true)
+	}
+	if params.MinPrice != nil {
+		q = q.Where(p+"sale_price >= ?", *params.MinPrice)
+	}
+	if params.MaxPrice != nil {
+		q = q.Where(p+"sale_price <= ?", *params.MaxPrice)
+	}
 	// has_combo puede ser NULL en filas anteriores a V099: tratarlas como no-combo.
 	if params.CombosOnly {
 		q = q.Where(p+"has_combo = ?", true)
@@ -122,26 +134,44 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 			// Carta Tukichef: catálogo exclusivo por sucursal (branch_id en el producto).
 			q = q.Where(p+"branch_id = ?", bid)
 		} else {
+			// Productos con variantes: el stock vive en tenant_product_presentation_stocks, no en
+			// tenant_product_stocks — sin este OR, un producto con variantes nunca tiene fila en
+			// la tabla vieja y quedaría invisible en cualquier listado filtrado por sucursal
+			// (transferencias, POS, etc.) aunque sí tenga stock real en alguna presentación.
 			q = q.Where(`(`+p+`manage_stock = ? OR EXISTS (
 				SELECT 1 FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = ?
-			))`, false, bid)
+			) OR EXISTS (
+				SELECT 1 FROM tenant_product_presentation_stocks ps
+				JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL
+				WHERE pr.product_id = tenant_products.id AND ps.branch_id = ?
+			))`, false, bid, bid)
 		}
 	}
 	if params.StockLessThan != nil {
 		thr := *params.StockLessThan
+		// Productos con variantes: sumar tenant_product_presentation_stocks en vez de la tabla
+		// vieja (que para estos productos queda congelada en 0 y los marcaría siempre "bajo stock").
 		if params.BranchID > 0 {
 			bid := params.BranchID
 			q = q.Where(p+"manage_stock = ?", true).
-				Where(`COALESCE((
-					SELECT s.quantity FROM tenant_product_stocks s
-					WHERE s.product_id = tenant_products.id AND s.branch_id = ?
-					LIMIT 1
-				), 0) < ?`, bid, thr)
+				Where(`(CASE WHEN `+p+`has_variants THEN COALESCE((
+						SELECT SUM(ps.quantity) FROM tenant_product_presentation_stocks ps
+						JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL
+						WHERE pr.product_id = tenant_products.id AND ps.branch_id = ?
+					), 0) ELSE COALESCE((
+						SELECT s.quantity FROM tenant_product_stocks s
+						WHERE s.product_id = tenant_products.id AND s.branch_id = ?
+						LIMIT 1
+					), 0) END) < ?`, bid, bid, thr)
 		} else {
 			q = q.Where(p+"manage_stock = ?", true).
-				Where(`COALESCE((
-					SELECT SUM(s.quantity) FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id
-				), 0) < ?`, thr)
+				Where(`(CASE WHEN `+p+`has_variants THEN COALESCE((
+						SELECT SUM(ps.quantity) FROM tenant_product_presentation_stocks ps
+						JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL
+						WHERE pr.product_id = tenant_products.id
+					), 0) ELSE COALESCE((
+						SELECT SUM(s.quantity) FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id
+					), 0) END) < ?`, thr)
 		}
 	}
 	return q
@@ -330,6 +360,39 @@ func (s *ProductService) enrichReport(products []database.TenantProduct, branchI
 		totals[r.ProductID] += r.Quantity
 	}
 
+	// Productos con variantes: el stock vive por presentación, no en tenant_product_stocks.
+	// Se descarta lo que haya salido de la consulta anterior (puede ser un total "congelado" de
+	// antes de tener presentaciones con stock propio) y se recalcula desde las presentaciones.
+	variantIDs := make([]uint, 0)
+	for _, p := range products {
+		if p.HasVariants {
+			variantIDs = append(variantIDs, p.ID)
+		}
+	}
+	if len(variantIDs) > 0 {
+		for _, pid := range variantIDs {
+			delete(totals, pid)
+			delete(stockMap, pid)
+		}
+		var prows []stockScan
+		pq := s.db.Table("tenant_product_presentation_stocks AS ps").
+			Select("pr.product_id, ps.branch_id, b.name AS branch_name, SUM(ps.quantity) AS quantity").
+			Joins("JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL").
+			Joins("JOIN tenant_branches b ON b.id = ps.branch_id").
+			Where("pr.product_id IN ?", variantIDs).
+			Group("pr.product_id, ps.branch_id, b.name")
+		if branchID > 0 {
+			pq = pq.Where("ps.branch_id = ?", branchID)
+		}
+		_ = pq.Scan(&prows).Error
+		for _, r := range prows {
+			stockMap[r.ProductID] = append(stockMap[r.ProductID], BranchStockRow{
+				BranchID: r.BranchID, BranchName: r.BranchName, Quantity: r.Quantity,
+			})
+			totals[r.ProductID] += r.Quantity
+		}
+	}
+
 	seriesIDs := make([]uint, 0)
 	for _, p := range products {
 		if p.ManageSeries {
@@ -455,32 +518,33 @@ func (s *ProductService) EnsureRestaurantBranchAccess(p *database.TenantProduct,
 }
 
 type ProductInput struct {
-	CategoryID         *uint
-	Code               string
-	Name               string
-	Description        string
-	Type               string
-	Unit               string
-	SalePrice          float64
-	PurchasePrice      float64
-	TaxRate            float64
-	IgvAffectationType string
-	PriceIncludesIgv   bool
-	ManageStock        bool
-	ManageSeries       bool
-	HasVariants        bool
-	HasModifiers       bool
-	IsRestaurant       bool
-	PreparationAreaID  *uint
-	PreparationArea    string // slug legacy; se sincroniza desde preparation_area_id
-	MinStock           float64
-	HasExpiryDate      bool
-	ExpiryDate         *time.Time
-	ImageURL           string
-	ImageURLSet        bool // si true, Update actualiza image_url; si no, conserva la imagen actual
-	Active             bool
-	ActiveSet          bool // si true, Update actualiza el campo active
-	BranchID           uint // sucursal dueña (platos restaurante)
+	CategoryID           *uint
+	Code                 string
+	Name                 string
+	Description          string
+	Type                 string
+	Unit                 string
+	SalePrice            float64
+	PurchasePrice        float64
+	TaxRate              float64
+	IgvAffectationType   string
+	PriceIncludesIgv     bool
+	ManageStock          bool
+	ManageSeries         bool
+	HasVariants          bool
+	HasModifiers         bool
+	IsRestaurant         bool
+	ShowInDigitalCatalog bool
+	PreparationAreaID    *uint
+	PreparationArea      string // slug legacy; se sincroniza desde preparation_area_id
+	MinStock             float64
+	HasExpiryDate        bool
+	ExpiryDate           *time.Time
+	ImageURL             string
+	ImageURLSet          bool // si true, Update actualiza image_url; si no, conserva la imagen actual
+	Active               bool
+	ActiveSet            bool // si true, Update actualiza el campo active
+	BranchID             uint // sucursal dueña (platos restaurante)
 	// nil = no tocar vínculos (update parcial); no-nil = reemplazar asignación (puede ser slice vacío).
 	ModifierGroupIDs *[]uint
 	// nil = no tocar presentaciones; no-nil = reemplazar lista del producto.
@@ -491,27 +555,41 @@ type ProductInput struct {
 
 // ProductPresentationInput fila de presentación propia del producto (no es grupo global).
 type ProductPresentationInput struct {
+	// ID: si viene informado y pertenece al producto, se actualiza esa fila en vez de recrearla
+	// (preserva su stock). nil/0 = fila nueva.
+	ID        *uint
 	Name      string
 	SalePrice float64
 	SortOrder int
+	// InitialStock: solo se aplica cuando la fila es NUEVA (ver PresentationSyncResult.IsNew) y el
+	// producto maneja stock. Ediciones de stock posteriores van por ajuste de inventario, no por acá.
+	InitialStock float64
 }
 
-func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, error) {
+// PresentationSyncResult resultado de sincronizar una fila de presentación: si es nueva, el
+// caller (handler) puede sembrar su stock inicial con InitialStock.
+type PresentationSyncResult struct {
+	Presentation database.TenantProductPresentation
+	IsNew        bool
+	InitialStock float64
+}
+
+func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []PresentationSyncResult, error) {
 	if input.Name == "" {
-		return nil, errors.New("nombre es requerido")
+		return nil, nil, errors.New("nombre es requerido")
 	}
 
 	if input.Code != "" {
 		scopeBranch := input.IsRestaurant && input.BranchID > 0
 		existing, err := s.findProductByCodeUnscoped(input.Code, input.BranchID, scopeBranch)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if existing != nil {
 			if isProductSoftDeleted(existing) {
 				return s.reactivateProductFromInput(existing.ID, input)
 			}
-			return nil, fmt.Errorf("el código '%s' ya está en uso en esta sucursal", input.Code)
+			return nil, nil, fmt.Errorf("el código '%s' ya está en uso en esta sucursal", input.Code)
 		}
 	}
 
@@ -527,34 +605,35 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 	}
 
 	if err := validateProductExpiry(input.HasExpiryDate, input.ExpiryDate); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	p := &database.TenantProduct{
-		CategoryID:         input.CategoryID,
-		Code:               input.Code,
-		Name:               input.Name,
-		Description:        input.Description,
-		Type:               input.Type,
-		Unit:               input.Unit,
-		SalePrice:          input.SalePrice,
-		PurchasePrice:      input.PurchasePrice,
-		TaxRate:            taxRate,
-		IgvAffectationType: igvType,
-		PriceIncludesIgv:   input.PriceIncludesIgv,
-		ManageStock:        input.ManageStock,
-		ManageSeries:       input.ManageSeries,
-		HasVariants:        input.HasVariants,
-		HasModifiers:       input.HasModifiers,
-		IsRestaurant:       input.IsRestaurant,
-		BranchID:           input.BranchID,
-		PreparationAreaID:  input.PreparationAreaID,
-		PreparationArea:    input.PreparationArea,
-		MinStock:           input.MinStock,
-		HasExpiryDate:      input.HasExpiryDate,
-		ExpiryDate:         input.ExpiryDate,
-		ImageURL:           input.ImageURL,
-		Active:             input.Active,
+		CategoryID:           input.CategoryID,
+		Code:                 input.Code,
+		Name:                 input.Name,
+		Description:          input.Description,
+		Type:                 input.Type,
+		Unit:                 input.Unit,
+		SalePrice:            input.SalePrice,
+		PurchasePrice:        input.PurchasePrice,
+		TaxRate:              taxRate,
+		IgvAffectationType:   igvType,
+		PriceIncludesIgv:     input.PriceIncludesIgv,
+		ManageStock:          input.ManageStock,
+		ManageSeries:         input.ManageSeries,
+		HasVariants:          input.HasVariants,
+		HasModifiers:         input.HasModifiers,
+		IsRestaurant:         input.IsRestaurant,
+		ShowInDigitalCatalog: input.ShowInDigitalCatalog,
+		BranchID:             input.BranchID,
+		PreparationAreaID:    input.PreparationAreaID,
+		PreparationArea:      input.PreparationArea,
+		MinStock:             input.MinStock,
+		HasExpiryDate:        input.HasExpiryDate,
+		ExpiryDate:           input.ExpiryDate,
+		ImageURL:             input.ImageURL,
+		Active:               input.Active,
 	}
 	// Si no viene type pero la unidad es ZZ (SUNAT servicio), tratar como servicio antes del default "product".
 	if strings.TrimSpace(p.Type) == "" && strings.EqualFold(strings.TrimSpace(p.Unit), "ZZ") {
@@ -565,44 +644,49 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, er
 	}
 	normalizeProductCatalogFields(p)
 	if err := s.resolvePreparationAreaFields(p); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	p.Unit = sunat.NormalizeUnit(p.Unit, p.Type)
 	if strings.EqualFold(strings.TrimSpace(p.Type), "product") && strings.EqualFold(strings.TrimSpace(p.Unit), "ZZ") {
-		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
+		return nil, nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
 
 	if err := s.db.Create(p).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := gormutil.PersistBoolWithDefault(s.db, p, "price_includes_igv", input.PriceIncludesIgv); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	p.PriceIncludesIgv = input.PriceIncludesIgv
 	if err := gormutil.PersistBoolWithDefault(s.db, p, "manage_stock", input.ManageStock); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	p.ManageStock = input.ManageStock
 
 	if input.ModifierGroupIDs != nil {
 		s.syncModifierGroups(p.ID, *input.ModifierGroupIDs)
 	}
+	var presResults []PresentationSyncResult
 	if input.Presentations != nil {
-		if err := s.syncPresentations(p.ID, *input.Presentations); err != nil {
-			return nil, err
+		res, err := s.syncPresentations(p.ID, *input.Presentations)
+		if err != nil {
+			return nil, nil, err
 		}
+		presResults = res
 	}
 	if input.ComboGroups != nil {
 		if err := s.syncComboGroups(p, *input.ComboGroups); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	return p, nil
+	return p, presResults, nil
 }
 
 // reactivateProductFromInput restaura un producto oculto (soft delete) y aplica los datos del alta.
-func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput) (*database.TenantProduct, error) {
+// No siembra stock inicial por presentación (edge case raro: alta con un código previamente
+// eliminado); el tenant puede ajustarlo después con "Ajustar stock".
+func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput) (*database.TenantProduct, []PresentationSyncResult, error) {
 	igvType := input.IgvAffectationType
 	if igvType == "" {
 		igvType = "10"
@@ -612,7 +696,7 @@ func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput)
 		taxRate = 0
 	}
 	if err := validateProductExpiry(input.HasExpiryDate, input.ExpiryDate); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	effType := strings.TrimSpace(input.Type)
 	if effType == "" {
@@ -620,7 +704,7 @@ func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput)
 	}
 	unit := sunat.NormalizeUnit(input.Unit, effType)
 	if strings.EqualFold(effType, "product") && strings.EqualFold(unit, "ZZ") {
-		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
+		return nil, nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
 
 	input.IgvAffectationType = igvType
@@ -633,26 +717,27 @@ func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput)
 	input.ImageURLSet = true
 
 	if err := s.restoreSoftDeletedProduct(id); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := s.Update(id, input); err != nil {
-		return nil, err
+	// Update() ya aplica input.Presentations internamente (syncPresentations) — no repetirlo acá,
+	// o cada fila nueva (sin ID) se duplicaría en vez de quedar como una sola.
+	if _, err := s.Update(id, input); err != nil {
+		return nil, nil, err
 	}
 	if err := gormutil.PersistBoolWithDefault(s.db, &database.TenantProduct{ID: id}, "price_includes_igv", input.PriceIncludesIgv); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := gormutil.PersistBoolWithDefault(s.db, &database.TenantProduct{ID: id}, "manage_stock", input.ManageStock); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if input.ModifierGroupIDs != nil {
 		s.syncModifierGroups(id, *input.ModifierGroupIDs)
 	}
-	if input.Presentations != nil {
-		if err := s.syncPresentations(id, *input.Presentations); err != nil {
-			return nil, err
-		}
+	p, err := s.GetByID(id)
+	if err != nil {
+		return nil, nil, err
 	}
-	return s.GetByID(id)
+	return p, nil, nil
 }
 
 // normalizeProductServiceFields fuerza reglas SUNAT/ERP para filas type=service.
@@ -690,10 +775,10 @@ func normalizeProductCatalogFields(p *database.TenantProduct) {
 	normalizeProductExpiryFields(p)
 }
 
-func (s *ProductService) Update(id uint, input ProductInput) error {
+func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSyncResult, error) {
 	var existing database.TenantProduct
 	if err := s.db.First(&existing, id).Error; err != nil {
-		return err
+		return nil, err
 	}
 
 	igvType := input.IgvAffectationType
@@ -720,57 +805,59 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 	}
 	unit = sunat.NormalizeUnit(unit, effType)
 	if !strings.EqualFold(effType, "service") && strings.EqualFold(unit, "ZZ") {
-		return errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
+		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
 
 	if err := validateProductExpiry(input.HasExpiryDate, input.ExpiryDate); err != nil {
-		return err
+		return nil, err
 	}
 
 	draft := &database.TenantProduct{
-		Type:              effType,
-		Unit:              unit,
-		IsRestaurant:      input.IsRestaurant,
-		ManageStock:         input.ManageStock,
-		PreparationAreaID:   input.PreparationAreaID,
-		PreparationArea:     input.PreparationArea,
-		MinStock:            input.MinStock,
-		HasExpiryDate:       input.HasExpiryDate,
-		ExpiryDate:          input.ExpiryDate,
-		ManageSeries:        input.ManageSeries,
-		HasVariants:         input.HasVariants,
-		HasModifiers:        input.HasModifiers,
+		Type:                 effType,
+		Unit:                 unit,
+		IsRestaurant:         input.IsRestaurant,
+		ShowInDigitalCatalog: input.ShowInDigitalCatalog,
+		ManageStock:          input.ManageStock,
+		PreparationAreaID:    input.PreparationAreaID,
+		PreparationArea:      input.PreparationArea,
+		MinStock:             input.MinStock,
+		HasExpiryDate:        input.HasExpiryDate,
+		ExpiryDate:           input.ExpiryDate,
+		ManageSeries:         input.ManageSeries,
+		HasVariants:          input.HasVariants,
+		HasModifiers:         input.HasModifiers,
 	}
 	normalizeProductCatalogFields(draft)
 	if err := s.resolvePreparationAreaFields(draft); err != nil {
-		return err
+		return nil, err
 	}
 	if strings.EqualFold(draft.Type, "service") {
 		unit = draft.Unit
 	}
 
 	upd := map[string]interface{}{
-		"category_id":          input.CategoryID,
-		"code":                 input.Code,
-		"name":                 input.Name,
-		"description":          input.Description,
-		"type":                 draft.Type,
-		"unit":                 unit,
-		"sale_price":           input.SalePrice,
-		"purchase_price":       input.PurchasePrice,
-		"tax_rate":             taxRate,
-		"igv_affectation_type": igvType,
-		"price_includes_igv":   input.PriceIncludesIgv,
-		"manage_stock":         draft.ManageStock,
-		"manage_series":        draft.ManageSeries,
-		"has_variants":         draft.HasVariants,
-		"has_modifiers":        draft.HasModifiers,
-		"is_restaurant":        draft.IsRestaurant,
-		"preparation_area_id":  draft.PreparationAreaID,
-		"preparation_area":     draft.PreparationArea,
-		"min_stock":            draft.MinStock,
-		"has_expiry_date":      draft.HasExpiryDate,
-		"expiry_date":          draft.ExpiryDate,
+		"category_id":             input.CategoryID,
+		"code":                    input.Code,
+		"name":                    input.Name,
+		"description":             input.Description,
+		"type":                    draft.Type,
+		"unit":                    unit,
+		"sale_price":              input.SalePrice,
+		"purchase_price":          input.PurchasePrice,
+		"tax_rate":                taxRate,
+		"igv_affectation_type":    igvType,
+		"price_includes_igv":      input.PriceIncludesIgv,
+		"manage_stock":            draft.ManageStock,
+		"manage_series":           draft.ManageSeries,
+		"has_variants":            draft.HasVariants,
+		"has_modifiers":           draft.HasModifiers,
+		"is_restaurant":           draft.IsRestaurant,
+		"show_in_digital_catalog": draft.ShowInDigitalCatalog,
+		"preparation_area_id":     draft.PreparationAreaID,
+		"preparation_area":        draft.PreparationArea,
+		"min_stock":               draft.MinStock,
+		"has_expiry_date":         draft.HasExpiryDate,
+		"expiry_date":             draft.ExpiryDate,
 	}
 	// Omitir image_url en el body significa «no tocar la imagen», no borrarla. Para quitarla
 	// hay que enviarla explícitamente vacía.
@@ -782,7 +869,7 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 	}
 	err := s.db.Model(&database.TenantProduct{}).Where("id = ?", id).Updates(upd).Error
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if input.ModifierGroupIDs != nil {
@@ -792,17 +879,19 @@ func (s *ProductService) Update(id uint, input ProductInput) error {
 		}
 		s.syncModifierGroups(id, modIDs)
 	}
+	var presResults []PresentationSyncResult
 	if input.Presentations != nil {
-		if err := s.syncPresentations(id, *input.Presentations); err != nil {
-			return err
+		presResults, err = s.syncPresentations(id, *input.Presentations)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if input.ComboGroups != nil {
 		if err := s.syncComboGroups(&existing, *input.ComboGroups); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return presResults, nil
 }
 
 func (s *ProductService) syncModifierGroups(productID uint, groupIDs []uint) {
@@ -828,33 +917,79 @@ func (s *ProductService) filterExtraModifierGroupIDs(groupIDs []uint) []uint {
 	return out
 }
 
-func (s *ProductService) syncPresentations(productID uint, inputs []ProductPresentationInput) error {
-	if err := s.db.Where("product_id = ?", productID).Delete(&database.TenantProductPresentation{}).Error; err != nil {
-		return err
+// syncPresentations aplica un upsert estable: las filas con ID existente se actualizan in-place
+// (preservando su stock en TenantProductPresentationStock), las nuevas se crean, y las que ya no
+// vienen en la lista se eliminan (soft-delete, vía DeletedAt del modelo). Antes esto borraba y
+// recreaba TODO en cada guardado — inofensivo cuando la presentación solo tenía precio, pero
+// destructivo ahora que puede tener stock e historial de movimientos ligados a su ID.
+func (s *ProductService) syncPresentations(productID uint, inputs []ProductPresentationInput) ([]PresentationSyncResult, error) {
+	var existing []database.TenantProductPresentation
+	if err := s.db.Where("product_id = ?", productID).Find(&existing).Error; err != nil {
+		return nil, err
 	}
+	existingByID := make(map[uint]database.TenantProductPresentation, len(existing))
+	for _, e := range existing {
+		existingByID[e.ID] = e
+	}
+
+	keep := make(map[uint]bool, len(inputs))
+	out := make([]PresentationSyncResult, 0, len(inputs))
 	sortOrder := 0
 	for _, in := range inputs {
 		name := strings.TrimSpace(in.Name)
 		if name == "" {
 			continue
 		}
+		order := sortOrder
+		if in.SortOrder > 0 {
+			order = in.SortOrder
+		}
+		if in.ID != nil && *in.ID > 0 {
+			if row, ok := existingByID[*in.ID]; ok {
+				row.Name = name
+				row.SalePrice = money.RoundDisplay(in.SalePrice)
+				row.SortOrder = order
+				row.Active = true
+				if err := s.db.Save(&row).Error; err != nil {
+					return nil, err
+				}
+				keep[row.ID] = true
+				out = append(out, PresentationSyncResult{Presentation: row, IsNew: false})
+				sortOrder++
+				continue
+			}
+		}
 		row := database.TenantProductPresentation{
 			ProductID: productID,
 			Name:      name,
 			SalePrice: money.RoundDisplay(in.SalePrice),
-			SortOrder: sortOrder,
+			SortOrder: order,
 			Active:    true,
 		}
-		if in.SortOrder > 0 {
-			row.SortOrder = in.SortOrder
-		}
 		if err := s.db.Create(&row).Error; err != nil {
-			return err
+			return nil, err
 		}
+		out = append(out, PresentationSyncResult{Presentation: row, IsNew: true, InitialStock: in.InitialStock})
 		sortOrder++
 	}
-	hasVariants := sortOrder > 0
-	return s.db.Model(&database.TenantProduct{}).Where("id = ?", productID).Update("has_variants", hasVariants).Error
+
+	var toRemove []uint
+	for id := range existingByID {
+		if !keep[id] {
+			toRemove = append(toRemove, id)
+		}
+	}
+	if len(toRemove) > 0 {
+		if err := s.db.Where("id IN ?", toRemove).Delete(&database.TenantProductPresentation{}).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	hasVariants := len(out) > 0
+	if err := s.db.Model(&database.TenantProduct{}).Where("id = ?", productID).Update("has_variants", hasVariants).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *ProductService) ListProductPresentations(productID uint) ([]database.TenantProductPresentation, error) {
@@ -870,8 +1005,21 @@ func (s *ProductService) Delete(id uint) error {
 	return s.db.Delete(&database.TenantProduct{}, id).Error
 }
 
+// GetStock stock total del producto. Si tiene variantes (HasVariants), el stock vive por
+// presentación (TenantProductPresentationStock) y no en TenantProductStock — sumar ambas fuentes
+// duplicaría el conteo, así que para productos con variantes se usa exclusivamente la primera.
 func (s *ProductService) GetStock(productID uint) float64 {
+	var hasVariants bool
+	s.db.Model(&database.TenantProduct{}).Where("id = ?", productID).Select("has_variants").Scan(&hasVariants)
 	var total float64
+	if hasVariants {
+		s.db.Table("tenant_product_presentation_stocks AS ps").
+			Joins("JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL").
+			Where("pr.product_id = ?", productID).
+			Select("COALESCE(SUM(ps.quantity), 0)").
+			Scan(&total)
+		return total
+	}
 	s.db.Model(&database.TenantProductStock{}).
 		Where("product_id = ?", productID).
 		Select("COALESCE(SUM(quantity), 0)").
@@ -880,6 +1028,17 @@ func (s *ProductService) GetStock(productID uint) float64 {
 }
 
 func (s *ProductService) GetStockByBranch(productID, branchID uint) float64 {
+	var hasVariants bool
+	s.db.Model(&database.TenantProduct{}).Where("id = ?", productID).Select("has_variants").Scan(&hasVariants)
+	if hasVariants {
+		var total float64
+		s.db.Table("tenant_product_presentation_stocks AS ps").
+			Joins("JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL").
+			Where("pr.product_id = ? AND ps.branch_id = ?", productID, branchID).
+			Select("COALESCE(SUM(ps.quantity), 0)").
+			Scan(&total)
+		return total
+	}
 	var stock database.TenantProductStock
 	s.db.Where("product_id = ? AND branch_id = ?", productID, branchID).First(&stock)
 	return stock.Quantity

@@ -79,11 +79,12 @@ func resolveRestaurantOrderItem(tx *gorm.DB, item *NewOrderItem) (*database.Tena
 	}
 
 	clientUnit := money.RoundDisplay(item.UnitPrice)
-	unit, canonJSON, err := calcRestaurantUnitPrice(tx, &product, item.ModifiersJSON)
+	unit, canonJSON, presentationID, err := calcRestaurantUnitPrice(tx, &product, item.ModifiersJSON)
 	if err != nil {
 		return nil, err
 	}
 	item.ModifiersJSON = canonJSON
+	item.PresentationID = presentationID
 	if clientUnit > 0 {
 		item.UnitPrice = clientUnit
 	} else {
@@ -106,12 +107,16 @@ func resolveRestaurantOrderItem(tx *gorm.DB, item *NewOrderItem) (*database.Tena
 	return &product, nil
 }
 
-func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modifiersJSON string) (float64, string, error) {
+// calcRestaurantUnitPrice también devuelve el ID de la presentación elegida (nil si el producto
+// no tiene variantes o no se eligió ninguna), para que quien llama pueda propagarlo a la comanda
+// y, más adelante, al descuento de stock — sin esto, vender una variante descontaba siempre el
+// stock agregado del producto en vez del de la variante correcta.
+func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modifiersJSON string) (float64, string, *uint, error) {
 	base := money.RoundDisplay(product.SalePrice)
 
 	entries, err := parseModifierPayload(modifiersJSON)
 	if err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 
 	// Producto llano sin nada elegido (el caso mayoritario: una gaseosa, un pan). Sin
@@ -119,23 +124,23 @@ func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modif
 	// puede fallar: solo se queja por variantes (HasVariants) o por un grupo de extras
 	// requerido (HasModifiers). Cargarlas serían 3 consultas por ítem que no cambian nada.
 	if len(entries) == 0 && !product.HasVariants && !product.HasModifiers {
-		return base, "", nil
+		return base, "", nil, nil
 	}
 
 	presentations, err := loadProductPresentations(tx, product.ID)
 	if err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 	groups, groupByID, err := loadProductModifierGroups(tx, product.ID)
 	if err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 
 	if len(entries) == 0 {
 		if err := validateRequiredSelections(product, presentations, groups, groupByID, nil); err != nil {
-			return 0, "", err
+			return 0, "", nil, err
 		}
-		return base, "", nil
+		return base, "", nil, nil
 	}
 
 	var variantEntries []modifierPayloadEntry
@@ -154,25 +159,28 @@ func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modif
 	}
 
 	canonical := make([]modifierPayloadEntry, 0, len(entries))
+	var resolvedPresentationID *uint
 
 	if len(variantEntries) > 1 {
-		return 0, "", errors.New("solo se permite una presentación por producto")
+		return 0, "", nil, errors.New("solo se permite una presentación por producto")
 	}
 	if len(variantEntries) == 1 {
 		e := variantEntries[0]
 		pres, ok := presByID[e.OptionID]
 		if !ok {
-			return 0, "", fmt.Errorf("presentación inválida (id %d)", e.OptionID)
+			return 0, "", nil, fmt.Errorf("presentación inválida (id %d)", e.OptionID)
 		}
+		presID := pres.ID
+		resolvedPresentationID = &presID
 		canonical = append(canonical, modifierPayloadEntry{
-			GroupID:       0,
-			GroupName:     "Presentación",
-			Type:          "variant",
-			GroupType:     "variant",
-			OptionID:      pres.ID,
-			OptionName:    pres.Name,
-			ExtraPrice:    money.RoundDisplay(pres.SalePrice),
-			Snapshot:      true,
+			GroupID:    0,
+			GroupName:  "Presentación",
+			Type:       "variant",
+			GroupType:  "variant",
+			OptionID:   pres.ID,
+			OptionName: pres.Name,
+			ExtraPrice: money.RoundDisplay(pres.SalePrice),
+			Snapshot:   true,
 		})
 	}
 
@@ -183,7 +191,7 @@ func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modif
 		}
 		var options []database.TenantModifierOption
 		if err := tx.Where("id IN ? AND active = ?", optionIDs, true).Find(&options).Error; err != nil {
-			return 0, "", err
+			return 0, "", nil, err
 		}
 		optByID := make(map[uint]database.TenantModifierOption, len(options))
 		for _, o := range options {
@@ -194,19 +202,19 @@ func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modif
 		for _, e := range modifierEntries {
 			opt, ok := optByID[e.OptionID]
 			if !ok {
-				return 0, "", fmt.Errorf("opción de extra inválida (id %d)", e.OptionID)
+				return 0, "", nil, fmt.Errorf("opción de extra inválida (id %d)", e.OptionID)
 			}
 			g, ok := groupByID[opt.GroupID]
 			if !ok || !isExtraModifierGroup(g) {
-				return 0, "", fmt.Errorf("el extra no pertenece al producto")
+				return 0, "", nil, fmt.Errorf("el extra no pertenece al producto")
 			}
 			for _, id := range modifiersByGroup[g.ID] {
 				if id == opt.ID {
-					return 0, "", fmt.Errorf("opción duplicada en «%s»", g.Name)
+					return 0, "", nil, fmt.Errorf("opción duplicada en «%s»", g.Name)
 				}
 			}
 			if !g.MultiSelect && len(modifiersByGroup[g.ID]) >= 1 {
-				return 0, "", fmt.Errorf("solo una opción permitida en «%s»", g.Name)
+				return 0, "", nil, fmt.Errorf("solo una opción permitida en «%s»", g.Name)
 			}
 			modifiersByGroup[g.ID] = append(modifiersByGroup[g.ID], opt.ID)
 
@@ -225,7 +233,7 @@ func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modif
 	}
 
 	if err := validateRequiredSelections(product, presentations, groups, groupByID, canonical); err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 
 	unit := base
@@ -249,12 +257,12 @@ func calcRestaurantUnitPrice(tx *gorm.DB, product *database.TenantProduct, modif
 	if len(canonical) > 0 {
 		b, err := json.Marshal(canonical)
 		if err != nil {
-			return 0, "", errors.New("no se pudo serializar modifiers_json")
+			return 0, "", nil, errors.New("no se pudo serializar modifiers_json")
 		}
 		canonJSON = string(b)
 	}
 
-	return unit, canonJSON, nil
+	return unit, canonJSON, resolvedPresentationID, nil
 }
 
 func loadProductPresentations(tx *gorm.DB, productID uint) ([]database.TenantProductPresentation, error) {
