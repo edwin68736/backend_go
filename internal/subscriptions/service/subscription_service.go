@@ -17,9 +17,13 @@ func NewSubscriptionService() *SubscriptionService { return &SubscriptionService
 
 type SubscriptionDetail struct {
 	database.SaasSubscription
-	PlanName   string   `json:"plan_name"`
-	TenantName string   `json:"tenant_name"`
-	Modules    []string `json:"modules"`
+	PlanName       string `json:"plan_name"`
+	TenantName     string `json:"tenant_name"`
+	Modules        []string `json:"modules"`
+	Status         string `json:"status"` // estado efectivo (active, grace_period, overdue, suspended)
+	StatusLabel    string `json:"status_label"` // traducción al español
+	DaysOverdue    int    `json:"days_overdue"` // días de mora (0 si vigente)
+	DaysInGrace    int    `json:"days_in_grace"` // días restantes de gracia (0 si fuera de gracia)
 }
 
 type SubscriptionListParams struct {
@@ -77,6 +81,10 @@ func (s *SubscriptionService) List(params SubscriptionListParams) ([]Subscriptio
 		database.CentralDB.First(&plan, sub.PlanID)
 		detail.PlanName = plan.Name
 		detail.Modules = s.getPlanModules(sub.PlanID)
+		var tenant database.Tenant
+		database.CentralDB.First(&tenant, sub.TenantID)
+		detail.Status = saas.ResolveEffectiveStatus(&sub, &tenant, saas.NowLima(), 3) // default grace=3
+		enrichSubscriptionDetail(&detail)
 		result = append(result, detail)
 	}
 	return result, total, nil
@@ -92,6 +100,7 @@ func (s *SubscriptionService) GetByTenant(tenantID uint) (*SubscriptionDetail, e
 	detail := &SubscriptionDetail{SaasSubscription: sub, PlanName: view.PlanName}
 	detail.Modules = s.getPlanModules(sub.PlanID)
 	detail.Status = view.Status
+	enrichSubscriptionDetail(detail)
 	return detail, nil
 }
 
@@ -320,4 +329,48 @@ func shouldReactivateTenantAfterValidity(manuallySuspended bool, tenant *databas
 		return true
 	}
 	return false
+}
+
+func statusToLabel(status string) string {
+	switch status {
+	case database.SaasSubActive:
+		return "Vigente"
+	case database.SaasSubTrial:
+		return "Prueba"
+	case database.SaasSubGracePeriod:
+		return "Período de gracia"
+	case database.SaasSubOverdue:
+		return "Mora"
+	case database.SaasSubSuspended:
+		return "Suspendido"
+	case database.SaasSubCancelled:
+		return "Cancelado"
+	case database.SaasSubExpired:
+		return "Expirado"
+	case database.SaasSubProvisional:
+		return "Provisional"
+	case database.SaasSubProvisionalActive:
+		return "Acceso provisional"
+	default:
+		return status
+	}
+}
+
+func enrichSubscriptionDetail(detail *SubscriptionDetail) {
+	detail.StatusLabel = statusToLabel(detail.Status)
+
+	cfg, _ := saas.LoadSettings()
+	now := saas.NowLima()
+	daysAfter := saas.CalendarDaysAfterEnd(detail.EndDate, now)
+
+	if daysAfter <= 0 {
+		detail.DaysOverdue = 0
+		detail.DaysInGrace = 0
+	} else if daysAfter <= cfg.GracePeriodDays {
+		detail.DaysOverdue = 0
+		detail.DaysInGrace = cfg.GracePeriodDays - daysAfter
+	} else {
+		detail.DaysOverdue = daysAfter - cfg.GracePeriodDays
+		detail.DaysInGrace = 0
+	}
 }
