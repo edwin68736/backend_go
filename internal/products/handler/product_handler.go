@@ -12,6 +12,8 @@ import (
 	"tukifac/internal/products/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/middleware"
+	"tukifac/pkg/saas"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
@@ -205,6 +207,10 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	}
 	if body.Name == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "El nombre del producto es requerido"})
+	}
+	// Cuota de productos del plan (los servicios no cuentan; ver CheckCreateQuota).
+	if body.Type != "service" && middleware.EnforceCreateQuota(c, db(c), saas.QuotaProducts) {
+		return nil
 	}
 	if body.InitialStock < 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "initial_stock no puede ser negativo"})

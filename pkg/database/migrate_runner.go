@@ -35,6 +35,9 @@ func RunCentralMigration() error {
 	if err := SeedCentral(); err != nil {
 		return fmt.Errorf("seed central: %w", err)
 	}
+	if err := SyncModuleCodeMetadata(); err != nil {
+		return fmt.Errorf("sync module metadata: %w", err)
+	}
 	if err := EnsureCentralFleetSchema(); err != nil {
 		return fmt.Errorf("central fleet schema: %w", err)
 	}
