@@ -65,6 +65,7 @@ func (s *BillingService) enqueueFiscalMicroservice(
 		RUC:            ruc,
 		Document:       document,
 		IdempotencyKey: fingerprint,
+		Reissue:        s.reissueMode,
 	})
 	if err != nil {
 		return nil, err

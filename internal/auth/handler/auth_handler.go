@@ -369,7 +369,14 @@ func (h *AuthHandler) RefreshAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Usuario desactivado", "code": "REFRESH_INVALID"})
 	}
 
-	sess, err := authservice.BuildTenantSession(tenant, tenantDB, user, legacyBranch, authservice.TenantSessionOpts{AuthMethod: claims.AuthMethod})
+	// El refresh token no lleva impersonated, pero sí auth_method, y solo el acceso
+	// maestro lo emite como master_access. Derivarlo mantiene ambas señales coherentes
+	// si alguna vez se emite refresh para sesiones de soporte (hoy solo lo emite el
+	// login normal, con "pwd", así que aquí siempre resuelve a false).
+	sess, err := authservice.BuildTenantSession(tenant, tenantDB, user, legacyBranch, authservice.TenantSessionOpts{
+		AuthMethod:   claims.AuthMethod,
+		Impersonated: claims.AuthMethod == middleware.AuthMethodMasterAccess,
+	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "No se pudo renovar la sesión"})
 	}

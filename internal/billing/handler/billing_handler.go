@@ -11,6 +11,7 @@ import (
 	"tukifac/config"
 	"tukifac/internal/billing/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/middleware"
 	"tukifac/pkg/saas/docusage"
 
 	"github.com/gofiber/fiber/v3"
@@ -135,6 +136,78 @@ func (h *BillingHandler) ResendToSUNAT(c fiber.Ctx) error {
 		})
 	}
 	return c.JSON(result)
+}
+
+// ReissueToSUNAT POST /api/billing/reissue/:saleId
+//
+// Reenvía un comprobante con otra fecha de emisión conservando su numeración.
+// La ruta está detrás de middleware.RequireMasterAccess: el tenant no puede
+// ejecutarla, solo soporte entrando por acceso maestro desde el panel central.
+func (h *BillingHandler) ReissueToSUNAT(c fiber.Ctx) error {
+	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+
+	var body struct {
+		IssueDate   string  `json:"issue_date"`
+		Observation *string `json:"observation"`
+		Reason      string  `json:"reason"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+
+	issueDate, err := parseReissueDate(body.IssueDate)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	claims, _ := c.Locals("tenant_claims").(*middleware.TenantClaims)
+	in := service.ReissueInput{
+		SaleID:    uint(saleID),
+		IssueDate: issueDate,
+		Reason:    body.Reason,
+		ClientIP:  c.IP(),
+	}
+	if claims != nil {
+		in.ActorID = claims.MasterActorID
+		in.ActorEmail = claims.MasterActorEmail
+	}
+	if body.Observation != nil {
+		in.SetObservation = true
+		in.Observation = *body.Observation
+	}
+
+	result, err := billingSvc(c).ReissueSale(in)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":  err.Error(),
+			"status": "error",
+		})
+	}
+	return c.JSON(result)
+}
+
+// parseReissueDate acepta la fecha en formato de día (YYYY-MM-DD) o ISO completo.
+// Se interpreta en America/Lima: el día calendario es lo que cuenta para el plazo
+// de SUNAT, y tomarlo en UTC correría la fecha en las primeras horas del día.
+func parseReissueDate(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, errors.New("la fecha de emisión es obligatoria")
+	}
+	loc, err := time.LoadLocation("America/Lima")
+	if err != nil {
+		loc = time.Local
+	}
+	if d, err := time.ParseInLocation("2006-01-02", raw, loc); err == nil {
+		return d, nil
+	}
+	if d, err := time.Parse(time.RFC3339, raw); err == nil {
+		return d.In(loc), nil
+	}
+	return time.Time{}, errors.New("formato de fecha inválido; use YYYY-MM-DD")
 }
 
 // VoidWithCreditNoteAPI anula la venta generando y enviando una nota de crédito a SUNAT; luego anula la venta original.

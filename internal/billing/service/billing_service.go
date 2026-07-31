@@ -37,6 +37,11 @@ type BillingService struct {
 	orchestrator    *InvoiceOrchestrator
 	centralTenantID uint // ID tenant en BD central (cuota documentos)
 	tenantSlug      string
+	// reissueMode marca que la emisión en curso es una corrección de soporte, para
+	// que el facturador acepte regenerar un documento ya aceptado. Vive en el
+	// servicio porque la cadena de emisión no propaga el origen hasta el cliente
+	// HTTP; se acota a esta instancia, que se crea por request.
+	reissueMode bool
 }
 
 // SetCentralTenantID asocia el tenant SaaS para control de cupo documentos.

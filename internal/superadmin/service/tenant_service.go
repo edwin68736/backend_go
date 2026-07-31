@@ -754,8 +754,10 @@ func (s *TenantService) MasterAccess(tenantID, saUserID uint, saEmail, clientIP 
 	}
 
 	session, err := authsvc.BuildTenantSession(tenant, tenantDB, user, legacyBranch, authsvc.TenantSessionOpts{
-		AuthMethod:   "master_access",
-		Impersonated: true,
+		AuthMethod:       middleware.AuthMethodMasterAccess,
+		Impersonated:     true,
+		MasterActorID:    saUserID,
+		MasterActorEmail: saEmail,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("generando sesión: %w", err)

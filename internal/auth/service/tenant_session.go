@@ -15,6 +15,10 @@ import (
 type TenantSessionOpts struct {
 	AuthMethod   string // pwd | master_access | pin
 	Impersonated bool
+	// MasterActor* identifican al superadmin que abre el acceso maestro; solo se
+	// llenan en ese flujo y viajan en el JWT para poder auditar a su nombre.
+	MasterActorID    uint
+	MasterActorEmail string
 }
 
 // TenantSessionResult token firmado y claims generados.
@@ -115,6 +119,8 @@ func BuildTenantSession(
 		EmployeeType:         employeeType,
 		AuthMethod:           authMethod,
 		Impersonated:         opts.Impersonated,
+		MasterActorID:        opts.MasterActorID,
+		MasterActorEmail:     opts.MasterActorEmail,
 		PermVer:              permVer,
 		StaffID:              staffID,
 		Status:               tenant.Status,

@@ -1091,10 +1091,19 @@ type TenantSale struct {
 	// Origen comercial: direct | converted_from_nota | api | migration | legacy
 	SaleOrigin string `gorm:"size:30;default:direct;index" json:"sale_origin"`
 	// Venta generada desde una cotización (pre venta).
-	IssuedFromQuotationID *uint          `gorm:"index" json:"issued_from_quotation_id,omitempty"`
-	CreatedAt             time.Time      `json:"created_at"`
-	UpdatedAt             time.Time      `json:"updated_at"`
-	DeletedAt             gorm.DeletedAt `gorm:"index" json:"-"`
+	IssuedFromQuotationID *uint `gorm:"index" json:"issued_from_quotation_id,omitempty"`
+	// Reemisión fiscal: comprobante reenviado a SUNAT con otra fecha de emisión,
+	// conservando su numeración (caso típico: se emitió contra beta y hay que
+	// llevarlo a producción). Solo lo ejecuta soporte por acceso maestro.
+	ReissuedAt       *time.Time `gorm:"index" json:"reissued_at,omitempty"`
+	ReissuedFromDate *time.Time `json:"reissued_from_date,omitempty"` // issue_date antes de la primera corrección
+	ReissueReason    string     `gorm:"type:text" json:"reissue_reason,omitempty"`
+	ReissuedByEmail  string     `gorm:"size:255" json:"reissued_by_email,omitempty"`
+	ReissueCount     int        `gorm:"default:0" json:"reissue_count,omitempty"`
+
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// ContactName se rellena al listar (join con tenant_contacts), no es columna en BD
 	ContactName string `gorm:"-" json:"contact_name"`
