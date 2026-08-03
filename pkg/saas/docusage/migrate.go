@@ -32,6 +32,10 @@ func MigrateBillingCycleConstraints() error {
 			slog.Int("rows_updated", n),
 		)
 	}
+	// Reconstruye los períodos mensuales de cuota de las suscripciones ya existentes.
+	if _, err := BackfillDocumentQuotaPeriods(); err != nil {
+		return err
+	}
 	return nil
 }
 

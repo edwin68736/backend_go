@@ -68,7 +68,13 @@ type DocumentUsageHubView struct {
 	WarningLevel     string `json:"warning_level"`
 	WarningMessage   string `json:"warning_message,omitempty"`
 	CanEmit          bool   `json:"can_emit"`
-	BillingCycleEnd  string `json:"billing_cycle_end,omitempty"`
+	// Fin de la suscripción pagada: hasta esta fecha valen los paquetes comprados.
+	BillingCycleEnd string `json:"billing_cycle_end,omitempty"`
+	// Fecha en que el cupo mensual del plan vuelve a cero. No coincide con
+	// BillingCycleEnd cuando el cliente paga varios meses por adelantado.
+	QuotaPeriodEnd   string `json:"quota_period_end,omitempty"`
+	QuotaPeriodIndex int    `json:"quota_period_index,omitempty"`
+	QuotaPeriodTotal int    `json:"quota_period_total,omitempty"`
 }
 
 type CatalogPackageHubView struct {

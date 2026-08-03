@@ -227,6 +227,7 @@ func MigrateCentral() error {
 		&SaasDocumentPackage{},
 		&SaasTenantDocumentPackage{},
 		&SaasElectronicDocumentUsage{},
+		&SaasDocumentQuotaPeriod{},
 		&CentralAjuste{},
 		&SaasExchangeRate{},
 		&UbiRegion{},

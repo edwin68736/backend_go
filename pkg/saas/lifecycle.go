@@ -39,6 +39,10 @@ func RunHourlyJobs() (reminders int, notifications int) {
 			}
 		}
 		_, _ = EnsureBillingCycle(sub)
+		// Abre el período mensual de cuota al entrar el nuevo mes. La emisión también
+		// lo crea por su cuenta; esto solo adelanta el trabajo para que el panel
+		// muestre el cupo renovado aunque el tenant todavía no haya emitido nada.
+		_, _, _ = docusage.EnsureQuotaPeriod(sub.TenantID)
 	}
 	notifications = ProcessNotificationQueue(100)
 	return reminders, notifications

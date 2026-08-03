@@ -8,6 +8,7 @@ import (
 	"tukifac/internal/purchases/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/datespe"
 	"tukifac/pkg/tax"
 
 	"github.com/gofiber/fiber/v3"
@@ -21,14 +22,19 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 		Query:     c.Query("q"),
 		ContactID: uint(contactID),
 	}
+	// El rango se interpreta en hora de Perú y cubre el día completo: la fecha de emisión
+	// se guarda al mediodía, así que un `to` en 00:00 dejaría fuera las compras de ese día.
+	loc := datespe.Location()
 	if f := c.Query("from"); f != "" {
-		if t, err := time.Parse("2006-01-02", f); err == nil {
-			params.DateFrom = &t
+		if t, err := time.ParseInLocation("2006-01-02", f, loc); err == nil {
+			from := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+			params.DateFrom = &from
 		}
 	}
 	if t := c.Query("to"); t != "" {
-		if ts, err := time.Parse("2006-01-02", t); err == nil {
-			params.DateTo = &ts
+		if ts, err := time.ParseInLocation("2006-01-02", t, loc); err == nil {
+			to := time.Date(ts.Year(), ts.Month(), ts.Day(), 23, 59, 59, 999999999, loc)
+			params.DateTo = &to
 		}
 	}
 	perPage, _ := strconv.Atoi(c.Query("per_page"))
@@ -223,9 +229,19 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 	}
 
 	taxCfg := tax.LoadFromDB(tdb)
-	issueDate, _ := time.Parse("2006-01-02", body.IssueDate)
-	if issueDate.IsZero() {
-		issueDate = time.Now()
+
+	// time.Parse("2006-01-02", ...) devuelve 00:00 en UTC. Con el driver en loc=Local
+	// (contenedor en America/Lima) eso se persiste como las 19:00 del día anterior, así
+	// que la compra quedaba guardada un día antes del que eligió el usuario. Mismo
+	// tratamiento que ventas: se parsea en Perú y se fija al mediodía, para que ninguna
+	// conversión de zona horaria vuelva a mover el documento de día.
+	loc := datespe.Location()
+	nowPe := time.Now().In(loc)
+	issueDate := time.Date(nowPe.Year(), nowPe.Month(), nowPe.Day(), 12, 0, 0, 0, loc)
+	if body.IssueDate != "" {
+		if t, err := time.ParseInLocation("2006-01-02", body.IssueDate, loc); err == nil {
+			issueDate = time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, loc)
+		}
 	}
 
 	input := service.CreatePurchaseInput{

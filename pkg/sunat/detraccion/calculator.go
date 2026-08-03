@@ -127,7 +127,6 @@ func Evaluate(cat *CatalogProvider, in CalcInput) (CalcResult, error) {
 	res.BaseAmountPEN = base
 	res.DetractionAmountPEN = amount
 	res.NetPayablePEN = net
-	res.BankAccount = res.BankAccount
 	return res, nil
 }
 

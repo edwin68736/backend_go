@@ -378,13 +378,47 @@ func (h *CompanyHandler) DeleteBranchAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
-// GET /api/company/series?branch_id=1&category=venta
+// filterActiveSeries descarta las series desactivadas. Se aplica a todo consumidor que
+// vaya a emitir un documento; la pantalla de configuración se salta este filtro.
+func filterActiveSeries(series []service.SeriesListItem) []service.SeriesListItem {
+	out := make([]service.SeriesListItem, 0, len(series))
+	for _, s := range series {
+		if s.Active {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// isTruthyFlag interpreta el valor de un flag booleano de query string. Cualquier valor
+// no reconocido es false, para que el filtrado por defecto sea el comportamiento seguro.
+func isTruthyFlag(v string) bool {
+	switch strings.TrimSpace(strings.ToLower(v)) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// queryFlag lee un query param booleano tolerando "1", "true", "yes" y mayúsculas.
+func queryFlag(c fiber.Ctx, name string) bool {
+	return isTruthyFlag(c.Query(name))
+}
+
+// GET /api/company/series?branch_id=1&category=venta&include_inactive=1
 func (h *CompanyHandler) ListSeriesAPI(c fiber.Ctx) error {
 	svc := service.NewCompanyService(db(c))
 	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
 	series, err := svc.ListSeriesEnriched(uint(branchID))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Por defecto solo series activas: una serie desactivada no debe poder elegirse al
+	// emitir una venta, un comprobante o cualquier otro documento. Solo la pantalla de
+	// configuración pide include_inactive=1, porque necesita verlas para reactivarlas.
+	if !queryFlag(c, "include_inactive") {
+		series = filterActiveSeries(series)
 	}
 	// Filtro opcional por categoría (vacío en BD = venta para series 00/01/03)
 	category := strings.TrimSpace(strings.ToLower(c.Query("category")))
