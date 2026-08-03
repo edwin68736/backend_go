@@ -205,6 +205,7 @@ func Setup(app *fiber.App) {
 	sessionH := authHandler.NewSessionHandler()
 	tenantAPI.Get("/session/context", sessionH.GetContext)
 	tenantAPI.Get("/session/capabilities", sessionH.GetCapabilities)
+	tenantAPI.Get("/session/modules", sessionH.GetModules)
 	tenantAPI.Post("/session/switch-branch", sessionH.SwitchBranch)
 
 	ubigeoTenant := ubigeo.NewTenantHandler()

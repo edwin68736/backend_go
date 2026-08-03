@@ -1523,3 +1523,76 @@ func (s *ProductService) ListProductSerials(productID uint) ([]database.TenantPr
 	err := s.db.Where("product_id = ?", productID).Order("branch_id ASC, serial ASC").Find(&serials).Error
 	return serials, err
 }
+
+// ========= Bulk Actions =========
+
+type BulkToggleCatalogInput struct {
+	ProductIDs []uint
+	UserID     uint
+	BranchID   uint
+}
+
+type BulkUpdateCatalogInput struct {
+	ProductIDs           []uint
+	Active               *bool
+	IsRestaurant         *bool
+	ShowInDigitalCatalog *bool
+	ManageStock          *bool
+	UserID               uint
+	BranchID             uint
+}
+
+type BulkActionResult struct {
+	Success int `json:"success"`
+	Updated int `json:"updated"`
+}
+
+// BulkToggleCatalog activa/desactiva múltiples productos
+func (s *ProductService) BulkToggleCatalog(input BulkToggleCatalogInput) (*BulkActionResult, error) {
+	if len(input.ProductIDs) == 0 {
+		return nil, errors.New("se requiere al menos un producto")
+	}
+
+	res := s.db.Model(&database.TenantProduct{}).
+		Where("id IN ?", input.ProductIDs).
+		Update("active", gorm.Expr("NOT active"))
+
+	return &BulkActionResult{
+		Success: 1,
+		Updated: int(res.RowsAffected),
+	}, res.Error
+}
+
+// BulkUpdateCatalog actualiza múltiples productos con los campos especificados
+func (s *ProductService) BulkUpdateCatalog(input BulkUpdateCatalogInput) (*BulkActionResult, error) {
+	if len(input.ProductIDs) == 0 {
+		return nil, errors.New("se requiere al menos un producto")
+	}
+
+	updates := make(map[string]interface{})
+	if input.Active != nil {
+		updates["active"] = *input.Active
+	}
+	if input.IsRestaurant != nil {
+		updates["is_restaurant"] = *input.IsRestaurant
+	}
+	if input.ShowInDigitalCatalog != nil {
+		updates["show_in_digital_catalog"] = *input.ShowInDigitalCatalog
+	}
+	if input.ManageStock != nil {
+		updates["manage_stock"] = *input.ManageStock
+	}
+
+	if len(updates) == 0 {
+		return nil, errors.New("se requiere al menos un campo para actualizar")
+	}
+
+	res := s.db.Model(&database.TenantProduct{}).
+		Where("id IN ?", input.ProductIDs).
+		Updates(updates)
+
+	return &BulkActionResult{
+		Success: 1,
+		Updated: int(res.RowsAffected),
+	}, res.Error
+}

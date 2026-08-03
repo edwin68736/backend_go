@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -61,10 +62,14 @@ func (u *SuperAdminUser) CheckPassword(password string) bool {
 }
 
 type TenantModule struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	TenantID   uint      `gorm:"not null;index" json:"tenant_id"`
-	ModuleKey  string    `gorm:"size:100;not null" json:"module_key"`
-	Enabled    bool      `gorm:"default:true" json:"enabled"`
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	TenantID  uint   `gorm:"not null;index" json:"tenant_id"`
+	ModuleKey string `gorm:"size:100;not null" json:"module_key"`
+	Enabled   bool   `gorm:"default:true" json:"enabled"`
+	// Source distingue el origen del acceso: "plan" (heredado del plan del tenant, se recalcula
+	// al reconciliar) vs "manual" (cortesía asignada por el superadmin, sobrevive a la
+	// reconciliación). Ver ReconcileTenantModulesFromPlan.
+	Source     string    `gorm:"size:20;default:'plan'" json:"source"`
 	ConfigJSON *string   `gorm:"type:json" json:"config_json"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
@@ -91,22 +96,38 @@ type SaasPlan struct {
 	BillingCycle string  `gorm:"size:20;default:'monthly'" json:"billing_cycle"` // monthly | yearly | lifetime
 	Active       bool    `gorm:"default:true" json:"active"`
 	// Límite documentos electrónicos SUNAT por ciclo de suscripción.
-	IsUnlimitedDocuments  bool      `gorm:"default:false" json:"is_unlimited_documents"`
-	MonthlyDocumentsLimit int       `gorm:"default:0" json:"monthly_documents_limit"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
-}
-
-// SaasModule — catálogo global de módulos disponibles en el sistema
-type SaasModule struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Key         string    `gorm:"size:100;not null;uniqueIndex" json:"key"`
-	Name        string    `gorm:"size:100;not null" json:"name"`
-	Description string    `gorm:"size:500" json:"description"`
-	Icon        string    `gorm:"size:100" json:"icon"`
-	Active      bool      `gorm:"default:true" json:"active"`
+	IsUnlimitedDocuments  bool `gorm:"default:false" json:"is_unlimited_documents"`
+	MonthlyDocumentsLimit int  `gorm:"default:0" json:"monthly_documents_limit"`
+	// Cuotas del plan. 0 = ilimitado (grandfathering: superar el tope no borra datos existentes,
+	// solo bloquea crear nuevos; ver pkg/saas/quota).
+	MaxUsers    int       `gorm:"default:0" json:"max_users"`
+	MaxBranches int       `gorm:"default:0" json:"max_branches"`
+	MaxProducts int       `gorm:"default:0" json:"max_products"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// SaasModule — catálogo global de módulos (única fuente de verdad para panel central, tukifac
+// y tukichef). Agregar un módulo = una fila aquí y aparece en todos lados.
+type SaasModule struct {
+	ID          uint   `gorm:"primaryKey" json:"id"`
+	Key         string `gorm:"size:100;not null;uniqueIndex" json:"key"`
+	Name        string `gorm:"size:100;not null" json:"name"`
+	Description string `gorm:"size:500" json:"description"`
+	Icon        string `gorm:"size:100" json:"icon"`
+	// Category agrupa módulos en la UI (ej. "core", "vertical", "avanzado").
+	Category string `gorm:"size:50;default:'core'" json:"category"`
+	// Implemented: el módulo existe en código y es usable. Es un hecho del código (se sincroniza
+	// al arrancar desde syncModuleCodeMetadata), NO editable libremente. Los no implementados se
+	// OCULTAN al tenant, pero el superadmin sí los ve para pre-asignarlos a un plan.
+	Implemented bool `gorm:"default:false" json:"implemented"`
+	// Requires: keys de módulos de los que depende (CSV). No se fusionan (se venden aparte), pero
+	// un plan que incluya este módulo debe incluir también sus requeridos. Ej. sales→cashbank.
+	Requires  string    `gorm:"size:255" json:"requires"`
+	SortOrder int       `gorm:"default:0" json:"sort_order"`
+	Active    bool      `gorm:"default:true" json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // SaasPlanModule — qué módulos incluye cada plan
@@ -278,6 +299,119 @@ func MigrateModuleKeySaasToMemberships() error {
 	return CentralDB.Model(&SaasModule{}).Where("`key` = ?", "saas").Update("key", "memberships").Error
 }
 
+// moduleCodeMeta: hechos de código de un módulo (si existe/usable y sus dependencias). Es la
+// fuente de verdad de implemented/requires/category; name/description/icon los edita el superadmin.
+type moduleCodeMeta struct {
+	Key         string
+	Implemented bool
+	Requires    string // CSV de keys de las que depende (no se fusionan, se venden aparte)
+	Category    string
+	SortOrder   int
+}
+
+// moduleCodeCatalog: todos los módulos conocidos por el código. Los implemented=false se ocultan
+// al tenant; el superadmin sí los ve para pre-asignarlos a un plan.
+var moduleCodeCatalog = []moduleCodeMeta{
+	{Key: "sales", Implemented: true, Requires: "cashbank", Category: "core", SortOrder: 1},
+	{Key: "cashbank", Implemented: true, Requires: "", Category: "core", SortOrder: 2},
+	{Key: "products", Implemented: true, Requires: "", Category: "core", SortOrder: 3},
+	{Key: "inventory", Implemented: true, Requires: "products", Category: "core", SortOrder: 4},
+	{Key: "purchases", Implemented: true, Requires: "products,cashbank", Category: "core", SortOrder: 5},
+	{Key: "contacts", Implemented: true, Requires: "", Category: "core", SortOrder: 6},
+	{Key: "billing", Implemented: true, Requires: "", Category: "core", SortOrder: 7},
+	{Key: "restaurant", Implemented: true, Requires: "cashbank", Category: "vertical", SortOrder: 8},
+	{Key: "memberships", Implemented: true, Requires: "sales,cashbank", Category: "vertical", SortOrder: 9},
+	{Key: "ecommerce", Implemented: true, Requires: "products,sales", Category: "vertical", SortOrder: 10},
+	// No implementados (ocultos al tenant hasta que exista el código):
+	{Key: "hotel", Implemented: false, Category: "vertical", SortOrder: 11},
+	{Key: "clinic", Implemented: false, Category: "vertical", SortOrder: 12},
+	{Key: "transport", Implemented: false, Category: "vertical", SortOrder: 13},
+	{Key: "manufacturing", Implemented: false, Category: "vertical", SortOrder: 14},
+	{Key: "hr", Implemented: false, Category: "avanzado", SortOrder: 15},
+	{Key: "accounting", Implemented: false, Category: "avanzado", SortOrder: 16},
+	{Key: "bi", Implemented: false, Category: "avanzado", SortOrder: 17},
+	{Key: "fixedassets", Implemented: false, Category: "avanzado", SortOrder: 18},
+	{Key: "documents", Implemented: false, Category: "avanzado", SortOrder: 19},
+	{Key: "support", Implemented: false, Category: "avanzado", SortOrder: 20},
+}
+
+// ImplementedModuleKeys: set de módulos usables (implementados). Fuente para filtrar lo que ve
+// el tenant en el endpoint de sesión.
+func ImplementedModuleKeys() map[string]bool {
+	out := make(map[string]bool, len(moduleCodeCatalog))
+	for _, m := range moduleCodeCatalog {
+		if m.Implemented {
+			out[m.Key] = true
+		}
+	}
+	return out
+}
+
+// IsCodeModule: true si la key pertenece al catálogo de código (no se puede eliminar por API;
+// solo desactivar, o el boot la recrearía).
+func IsCodeModule(key string) bool {
+	for _, m := range moduleCodeCatalog {
+		if m.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// ModuleRequires: dependencias duras de un módulo (keys). Vacío si no tiene.
+func ModuleRequires(key string) []string {
+	for _, m := range moduleCodeCatalog {
+		if m.Key == key {
+			return splitCSVKeys(m.Requires)
+		}
+	}
+	return nil
+}
+
+func splitCSVKeys(csv string) []string {
+	out := []string{}
+	for _, part := range strings.Split(csv, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// SyncModuleCodeMetadata sincroniza (idempotente, en cada arranque) los campos de código de cada
+// módulo conocido: implemented, requires, category, sort_order. No toca name/description/icon.
+// Inserta módulos conocidos que falten en BD.
+func SyncModuleCodeMetadata() error {
+	if CentralDB == nil {
+		return nil
+	}
+	for _, m := range moduleCodeCatalog {
+		var existing SaasModule
+		err := CentralDB.Where("`key` = ?", m.Key).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			if e := CentralDB.Create(&SaasModule{
+				Key: m.Key, Name: m.Key, Implemented: m.Implemented,
+				Requires: m.Requires, Category: m.Category, SortOrder: m.SortOrder, Active: true,
+			}).Error; e != nil {
+				return e
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if e := CentralDB.Model(&existing).Updates(map[string]interface{}{
+			"implemented": m.Implemented,
+			"requires":    m.Requires,
+			"category":    m.Category,
+			"sort_order":  m.SortOrder,
+		}).Error; e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
 // SeedCentral inserta datos iniciales en la BD central.
 func SeedCentral() error {
 	// Super admin
@@ -331,9 +465,9 @@ func SeedCentral() error {
 	CentralDB.Model(&SaasPlan{}).Count(&planCount)
 	if planCount == 0 {
 		plans := []SaasPlan{
-			{Name: "Trial", Description: "Período de prueba gratuito 30 días", Price: 0, BillingCycle: "monthly", MonthlyDocumentsLimit: 20},
-			{Name: "Basic", Description: "Plan básico para pequeñas empresas", Price: 49, BillingCycle: "monthly", MonthlyDocumentsLimit: 50},
-			{Name: "Pro", Description: "Plan profesional con todos los módulos", Price: 99, BillingCycle: "monthly", IsUnlimitedDocuments: true},
+			{Name: "Trial", Description: "Período de prueba gratuito 30 días", Price: 0, BillingCycle: "monthly", MonthlyDocumentsLimit: 20, MaxUsers: 1, MaxBranches: 1, MaxProducts: 100},
+			{Name: "Basic", Description: "Plan básico para pequeñas empresas", Price: 49, BillingCycle: "monthly", MonthlyDocumentsLimit: 50, MaxUsers: 3, MaxBranches: 1, MaxProducts: 500},
+			{Name: "Pro", Description: "Plan profesional con todos los módulos", Price: 99, BillingCycle: "monthly", IsUnlimitedDocuments: true, MaxUsers: 0, MaxBranches: 0, MaxProducts: 0},
 		}
 		CentralDB.Create(&plans)
 
@@ -958,10 +1092,19 @@ type TenantSale struct {
 	// Origen comercial: direct | converted_from_nota | api | migration | legacy
 	SaleOrigin string `gorm:"size:30;default:direct;index" json:"sale_origin"`
 	// Venta generada desde una cotización (pre venta).
-	IssuedFromQuotationID *uint          `gorm:"index" json:"issued_from_quotation_id,omitempty"`
-	CreatedAt             time.Time      `json:"created_at"`
-	UpdatedAt             time.Time      `json:"updated_at"`
-	DeletedAt             gorm.DeletedAt `gorm:"index" json:"-"`
+	IssuedFromQuotationID *uint `gorm:"index" json:"issued_from_quotation_id,omitempty"`
+	// Reemisión fiscal: comprobante reenviado a SUNAT con otra fecha de emisión,
+	// conservando su numeración (caso típico: se emitió contra beta y hay que
+	// llevarlo a producción). Solo lo ejecuta soporte por acceso maestro.
+	ReissuedAt       *time.Time `gorm:"index" json:"reissued_at,omitempty"`
+	ReissuedFromDate *time.Time `json:"reissued_from_date,omitempty"` // issue_date antes de la primera corrección
+	ReissueReason    string     `gorm:"type:text" json:"reissue_reason,omitempty"`
+	ReissuedByEmail  string     `gorm:"size:255" json:"reissued_by_email,omitempty"`
+	ReissueCount     int        `gorm:"default:0" json:"reissue_count,omitempty"`
+
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// ContactName se rellena al listar (join con tenant_contacts), no es columna en BD
 	ContactName string `gorm:"-" json:"contact_name"`

@@ -5,6 +5,8 @@ import (
 
 	"tukifac/internal/users/service"
 	"tukifac/pkg/branch"
+	"tukifac/pkg/middleware"
+	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -98,6 +100,9 @@ func (h *UserHandler) CreateAPI(c fiber.Ctx) error {
 	var input service.CreateUserInput
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	if middleware.EnforceCreateQuota(c, tenantDB(c), saas.QuotaUsers) {
+		return nil
 	}
 	u, err := service.NewUserService(tenantDB(c)).Create(input)
 	if err != nil {

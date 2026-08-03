@@ -468,19 +468,26 @@ func (s *TenantService) GetModules(tenantID uint) ([]database.TenantModule, erro
 	return modules, err
 }
 
+// SetModule: activación/desactivación MANUAL de un módulo a un tenant por el superadmin
+// (cortesía o revocación puntual). Marca source='manual' para que la decisión sobreviva a la
+// reconciliación con el plan (ver saas.ReconcileTenantModulesFromPlan).
 func (s *TenantService) SetModule(tenantID uint, moduleKey string, enabled bool) error {
 	var mod database.TenantModule
 	err := s.db.Where("tenant_id = ? AND module_key = ?", tenantID, moduleKey).First(&mod).Error
 	if err != nil {
-		// Crear
 		return s.db.Create(&database.TenantModule{
 			TenantID:   tenantID,
 			ModuleKey:  moduleKey,
 			Enabled:    enabled,
+			Source:     "manual",
 			ConfigJSON: strPtr("{}"),
 		}).Error
 	}
-	return s.db.Model(&mod).Update("enabled", enabled).Error
+	if e := s.db.Model(&mod).Updates(map[string]interface{}{"enabled": enabled, "source": "manual"}).Error; e != nil {
+		return e
+	}
+	saas.InvalidateTenantCache(tenantID)
+	return nil
 }
 
 // RunMigrations ejecuta las migraciones del tenant (tablas/columnas nuevas) y opcionalmente el seed de permisos si no existen.
@@ -607,19 +614,46 @@ func (s *TenantService) CleanupAbandonedQuickSalesFleet() (cleaned int64, failed
 
 func (s *TenantService) Stats() (map[string]int64, error) {
 	stats := make(map[string]int64)
-	var total, active, inactive, trial, basic, pro int64
+	var total, active, inactive int64
 	s.db.Model(&database.Tenant{}).Count(&total)
 	s.db.Model(&database.Tenant{}).Where("status = ?", "active").Count(&active)
 	s.db.Model(&database.Tenant{}).Where("status = ?", "inactive").Count(&inactive)
-	s.db.Model(&database.Tenant{}).Where("plan = ?", "trial").Count(&trial)
-	s.db.Model(&database.Tenant{}).Where("plan = ?", "basic").Count(&basic)
-	s.db.Model(&database.Tenant{}).Where("plan = ?", "pro").Count(&pro)
 	stats["total"] = total
 	stats["active"] = active
 	stats["inactive"] = inactive
-	stats["trial"] = trial
-	stats["basic"] = basic
-	stats["pro"] = pro
+
+	// Conteo por plan REAL (suscripción vigente), no por la columna legacy tenants.plan que se
+	// desincroniza. Dinámico: una clave "plan_<nombre>" por cada plan del catálogo.
+	planName := map[uint]string{}
+	var plans []database.SaasPlan
+	s.db.Find(&plans)
+	for _, p := range plans {
+		planName[p.ID] = p.Name
+	}
+	var tenants []database.Tenant
+	s.db.Select("id").Find(&tenants)
+	byPlan := map[string]int64{}
+	for _, t := range tenants {
+		var sub database.SaasSubscription
+		if err := s.db.Where("tenant_id = ?", t.ID).
+			Where("status NOT IN ?", []string{database.SaasSubCancelled}).
+			Order("created_at desc").First(&sub).Error; err != nil {
+			byPlan["sin_plan"]++
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(planName[sub.PlanID]))
+		if name == "" {
+			name = "desconocido"
+		}
+		byPlan[name]++
+	}
+	for name, cnt := range byPlan {
+		stats["plan_"+name] = cnt
+	}
+	// Compat: claves legacy que el dashboard aún consume (se migran a plan_* en Fase 2).
+	stats["trial"] = byPlan["trial"]
+	stats["basic"] = byPlan["basic"]
+	stats["pro"] = byPlan["pro"]
 	return stats, nil
 }
 
@@ -720,8 +754,10 @@ func (s *TenantService) MasterAccess(tenantID, saUserID uint, saEmail, clientIP 
 	}
 
 	session, err := authsvc.BuildTenantSession(tenant, tenantDB, user, legacyBranch, authsvc.TenantSessionOpts{
-		AuthMethod:   "master_access",
-		Impersonated: true,
+		AuthMethod:       middleware.AuthMethodMasterAccess,
+		Impersonated:     true,
+		MasterActorID:    saUserID,
+		MasterActorEmail: saEmail,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("generando sesión: %w", err)

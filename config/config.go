@@ -114,6 +114,10 @@ type Config struct {
 	FacturadorBaseURL          string
 	FacturadorToken            string
 	FiscalQueueWorkers         int
+	// SunatMaxBackdateDays días calendario hacia atrás admitidos al reemitir un
+	// comprobante con otra fecha de emisión. Configurable porque el plazo lo fija
+	// SUNAT y ha cambiado con el tiempo.
+	SunatMaxBackdateDays       int
 	InvoiceStoragePath         string
 	ValidaPSEManagementBaseURL string
 	ValidaPSEManagementToken   string
@@ -244,6 +248,7 @@ func Load() error {
 		FacturadorBaseURL:          getEnv("FACTURADOR_BASE_URL", ""),
 		FacturadorToken:            getEnv("FACTURADOR_TOKEN", ""),
 		FiscalQueueWorkers:         getEnvInt("FISCAL_QUEUE_WORKERS", 4),
+		SunatMaxBackdateDays:       getEnvInt("SUNAT_MAX_BACKDATE_DAYS", 3),
 		InvoiceStoragePath:         getEnv("INVOICE_STORAGE_PATH", "./storage/invoices"),
 		ValidaPSEManagementBaseURL: getEnv("VALIDAPSE_MGMT_BASE_URL", "https://app.validapse.com/api"),
 		ValidaPSEManagementToken:   getEnv("VALIDAPSE_MGMT_TOKEN", ""),

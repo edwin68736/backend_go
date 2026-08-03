@@ -107,18 +107,25 @@ func RunLimaDailyEvaluation() (statusUpdates int, suspended int, overdueCycles i
 			}
 		}
 
-		// Auto-suspend solo tras grace (día calendario), nunca el mismo día de vencimiento
-		if cfg.AutoSuspendEnabled && effective == database.SaasSubOverdue &&
-			daysAfter > cfg.GracePeriodDays && tenant.Status != database.TenantStatusSuspended {
-			database.CentralDB.Model(sub).Updates(map[string]interface{}{
-				"status": database.SaasSubSuspended, "provisional_until": nil,
-			})
-			database.CentralDB.Model(&tenant).Update("status", database.TenantStatusSuspended)
-			sid := sub.ID
-			LogEvent(sub.TenantID, &sid, EventSuspended, "system", nil,
-				"auto_suspend daily 00:05 Lima", MetaJSON(map[string]interface{}{"days_after_end": daysAfter}))
-			suspended++
-			InvalidateTenantCache(sub.TenantID)
+		// Auto-suspend solo tras grace (día calendario), nunca el mismo día de vencimiento.
+		// Si pasó la gracia y autoSuspend está habilitado: marcar como suspended.
+		// Si no, marcar como expired (informativo) solo si AutoSuspend deshabilitado.
+		if daysAfter > cfg.GracePeriodDays && sub.Status != database.SaasSubSuspended &&
+			sub.Status != database.SaasSubCancelled && sub.Status != database.SaasSubExpired {
+			if cfg.AutoSuspendEnabled && tenant.Status != database.TenantStatusSuspended {
+				database.CentralDB.Model(sub).Updates(map[string]interface{}{
+					"status": database.SaasSubSuspended, "provisional_until": nil,
+				})
+				database.CentralDB.Model(&tenant).Update("status", database.TenantStatusSuspended)
+				sid := sub.ID
+				LogEvent(sub.TenantID, &sid, EventSuspended, "system", nil,
+					"auto_suspend daily 00:05 Lima", MetaJSON(map[string]interface{}{"days_after_end": daysAfter}))
+				suspended++
+				InvalidateTenantCache(sub.TenantID)
+			} else {
+				database.CentralDB.Model(sub).Update("status", database.SaasSubExpired)
+			}
+			statusUpdates++
 		}
 	}
 

@@ -82,6 +82,7 @@ var TenantMigrations = []TenantMigration{
 	V108TransferKardexLinks{},
 	V109ComandaPresentation{},
 	V110QuotationItemPresentation{},
+	V111SaleReissueAudit{},
 }
 
 // ByVersion mapa versión → migración.

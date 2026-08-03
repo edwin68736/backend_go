@@ -13,6 +13,8 @@ import (
 	"tukifac/internal/company/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
+	"tukifac/pkg/middleware"
+	"tukifac/pkg/saas"
 	"tukifac/pkg/taxregime"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
@@ -336,6 +338,9 @@ func (h *CompanyHandler) CreateBranchAPI(c fiber.Ctx) error {
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	if middleware.EnforceCreateQuota(c, db(c), saas.QuotaBranches) {
+		return nil
 	}
 	b, err := service.NewCompanyService(db(c)).CreateBranch(body.Name, body.Address, body.Phone, body.FiscalDomicileCode, body.IsMain)
 	if err != nil {

@@ -31,6 +31,11 @@ type TenantClaims struct {
 	EmployeeType   string `json:"employee_type"` // admin, cashier, waiter, cook, driver, supervisor
 	AuthMethod     string `json:"auth_method,omitempty"` // pwd | pin | master_access
 	Impersonated   bool   `json:"impersonated,omitempty"`
+	// Identidad del superadmin que abrió el acceso maestro. UserID/Email apuntan al
+	// dueño del tenant suplantado, así que sin esto una acción de soporte quedaría
+	// registrada a nombre del cliente. Vacío en sesiones normales.
+	MasterActorID    uint   `json:"master_actor_id,omitempty"`
+	MasterActorEmail string `json:"master_actor_email,omitempty"`
 	PermVer        uint   `json:"pv,omitempty"`    // versión cache permisos restaurante
 	StaffID        uint   `json:"sid,omitempty"`   // tenant_restaurant_staff.id
 	Status         string `json:"status"`          // Estado del tenant al momento del login
