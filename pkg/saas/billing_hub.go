@@ -155,6 +155,17 @@ func GetBillingHub(tenantID uint) (BillingHub, error) {
 	return hub, nil
 }
 
+// PendingCycleForTenant cobro impago más próximo del tenant (nil si no hay).
+func PendingCycleForTenant(tenantID uint) *database.SaasBillingCycle {
+	var cycle database.SaasBillingCycle
+	if database.CentralDB.Where("tenant_id = ? AND status IN ?", tenantID,
+		[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).
+		Order("due_date asc").First(&cycle).Error != nil {
+		return nil
+	}
+	return &cycle
+}
+
 // ListInvoicesView facturas/ciclos del tenant.
 func ListInvoicesView(tenantID uint) []InvoiceView {
 	var cycles []database.SaasBillingCycle

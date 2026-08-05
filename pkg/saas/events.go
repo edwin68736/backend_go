@@ -11,4 +11,5 @@ const (
 	EventReactivated        = "REACTIVATED"
 	EventValidityAdjusted   = "VALIDITY_ADJUSTED"
 	EventInvoiceIssued      = "INVOICE_ISSUED"
+	EventInvoiceSuperseded  = "INVOICE_SUPERSEDED"
 )

@@ -15,6 +15,12 @@ func RegisterRoutes(api fiber.Router) {
 		middleware.RequireProductsViewOrRestaurantCatalog(),
 		h.SearchAPI,
 	)
+	api.Get("/products/next-code",
+		middleware.RequireModule("products"),
+		middleware.LoadRestaurantPermissions(),
+		middleware.RequireProductsViewOrRestaurantCatalog(),
+		h.NextCodeAPI,
+	)
 	api.Get("/products/lookup-by-code",
 		middleware.RequireModule("products"),
 		middleware.LoadRestaurantPermissions(),

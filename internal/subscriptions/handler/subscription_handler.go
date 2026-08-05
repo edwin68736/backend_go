@@ -66,7 +66,13 @@ func (h *SubscriptionHandler) CreateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": sub})
+	// El cobro del alta va en la respuesta para poder registrar el pago en el mismo paso,
+	// sin una consulta extra para averiguar qué ciclo se acaba de emitir.
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"success":       true,
+		"data":          sub,
+		"billing_cycle": h.svc.PendingCycleForSubscription(sub.ID),
+	})
 }
 
 // PATCH /api/superadmin/subscriptions/:id/suspend
@@ -80,6 +86,26 @@ func (h *SubscriptionHandler) SuspendAPI(c fiber.Ctx) error {
 	}
 	c.Bind().JSON(&body)
 	if err := h.svc.Suspend(uint(id), body.Reason); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// PATCH /api/superadmin/subscriptions/:id/cancel — anula la suscripción (alta no concretada
+// o baja del cliente). Conserva los datos del tenant.
+func (h *SubscriptionHandler) CancelAPI(c fiber.Ctx) error {
+	if err := requireSuperAdminRole(c); err != nil {
+		return err
+	}
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	c.Bind().JSON(&body)
+	if err := h.svc.Cancel(uint(id), body.Reason); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

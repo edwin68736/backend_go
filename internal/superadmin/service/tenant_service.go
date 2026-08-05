@@ -47,9 +47,15 @@ type CreateTenantInput struct {
 	Ubigeo             string `json:"ubigeo"` // código 6 dígitos del distrito
 	AdminEmail         string `json:"admin_email"`
 	AdminPassword      string `json:"admin_password"`
-	SubscriptionMonths int    `json:"subscription_months"` // duración en meses de la suscripción al crear (0 = no crear suscripción automática)
-	Rubro              string `json:"rubro"`               // general | gastronomico
-	TaxpayerRegime     string `json:"taxpayer_regime"`     // general | nrus — régimen tributario del contribuyente
+	// SubscriptionMonths duración de la suscripción inicial. Toda empresa nace con una
+	// suscripción —las gratuitas también, vinculadas al plan gratis—, así que 0 se corrige a 1
+	// en vez de saltarse el alta.
+	SubscriptionMonths int    `json:"subscription_months"`
+	Rubro              string `json:"rubro"`           // general | gastronomico
+	TaxpayerRegime     string `json:"taxpayer_regime"` // general | nrus — régimen tributario del contribuyente
+	// Descuento opcional sobre el cobro inicial (precio del plan × meses).
+	DiscountType  string  `json:"discount_type"`
+	DiscountValue float64 `json:"discount_value"`
 }
 
 // Create provisioning completo y transaccional (rollback automático si falla cualquier paso).
@@ -76,9 +82,12 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 		return nil, errors.New("ya existe una empresa con ese subdominio. Elige otro identificador")
 	}
 
+	// Sin default: el catálogo de planes lo define el superadmin y no tiene por qué existir
+	// uno llamado «trial». Antes se asumía ese nombre y el alta fallaba con un error opaco de
+	// plan no encontrado en vez de decir que faltaba elegirlo.
 	plan := strings.TrimSpace(input.Plan)
 	if plan == "" {
-		plan = "trial"
+		return nil, errors.New("debe seleccionar un plan para la empresa")
 	}
 	months := input.SubscriptionMonths
 	if months <= 0 {
@@ -151,6 +160,7 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	// 5–6. Suscripción + billing cycle (módulos según plan vía syncTenantModulesFromPlanTx)
 	if _, err = saas.ProvisionInitialSubscription(
 		tenant.ID, plan, months, "Suscripción creada al registrar la empresa",
+		saas.Discount{Type: input.DiscountType, Value: input.DiscountValue},
 	); err != nil {
 		return nil, fmt.Errorf("suscripción SaaS: %w", err)
 	}
@@ -534,15 +544,20 @@ func (s *TenantService) RunMigrationsAll() (database.MigrateSummary, error) {
 
 // BackfillInfo describe un backfill disponible para el panel central.
 type BackfillInfo struct {
-	Version int    `json:"version"`
-	Name    string `json:"name"`
+	Version     int    `json:"version"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // ListBackfills backfills registrados (run-once, idempotentes).
 func (s *TenantService) ListBackfills() []BackfillInfo {
 	out := make([]BackfillInfo, 0, len(tenantbackfills.TenantBackfills))
 	for _, b := range tenantbackfills.TenantBackfills {
-		out = append(out, BackfillInfo{Version: b.Version(), Name: b.Name()})
+		out = append(out, BackfillInfo{
+			Version:     b.Version(),
+			Name:        b.Name(),
+			Description: tenantbackfills.DescriptionOf(b),
+		})
 	}
 	return out
 }

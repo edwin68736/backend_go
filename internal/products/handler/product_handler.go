@@ -1011,3 +1011,21 @@ func buildProductInput(c fiber.Ctx, taxCfg tax.Config) service.ProductInput {
 		ModifierGroupIDs: &modGroupIDs,
 	}
 }
+
+// NextCodeAPI sugiere un código libre para el formulario de alta.
+//
+// El formulario lo prellena y el usuario puede reemplazarlo por el suyo; el backend lo
+// completa igual si llega vacío, así que esto es comodidad, no la validación.
+func (h *ProductHandler) NextCodeAPI(c fiber.Ctx) error {
+	svc := service.NewProductService(db(c))
+	branchID := branch.ActiveBranchID(c)
+	if reqB, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil && reqB > 0 {
+		branchID = branch.ResolveReadBranchFilter(c, uint(reqB))
+	}
+	isRestaurant := strings.EqualFold(strings.TrimSpace(c.Query("scope")), "restaurant")
+	code, err := svc.NextProductCode(branchID, isRestaurant && branchID > 0)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"code": code})
+}

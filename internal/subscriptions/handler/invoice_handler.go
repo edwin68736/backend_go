@@ -124,6 +124,7 @@ func (h *SubscriptionHandler) ListAllInvoicesAPI(c fiber.Ctx) error {
 	for _, r := range rows {
 		m := invoiceRow(r.InvoiceRow)
 		m["tenant_name"] = r.TenantName
+		m["covers_active_period"] = r.CoversActivePeriod
 		out = append(out, m)
 	}
 	return c.JSON(fiber.Map{"data": out})

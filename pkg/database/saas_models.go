@@ -52,6 +52,10 @@ type SaasPlatformSettings struct {
 
 	ReminderDaysJSON               string  `gorm:"type:text" json:"reminder_days_json"` // ej. [7,5,3,1]
 	GracePeriodDays                int     `gorm:"default:3" json:"grace_period_days"`
+	// PaymentWindowDays: días para pagar un cobro ya emitido. Aplica a quien está usando el
+	// servicio sin haberlo pagado todavía (alta nueva); las renovaciones se rigen por la
+	// fecha de vencimiento del período contratado.
+	PaymentWindowDays int `gorm:"default:3" json:"payment_window_days"`
 	ReconnectionFee                float64 `gorm:"default:50" json:"reconnection_fee"`
 	AutoSuspendEnabled             bool    `gorm:"default:true" json:"auto_suspend_enabled"`
 	ProvisionalReactivationEnabled bool    `gorm:"default:true" json:"provisional_reactivation_enabled"`
@@ -88,7 +92,14 @@ type SaasBillingCycle struct {
 	PeriodStart     time.Time `gorm:"not null" json:"period_start"`
 	PeriodEnd       time.Time `gorm:"not null;uniqueIndex:idx_billing_cycle_sub_period,priority:2" json:"period_end"`
 	DueDate         time.Time `gorm:"not null;index" json:"due_date"`
+	// Amount es el importe A COBRAR, ya con el descuento aplicado: toda la lógica de deuda,
+	// conciliación de pagos y mora sigue mirando este campo. Los tres siguientes son la
+	// memoria de cómo se calculó, para poder mostrarlo y auditarlo.
 	Amount          float64   `gorm:"not null" json:"amount"`
+	GrossAmount     float64   `gorm:"default:0" json:"gross_amount"`   // precio del plan × meses, sin descuento
+	MonthsCovered   int       `gorm:"default:0" json:"months_covered"` // meses que cubre el cobro
+	DiscountType    string    `gorm:"size:10" json:"discount_type"`    // "" | percent | fixed
+	DiscountValue   float64   `gorm:"default:0" json:"discount_value"`
 	ReconnectionFee float64   `gorm:"default:0" json:"reconnection_fee"`
 	Currency        string    `gorm:"size:10;default:'PEN'" json:"currency"`
 	Status          string    `gorm:"size:30;index;default:'pending'" json:"status"`

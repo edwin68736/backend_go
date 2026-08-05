@@ -578,6 +578,11 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 	if input.Name == "" {
 		return nil, nil, errors.New("nombre es requerido")
 	}
+	// Sin código el producto no se puede facturar (SUNAT lo exige por línea) y el error
+	// aparecía recién al emitir. Se completa aquí para que nunca nazca uno inutilizable.
+	if err := s.ensureProductCode(&input); err != nil {
+		return nil, nil, err
+	}
 
 	if input.Code != "" {
 		scopeBranch := input.IsRestaurant && input.BranchID > 0

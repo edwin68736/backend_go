@@ -113,3 +113,81 @@ func TestRenewalChain_consecutivePeriods(t *testing.T) {
 		covered = end
 	}
 }
+
+// Anular un cobro con un pago vivo dejaría el comprobante del cliente sin deuda a la que
+// aplicarse: primero hay que resolver el pago.
+func TestCancelInvoiceRechazaCobroConPagoAsociado(t *testing.T) {
+	db := setupApprovePaymentDB(t)
+	cycle := database.SaasBillingCycle{
+		TenantID: 1, SubscriptionID: 1, PlanID: 1,
+		PeriodStart: time.Now(), PeriodEnd: time.Now().AddDate(0, 1, 0), DueDate: time.Now(),
+		Amount: 99, Currency: "PEN", Status: database.SaasInvoicePending,
+	}
+	if err := db.Create(&cycle).Error; err != nil {
+		t.Fatalf("crear ciclo: %v", err)
+	}
+	pago := database.SaasPayment{
+		TenantID: 1, BillingCycleID: &cycle.ID, Amount: 99,
+		Status: database.SaasPayPendingReview,
+	}
+	if err := db.Create(&pago).Error; err != nil {
+		t.Fatalf("crear pago: %v", err)
+	}
+
+	if err := CancelInvoice(cycle.ID); err == nil {
+		t.Error("se esperaba error al anular un cobro con pago en revisión")
+	}
+
+	// Rechazado el pago, el cobro ya puede anularse.
+	db.Model(&pago).Update("status", database.SaasPayRejected)
+	if err := CancelInvoice(cycle.ID); err != nil {
+		t.Errorf("con el pago rechazado debía poder anularse: %v", err)
+	}
+	var after database.SaasBillingCycle
+	db.First(&after, cycle.ID)
+	if after.Status != database.SaasInvoiceRejected {
+		t.Errorf("estado = %q, se esperaba anulado", after.Status)
+	}
+}
+
+func TestCancelInvoiceRechazaPagadoYaAnulado(t *testing.T) {
+	db := setupApprovePaymentDB(t)
+	pagado := database.SaasBillingCycle{
+		TenantID: 1, SubscriptionID: 1, PlanID: 1,
+		PeriodStart: time.Now(), PeriodEnd: time.Now().AddDate(0, 1, 0), DueDate: time.Now(),
+		Amount: 99, Currency: "PEN", Status: database.SaasInvoicePaid,
+	}
+	db.Create(&pagado)
+	if err := CancelInvoice(pagado.ID); err == nil {
+		t.Error("un cobro pagado no debe poder anularse")
+	}
+
+	anulado := database.SaasBillingCycle{
+		TenantID: 1, SubscriptionID: 1, PlanID: 1,
+		PeriodStart: time.Now(), PeriodEnd: time.Now().AddDate(0, 2, 0), DueDate: time.Now(),
+		Amount: 99, Currency: "PEN", Status: database.SaasInvoiceRejected,
+	}
+	db.Create(&anulado)
+	if err := CancelInvoice(anulado.ID); err == nil {
+		t.Error("un cobro ya anulado no debe volver a anularse")
+	}
+}
+
+// El período en curso es el caso que hay que advertir: anularlo regala el servicio que el
+// cliente está usando.
+func TestInvoiceCancelInfoDetectaPeriodoEnCurso(t *testing.T) {
+	setupApprovePaymentDB(t)
+	now := NowLima()
+	enCurso := database.SaasBillingCycle{
+		TenantID: 1, PeriodStart: now.AddDate(0, 0, -5), PeriodEnd: now.AddDate(0, 0, 25),
+	}
+	if info := InvoiceCancelInfo(&enCurso); !info.CoversActivePeriod {
+		t.Error("un período que ya empezó y no ha terminado debía marcarse como en curso")
+	}
+	futuro := database.SaasBillingCycle{
+		TenantID: 1, PeriodStart: now.AddDate(0, 0, 10), PeriodEnd: now.AddDate(0, 0, 40),
+	}
+	if info := InvoiceCancelInfo(&futuro); info.CoversActivePeriod {
+		t.Error("un período que aún no empieza no debía marcarse como en curso")
+	}
+}

@@ -10,6 +10,7 @@ import (
 
 	"tukifac/internal/payments/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
 
@@ -193,4 +194,13 @@ func (h *PaymentHandler) UploadFiscalDocAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true, "fiscal_doc_url": url})
+}
+
+// CollectionAlertsAPI GET /api/superadmin/payments/alerts — campana de cobranza del panel.
+func (h *PaymentHandler) CollectionAlertsAPI(c fiber.Ctx) error {
+	alerts, err := saas.GetCollectionAlerts()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(alerts)
 }

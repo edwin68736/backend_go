@@ -149,6 +149,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	input.Items = resolvedItems
 	input.ExtraStockMovements = append(input.ExtraStockMovements, comboStock...)
+	// SUNAT exige código en cada línea: sin él la venta se guardaba y reventaba recién al
+	// emitir, con el cliente esperando. Se completa antes de calcular nada.
+	fillMissingItemCodes(s.db, input.Items)
 
 	series, err := docseries.ValidateForBranch(s.db, input.SeriesID, input.BranchID)
 	if err != nil {
@@ -1178,6 +1181,8 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 	}
 	s.enrichSalesWithDetraccion(sales)
 	nvdisplay.EnrichSales(s.db, sales)
+	// Notas de crédito/débito: documento afectado y tipo de nota para el listado.
+	enrichNotesAffectedDoc(s.db, sales)
 
 	// Normalizar issue_date como fecha de negocio Perú al mediodía para evitar corrimientos de día
 	// por parsing/serialización (MySQL DATETIME + loc=Local + clientes en UTC).
@@ -1523,100 +1528,14 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 	cashSvc := cashbanksvc.NewCashBankService(s.db)
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var incomeMovements []database.TenantCashMovement
-		if err := tx.Where("sale_id = ? AND type = ?", id, "income").Find(&incomeMovements).Error; err != nil {
+		if err := reverseSaleCashTx(tx, cashSvc, &sale, ref, reason, userID); err != nil {
 			return err
 		}
-		for _, m := range incomeMovements {
-			if err := cashSvc.CreateCashReversal(tx, m, "Anulación venta", ref, reason, userID); err != nil {
-				return err
-			}
-		}
-		if len(incomeMovements) == 0 && sale.Total > 0 {
-			// Ventas sin movimiento de caja indexado: revertir pagos registrados en sesión original.
-			var payments []database.TenantSalePayment
-			tx.Where("sale_id = ?", id).Find(&payments)
-			sessionID := sale.CashSessionID
-			for _, p := range payments {
-				if p.Amount <= 0 {
-					continue
-				}
-				pm, _ := cashSvc.GetPaymentMethodByCode(p.Method)
-				if pm != nil && pm.DestinationType == "cash" && sessionID != nil && *sessionID > 0 {
-					uid := userID
-					if uid == 0 {
-						uid = sale.UserID
-					}
-					if err := tx.Create(&database.TenantCashMovement{
-						CashSessionID: *sessionID,
-						Type:          "expense",
-						Amount:        p.Amount,
-						PaymentMethod: p.Method,
-						Category:      "Anulación venta",
-						Reference:     ref,
-						SaleID:        &id,
-						Notes:         reason,
-						UserID:        uid,
-						CreatedAt:     time.Now(),
-					}).Error; err != nil {
-						return err
-					}
-				}
-			}
-		}
-		var bankCredits []database.TenantBankMovement
-		if err := tx.Where("reference = ? AND type = ?", sale.Number, "credit").Find(&bankCredits).Error; err != nil {
+		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
 			return err
 		}
-		for _, bm := range bankCredits {
-			desc := "Reversión por anulación de venta"
-			if err := cashSvc.CreateBankReversal(tx, bm, desc, ref, userID); err != nil {
-				return err
-			}
-		}
-
-		inv := invsvc.NewInventoryService(tx)
-		for _, item := range items {
-			if item.ProductID == nil {
-				continue
-			}
-			var product database.TenantProduct
-			if tx.First(&product, *item.ProductID).Error != nil {
-				continue
-			}
-			if !product.ManageStock || productIsCatalogService(&product) {
-				continue
-			}
-
-			var restorePresentationID *uint
-			if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
-				restorePresentationID = item.PresentationID
-			}
-			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:      *item.ProductID,
-				PresentationID: restorePresentationID,
-				BranchID:       sale.BranchID,
-				Type:           "in",
-				Quantity:       item.Quantity,
-				Reference:      ref,
-				UserID:         sale.UserID,
-				OperationCode:  "SALE",
-			}); err != nil {
-				return err
-			}
-
-			// Productos con series: marcar seriales de este ítem como disponibles nuevamente
-			if product.ManageSeries && !productIsCatalogService(&product) {
-				if err := tx.Model(&database.TenantProductSerial{}).
-					Where("sale_item_id = ?", item.ID).
-					Updates(map[string]interface{}{
-						"status":       "available",
-						"sale_item_id": nil,
-						"updated_at":   time.Now(),
-					}).Error; err != nil {
-					return err
-				}
-			}
+		if err := releaseSerialsForSaleTx(tx, items); err != nil {
+			return err
 		}
 
 		cancelNotes := strings.TrimSpace(sale.Notes)
@@ -1651,47 +1570,18 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		return err
 	}
 	ref := "ANULACION VENTA/" + sale.Number
-	_ = userID
+	cashSvc := cashbanksvc.NewCashBankService(s.db)
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		inv := invsvc.NewInventoryService(tx)
-		for _, item := range items {
-			if item.ProductID == nil {
-				continue
-			}
-			var product database.TenantProduct
-			if tx.First(&product, *item.ProductID).Error != nil {
-				continue
-			}
-			if !product.ManageStock || productIsCatalogService(&product) {
-				continue
-			}
-			var restorePresentationID *uint
-			if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
-				restorePresentationID = item.PresentationID
-			}
-			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:      *item.ProductID,
-				PresentationID: restorePresentationID,
-				BranchID:       sale.BranchID,
-				Type:           "in",
-				Quantity:       item.Quantity,
-				Reference:      ref,
-				UserID:         sale.UserID,
-				OperationCode:  "SALE",
-			}); err != nil {
-				return err
-			}
-			if product.ManageSeries && !productIsCatalogService(&product) {
-				if err := tx.Model(&database.TenantProductSerial{}).
-					Where("sale_item_id = ?", item.ID).
-					Updates(map[string]interface{}{
-						"status":       "available",
-						"sale_item_id": nil,
-						"updated_at":   time.Now(),
-					}).Error; err != nil {
-					return err
-				}
-			}
+		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
+			return err
+		}
+		if err := releaseSerialsForSaleTx(tx, items); err != nil {
+			return err
+		}
+		// La anulación por nota de crédito también devuelve el dinero: antes solo revertía
+		// stock y el cobro quedaba vivo en caja, así que el arqueo cuadraba de más.
+		if err := reverseSaleCashTx(tx, cashSvc, &sale, ref, reason, userID); err != nil {
+			return err
 		}
 		cancelNotes := strings.TrimSpace(sale.Notes)
 		if cancelNotes != "" {

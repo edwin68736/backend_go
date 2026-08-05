@@ -149,7 +149,18 @@ type SaasSubscription struct {
 	ProvisionalUntil *time.Time `json:"provisional_until,omitempty"`
 	Status           string     `gorm:"size:30;default:'active';index" json:"status"`
 	Notes            string     `gorm:"size:500" json:"notes"`
-	CancelledAt      *time.Time `json:"cancelled_at,omitempty"`
+	// BilledMonths meses VENDIDOS en esta suscripción, que es lo que se cobra.
+	//
+	// No se puede deducir de start_date→end_date: al renovar antes de tiempo la vigencia se
+	// encadena al fin del período anterior mientras start_date es hoy, así que esa distancia
+	// resulta mayor que los meses realmente contratados y el cobro salía inflado.
+	BilledMonths int `gorm:"default:0" json:"billed_months"`
+	// Descuento pactado para esta suscripción: se aplica a cada cobro que genere.
+	// Vive aquí y no en el ciclo porque es parte del acuerdo con el cliente (típicamente
+	// a cambio de contratar varios meses por adelantado).
+	DiscountType  string  `gorm:"size:10" json:"discount_type"` // "" | percent | fixed
+	DiscountValue float64 `gorm:"default:0" json:"discount_value"`
+	CancelledAt   *time.Time `json:"cancelled_at,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
@@ -1112,6 +1123,15 @@ type TenantSale struct {
 	ContactDocNumber string `gorm:"-" json:"contact_doc_number,omitempty"`
 	// UserName se rellena al listar (usuario que registró la venta).
 	UserName string `gorm:"-" json:"user_name,omitempty"`
+	// Nota de crédito/débito: documento afectado, como lo exige SUNAT en la representación
+	// impresa y como debe verse en el listado (tipo + serie-correlativo, no el ID interno).
+	AffectedDocSunatCode string `gorm:"-" json:"affected_doc_sunat_code,omitempty"` // 01 factura, 03 boleta
+	AffectedDocType      string `gorm:"-" json:"affected_doc_type,omitempty"`       // FACTURA, BOLETA…
+	AffectedDocSeries    string `gorm:"-" json:"affected_doc_series,omitempty"`
+	AffectedDocNumber    string `gorm:"-" json:"affected_doc_number,omitempty"`
+	// Tipo de nota según catálogo SUNAT 09/10 (codMotivo) y su descripción.
+	NoteTypeCode   string `gorm:"-" json:"note_type_code,omitempty"`
+	NoteTypeReason string `gorm:"-" json:"note_type_reason,omitempty"`
 	// ID de la venta electrónica (01/03) emitida desde esta NV; solo listados NV.
 	ElectronicIssueSaleID  *uint  `gorm:"-" json:"electronic_issue_sale_id,omitempty"`
 	ElectronicIssueDocType string `gorm:"-" json:"electronic_issue_doc_type,omitempty"`

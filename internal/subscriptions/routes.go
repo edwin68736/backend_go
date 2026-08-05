@@ -13,6 +13,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/subscriptions", h.CreateAPI)
 	saAPI.Patch("/subscriptions/:id/suspend", h.SuspendAPI)
 	saAPI.Patch("/subscriptions/:id/reactivate", h.ReactivateAPI)
+	saAPI.Patch("/subscriptions/:id/cancel", h.CancelAPI)
 	saAPI.Patch("/subscriptions/:id/adjust-validity", h.AdjustValidityAPI)
 	saAPI.Get("/tenants/:id/subscription", h.GetByTenantAPI)
 	// Cobros emitidos a mano: hasta ahora una factura solo nacía como efecto de crear o

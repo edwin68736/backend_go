@@ -660,3 +660,41 @@ func (h *SaleHandler) CreateForm(c fiber.Ctx) error {
 	}
 	return c.Redirect().To("/sales/" + strconv.FormatUint(uint64(sale.ID), 10))
 }
+
+// PendingRefundsAPI devoluciones de dinero que quedaron sin registrar al anular ventas.
+//
+// Se derivan de los cobros sin reversión (reversal_of_id), así que no hay estado que mantener:
+// aplicar la devolución las quita de la lista sola.
+func (h *SaleHandler) PendingRefundsAPI(c fiber.Ctx) error {
+	branchID := branch.ActiveBranchID(c)
+	if reqB, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil && reqB > 0 {
+		branchID = branch.ResolveReadBranchFilter(c, uint(reqB))
+	}
+	rows, err := service.NewSaleService(db(c)).PendingSaleRefunds(branchID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// ApplyPendingRefundAPI registra una devolución pendiente en la caja indicada.
+func (h *SaleHandler) ApplyPendingRefundAPI(c fiber.Ctx) error {
+	var body struct {
+		CashMovementID uint   `json:"cash_movement_id"`
+		CashSessionID  uint   `json:"cash_session_id"`
+		Reason         string `json:"reason"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	if body.CashMovementID == 0 || body.CashSessionID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "movimiento y caja son requeridos"})
+	}
+	err := service.NewSaleService(db(c)).ApplyPendingRefund(
+		body.CashMovementID, body.CashSessionID, userID(c), strings.TrimSpace(body.Reason),
+	)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "message": "Devolución registrada en caja"})
+}

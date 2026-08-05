@@ -33,12 +33,16 @@ type RenewalPreview struct {
 	CurrentEnd string `json:"current_end"` // vence hoy la suscripción
 	// CoveredUntil hasta dónde llega lo ya cobrado (suscripción + cobros por adelantado).
 	// Si va por delante de CurrentEnd, ya hay renovaciones emitidas sin pagar.
-	CoveredUntil  string  `json:"covered_until"`
-	PeriodStart   string  `json:"period_start"` // arranca el período cobrado
-	PeriodEnd     string  `json:"period_end"`   // nuevo vencimiento si paga
-	DueDate       string  `json:"due_date"`     // fecha límite de pago
-	Months        int     `json:"months"`
-	Amount        float64 `json:"amount"`
+	CoveredUntil string  `json:"covered_until"`
+	PeriodStart  string  `json:"period_start"` // arranca el período cobrado
+	PeriodEnd    string  `json:"period_end"`   // nuevo vencimiento si paga
+	DueDate      string  `json:"due_date"`     // fecha límite de pago
+	Months       int     `json:"months"`
+	Amount       float64 `json:"amount"` // lo que se cobra: bruto menos descuento
+	// Desglose, para que el panel muestre de dónde sale el importe.
+	GrossAmount   float64 `json:"gross_amount"`
+	DiscountType  string  `json:"discount_type,omitempty"`
+	DiscountValue float64 `json:"discount_value,omitempty"`
 	Currency      string  `json:"currency"`
 	AlreadyIssued bool    `json:"already_issued"` // ya existe un cobro para ese período
 }
@@ -101,11 +105,18 @@ func resolveRenewal(in RenewalInvoiceInput) (*database.SaasSubscription, *databa
 	}
 	periodEnd := base.AddDate(0, months, 0)
 
+	// Sin monto explícito se calcula igual que los cobros automáticos: precio mensual × meses
+	// menos el descuento pactado en la suscripción. Antes solo escalaba por meses, así que un
+	// cliente con descuento recibía la renovación manual al precio de lista.
+	amounts := ComputeCycleAmounts(plan.Price, months,
+		Discount{Type: sub.DiscountType, Value: sub.DiscountValue})
 	amount := in.Amount
-	if amount == 0 {
-		amount = plan.Price * float64(months)
-	}
 	if amount <= 0 {
+		amount = amounts.Net
+	}
+	// Un neto en cero por un descuento del 100% es una cortesía válida; el error queda para
+	// cuando el plan no tiene precio y tampoco se indicó un monto a mano.
+	if amount <= 0 && amounts.Gross <= 0 {
 		return nil, nil, preview, errors.New("el monto debe ser mayor a cero; el plan no tiene precio configurado")
 	}
 
@@ -120,12 +131,15 @@ func resolveRenewal(in RenewalInvoiceInput) (*database.SaasSubscription, *databa
 		CurrentEnd:   currentEnd.Format("2006-01-02"),
 		CoveredUntil: base.Format("2006-01-02"),
 		// Cada cobro se vence al inicio del período que cubre: el cliente paga por adelantado.
-		PeriodStart: base.Format("2006-01-02"),
-		PeriodEnd:   periodEnd.Format("2006-01-02"),
-		DueDate:     base.Format("2006-01-02"),
-		Months:      months,
-		Amount:      amount,
-		Currency:    currency,
+		PeriodStart:   base.Format("2006-01-02"),
+		PeriodEnd:     periodEnd.Format("2006-01-02"),
+		DueDate:       base.Format("2006-01-02"),
+		Months:        months,
+		Amount:        amount,
+		GrossAmount:   amounts.Gross,
+		DiscountType:  amounts.Discount.Type,
+		DiscountValue: amounts.Discount.Value,
+		Currency:      currency,
 	}
 
 	var dup int64
@@ -169,6 +183,10 @@ func IssueRenewalInvoice(in RenewalInvoiceInput) (*database.SaasBillingCycle, er
 		PeriodEnd:      day(preview.PeriodEnd),
 		DueDate:        day(preview.DueDate),
 		Amount:         preview.Amount,
+		GrossAmount:    preview.GrossAmount,
+		MonthsCovered:  preview.Months,
+		DiscountType:   preview.DiscountType,
+		DiscountValue:  preview.DiscountValue,
 		// Sin recargo de reconexión: es una renovación al día, no una mora.
 		ReconnectionFee: 0,
 		Currency:        preview.Currency,
@@ -229,6 +247,9 @@ func ToInvoiceRow(c *database.SaasBillingCycle) InvoiceRow {
 type InvoiceListRow struct {
 	InvoiceRow
 	TenantName string
+	// CoversActivePeriod el período ya empezó y todavía no termina: anular este cobro deja al
+	// cliente con el servicio corriendo y sin deuda. La UI lo advierte antes de confirmar.
+	CoversActivePeriod bool
 }
 
 // ListInvoices cobros de todas las empresas, del vencimiento más próximo al más lejano.
@@ -268,11 +289,15 @@ func ListInvoices(status string, limit int) ([]InvoiceListRow, error) {
 		}
 	}
 
+	now := CalendarDateLima(NowLima())
 	out := make([]InvoiceListRow, 0, len(rows))
 	for i := range rows {
+		c := &rows[i]
 		out = append(out, InvoiceListRow{
-			InvoiceRow: ToInvoiceRow(&rows[i]),
-			TenantName: names[rows[i].TenantID],
+			InvoiceRow: ToInvoiceRow(c),
+			TenantName: names[c.TenantID],
+			CoversActivePeriod: !CalendarDateLima(c.PeriodEnd).Before(now) &&
+				!CalendarDateLima(c.PeriodStart).After(now),
 		})
 	}
 	return out, nil
@@ -298,5 +323,51 @@ func CancelInvoice(cycleID uint) error {
 	if cycle.Status == database.SaasInvoicePaid {
 		return errors.New("el cobro ya fue pagado y no puede anularse")
 	}
+	if cycle.Status == database.SaasInvoiceRejected {
+		return errors.New("el cobro ya está anulado")
+	}
+
+	// Un pago vivo apunta a este cobro: anularlo dejaría el comprobante del cliente sin
+	// deuda a la que aplicarse. Primero hay que resolver el pago (aprobarlo o rechazarlo).
+	var attached int64
+	database.CentralDB.Model(&database.SaasPayment{}).
+		Where("billing_cycle_id = ? AND status IN ?", cycleID,
+			[]string{database.SaasPayPending, database.SaasPayPendingReview, database.SaasPayApproved}).
+		Count(&attached)
+	if attached > 0 {
+		return errors.New("este cobro tiene un pago asociado; revísalo o recházalo antes de anular el cobro")
+	}
+
 	return database.CentralDB.Model(&cycle).Update("status", database.SaasInvoiceRejected).Error
+}
+
+// InvoiceCancelWarning advertencia previa a anular (no impide hacerlo, lo explica).
+type InvoiceCancelWarning struct {
+	// CoversActivePeriod el período que cubre este cobro está en curso: el cliente lo está
+	// usando. Anularlo le deja el servicio hasta esa fecha sin deuda registrada.
+	CoversActivePeriod bool   `json:"covers_active_period"`
+	CoveredUntil       string `json:"covered_until,omitempty"`
+	// IsOnlyOpenInvoice es el único cobro por cobrar del tenant; al anularlo deja de figurar
+	// en cobranza.
+	IsOnlyOpenInvoice bool `json:"is_only_open_invoice"`
+}
+
+// InvoiceCancelInfo describe qué implica anular un cobro concreto.
+func InvoiceCancelInfo(cycle *database.SaasBillingCycle) InvoiceCancelWarning {
+	var out InvoiceCancelWarning
+	if cycle == nil {
+		return out
+	}
+	now := CalendarDateLima(NowLima())
+	if !CalendarDateLima(cycle.PeriodEnd).Before(now) && !CalendarDateLima(cycle.PeriodStart).After(now) {
+		out.CoversActivePeriod = true
+		out.CoveredUntil = CalendarDateLima(cycle.PeriodEnd).Format("2006-01-02")
+	}
+	var open int64
+	database.CentralDB.Model(&database.SaasBillingCycle{}).
+		Where("tenant_id = ? AND status IN ?", cycle.TenantID,
+			[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).
+		Count(&open)
+	out.IsOnlyOpenInvoice = open <= 1
+	return out
 }

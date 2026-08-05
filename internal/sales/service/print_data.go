@@ -15,6 +15,7 @@ import (
 	"tukifac/pkg/paymentcondition"
 	detraccionpkg "tukifac/pkg/sunat/detraccion"
 	sunatpre "tukifac/pkg/sunat/prepayment"
+	"tukifac/pkg/sunatnote"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/taxpayment"
 	"tukifac/pkg/taxregime"
@@ -69,6 +70,10 @@ type PrintData struct {
 	AffectedDocSunatCode string `json:"affected_doc_sunat_code,omitempty"` // 01 factura, 03 boleta
 	AffectedDocNumber    string `json:"affected_doc_number,omitempty"`     // ej. B001-4
 	CreditNoteReason     string `json:"credit_note_reason,omitempty"`      // desMotivo
+	// Tipo de nota (catálogo SUNAT 09/10): código y etiqueta «01 - Anulación de la operación».
+	// SUNAT lo exige en la representación impresa, aparte del documento que modifica.
+	NoteTypeCode  string `json:"note_type_code,omitempty"`
+	NoteTypeLabel string `json:"note_type_label,omitempty"`
 
 	// Vuelto cuando el cliente pagó de más (p. ej. efectivo).
 	ChangeAmount float64 `json:"change_amount,omitempty"`
@@ -705,28 +710,45 @@ func enrichCreditNotePrintData(db *gorm.DB, sale *database.TenantSale, pd *Print
 			pd.AffectedDocNumber = printAffectedDocNumber(&orig)
 		}
 	}
-	if pd.AffectedDocNumber != "" {
-		return
-	}
+	// El payload se lee siempre, no solo cuando falta el documento afectado: el tipo de nota
+	// (codMotivo) vive únicamente ahí y SUNAT lo exige en la representación impresa.
 	var inv database.TenantInvoice
-	if err := db.Where("sale_id = ?", sale.ID).First(&inv).Error; err != nil || strings.TrimSpace(inv.NotePayloadJSON) == "" {
-		return
+	if err := db.Where("sale_id = ?", sale.ID).First(&inv).Error; err == nil &&
+		strings.TrimSpace(inv.NotePayloadJSON) != "" {
+		var note notePayloadRef
+		if json.Unmarshal([]byte(inv.NotePayloadJSON), &note) == nil {
+			if pd.AffectedDocNumber == "" {
+				if v := strings.TrimSpace(note.TipDocAfectado); v != "" {
+					pd.AffectedDocSunatCode = v
+				}
+				if v := strings.TrimSpace(note.NumDocfectado); v != "" {
+					pd.AffectedDocNumber = v
+				}
+			}
+			if pd.CreditNoteReason == "" {
+				pd.CreditNoteReason = strings.TrimSpace(note.DesMotivo)
+			}
+			if pd.NoteTypeCode == "" {
+				pd.NoteTypeCode = strings.TrimSpace(note.CodMotivo)
+			}
+		}
 	}
-	var note struct {
-		TipDocAfectado string `json:"tipDocAfectado"`
-		NumDocfectado  string `json:"numDocfectado"`
-		DesMotivo      string `json:"desMotivo"`
+
+	tipoDoc := noteSunatTipoDoc(sale.DocType)
+	// Sin codMotivo declarado (notas antiguas), se asume el del catálogo que emite el sistema.
+	if pd.NoteTypeCode == "" {
+		pd.NoteTypeCode = defaultNoteReasonCode(tipoDoc)
 	}
-	if err := json.Unmarshal([]byte(inv.NotePayloadJSON), &note); err != nil {
-		return
+	pd.NoteTypeLabel = sunatnote.TypeLabel(tipoDoc, pd.NoteTypeCode)
+	if pd.CreditNoteReason == "" {
+		pd.CreditNoteReason = sunatnote.ReasonLabel(tipoDoc, pd.NoteTypeCode)
 	}
-	if strings.TrimSpace(note.TipDocAfectado) != "" {
-		pd.AffectedDocSunatCode = strings.TrimSpace(note.TipDocAfectado)
+}
+
+// defaultNoteReasonCode el mismo que usa la emisión cuando no se declara otro.
+func defaultNoteReasonCode(tipoDoc string) string {
+	if tipoDoc == "08" {
+		return "02"
 	}
-	if strings.TrimSpace(note.NumDocfectado) != "" {
-		pd.AffectedDocNumber = strings.TrimSpace(note.NumDocfectado)
-	}
-	if pd.CreditNoteReason == "" && strings.TrimSpace(note.DesMotivo) != "" {
-		pd.CreditNoteReason = strings.TrimSpace(note.DesMotivo)
-	}
+	return "01"
 }

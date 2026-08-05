@@ -7,6 +7,7 @@ import (
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/logger"
+	"tukifac/pkg/saas/pricing"
 
 	"gorm.io/gorm"
 )
@@ -134,10 +135,22 @@ func EnsureBillingCycleForSubscription(sub *database.SaasSubscription) (*databas
 		}
 		reconnFee, _ := LoadSettingsInTx(tx)
 		limit := planLimitFromPlan(&plan)
+		// Mismo cálculo que ensureBillingCycleTx: precio mensual × meses contratados, menos el
+		// descuento pactado en la suscripción.
+		amounts := pricing.ComputeCycleAmounts(
+			plan.Price,
+			pricing.BillableMonths(locked.BilledMonths, locked.StartDate, locked.EndDate, lima()),
+			pricing.Discount{Type: locked.DiscountType, Value: locked.DiscountValue},
+		)
 		out = database.SaasBillingCycle{
 			TenantID: locked.TenantID, SubscriptionID: locked.ID, PlanID: locked.PlanID,
-			PeriodStart: locked.StartDate, PeriodEnd: locked.EndDate, DueDate: locked.EndDate,
-			Amount: plan.Price, ReconnectionFee: reconnFee, Currency: "PEN",
+			// Prepago: la deuda vence al INICIO del período, igual que ensureBillingCycleTx y
+			// que la emisión manual. Antes aquí vencía al final, así que un mismo cobro tenía
+			// due_date distinto según quién lo hubiera creado y la ventana de pago no era fiable.
+			PeriodStart: locked.StartDate, PeriodEnd: locked.EndDate, DueDate: locked.StartDate,
+			Amount: amounts.Net, GrossAmount: amounts.Gross, MonthsCovered: amounts.Months,
+			DiscountType: amounts.Discount.Type, DiscountValue: amounts.Discount.Value,
+			ReconnectionFee: reconnFee, Currency: "PEN",
 			Status: database.SaasInvoicePending,
 			IsUnlimitedDocuments: plan.IsUnlimitedDocuments, DocumentsLimit: limit, DocumentsUsed: 0,
 		}

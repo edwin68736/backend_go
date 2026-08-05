@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas/pricing"
 	"tukifac/pkg/tenantcache"
 )
 
@@ -50,19 +51,7 @@ type TenantSubscriptionView struct {
 // días. Un resto de días cuenta como mes empezado (13/07 → 15/09 = 3), porque para el
 // usuario ese tramo también está cubierto.
 func ContractedMonths(start, end time.Time) int {
-	s := CalendarDateLima(start)
-	e := CalendarDateLima(end)
-	if !e.After(s) {
-		return 0
-	}
-	months := int(e.Year()-s.Year())*12 + int(e.Month()) - int(s.Month())
-	if e.Day() > s.Day() {
-		months++
-	}
-	if months < 1 {
-		months = 1
-	}
-	return months
+	return pricing.MonthsBetween(start, end, lima())
 }
 
 // CycleMonthsFromBilling devuelve meses por ciclo.

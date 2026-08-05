@@ -97,14 +97,20 @@ func RunLimaDailyEvaluation() (statusUpdates int, suspended int, overdueCycles i
 		}
 
 		daysAfter := CalendarDaysAfterEnd(sub.EndDate, now)
-		if daysAfter > 0 {
-			res := database.CentralDB.Model(&database.SaasBillingCycle{}).
-				Where("tenant_id = ? AND status = ?", sub.TenantID, database.SaasInvoicePending).
-				Where("due_date < ?", CalendarDateLima(now)).
-				Update("status", database.SaasInvoiceOverdue)
-			if res.RowsAffected > 0 {
-				overdueCycles += int(res.RowsAffected)
-			}
+
+		// Un cobro impago se da por vencido al agotarse su ventana de pago, sin esperar a que
+		// termine el período contratado. Antes esto vivía dentro de `if daysAfter > 0`, así que
+		// un plan anual daba doce meses de uso antes de que el sistema registrara el impago.
+		// Marcar el ciclo no suspende a nadie: lo hace visible en el panel central para que
+		// ventas decida (las renovaciones sí siguen suspendiéndose solas al vencer + gracia).
+		payWindow := EffectivePaymentWindowDays(cfg)
+		overdueLimit := CalendarDateLima(now).AddDate(0, 0, -payWindow)
+		res := database.CentralDB.Model(&database.SaasBillingCycle{}).
+			Where("tenant_id = ? AND status = ?", sub.TenantID, database.SaasInvoicePending).
+			Where("due_date < ?", overdueLimit).
+			Update("status", database.SaasInvoiceOverdue)
+		if res.RowsAffected > 0 {
+			overdueCycles += int(res.RowsAffected)
 		}
 
 		// Auto-suspend solo tras grace (día calendario), nunca el mismo día de vencimiento.

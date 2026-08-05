@@ -109,9 +109,11 @@ func (h *TenantHandler) CreateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	// El cobro del alta va en la respuesta para poder registrar el pago en el mismo paso.
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success": true,
-		"data":    enrichTenantMap(tenant),
+		"success":       true,
+		"data":          enrichTenantMap(tenant),
+		"billing_cycle": saas.PendingCycleForTenant(tenant.ID),
 	})
 }
 

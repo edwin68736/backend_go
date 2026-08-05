@@ -375,6 +375,9 @@ type CashSessionListItem struct {
 	ClosedByName string  `json:"closed_by_name,omitempty"`
 	TotalIncome  float64 `json:"total_income"`
 	TotalExpense float64 `json:"total_expense"`
+	// Empty caja sin movimientos ni ventas: se puede eliminar sin perder nada.
+	// No basta con que los totales den cero (un ingreso y un egreso iguales se anulan).
+	Empty bool `json:"empty"`
 }
 
 func (s *CashBankService) ListSessionsEnriched(branchID uint) ([]CashSessionListItem, error) {
@@ -388,6 +391,9 @@ func (s *CashBankService) ListSessionsEnriched(branchID uint) ([]CashSessionList
 		income, expense := s.sessionMovementTotals(st.ID)
 		item.TotalIncome = income
 		item.TotalExpense = expense
+		if usage, err := s.SessionUsageOf(st.ID); err == nil {
+			item.Empty = usage.Empty()
+		}
 		var opener database.TenantUser
 		if s.db.Select("name").First(&opener, st.OpenedBy).Error == nil {
 			item.OpenedByName = opener.Name

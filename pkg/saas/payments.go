@@ -8,6 +8,7 @@ import (
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/saas/docusage"
+	"tukifac/pkg/saas/pricing"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -283,11 +284,18 @@ func extendSubscriptionToCycleTx(tx *gorm.DB, tenantID, planID uint, cycle *data
 		return nil, errors.New("suscripción no encontrada para el ciclo")
 	}
 
+	// billed_months pasa a ser el del período que se acaba de pagar: si conservara el del alta,
+	// un cobro futuro para esta suscripción se calcularía con una duración que ya no aplica.
+	billedMonths := cycle.MonthsCovered
+	if billedMonths <= 0 {
+		billedMonths = pricing.MonthsBetween(cycle.PeriodStart, cycle.PeriodEnd, lima())
+	}
 	if err := tx.Model(&sub).Updates(map[string]interface{}{
 		"plan_id":           planID,
 		"billing_cycle":     billing,
 		"end_date":          EndOfDayLima(cycle.PeriodEnd),
 		"status":            database.SaasSubActive,
+		"billed_months":     billedMonths,
 		"provisional_until": nil,
 		"grace_ends_at":     nil,
 		"notes":             notes,
@@ -356,7 +364,11 @@ func RejectPayment(paymentID uint, adminNotes string, reviewerID uint) error {
 	return nil
 }
 
-func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, notes string) (*database.SaasSubscription, error) {
+func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, notes string, discount ...Discount) (*database.SaasSubscription, error) {
+	var d Discount
+	if len(discount) > 0 {
+		d = discount[0]
+	}
 	if tenantID == 0 || planID == 0 {
 		return nil, errors.New("tenant_id y plan_id requeridos")
 	}
@@ -370,6 +382,16 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 	}
 	if months <= 0 {
 		months = CycleMonthsFromBilling(cycle)
+	}
+
+	// Renovar el MISMO plan extiende la suscripción vigente en lugar de crear otra.
+	//
+	// Crear una fila nueva dejaba el cobro impago de la anterior suelto y solapado con el
+	// nuevo período (mismos días facturados dos veces), y llenaba la lista del panel de
+	// «históricas» en cada renovación. Una fila nueva solo tiene sentido cuando cambia el
+	// plan, que es cuando de verdad empieza otro contrato.
+	if current, ok := currentSubscriptionForRenewalTx(tx, tenantID); ok && current.PlanID == planID {
+		return renewInPlaceTx(tx, current, &plan, cycle, months, notes, d)
 	}
 
 	_ = tx.Model(&database.SaasSubscription{}).
@@ -391,6 +413,7 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 		TenantID: tenantID, PlanID: planID, BillingCycle: cycle,
 		StartDate: now, EndDate: EndOfDayLima(endDay),
 		Status: database.SaasSubActive, Notes: notes,
+		BilledMonths: months, DiscountType: d.Type, DiscountValue: d.Value,
 	}
 	if err := tx.Create(sub).Error; err != nil {
 		return nil, err
@@ -401,7 +424,173 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 	if _, err := ensureBillingCycleTx(tx, sub); err != nil {
 		return nil, fmt.Errorf("ciclo de facturación: %w", err)
 	}
+	if err := voidOverlappingUnpaidCyclesTx(tx, tenantID, sub.ID, sub.StartDate, sub.EndDate); err != nil {
+		return nil, fmt.Errorf("anulando cobros solapados: %w", err)
+	}
 	return sub, nil
+}
+
+// voidOverlappingUnpaidCyclesTx anula los cobros impagos que el período nuevo vuelve a cubrir.
+//
+// Cuando se abre otro contrato (cambio de plan) los cobros impagos de la suscripción anterior
+// quedan vivos y, como el período nuevo arranca hoy mientras el viejo seguía corriendo, ambos
+// facturan los mismos días. Cobrar los dos sería duplicar, no reclamar deuda.
+//
+// El corte es por SOLAPAMIENTO, no por antigüedad: un cobro cuyo período ya cerró antes de que
+// empiece el nuevo sí es deuda real por servicio prestado y se conserva para poder cobrarlo.
+func voidOverlappingUnpaidCyclesTx(
+	tx *gorm.DB,
+	tenantID uint,
+	keepSubscriptionID uint,
+	newStart, newEnd time.Time,
+) error {
+	var cycles []database.SaasBillingCycle
+	if err := tx.Where("tenant_id = ? AND subscription_id <> ? AND status IN ?",
+		tenantID, keepSubscriptionID,
+		[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).
+		Find(&cycles).Error; err != nil {
+		return err
+	}
+	for i := range cycles {
+		c := &cycles[i]
+		// Intervalos [inicio, fin) que se cruzan en al menos un día.
+		if !c.PeriodStart.Before(newEnd) || !newStart.Before(c.PeriodEnd) {
+			continue
+		}
+		if err := tx.Model(c).Update("status", database.SaasInvoiceRejected).Error; err != nil {
+			return err
+		}
+		sid := keepSubscriptionID
+		LogEventTx(tx, tenantID, &sid, EventInvoiceSuperseded, "system", nil,
+			"cobro anulado: su período quedó cubierto por la nueva suscripción",
+			MetaJSON(map[string]interface{}{
+				"billing_cycle_id":  c.ID,
+				"amount":            c.Amount,
+				"period_start":      CalendarDateLima(c.PeriodStart).Format("2006-01-02"),
+				"period_end":        CalendarDateLima(c.PeriodEnd).Format("2006-01-02"),
+				"superseded_by_sub": keepSubscriptionID,
+			}))
+	}
+	return nil
+}
+
+// currentSubscriptionForRenewalTx suscripción vigente del tenant (la última no cancelada),
+// que es la misma regla con la que el runtime decide qué suscripción gobierna.
+func currentSubscriptionForRenewalTx(tx *gorm.DB, tenantID uint) (*database.SaasSubscription, bool) {
+	var sub database.SaasSubscription
+	err := tx.Where("tenant_id = ?", tenantID).
+		Where("status NOT IN ?", []string{database.SaasSubCancelled}).
+		Order("created_at desc").First(&sub).Error
+	if err != nil {
+		return nil, false
+	}
+	return &sub, true
+}
+
+// renewInPlaceTx alarga la suscripción vigente y emite el cobro del tramo añadido.
+//
+// El período nuevo arranca donde termina lo ya cubierto —vigencia actual o el último cobro
+// emitido, lo que llegue más lejos—, así las renovaciones quedan encadenadas sin solapar días
+// con cobros anteriores. Si la suscripción ya venció, arranca hoy: no se regalan días pasados.
+func renewInPlaceTx(
+	tx *gorm.DB,
+	sub *database.SaasSubscription,
+	plan *database.SaasPlan,
+	billingCycle string,
+	months int,
+	notes string,
+	d Discount,
+) (*database.SaasSubscription, error) {
+	base := CalendarDateLima(NowLima())
+	if end := CalendarDateLima(sub.EndDate); end.After(base) {
+		base = end
+	}
+	var lastCovered database.SaasBillingCycle
+	if err := tx.Where("subscription_id = ? AND status NOT IN ?", sub.ID,
+		[]string{database.SaasInvoiceRejected}).
+		Order("period_end desc").First(&lastCovered).Error; err == nil {
+		if d := CalendarDateLima(lastCovered.PeriodEnd); d.After(base) {
+			base = d
+		}
+	}
+
+	periodStart := EndOfDayLima(base)
+	newEnd := EndOfDayLima(base.AddDate(0, months, 0))
+
+	if err := tx.Model(sub).Updates(map[string]interface{}{
+		"plan_id":           plan.ID,
+		"billing_cycle":     billingCycle,
+		"end_date":          newEnd,
+		"status":            database.SaasSubActive,
+		"billed_months":     months,
+		"discount_type":     d.Type,
+		"discount_value":    d.Value,
+		"notes":             notes,
+		"provisional_until": nil,
+		"grace_ends_at":     nil,
+	}).Error; err != nil {
+		return nil, err
+	}
+	// Cualquier otra suscripción del tenant queda como histórico: una sola vigente.
+	_ = tx.Model(&database.SaasSubscription{}).
+		Where("tenant_id = ? AND id <> ? AND status NOT IN ?", sub.TenantID, sub.ID,
+			[]string{database.SaasSubCancelled}).
+		Update("status", database.SaasSubExpired)
+
+	syncTenantModulesFromPlanTx(tx, sub.TenantID, plan.ID)
+	_ = tx.Model(&database.Tenant{}).Where("id = ?", sub.TenantID).
+		Updates(map[string]interface{}{"plan": plan.Name, "status": database.TenantStatusActive}).Error
+
+	if err := createCycleForPeriodTx(tx, sub, plan, periodStart, newEnd, months, d); err != nil {
+		return nil, fmt.Errorf("ciclo de facturación: %w", err)
+	}
+	// Aquí el tramo nuevo no solapa con los cobros de esta misma suscripción, pero sí puede
+	// hacerlo con huérfanos de suscripciones anteriores del tenant.
+	if err := voidOverlappingUnpaidCyclesTx(tx, sub.TenantID, sub.ID, periodStart, newEnd); err != nil {
+		return nil, fmt.Errorf("anulando cobros solapados: %w", err)
+	}
+	_ = tx.First(sub, sub.ID).Error
+	return sub, nil
+}
+
+// createCycleForPeriodTx emite el cobro de un tramo concreto (prepago: vence al iniciarlo).
+func createCycleForPeriodTx(
+	tx *gorm.DB,
+	sub *database.SaasSubscription,
+	plan *database.SaasPlan,
+	periodStart, periodEnd time.Time,
+	months int,
+	d Discount,
+) error {
+	var existing database.SaasBillingCycle
+	if err := tx.Where("subscription_id = ? AND period_end = ?", sub.ID, periodEnd).
+		First(&existing).Error; err == nil {
+		return nil
+	}
+	cfg, _ := LoadSettings()
+	amounts := ComputeCycleAmounts(plan.Price, months, d)
+	cycle := &database.SaasBillingCycle{
+		TenantID: sub.TenantID, SubscriptionID: sub.ID, PlanID: plan.ID,
+		PeriodStart: periodStart, PeriodEnd: periodEnd, DueDate: periodStart,
+		Amount: amounts.Net, GrossAmount: amounts.Gross, MonthsCovered: amounts.Months,
+		DiscountType: amounts.Discount.Type, DiscountValue: amounts.Discount.Value,
+		ReconnectionFee: cfg.ReconnectionFee, Currency: "PEN",
+		Status: database.SaasInvoicePending,
+	}
+	if err := tx.Create(cycle).Error; err != nil {
+		if isDuplicateBillingCycleErr(err) {
+			return nil
+		}
+		return err
+	}
+	limit := 0
+	if !plan.IsUnlimitedDocuments {
+		limit = plan.MonthlyDocumentsLimit
+	}
+	return tx.Model(cycle).Updates(map[string]interface{}{
+		"is_unlimited_documents": plan.IsUnlimitedDocuments,
+		"documents_limit":        limit,
+	}).Error
 }
 
 // guardBillingCycleApprove evita doble aprobación por ciclo (FOR UPDATE + 1 approved por billing_cycle).
@@ -434,10 +623,20 @@ func markCyclePaidTx(tx *gorm.DB, cycleID uint, paymentID uint) error {
 }
 
 // ExtendSubscription crea o extiende suscripción (API pública).
-func ExtendSubscription(tenantID uint, planID uint, months int, notes string) (*database.SaasSubscription, error) {
+// ExtendSubscription crea la nueva suscripción del tenant. El descuento es opcional y queda
+// guardado en la suscripción, de modo que cualquier cobro que se genere para ella lo aplique.
+func ExtendSubscription(tenantID uint, planID uint, months int, notes string, discount ...Discount) (*database.SaasSubscription, error) {
+	var d Discount
+	if len(discount) > 0 {
+		d = discount[0]
+	}
+	norm, err := NormalizeDiscount(d)
+	if err != nil {
+		return nil, err
+	}
 	var sub *database.SaasSubscription
-	err := database.CentralDB.Transaction(func(tx *gorm.DB) error {
-		s, err := extendSubscriptionTx(tx, tenantID, planID, months, notes)
+	err = database.CentralDB.Transaction(func(tx *gorm.DB) error {
+		s, err := extendSubscriptionTx(tx, tenantID, planID, months, notes, norm)
 		sub = s
 		return err
 	})
@@ -522,12 +721,17 @@ func ensureBillingCycleTx(tx *gorm.DB, sub *database.SaasSubscription) (*databas
 		return &existing, nil
 	}
 	cfg, _ := LoadSettings()
+	amounts := ComputeCycleAmounts(plan.Price,
+		pricing.BillableMonths(sub.BilledMonths, sub.StartDate, sub.EndDate, lima()),
+		Discount{Type: sub.DiscountType, Value: sub.DiscountValue})
 	cycle := &database.SaasBillingCycle{
 		TenantID: sub.TenantID, SubscriptionID: sub.ID, PlanID: sub.PlanID,
 		// Prepago: la deuda vence al INICIO del período (se paga por adelantado), igual que la
 		// vía manual (IssueRenewalInvoice). Antes vencía al final (postpago), incoherente.
 		PeriodStart: sub.StartDate, PeriodEnd: sub.EndDate, DueDate: sub.StartDate,
-		Amount: plan.Price, ReconnectionFee: cfg.ReconnectionFee, Currency: "PEN",
+		Amount: amounts.Net, GrossAmount: amounts.Gross, MonthsCovered: amounts.Months,
+		DiscountType: amounts.Discount.Type, DiscountValue: amounts.Discount.Value,
+		ReconnectionFee: cfg.ReconnectionFee, Currency: "PEN",
 		Status: database.SaasInvoicePending,
 	}
 	if err := tx.Create(cycle).Error; err != nil {
