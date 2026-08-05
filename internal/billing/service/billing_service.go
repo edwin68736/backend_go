@@ -1393,7 +1393,40 @@ type DespatchDetailInput struct {
 type DespatchListItem struct {
 	database.TenantDespatch
 	BillingStatus string `json:"billing_status,omitempty"`
-	DocType       string `json:"doc_type,omitempty"`
+	// DocType tipo de comprobante de la VENTA de origen (FACTURA/BOLETA), cuando la guía
+	// nace de una. No indica el tipo de guía: para eso está GuiaSunatCode.
+	DocType string `json:"doc_type,omitempty"`
+	// GuiaSunatCode tipo de la guía en sí (catálogo 01): "09" remitente, "31" transportista.
+	// Se resuelve desde la serie de la propia guía, no desde la venta de origen — es el mismo
+	// dato con el que el sistema ya decide el payload SUNAT al emitir (ver getSeriesSunatCode).
+	GuiaSunatCode string `json:"guia_sunat_code,omitempty"`
+}
+
+// enrichDespatchListItem resuelve el estado fiscal de la venta vinculada y el tipo de guía.
+func (s *BillingService) enrichDespatchListItem(d database.TenantDespatch, saleByID map[uint]database.TenantSale) DespatchListItem {
+	item := DespatchListItem{TenantDespatch: d}
+	if d.SaleID != nil {
+		if sale, ok := saleByID[*d.SaleID]; ok {
+			item.BillingStatus = sale.BillingStatus
+			item.DocType = sale.DocType
+		}
+	}
+	item.GuiaSunatCode = strings.TrimSpace(getSeriesSunatCode(s.db, d.SeriesID))
+	return item
+}
+
+// GetDespatchListItem versión de un solo registro de enrichDespatchListItem, para endpoints
+// que consultan/actualizan una guía puntual (ej. refresco de estado SUNAT).
+func (s *BillingService) GetDespatchListItem(d database.TenantDespatch) (*DespatchListItem, error) {
+	saleByID := map[uint]database.TenantSale{}
+	if d.SaleID != nil && *d.SaleID > 0 {
+		var sale database.TenantSale
+		if err := s.db.Select("id, billing_status, doc_type").First(&sale, *d.SaleID).Error; err == nil {
+			saleByID[sale.ID] = sale
+		}
+	}
+	item := s.enrichDespatchListItem(d, saleByID)
+	return &item, nil
 }
 
 func (s *BillingService) ListDespatches() ([]DespatchListItem, error) {
@@ -1401,7 +1434,6 @@ func (s *BillingService) ListDespatches() ([]DespatchListItem, error) {
 	if err := s.db.Order("issue_date DESC, created_at DESC").Find(&list).Error; err != nil {
 		return nil, err
 	}
-	out := make([]DespatchListItem, len(list))
 	saleIDs := make([]uint, 0, len(list))
 	for _, d := range list {
 		if d.SaleID != nil && *d.SaleID > 0 {
@@ -1416,15 +1448,9 @@ func (s *BillingService) ListDespatches() ([]DespatchListItem, error) {
 			saleByID[sale.ID] = sale
 		}
 	}
+	out := make([]DespatchListItem, len(list))
 	for i, d := range list {
-		item := DespatchListItem{TenantDespatch: d}
-		if d.SaleID != nil {
-			if sale, ok := saleByID[*d.SaleID]; ok {
-				item.BillingStatus = sale.BillingStatus
-				item.DocType = sale.DocType
-			}
-		}
-		out[i] = item
+		out[i] = s.enrichDespatchListItem(d, saleByID)
 	}
 	return out, nil
 }

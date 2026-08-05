@@ -517,7 +517,14 @@ func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(rec)
+	// Mismo shape que el listado: si se devolviera el registro crudo, el refresco de estado
+	// borraría billing_status/guia_sunat_code en la fila del frontend (el listado no vuelve a
+	// pedirlos), y la guía se caería de su vista dedicada (remitente/transportista).
+	item, err := svc.GetDespatchListItem(*rec)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(item)
 }
 
 // --- Retención ---
