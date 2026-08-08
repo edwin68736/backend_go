@@ -71,6 +71,16 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 			in.Amount = BillingCycleAmountDue(cycle, &tenant, subPtr)
 		}
 
+		// Si el tenant vuelve a subir un comprobante para el mismo ciclo (p. ej. el primero
+		// nunca se revisó), cerrar los pending_review/pending anteriores de ese ciclo: sin
+		// esto se apilaban comprobantes sin resolver y el tenant seguía viendo "pago en
+		// revisión" para siempre aunque ya hubiera vuelto a pagar.
+		if cycle != nil {
+			if err := supersedePriorPendingPayments(tx, cycle.ID, NowLima()); err != nil {
+				return err
+			}
+		}
+
 		status := database.SaasPayPendingReview
 		if in.FromAdmin {
 			status = database.SaasPayPending
@@ -243,6 +253,15 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 		}
 		if cycle != nil {
 			_ = markCyclePaidTx(tx, cycle.ID, payment.ID)
+			// Si el mismo ciclo tenía otro(s) pago(s) que quedaron pending_review sin
+			// resolver (p. ej. un comprobante viejo que nadie aprobó/rechazó y luego el
+			// tenant volvió a pagar), quedaban colgados para siempre: guardBillingCycleApprove
+			// solo evita aprobar dos pagos por ciclo, pero no cierra los que ya no aplican.
+			// Eso hacía que /subscription siguiera mostrando "pago en revisión" indefinidamente
+			// aunque el ciclo ya estuviera pagado. Se superan automáticamente al aprobar éste.
+			if err := supersedeSiblingPendingPayments(tx, cycle.ID, payment.ID, reviewerID, now); err != nil {
+				return err
+			}
 		}
 
 		sid := sub.ID
@@ -338,6 +357,14 @@ func RejectPayment(paymentID uint, adminNotes string, reviewerID uint) error {
 			return err
 		}
 
+		// Si el ciclo de este pago YA quedó pagado (por otro pago aprobado), rechazar este
+		// es limpieza administrativa de un comprobante duplicado/sobrante — no la constatación
+		// de un comprobante inválido o fraudulento. Penalizar al tenant aquí (strike, suspender
+		// tenant/suscripción) lo castigaba por algo que ya había pagado correctamente.
+		if isDuplicateOfPaidCycle(tx, payment.BillingCycleID, payment.ID) {
+			return nil
+		}
+
 		var subID *uint
 		if payment.SubscriptionID != nil {
 			subID = payment.SubscriptionID
@@ -362,6 +389,28 @@ func RejectPayment(paymentID uint, adminNotes string, reviewerID uint) error {
 	}
 	InvalidateTenantCache(tenantID)
 	return nil
+}
+
+// isDuplicateOfPaidCycle true si el pago pertenece a un ciclo de facturación que ya quedó
+// pagado (directamente, o vía otro pago aprobado) — es decir, es un comprobante sobrante y
+// no uno inválido. Si el pago no está ligado a ningún ciclo (billingCycleID nil), no hay forma
+// de saberlo y se trata como un rechazo normal (con strike), igual que antes de este fix.
+func isDuplicateOfPaidCycle(tx *gorm.DB, billingCycleID *uint, paymentID uint) bool {
+	if billingCycleID == nil {
+		return false
+	}
+	var cycle database.SaasBillingCycle
+	if err := tx.First(&cycle, *billingCycleID).Error; err != nil {
+		return false
+	}
+	if cycle.Status == database.SaasInvoicePaid {
+		return true
+	}
+	var approvedCount int64
+	tx.Model(&database.SaasPayment{}).
+		Where("billing_cycle_id = ? AND status = ? AND id <> ?", *billingCycleID, database.SaasPayApproved, paymentID).
+		Count(&approvedCount)
+	return approvedCount > 0
 }
 
 func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, notes string, discount ...Discount) (*database.SaasSubscription, error) {
@@ -610,6 +659,60 @@ func guardBillingCycleApprove(tx *gorm.DB, cycleID uint, paymentID uint) error {
 	}
 	if approvedCount > 0 {
 		return errors.New("ya existe un pago aprobado para este ciclo de facturación")
+	}
+	return nil
+}
+
+// supersedePriorPendingPayments cierra (rechaza) automáticamente cualquier pago
+// pending_review/pending que haya quedado del mismo ciclo cuando llega un comprobante
+// nuevo para ese mismo ciclo (p. ej. el anterior nunca se revisó). Complementa a
+// supersedeSiblingPendingPayments: éste actúa al SUBIR un comprobante nuevo, el otro
+// al APROBAR uno — juntos evitan que un comprobante viejo quede huérfano en
+// pending_review para siempre.
+func supersedePriorPendingPayments(tx *gorm.DB, cycleID uint, now time.Time) error {
+	var prior []database.SaasPayment
+	if err := tx.Where("billing_cycle_id = ? AND status IN ?",
+		cycleID, []string{database.SaasPayPendingReview, database.SaasPayPending}).
+		Find(&prior).Error; err != nil {
+		return err
+	}
+	for _, p := range prior {
+		note := "Superado automáticamente: se subió un comprobante más reciente para este ciclo"
+		if err := tx.Model(&database.SaasPayment{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
+			"status":      database.SaasPayRejected,
+			"admin_notes": note,
+			"reviewed_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		LogEventTx(tx, p.TenantID, p.SubscriptionID, EventPaymentRejected, "system", nil, note, "")
+	}
+	return nil
+}
+
+// supersedeSiblingPendingPayments rechaza automáticamente cualquier otro pago que haya
+// quedado pending_review/pending para el mismo ciclo de facturación ya pagado por
+// `approvedPaymentID`. Sin esto, un comprobante viejo sin resolver seguía marcando al
+// tenant con "tienes un pago en revisión" para siempre, aunque el ciclo ya estuviera
+// cerrado por un pago posterior.
+func supersedeSiblingPendingPayments(tx *gorm.DB, cycleID uint, approvedPaymentID uint, reviewerID uint, now time.Time) error {
+	var siblings []database.SaasPayment
+	if err := tx.Where("billing_cycle_id = ? AND id <> ? AND status IN ?",
+		cycleID, approvedPaymentID, []string{database.SaasPayPendingReview, database.SaasPayPending}).
+		Find(&siblings).Error; err != nil {
+		return err
+	}
+	for _, sib := range siblings {
+		note := fmt.Sprintf("Superado automáticamente: el ciclo ya quedó pagado con el pago #%d", approvedPaymentID)
+		if err := tx.Model(&database.SaasPayment{}).Where("id = ?", sib.ID).Updates(map[string]interface{}{
+			"status":      database.SaasPayRejected,
+			"admin_notes": note,
+			"reviewed_by": reviewerID,
+			"reviewed_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		LogEventTx(tx, sib.TenantID, sib.SubscriptionID, EventPaymentRejected, "system", &reviewerID, note, "")
 	}
 	return nil
 }
