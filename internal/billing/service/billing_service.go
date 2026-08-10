@@ -343,6 +343,13 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		facturador.SetSUNATLegend1000(&payload.Legends, payload.MtoImpVenta, tipoMoneda)
 	}
 	applyCreditTermsToInvoicePayload(s.db, &sale, payload)
+	// Defensa adicional: SUNAT rechaza (código 3251) cualquier comprobante Credito sin el Monto
+	// Neto Pendiente de Pago. applyCreditTermsToInvoicePayload ya lo garantiza hoy, pero esto
+	// falla rápido y con un error claro en vez de dejar pasar un comprobante que SUNAT va a
+	// rechazar de todas formas — más barato detectarlo acá que como un rechazo real en producción.
+	if payload.FormaPago != nil && payload.FormaPago.Tipo == "Credito" && payload.FormaPago.Monto <= 0 {
+		return nil, errors.New("venta a crédito sin monto neto pendiente de pago; revisa las cuotas antes de emitir")
+	}
 	payloadBytes, _ := json.Marshal(payload)
 	payloadJSON := string(payloadBytes)
 
