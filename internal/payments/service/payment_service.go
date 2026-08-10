@@ -107,11 +107,14 @@ func (s *PaymentService) Create(input CreatePaymentInput) (*database.SaasPayment
 type ApproveInput struct {
 	PlanID     uint   `json:"plan_id"`
 	AdminNotes string `json:"admin_notes"`
-	ReviewerID uint
+	// PeriodMonths opcional: 0 deja que ApprovePayment use payment.PeriodMonths (lo que pidió
+	// el tenant), no fuerza 1 mes.
+	PeriodMonths int
+	ReviewerID   uint
 }
 
 func (s *PaymentService) Approve(paymentID uint, input ApproveInput) error {
-	return saas.ApprovePayment(paymentID, input.PlanID, 0, input.AdminNotes, input.ReviewerID)
+	return saas.ApprovePayment(paymentID, input.PlanID, input.PeriodMonths, input.AdminNotes, input.ReviewerID)
 }
 
 func (s *PaymentService) Reject(paymentID uint, adminNotes string, reviewerID uint) error {

@@ -111,14 +111,18 @@ func (h *PaymentHandler) ApproveAPI(c fiber.Ctx) error {
 	var body struct {
 		PlanID     uint   `json:"plan_id"`
 		AdminNotes string `json:"admin_notes"`
+		// PeriodMonths opcional: si el admin lo deja en 0, ApprovePayment cae a
+		// payment.PeriodMonths (lo que pidió el tenant al enviarlo) — ver saas.ApprovePayment.
+		PeriodMonths int `json:"period_months"`
 	}
 	c.Bind().JSON(&body)
 
 	reviewerID, _ := c.Locals("sa_user_id").(uint)
 	if err := h.svc.Approve(uint(id), service.ApproveInput{
-		PlanID:     body.PlanID,
-		AdminNotes: body.AdminNotes,
-		ReviewerID: reviewerID,
+		PlanID:       body.PlanID,
+		AdminNotes:   body.AdminNotes,
+		PeriodMonths: body.PeriodMonths,
+		ReviewerID:   reviewerID,
 	}); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
