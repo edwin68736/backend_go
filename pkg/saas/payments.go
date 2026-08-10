@@ -92,6 +92,10 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 			PaymentDate: in.PaymentDate, Reference: in.Reference,
 			ReceiptURL: in.ReceiptURL, Notes: in.Notes, Status: status, SubmittedBy: in.SubmittedBy,
 		}
+		if in.PlanID > 0 {
+			planID := in.PlanID
+			p.RequestedPlanID = &planID
+		}
 		if cycle != nil {
 			p.BillingCycleID = &cycle.ID
 			var subPtr *database.SaasSubscription
@@ -112,7 +116,17 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 		}
 		payment = p
 
-		if !in.FromAdmin && cfg.ProvisionalReactivationEnabled && cycle != nil && !cycle.ProvisionalUsed {
+		// Cupo para otorgar provisional: por ciclo (provisional_used, 1 vez por ciclo) o, sin
+		// ciclo (solicitud de plan nueva, ver renewal_request.go: SubmitRenewalRequest), por que
+		// la suscripción no tenga ya un provisional vigente (evita extenderlo indefinido a punta
+		// de solicitudes repetidas sin que nunca se apruebe nada).
+		provisionalSlotFree := false
+		if cycle != nil {
+			provisionalSlotFree = !cycle.ProvisionalUsed
+		} else if hasSub {
+			provisionalSlotFree = sub.ProvisionalUntil == nil || sub.ProvisionalUntil.Before(NowLima())
+		}
+		if !in.FromAdmin && cfg.ProvisionalReactivationEnabled && hasSub && provisionalSlotFree && in.ReceiptURL != "" {
 			needsProvisional := sub.Status == database.SaasSubSuspended ||
 				sub.Status == database.SaasSubOverdue ||
 				tenant.Status == database.TenantStatusSuspended
@@ -124,8 +138,10 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 				}).Error; err != nil {
 					return err
 				}
-				if err := tx.Model(cycle).Update("provisional_used", true).Error; err != nil {
-					return err
+				if cycle != nil {
+					if err := tx.Model(cycle).Update("provisional_used", true).Error; err != nil {
+						return err
+					}
 				}
 				if err := tx.Model(&tenant).Update("status", database.TenantStatusActive).Error; err != nil {
 					return err
@@ -134,10 +150,12 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 					return err
 				}
 				sid := sub.ID
+				meta := map[string]interface{}{"payment_id": p.ID, "until": until.Format(time.RFC3339)}
+				if cycle != nil {
+					meta["billing_cycle_id"] = cycle.ID
+				}
 				LogEventTx(tx, in.TenantID, &sid, EventProvisionalGranted, "tenant", in.SubmittedBy,
-					"reactivación provisional", MetaJSON(map[string]interface{}{
-						"payment_id": p.ID, "until": until.Format(time.RFC3339), "billing_cycle_id": cycle.ID,
-					}))
+					"reactivación provisional", MetaJSON(meta))
 			}
 		}
 		return nil
@@ -221,6 +239,10 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 		if planID == 0 {
 			if cycle != nil && cycle.PlanID > 0 {
 				planID = cycle.PlanID
+			} else if payment.RequestedPlanID != nil && *payment.RequestedPlanID > 0 {
+				// Sin ciclo: es una solicitud de plan del tenant (ver SubmitRenewalRequest), no un
+				// cobro ya emitido. Su elección pesa más que quedarse callado con el plan viejo.
+				planID = *payment.RequestedPlanID
 			} else if hasCurSub {
 				planID = curSub.PlanID
 			}
