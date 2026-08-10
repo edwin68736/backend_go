@@ -51,8 +51,12 @@ type CreateTenantInput struct {
 	// suscripción —las gratuitas también, vinculadas al plan gratis—, así que 0 se corrige a 1
 	// en vez de saltarse el alta.
 	SubscriptionMonths int    `json:"subscription_months"`
-	Rubro              string `json:"rubro"`           // general | gastronomico
-	TaxpayerRegime     string `json:"taxpayer_regime"` // general | nrus — régimen tributario del contribuyente
+	// StartDate opcional (YYYY-MM-DD): la empresa se registra hoy pero su suscripción/primer
+	// cobro puede arrancar unos días después. Vacío = arranca hoy (comportamiento de siempre).
+	// Debe ser hoy o una fecha futura — se valida al crear la suscripción.
+	StartDate      string `json:"start_date"`
+	Rubro          string `json:"rubro"`           // general | gastronomico
+	TaxpayerRegime string `json:"taxpayer_regime"` // general | nrus — régimen tributario del contribuyente
 	// Descuento opcional sobre el cobro inicial (precio del plan × meses).
 	DiscountType  string  `json:"discount_type"`
 	DiscountValue float64 `json:"discount_value"`
@@ -92,6 +96,14 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	months := input.SubscriptionMonths
 	if months <= 0 {
 		months = 1
+	}
+	var startDate *time.Time
+	if sd := strings.TrimSpace(input.StartDate); sd != "" {
+		t, parseErr := time.ParseInLocation("2006-01-02", sd, saas.LimaLocation())
+		if parseErr != nil {
+			return nil, errors.New("fecha de inicio inválida (formato esperado AAAA-MM-DD)")
+		}
+		startDate = &t
 	}
 
 	dbName := "saas_tenant_" + slug
@@ -159,7 +171,7 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 
 	// 5–6. Suscripción + billing cycle (módulos según plan vía syncTenantModulesFromPlanTx)
 	if _, err = saas.ProvisionInitialSubscription(
-		tenant.ID, plan, months, "Suscripción creada al registrar la empresa",
+		tenant.ID, plan, months, "Suscripción creada al registrar la empresa", startDate,
 		saas.Discount{Type: input.DiscountType, Value: input.DiscountValue},
 	); err != nil {
 		return nil, fmt.Errorf("suscripción SaaS: %w", err)

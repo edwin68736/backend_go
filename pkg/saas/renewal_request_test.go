@@ -92,6 +92,57 @@ func TestSubmitRenewalRequest_inactivePlan_rejected(t *testing.T) {
 	}
 }
 
+// Pago adelantado: el tenant con suscripción TODAVÍA ACTIVA (no vencida) pide renovar 3 meses
+// más. Al aprobarse (sin que el admin pase periodMonths explícito, como hace hoy el frontend),
+// debe aplicar los 3 meses que el tenant pidió —no 1 mes por defecto— y encadenar desde el fin
+// de la suscripción vigente (no perder los días que ya le quedaban, ni tocar el ciclo activo).
+func TestSubmitRenewalRequest_advancePayment_appliesRequestedMonths(t *testing.T) {
+	db := setupApprovePaymentDB(t)
+
+	plan := database.SaasPlan{Name: "Pro", Price: 99, BillingCycle: database.SaasCycleMonthly, Active: true}
+	db.Create(&plan)
+	tenant := database.Tenant{Name: "ACME", Slug: "acme", DBName: "acme", Status: database.TenantStatusActive}
+	db.Create(&tenant)
+
+	// Suscripción vigente, vence en 10 días (todavía activa, no vencida).
+	curEnd := CalendarDateLima(NowLima().AddDate(0, 0, 10))
+	sub := database.SaasSubscription{
+		TenantID: tenant.ID, PlanID: plan.ID, BillingCycle: database.SaasCycleMonthly,
+		StartDate: NowLima(), EndDate: EndOfDayLima(curEnd), Status: database.SaasSubActive,
+	}
+	db.Create(&sub)
+
+	payment, err := SubmitRenewalRequest(SubmitRenewalRequestInput{
+		TenantID: tenant.ID, PlanID: plan.ID, PeriodMonths: 3,
+		ReceiptURL: "/storage/saas/receipts/x.jpg",
+	})
+	if err != nil {
+		t.Fatalf("SubmitRenewalRequest: %v", err)
+	}
+	if payment.PeriodMonths != 3 {
+		t.Fatalf("payment.PeriodMonths = %d, want 3", payment.PeriodMonths)
+	}
+	if payment.Amount != plan.Price*3 {
+		t.Errorf("Amount = %v, want precio × 3 meses (%v)", payment.Amount, plan.Price*3)
+	}
+
+	// El admin aprueba sin pasar periodMonths (planID=0, periodMonths=0) — igual que hoy el
+	// frontend central: paymentsService.approve(id, planId, notes), sin meses.
+	if err := ApprovePayment(payment.ID, 0, 0, "ok", 1); err != nil {
+		t.Fatalf("ApprovePayment: %v", err)
+	}
+
+	var renewed database.SaasSubscription
+	db.First(&renewed, sub.ID)
+	if renewed.ID != sub.ID {
+		t.Fatal("debería renovar en sitio la misma suscripción, no crear otra")
+	}
+	wantEnd := CalendarDateLima(curEnd.AddDate(0, 3, 0))
+	if got := CalendarDateLima(renewed.EndDate); !got.Equal(wantEnd) {
+		t.Errorf("EndDate = %s, want %s (3 meses desde el fin vigente, no desde hoy)", got.Format("2006-01-02"), wantEnd.Format("2006-01-02"))
+	}
+}
+
 // ApprovePayment sin planID explícito del admin debe usar el plan que el TENANT pidió
 // (RequestedPlanID), no quedarse callado con el plan viejo de la suscripción.
 func TestApprovePayment_defaultsToRequestedPlan(t *testing.T) {

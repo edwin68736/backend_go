@@ -12,8 +12,12 @@ import (
 // admin/cron), esta solicitud no necesita que exista ningún cobro pendiente: cubre tanto al
 // tenant que nunca tuvo suscripción como al que la tiene vencida y quiere elegir otra.
 type SubmitRenewalRequestInput struct {
-	TenantID      uint
-	PlanID        uint
+	TenantID uint
+	PlanID   uint
+	// PeriodMonths: cuántos meses está pagando/pidiendo el tenant. <=0 se corrige a 1 — igual
+	// de importante para renovaciones normales que para pagos adelantados (un tenant con
+	// suscripción todavía activa que ya quiere pagar 3 meses más, sin esperar a vencer).
+	PeriodMonths  int
 	Amount        float64
 	PaymentMethod string
 	PaymentDate   *time.Time
@@ -40,13 +44,18 @@ func SubmitRenewalRequest(in SubmitRenewalRequestInput) (*database.SaasPayment, 
 	if err := database.CentralDB.Where("id = ? AND active = ?", in.PlanID, true).First(&plan).Error; err != nil {
 		return nil, errors.New("plan no encontrado o inactivo")
 	}
+	months := in.PeriodMonths
+	if months <= 0 {
+		months = 1
+	}
 	amount := in.Amount
 	if amount <= 0 {
-		amount = plan.Price
+		amount = plan.Price * float64(months)
 	}
 	return SubmitPayment(SubmitPaymentInput{
 		TenantID:      in.TenantID,
 		Amount:        amount,
+		PeriodMonths:  months,
 		PaymentMethod: in.PaymentMethod,
 		PaymentDate:   in.PaymentDate,
 		Reference:     in.Reference,

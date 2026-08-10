@@ -3,6 +3,7 @@ package saas
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"tukifac/pkg/database"
 
@@ -10,7 +11,10 @@ import (
 )
 
 // ProvisionInitialSubscription crea suscripción activa + ciclo de facturación inicial.
-func ProvisionInitialSubscription(tenantID uint, planName string, months int, notes string, discount ...Discount) (*database.SaasSubscription, error) {
+// startDate opcional: la empresa se registra hoy, pero su suscripción (y primer cobro) puede
+// arrancar unos días después — nil = arranca hoy, como antes. Debe ser hoy o futuro (validado en
+// extendSubscriptionTx).
+func ProvisionInitialSubscription(tenantID uint, planName string, months int, notes string, startDate *time.Time, discount ...Discount) (*database.SaasSubscription, error) {
 	if tenantID == 0 {
 		return nil, errors.New("tenant_id requerido")
 	}
@@ -24,7 +28,7 @@ func ProvisionInitialSubscription(tenantID uint, planName string, months int, no
 		}
 		return nil, err
 	}
-	sub, err := ExtendSubscription(tenantID, plan.ID, months, notes, discount...)
+	sub, err := ExtendSubscription(tenantID, plan.ID, months, notes, startDate, discount...)
 	if err != nil {
 		return nil, err
 	}

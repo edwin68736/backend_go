@@ -143,6 +143,11 @@ type CreateSubscriptionInput struct {
 	PlanID   uint   `json:"plan_id"`
 	Months   int    `json:"months"`
 	Notes    string `json:"notes"`
+	// StartDate opcional (YYYY-MM-DD): igual que en el alta de tenant, para cuando la
+	// suscripción real arranca unos días después de crearla. Vacío = arranca hoy. Solo tiene
+	// efecto si el tenant NO tiene ya una suscripción vigente con este mismo plan (ese caso
+	// siempre encadena en sitio desde el fin de la vigente, sin importar StartDate).
+	StartDate string `json:"start_date"`
 	// Descuento opcional sobre el cobro (precio del plan × meses). Pensado para contratos
 	// largos: 6 meses o anual a cambio de un porcentaje o un monto fijo menos.
 	DiscountType  string  `json:"discount_type"`
@@ -150,7 +155,15 @@ type CreateSubscriptionInput struct {
 }
 
 func (s *SubscriptionService) Create(input CreateSubscriptionInput) (*database.SaasSubscription, error) {
-	sub, err := saas.ExtendSubscription(input.TenantID, input.PlanID, input.Months, input.Notes,
+	var startDate *time.Time
+	if sd := strings.TrimSpace(input.StartDate); sd != "" {
+		t, parseErr := time.ParseInLocation("2006-01-02", sd, saas.LimaLocation())
+		if parseErr != nil {
+			return nil, errors.New("fecha de inicio inválida (formato esperado AAAA-MM-DD)")
+		}
+		startDate = &t
+	}
+	sub, err := saas.ExtendSubscription(input.TenantID, input.PlanID, input.Months, input.Notes, startDate,
 		saas.Discount{Type: input.DiscountType, Value: input.DiscountValue})
 	if err != nil {
 		return nil, err
@@ -206,7 +219,7 @@ func (s *SubscriptionService) Reactivate(id uint, extraMonths int) error {
 	if err := requireCurrentSubscription(&sub); err != nil {
 		return err
 	}
-	_, err := saas.ExtendSubscription(sub.TenantID, sub.PlanID, extraMonths, "reactivación manual")
+	_, err := saas.ExtendSubscription(sub.TenantID, sub.PlanID, extraMonths, "reactivación manual", nil)
 	if err != nil {
 		return err
 	}

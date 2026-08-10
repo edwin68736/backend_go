@@ -264,7 +264,7 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 				extendMonths = CycleMonthsFromBilling(curSub.BillingCycle)
 			}
 			sub, err = extendSubscriptionTx(tx, payment.TenantID, planID, extendMonths,
-				fmt.Sprintf("Pago #%d aprobado", paymentID))
+				fmt.Sprintf("Pago #%d aprobado", paymentID), nil)
 		}
 		if err != nil {
 			return err
@@ -439,7 +439,13 @@ func isDuplicateOfPaidCycle(tx *gorm.DB, billingCycleID *uint, paymentID uint) b
 	return approvedCount > 0
 }
 
-func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, notes string, discount ...Discount) (*database.SaasSubscription, error) {
+// startDate: piso opcional para el inicio de una suscripción SIN nada previo que continuar (alta
+// nueva, o tenant sin suscripción vigente). nil = arranca hoy, como antes. Si se pasa, debe ser
+// hoy o una fecha futura (se valida acá, no confiar solo en el frontend); típico caso de uso: se
+// registra la empresa hoy pero su suscripción/cobro real arranca unos días después. Se ignora
+// por completo en la rama de renovación en sitio (mismo plan): esa SIEMPRE encadena
+// automáticamente desde el fin de la suscripción vigente, nunca se elige a mano.
+func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, notes string, startDate *time.Time, discount ...Discount) (*database.SaasSubscription, error) {
 	var d Discount
 	if len(discount) > 0 {
 		d = discount[0]
@@ -474,8 +480,15 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 		Update("status", database.SaasSubExpired)
 
 	now := NowLima()
-	var prev database.SaasSubscription
 	base := CalendarDateLima(now)
+	if startDate != nil {
+		requested := CalendarDateLima(*startDate)
+		if requested.Before(base) {
+			return nil, errors.New("la fecha de inicio no puede ser anterior a hoy")
+		}
+		base = requested
+	}
+	var prev database.SaasSubscription
 	if err := tx.Where("tenant_id = ?", tenantID).Order("end_date desc").First(&prev).Error; err == nil {
 		prevDay := CalendarDateLima(prev.EndDate)
 		if prevDay.After(base) {
@@ -484,9 +497,17 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 	}
 	endDay := base.AddDate(0, months, 0)
 
+	// Con startDate explícito, el inicio real es esa fecha (inicio del día en Lima), no el
+	// instante exacto de este request — así "arranca el 15" no queda con la hora de cuando el
+	// admin cargó el alta.
+	subStart := now
+	if startDate != nil {
+		subStart = base
+	}
+
 	sub := &database.SaasSubscription{
 		TenantID: tenantID, PlanID: planID, BillingCycle: cycle,
-		StartDate: now, EndDate: EndOfDayLima(endDay),
+		StartDate: subStart, EndDate: EndOfDayLima(endDay),
 		Status: database.SaasSubActive, Notes: notes,
 		BilledMonths: months, DiscountType: d.Type, DiscountValue: d.Value,
 	}
@@ -754,7 +775,8 @@ func markCyclePaidTx(tx *gorm.DB, cycleID uint, paymentID uint) error {
 // ExtendSubscription crea o extiende suscripción (API pública).
 // ExtendSubscription crea la nueva suscripción del tenant. El descuento es opcional y queda
 // guardado en la suscripción, de modo que cualquier cobro que se genere para ella lo aplique.
-func ExtendSubscription(tenantID uint, planID uint, months int, notes string, discount ...Discount) (*database.SaasSubscription, error) {
+// startDate: ver extendSubscriptionTx — nil = arranca hoy (comportamiento de siempre).
+func ExtendSubscription(tenantID uint, planID uint, months int, notes string, startDate *time.Time, discount ...Discount) (*database.SaasSubscription, error) {
 	var d Discount
 	if len(discount) > 0 {
 		d = discount[0]
@@ -765,7 +787,7 @@ func ExtendSubscription(tenantID uint, planID uint, months int, notes string, di
 	}
 	var sub *database.SaasSubscription
 	err = database.CentralDB.Transaction(func(tx *gorm.DB) error {
-		s, err := extendSubscriptionTx(tx, tenantID, planID, months, notes, norm)
+		s, err := extendSubscriptionTx(tx, tenantID, planID, months, notes, startDate, norm)
 		sub = s
 		return err
 	})

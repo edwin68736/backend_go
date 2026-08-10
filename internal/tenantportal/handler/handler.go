@@ -159,6 +159,7 @@ func (h *Handler) SubmitPayment(c fiber.Ctx) error {
 func (h *Handler) SubmitRenewalRequest(c fiber.Ctx) error {
 	tid := tenantID(c)
 	planID, _ := strconv.ParseUint(c.FormValue("plan_id"), 10, 32)
+	periodMonths, _ := strconv.Atoi(c.FormValue("period_months"))
 	amount, _ := strconv.ParseFloat(c.FormValue("amount"), 64)
 	method := strings.TrimSpace(c.FormValue("payment_method"))
 	reference := strings.TrimSpace(c.FormValue("reference"))
@@ -194,6 +195,7 @@ func (h *Handler) SubmitRenewalRequest(c fiber.Ctx) error {
 	payment, err := saas.SubmitRenewalRequest(saas.SubmitRenewalRequestInput{
 		TenantID:      tid,
 		PlanID:        uint(planID),
+		PeriodMonths:  periodMonths,
 		Amount:        amount,
 		PaymentMethod: method,
 		PaymentDate:   paymentDate,
