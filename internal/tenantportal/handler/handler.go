@@ -151,6 +151,18 @@ func (h *Handler) SubmitPayment(c fiber.Ctx) error {
 	})
 }
 
+// ListPlans GET /api/subscription/plans — planes activos para elegir/renovar. Exento del
+// SubscriptionGate (prefijo /api/subscription completo, ver subscription_paths.go): el tenant
+// debe poder ver esto incluso con la suscripción vencida/suspendida/bloqueada, es justo la
+// salida que necesita en ese estado.
+func (h *Handler) ListPlans(c fiber.Ctx) error {
+	plans, err := saas.ListActivePlansView()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"plans": plans})
+}
+
 // ListDocumentPackages GET catálogo activo.
 func (h *Handler) ListDocumentPackages(c fiber.Ctx) error {
 	rows, err := docusage.ListActiveCatalog()
