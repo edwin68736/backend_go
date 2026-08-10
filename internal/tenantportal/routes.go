@@ -11,6 +11,8 @@ func RegisterRoutes(api fiber.Router) {
 	h := handler.New()
 	g := api.Group("/subscription")
 	g.Get("/summary", h.Summary)
+	g.Get("/plans", h.ListPlans)
+	g.Post("/renewal-request", h.SubmitRenewalRequest)
 	g.Get("/invoices", h.ListInvoices)
 	g.Get("/payments", h.ListPayments)
 	g.Get("/events", h.ListEvents)

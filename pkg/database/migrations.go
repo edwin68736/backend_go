@@ -181,7 +181,13 @@ type SaasPayment struct {
 	ReceiptURL      string     `gorm:"size:500" json:"receipt_url"` // voucher que sube el cliente
 	// FiscalDocURL boleta/factura que la empresa emite AL cliente por este pago. La sube el
 	// superadmin tras aprobar y el tenant la descarga desde el mismo pago en su panel.
-	FiscalDocURL       string     `gorm:"size:500" json:"fiscal_doc_url"`
+	FiscalDocURL string `gorm:"size:500" json:"fiscal_doc_url"`
+	// RequestedPlanID: plan que el TENANT pidió al enviar este pago (elegir plan / renovar sin
+	// ciclo de facturación previo, ver POST /api/subscription/renewal-request). Es la intención
+	// del tenant, no una decisión: ApprovePayment prioriza este valor como default del plan a
+	// aplicar, pero el admin puede reasignarlo antes de aprobar (mismo dropdown que ya existe en
+	// PaymentsPage). nil cuando el pago es contra un billing_cycle ya emitido (no hubo elección).
+	RequestedPlanID    *uint      `gorm:"index" json:"requested_plan_id,omitempty"`
 	Status             string     `gorm:"size:30;default:'pending_review';index" json:"status"`
 	ProvisionalApplied bool       `gorm:"default:false" json:"provisional_applied"`
 	Notes              string     `gorm:"size:500" json:"notes"`
