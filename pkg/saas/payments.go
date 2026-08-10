@@ -362,6 +362,7 @@ func extendSubscriptionToCycleTx(tx *gorm.DB, tenantID, planID uint, cycle *data
 // RejectPayment transacción segura: rechaza, revierte provisional, aplica strikes.
 func RejectPayment(paymentID uint, adminNotes string, reviewerID uint) error {
 	var tenantID uint
+	var tenantBlocked bool
 	err := database.CentralDB.Transaction(func(tx *gorm.DB) error {
 		var payment database.SaasPayment
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&payment, paymentID).Error; err != nil {
@@ -391,25 +392,28 @@ func RejectPayment(paymentID uint, adminNotes string, reviewerID uint) error {
 		if payment.SubscriptionID != nil {
 			subID = payment.SubscriptionID
 		}
-		if payment.ProvisionalApplied && subID != nil {
-			_ = tx.Model(&database.SaasSubscription{}).Where("id = ?", *subID).Updates(map[string]interface{}{
-				"status": database.SaasSubSuspended, "provisional_until": nil,
-			})
-		}
-
+		// Qué le pasa a la suscripción (revertir provisional, suspender o no) lo decide
+		// ApplyStrikeOnReject en un solo lugar, respetando la gracia por calendario — ver su
+		// doc. Antes había un segundo `Updates` acá mismo que siempre forzaba `suspended`,
+		// pisando esa decisión.
 		_, blocked, err := ApplyStrikeOnReject(tx, payment.TenantID, subID, &reviewerID, adminNotes)
 		if err != nil {
 			return err
 		}
-		if blocked {
-			QueueNotification(payment.TenantID, 0, "in_app", "tenant_blocked", map[string]interface{}{"reason": adminNotes})
-		}
+		tenantBlocked = blocked
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 	InvalidateTenantCache(tenantID)
+	// Fuera de la transacción a propósito (mismo patrón que SubmitPayment): QueueNotification
+	// escribe con database.CentralDB, no con `tx` — llamarla dentro de la transacción abierta
+	// competía por el mismo write-lock (en SQLite: SQLITE_BUSY; en cualquier motor, además,
+	// una notificación que "ya se envió" antes de que el commit sea definitivo).
+	if tenantBlocked {
+		QueueNotification(tenantID, 0, "in_app", "tenant_blocked", map[string]interface{}{"reason": adminNotes})
+	}
 	return nil
 }
 
