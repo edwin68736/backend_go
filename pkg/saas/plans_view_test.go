@@ -64,3 +64,21 @@ func TestListActivePlansView_onlyActiveOrderedByPrice(t *testing.T) {
 		t.Fatalf("esperaba slice vacío (no nil) de módulos para Básico, obtuve %v", got[0].Modules)
 	}
 }
+
+// El plan gratuito/trial (price=0) es para el alta inicial, no algo que se ofrezca al elegir o
+// renovar plan — aunque esté activo, no debe aparecer en la lista.
+func TestListActivePlansView_excludesFreePlan(t *testing.T) {
+	db := setupPlansViewDB(t)
+
+	db.Create(&database.SaasPlan{Name: "Trial", Price: 0, BillingCycle: "monthly", Active: true})
+	pro := database.SaasPlan{Name: "Pro", Price: 99.9, BillingCycle: "monthly", Active: true}
+	db.Create(&pro)
+
+	got, err := ListActivePlansView()
+	if err != nil {
+		t.Fatalf("ListActivePlansView: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Pro" {
+		t.Fatalf("esperaba solo el plan pagado (Pro), obtuve %+v", got)
+	}
+}

@@ -21,9 +21,11 @@ type PublicPlanView struct {
 // ListActivePlansView devuelve los planes activos para que el tenant elija uno (renovación o
 // cambio de plan). Solo activos: los desactivados por el superadmin no deben ofrecerse aunque
 // algún tenant viejo siga contratado a ellos (a ese no se le retira nada, ver ReconcileTenant...).
+// Solo planes pagados (price > 0): el plan gratuito/trial (ver seed "Trial" en migrations.go) es
+// para el alta inicial, no algo que un tenant elija al renovar o cambiar de plan.
 func ListActivePlansView() ([]PublicPlanView, error) {
 	var plans []database.SaasPlan
-	if err := database.CentralDB.Where("active = ?", true).Order("price asc, id asc").Find(&plans).Error; err != nil {
+	if err := database.CentralDB.Where("active = ? AND price > 0", true).Order("price asc, id asc").Find(&plans).Error; err != nil {
 		return nil, err
 	}
 	out := make([]PublicPlanView, 0, len(plans))
