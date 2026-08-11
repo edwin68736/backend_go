@@ -16,6 +16,10 @@ type PublicPlanView struct {
 	MaxBranches           int      `json:"max_branches"`
 	MaxProducts           int      `json:"max_products"`
 	Modules               []string `json:"modules"`
+	// Cycles: los ciclos fijos (1/3/6/12 meses) habilitados para este plan, con su precio ya
+	// calculado (bruto y con descuento aplicado) — el tenant elige uno de acá al renovar por
+	// autoservicio, nunca un número de meses libre (eso es exclusivo del panel central).
+	Cycles []PlanCycleView `json:"cycles"`
 }
 
 // ListActivePlansView devuelve los planes activos para que el tenant elija uno (renovación o
@@ -47,6 +51,12 @@ func ListActivePlansView() ([]PublicPlanView, error) {
 		database.CentralDB.Where("plan_id = ?", p.ID).Find(&pms)
 		for _, pm := range pms {
 			view.Modules = append(view.Modules, pm.ModuleKey)
+		}
+		view.Cycles = []PlanCycleView{}
+		for _, c := range BuildPlanCycleViews(p, LoadPlanCycles(p.ID)) {
+			if c.Enabled {
+				view.Cycles = append(view.Cycles, c)
+			}
 		}
 		out = append(out, view)
 	}

@@ -261,7 +261,11 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 			sub, err = extendSubscriptionToCycleTx(tx, payment.TenantID, planID, cycle,
 				fmt.Sprintf("Pago #%d aprobado", paymentID))
 		} else {
-			// Edge: pago sin ningún ciclo → extensión clásica por meses del plan.
+			// Edge: pago sin ningún ciclo → extensión clásica por meses del plan. Es el caso de
+			// una solicitud de plan de autoservicio (ver SubmitRenewalRequest): el tenant ya vio
+			// y pagó el descuento del ciclo fijo que eligió — sin recuperarlo acá, la suscripción/
+			// ciclo que resulta de aprobar quedaría al precio pleno, aunque haya pagado con
+			// descuento.
 			extendMonths := periodMonths
 			if extendMonths <= 0 {
 				extendMonths = payment.PeriodMonths
@@ -270,7 +274,7 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 				extendMonths = CycleMonthsFromBilling(curSub.BillingCycle)
 			}
 			sub, err = extendSubscriptionTx(tx, payment.TenantID, planID, extendMonths,
-				fmt.Sprintf("Pago #%d aprobado", paymentID), nil)
+				fmt.Sprintf("Pago #%d aprobado", paymentID), nil, renewalDiscountForApproval(planID, extendMonths))
 		}
 		if err != nil {
 			return err
@@ -300,6 +304,23 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 		LogEventTx(tx, payment.TenantID, &sid, EventReactivated, "admin", &reviewerID, adminNotes, "")
 		return nil
 	})
+}
+
+// renewalDiscountForApproval descuento del ciclo fijo del plan (si `months` calza con uno
+// habilitado, ver saas.FixedPlanCycleMonths) a aplicar cuando se aprueba un pago que llegó sin
+// ningún ciclo ya emitido — el caso de una solicitud de plan de autoservicio (SubmitRenewalRequest).
+// Lectura fuera de la transacción abierta a propósito (mismo patrón que LoadSettings dentro de
+// SubmitPayment): es una lectura pura, SaasPlanCycle no se modifica en esta transacción.
+func renewalDiscountForApproval(planID uint, months int) Discount {
+	var plan database.SaasPlan
+	if database.CentralDB.First(&plan, planID).Error != nil {
+		return Discount{}
+	}
+	views := BuildPlanCycleViews(plan, LoadPlanCycles(planID))
+	if c := FindEnabledPlanCycle(views, months); c != nil {
+		return Discount{Type: c.DiscountType, Value: c.DiscountValue}
+	}
+	return Discount{}
 }
 
 // extendSubscriptionToCycleTx extiende EN SITIO la suscripción hasta el fin del período del ciclo

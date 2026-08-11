@@ -77,6 +77,66 @@ func TestSubmitRenewalRequest_withReceipt_grantsProvisional(t *testing.T) {
 	}
 }
 
+// El bug real que esto cierra: antes, el frontend siempre mandaba un `amount` > 0 y el backend
+// solo recalculaba si venía en 0 — en la práctica el CLIENTE fijaba el precio final. Ahora
+// SubmitRenewalRequest ignora por completo lo que mande el cliente y calcula desde el descuento
+// configurado del ciclo (ver saas.SyncPlanCycles) — el ejemplo literal del requerimiento: plan
+// de 20/mes, 3 meses con 10 de descuento fijo → 50, no 60.
+func TestSubmitRenewalRequest_usesPlanCycleDiscount_ignoresClientAmount(t *testing.T) {
+	db := setupApprovePaymentDB(t)
+
+	plan := database.SaasPlan{Name: "Pro", Price: 20, Active: true}
+	db.Create(&plan)
+	SyncPlanCycles(plan.ID, []PlanCycleInput{
+		{Months: 3, DiscountType: DiscountFixed, DiscountValue: 10, Enabled: true},
+	})
+	tenant := database.Tenant{Name: "ACME", Slug: "acme", DBName: "acme", Status: database.TenantStatusActive}
+	db.Create(&tenant)
+
+	payment, err := SubmitRenewalRequest(SubmitRenewalRequestInput{
+		TenantID: tenant.ID, PlanID: plan.ID, PeriodMonths: 3,
+		Amount: 999999, // lo que mande el cliente ya no importa
+	})
+	if err != nil {
+		t.Fatalf("SubmitRenewalRequest: %v", err)
+	}
+	if payment.Amount != 50 {
+		t.Errorf("Amount = %v, want 50 (20×3 - 10 de descuento) — el amount del cliente no debe pesar", payment.Amount)
+	}
+}
+
+// Un ciclo que no es 1/3/6/12 no es elegible por autoservicio — eso es exclusivo del "ciclo
+// libre" del panel central (SubscriptionService.Create / ExtendSubscription).
+func TestSubmitRenewalRequest_rejectsNonFixedMonths(t *testing.T) {
+	db := setupApprovePaymentDB(t)
+	plan := database.SaasPlan{Name: "Pro", Price: 20, Active: true}
+	db.Create(&plan)
+	tenant := database.Tenant{Name: "ACME", Slug: "acme", DBName: "acme", Status: database.TenantStatusActive}
+	db.Create(&tenant)
+
+	if _, err := SubmitRenewalRequest(SubmitRenewalRequestInput{
+		TenantID: tenant.ID, PlanID: plan.ID, PeriodMonths: 5,
+	}); err == nil {
+		t.Fatal("esperaba error: 5 meses no es un ciclo fijo elegible por autoservicio")
+	}
+}
+
+// Un ciclo deshabilitado por el admin tampoco es elegible, aunque sea uno de los 4 fijos.
+func TestSubmitRenewalRequest_rejectsDisabledCycle(t *testing.T) {
+	db := setupApprovePaymentDB(t)
+	plan := database.SaasPlan{Name: "Pro", Price: 20, Active: true}
+	db.Create(&plan)
+	SyncPlanCycles(plan.ID, []PlanCycleInput{{Months: 12, Enabled: false}})
+	tenant := database.Tenant{Name: "ACME", Slug: "acme", DBName: "acme", Status: database.TenantStatusActive}
+	db.Create(&tenant)
+
+	if _, err := SubmitRenewalRequest(SubmitRenewalRequestInput{
+		TenantID: tenant.ID, PlanID: plan.ID, PeriodMonths: 12,
+	}); err == nil {
+		t.Fatal("esperaba error: el ciclo de 12 meses está deshabilitado para este plan")
+	}
+}
+
 // Plan inexistente o inactivo: rechazado antes de tocar nada.
 func TestSubmitRenewalRequest_inactivePlan_rejected(t *testing.T) {
 	db := setupApprovePaymentDB(t)
@@ -140,6 +200,50 @@ func TestSubmitRenewalRequest_advancePayment_appliesRequestedMonths(t *testing.T
 	wantEnd := CalendarDateLima(curEnd.AddDate(0, 3, 0))
 	if got := CalendarDateLima(renewed.EndDate); !got.Equal(wantEnd) {
 		t.Errorf("EndDate = %s, want %s (3 meses desde el fin vigente, no desde hoy)", got.Format("2006-01-02"), wantEnd.Format("2006-01-02"))
+	}
+}
+
+// El bug real que esto cierra: ApprovePayment aprobaba una solicitud de autoservicio (sin ciclo
+// ya emitido) llamando a extendSubscriptionTx SIN pasar ningún descuento — la suscripción/ciclo
+// resultante quedaba a precio pleno aunque el tenant hubiera visto y pagado el precio con
+// descuento de su ciclo elegido. Ahora ApprovePayment recupera ese mismo descuento (por
+// payment.PeriodMonths) antes de extender.
+func TestApprovePayment_propagatesPlanCycleDiscountToNewSubscription(t *testing.T) {
+	db := setupApprovePaymentDB(t)
+
+	plan := database.SaasPlan{Name: "Pro", Price: 20, Active: true}
+	db.Create(&plan)
+	SyncPlanCycles(plan.ID, []PlanCycleInput{
+		{Months: 3, DiscountType: DiscountFixed, DiscountValue: 10, Enabled: true},
+	})
+	tenant := database.Tenant{Name: "ACME", Slug: "acme", DBName: "acme", Status: database.TenantStatusSuspended}
+	db.Create(&tenant)
+
+	payment, err := SubmitRenewalRequest(SubmitRenewalRequestInput{
+		TenantID: tenant.ID, PlanID: plan.ID, PeriodMonths: 3,
+		ReceiptURL: "/storage/saas/receipts/x.jpg",
+	})
+	if err != nil {
+		t.Fatalf("SubmitRenewalRequest: %v", err)
+	}
+	if payment.Amount != 50 {
+		t.Fatalf("Amount = %v, want 50", payment.Amount)
+	}
+
+	if err := ApprovePayment(payment.ID, 0, 0, "ok", 1); err != nil {
+		t.Fatalf("ApprovePayment: %v", err)
+	}
+
+	var sub database.SaasSubscription
+	db.Where("tenant_id = ? AND status = ?", tenant.ID, database.SaasSubActive).First(&sub)
+	if sub.DiscountType != DiscountFixed || sub.DiscountValue != 10 {
+		t.Errorf("suscripción resultante = %+v, want descuento fixed 10 (el que el tenant pagó)", sub)
+	}
+
+	var cycle database.SaasBillingCycle
+	db.Where("subscription_id = ?", sub.ID).Order("id desc").First(&cycle)
+	if cycle.Amount != 50 {
+		t.Errorf("cycle.Amount = %v, want 50 — quedó a precio pleno, se perdió el descuento al aprobar", cycle.Amount)
 	}
 }
 

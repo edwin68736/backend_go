@@ -2,6 +2,7 @@ package saas
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"tukifac/pkg/database"
@@ -33,6 +34,13 @@ type SubmitRenewalRequestInput struct {
 // SubmitRenewalRequest valida el plan y delega en SubmitPayment (misma transacción, mismas
 // reglas de strikes/bloqueo vía CanTenantSubmitPayment): un solo camino de escritura para pagos,
 // evita que esta ruta nueva diverja en el futuro de las reglas de la ruta existente.
+//
+// El monto SIEMPRE se calcula acá, nunca se confía en in.Amount — antes, como el frontend
+// siempre mandaba un amount > 0, era en la práctica el cliente quien fijaba el precio final
+// (un request armado a mano podía mandar cualquier monto). PeriodMonths además debe ser uno de
+// los 4 ciclos fijos habilitados del plan (ver saas.FixedPlanCycleMonths): el "ciclo libre" (2,
+// 5, cualquier cantidad de meses) sigue existiendo, pero solo desde el panel central
+// (SubscriptionService.Create / ExtendSubscription), no por este camino de autoservicio.
 func SubmitRenewalRequest(in SubmitRenewalRequestInput) (*database.SaasPayment, error) {
 	if in.TenantID == 0 {
 		return nil, errors.New("tenant_id requerido")
@@ -48,13 +56,14 @@ func SubmitRenewalRequest(in SubmitRenewalRequestInput) (*database.SaasPayment, 
 	if months <= 0 {
 		months = 1
 	}
-	amount := in.Amount
-	if amount <= 0 {
-		amount = plan.Price * float64(months)
+	views := BuildPlanCycleViews(plan, LoadPlanCycles(plan.ID))
+	cycle := FindEnabledPlanCycle(views, months)
+	if cycle == nil {
+		return nil, fmt.Errorf("ciclo de %d meses no disponible para este plan", months)
 	}
 	return SubmitPayment(SubmitPaymentInput{
 		TenantID:      in.TenantID,
-		Amount:        amount,
+		Amount:        cycle.NetAmount,
 		PeriodMonths:  months,
 		PaymentMethod: in.PaymentMethod,
 		PaymentDate:   in.PaymentDate,

@@ -107,6 +107,31 @@ type SaasPlan struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// SaasPlanCycle — descuento configurado para uno de los 4 ciclos fijos de un plan (1/3/6/12
+// meses, ver saas.FixedPlanCycleMonths — no hay más valores posibles, es a propósito). Sin fila
+// para un (plan_id, months) dado, o con DiscountType="" , ese ciclo se cobra al precio pleno
+// (price × months, sin descuento) — no es un error, es el estado "sin descuento configurado".
+// Esto es EXCLUSIVO del autoservicio del tenant (elegir plan + ciclo para renovar); no aplica al
+// "ciclo libre" que ya puede armar un admin desde el panel central (SubscriptionService.Create),
+// que sigue aceptando cualquier cantidad de meses con su propio descuento libre.
+type SaasPlanCycle struct {
+	ID            uint    `gorm:"primaryKey" json:"id"`
+	PlanID        uint    `gorm:"not null;uniqueIndex:idx_plan_cycle,priority:1" json:"plan_id"`
+	Months        int     `gorm:"not null;uniqueIndex:idx_plan_cycle,priority:2" json:"months"`
+	DiscountType  string  `gorm:"size:10" json:"discount_type"` // "" | percent | fixed
+	DiscountValue float64 `gorm:"default:0" json:"discount_value"`
+	// Enabled: permite ocultar un ciclo del selector del tenant sin perder el descuento que ya
+	// se le configuró, por si se vuelve a habilitar después.
+	//
+	// Sin default de BD a propósito: GORM omite del INSERT los campos en su zero-value cuando
+	// tienen `gorm:"default:..."`, así que un Enabled:false explícito (SyncPlanCycles
+	// deshabilitando un ciclo) se hubiera colado como el default de la columna (true) en vez de
+	// guardarse como false — el mismo bug de omitempty/zero-value que ya picó una vez en este
+	// código con un float64. Cada fila la escribe siempre saas.SyncPlanCycles con su Enabled
+	// explícito, así que no hace falta ningún default acá.
+	Enabled bool `gorm:"not null" json:"enabled"`
+}
+
 // SaasModule — catálogo global de módulos (única fuente de verdad para panel central, tukifac
 // y tukichef). Agregar un módulo = una fila aquí y aparece en todos lados.
 type SaasModule struct {
@@ -158,24 +183,24 @@ type SaasSubscription struct {
 	// Descuento pactado para esta suscripción: se aplica a cada cobro que genere.
 	// Vive aquí y no en el ciclo porque es parte del acuerdo con el cliente (típicamente
 	// a cambio de contratar varios meses por adelantado).
-	DiscountType  string  `gorm:"size:10" json:"discount_type"` // "" | percent | fixed
-	DiscountValue float64 `gorm:"default:0" json:"discount_value"`
+	DiscountType  string     `gorm:"size:10" json:"discount_type"` // "" | percent | fixed
+	DiscountValue float64    `gorm:"default:0" json:"discount_value"`
 	CancelledAt   *time.Time `json:"cancelled_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // SaasPayment — pagos manuales con comprobante (solo BD central).
 type SaasPayment struct {
-	ID              uint       `gorm:"primaryKey" json:"id"`
-	TenantID        uint       `gorm:"not null;index" json:"tenant_id"`
-	SubscriptionID  *uint      `gorm:"index" json:"subscription_id"`
-	BillingCycleID  *uint      `gorm:"index" json:"billing_cycle_id"`
-	Amount          float64    `gorm:"not null;default:0" json:"amount"`
-	ReconnectionFee float64    `gorm:"default:0" json:"reconnection_fee"`
-	Currency        string     `gorm:"size:10;default:'PEN'" json:"currency"`
-	PeriodMonths    int        `gorm:"default:1" json:"period_months"`
-	PaymentMethod   string     `gorm:"size:30" json:"payment_method"` // yape, plin, transfer, deposit
+	ID              uint    `gorm:"primaryKey" json:"id"`
+	TenantID        uint    `gorm:"not null;index" json:"tenant_id"`
+	SubscriptionID  *uint   `gorm:"index" json:"subscription_id"`
+	BillingCycleID  *uint   `gorm:"index" json:"billing_cycle_id"`
+	Amount          float64 `gorm:"not null;default:0" json:"amount"`
+	ReconnectionFee float64 `gorm:"default:0" json:"reconnection_fee"`
+	Currency        string  `gorm:"size:10;default:'PEN'" json:"currency"`
+	PeriodMonths    int     `gorm:"default:1" json:"period_months"`
+	PaymentMethod   string  `gorm:"size:30" json:"payment_method"` // yape, plin, transfer, deposit
 	// PaymentMethodLabel/Kind/DetailsJSON: snapshot de lo que se le mostró al tenant al pagar
 	// (nombre del método, si era QR o cuenta bancaria, y el QR/las cuentas vigentes en ese
 	// momento). PaymentMethod por sí solo no bastaba para saber CÓMO pagó realmente ni permitía
@@ -183,9 +208,9 @@ type SaasPayment struct {
 	PaymentMethodLabel string     `gorm:"size:100" json:"payment_method_label,omitempty"`
 	PaymentMethodKind  string     `gorm:"size:20" json:"payment_method_kind,omitempty"`
 	PaymentDetailsJSON string     `gorm:"type:text" json:"payment_details_json,omitempty"`
-	PaymentDate     *time.Time `json:"payment_date,omitempty"`
-	Reference       string     `gorm:"size:120" json:"reference"`
-	ReceiptURL      string     `gorm:"size:500" json:"receipt_url"` // voucher que sube el cliente
+	PaymentDate        *time.Time `json:"payment_date,omitempty"`
+	Reference          string     `gorm:"size:120" json:"reference"`
+	ReceiptURL         string     `gorm:"size:500" json:"receipt_url"` // voucher que sube el cliente
 	// FiscalDocURL boleta/factura que la empresa emite AL cliente por este pago. La sube el
 	// superadmin tras aprobar y el tenant la descarga desde el mismo pago en su panel.
 	FiscalDocURL string `gorm:"size:500" json:"fiscal_doc_url"`
@@ -261,6 +286,7 @@ func MigrateCentral() error {
 		&TenantModule{},
 		&AuditLog{},
 		&SaasPlan{},
+		&SaasPlanCycle{},
 		&SaasModule{},
 		&SaasPlanModule{},
 		&SaasSubscription{},
