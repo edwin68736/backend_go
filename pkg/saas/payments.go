@@ -86,9 +86,15 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 			status = database.SaasPayPending
 		}
 
+		// Snapshot de método/QR/cuentas vigentes en este instante — ver payment_method_snapshot.go.
+		// Mismo punto de escritura para SubmitPayment (deuda pendiente) y SubmitRenewalRequest
+		// (renovación), que delega acá — ambos flujos quedan con la misma trazabilidad.
+		methodLabel, methodKind, methodDetails := paymentMethodSnapshot(cfg, in.PaymentMethod)
+
 		p := &database.SaasPayment{
 			TenantID: in.TenantID, Amount: in.Amount, Currency: "PEN",
 			PeriodMonths: in.PeriodMonths, PaymentMethod: in.PaymentMethod,
+			PaymentMethodLabel: methodLabel, PaymentMethodKind: methodKind, PaymentDetailsJSON: methodDetails,
 			PaymentDate: in.PaymentDate, Reference: in.Reference,
 			ReceiptURL: in.ReceiptURL, Notes: in.Notes, Status: status, SubmittedBy: in.SubmittedBy,
 		}

@@ -176,6 +176,13 @@ type SaasPayment struct {
 	Currency        string     `gorm:"size:10;default:'PEN'" json:"currency"`
 	PeriodMonths    int        `gorm:"default:1" json:"period_months"`
 	PaymentMethod   string     `gorm:"size:30" json:"payment_method"` // yape, plin, transfer, deposit
+	// PaymentMethodLabel/Kind/DetailsJSON: snapshot de lo que se le mostró al tenant al pagar
+	// (nombre del método, si era QR o cuenta bancaria, y el QR/las cuentas vigentes en ese
+	// momento). PaymentMethod por sí solo no bastaba para saber CÓMO pagó realmente ni permitía
+	// auditar contra un QR/cuenta que después se reemplazó o se borró en la config central.
+	PaymentMethodLabel string     `gorm:"size:100" json:"payment_method_label,omitempty"`
+	PaymentMethodKind  string     `gorm:"size:20" json:"payment_method_kind,omitempty"`
+	PaymentDetailsJSON string     `gorm:"type:text" json:"payment_details_json,omitempty"`
 	PaymentDate     *time.Time `json:"payment_date,omitempty"`
 	Reference       string     `gorm:"size:120" json:"reference"`
 	ReceiptURL      string     `gorm:"size:500" json:"receipt_url"` // voucher que sube el cliente

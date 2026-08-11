@@ -43,10 +43,24 @@ type SupportConfig struct {
 	Phone    string `json:"phone"`
 }
 
+// Kind de un método de pago: determina qué se le muestra al tenant al elegirlo.
+const (
+	PaymentMethodKindQR          = "qr"           // método tipo billetera: QR propio, opcional
+	PaymentMethodKindBankAccount = "bank_account"  // método tipo depósito/transferencia: lista de cuentas bancarias
+)
+
 type PaymentMethodConfig struct {
 	Key     string `json:"key"`
 	Label   string `json:"label"`
 	Enabled bool   `json:"enabled"`
+	// Kind: "qr" o "bank_account". Determina si este método muestra su propio QR (QRURL) o
+	// la lista compartida de cuentas bancarias (PlatformSettings.BankAccounts). Configs viejas
+	// sin este campo se completan en LoadSettings (ver backfillPaymentMethodDefaults).
+	Kind string `json:"kind"`
+	// QRURL: imagen de QR propia de este método (solo aplica si Kind == "qr"). Antes de esto,
+	// el QR de yape/plin vivía en dos campos sueltos (YapeQRURL/PlinQRURL) sin relación con la
+	// lista de métodos — ver backfillPaymentMethodDefaults para la migración de esos datos viejos.
+	QRURL string `json:"qr_url,omitempty"`
 }
 
 type BankAccountConfig struct {
@@ -82,14 +96,57 @@ func defaultSettings() PlatformSettings {
 		CronEvalMinute:                 5,
 		Timezone:                       DefaultTimezone,
 		PaymentMethods: []PaymentMethodConfig{
-			{Key: "yape", Label: "Yape", Enabled: true},
-			{Key: "plin", Label: "Plin", Enabled: true},
-			{Key: "transfer", Label: "Transferencia", Enabled: true},
-			{Key: "deposit", Label: "Depósito", Enabled: true},
+			{Key: "yape", Label: "Yape", Enabled: true, Kind: PaymentMethodKindQR},
+			{Key: "plin", Label: "Plin", Enabled: true, Kind: PaymentMethodKindQR},
+			{Key: "transfer", Label: "Transferencia", Enabled: true, Kind: PaymentMethodKindBankAccount},
+			{Key: "deposit", Label: "Depósito", Enabled: true, Kind: PaymentMethodKindBankAccount},
 		},
 		BankAccounts: []BankAccountConfig{},
 		PortalURLOverride: "",
 	}
+}
+
+// backfillPaymentMethodDefaults completa Kind/QRURL en configs guardadas antes de que existieran
+// estos campos (JSON viejo sin "kind"/"qr_url" simplemente los deserializa como ""). Sin esto,
+// un tenant con configuración previa vería sus métodos sin QR ni cuentas bancarias hasta que un
+// admin volviera a guardar el formulario. Muta in-place (methods comparte el array de out).
+func backfillPaymentMethodDefaults(methods []PaymentMethodConfig, legacyYapeQR, legacyPlinQR string) {
+	for i := range methods {
+		m := &methods[i]
+		if m.Kind == "" {
+			switch strings.ToLower(strings.TrimSpace(m.Key)) {
+			case "yape", "plin":
+				m.Kind = PaymentMethodKindQR
+			default:
+				// Antes de este cambio, cualquier método que no fuera yape/plin ya se mostraba
+				// como cuenta bancaria (era el único contenido disponible aparte del QR) — mismo
+				// comportamiento por default acá.
+				m.Kind = PaymentMethodKindBankAccount
+			}
+		}
+		if m.Kind == PaymentMethodKindQR && m.QRURL == "" {
+			switch strings.ToLower(strings.TrimSpace(m.Key)) {
+			case "yape":
+				m.QRURL = legacyYapeQR
+			case "plin":
+				m.QRURL = legacyPlinQR
+			}
+		}
+	}
+}
+
+// PaymentMethodByKey busca un método (case-insensitive) en la config. nil si no existe.
+func PaymentMethodByKey(methods []PaymentMethodConfig, key string) *PaymentMethodConfig {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return nil
+	}
+	for i := range methods {
+		if strings.ToLower(strings.TrimSpace(methods[i].Key)) == key {
+			return &methods[i]
+		}
+	}
+	return nil
 }
 
 // LoadSettings carga configuración central (crea defaults si no existe).
@@ -145,6 +202,7 @@ func LoadSettings() (PlatformSettings, error) {
 	}
 	out.YapeQRURL = row.YapeQRURL
 	out.PlinQRURL = row.PlinQRURL
+	backfillPaymentMethodDefaults(out.PaymentMethods, out.YapeQRURL, out.PlinQRURL)
 	out.PortalURLOverride = strings.TrimSpace(row.PortalURL)
 	out.Support = SupportConfig{
 		WhatsApp: row.SupportWhatsApp,

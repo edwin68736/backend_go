@@ -14,11 +14,26 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// UploadQR POST /api/superadmin/saas-settings/upload-qr (multipart: kind=yape|plin, file)
+// UploadQR POST /api/superadmin/saas-settings/upload-qr (multipart: kind=<key del método>, file)
+//
+// "kind" ya no está limitado a yape|plin: es la key de cualquier método de pago configurado en
+// PaymentMethods, siempre que su Kind sea "qr". Antes el QR vivía en dos campos sueltos
+// (YapeQRURL/PlinQRURL) sin relación con la lista de métodos — ver PaymentMethodConfig.QRURL.
 func (h *SettingsHandler) UploadQR(c fiber.Ctx) error {
 	kind := strings.ToLower(strings.TrimSpace(c.FormValue("kind")))
-	if kind != "yape" && kind != "plin" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "kind debe ser yape o plin"})
+	if kind == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "kind (key del método) requerido"})
+	}
+	cfgPre, err := saas.LoadSettings()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	method := saas.PaymentMethodByKey(cfgPre.PaymentMethods, kind)
+	if method == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "método de pago no encontrado"})
+	}
+	if method.Kind != saas.PaymentMethodKindQR {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "este método no usa QR (es de cuenta bancaria)"})
 	}
 	file, err := c.FormFile("file")
 	if err != nil || file == nil {
@@ -55,9 +70,19 @@ func (h *SettingsHandler) UploadQR(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	target := saas.PaymentMethodByKey(cfg.PaymentMethods, kind)
+	if target == nil {
+		// No debería pasar (ya lo validamos arriba con cfgPre), pero por las dudas: no perder el
+		// archivo ya guardado sin dejar rastro de a qué método pertenecía.
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "método de pago ya no existe"})
+	}
+	target.QRURL = publicURL
+	// yape/plin: mantener también los campos legacy en sync, por si algo más (fuera de este
+	// backend) todavía los lee directamente — costo cero, se puede quitar cuando se confirme que
+	// nada más los usa.
 	if kind == "yape" {
 		cfg.YapeQRURL = publicURL
-	} else {
+	} else if kind == "plin" {
 		cfg.PlinQRURL = publicURL
 	}
 	if err := saas.SaveSettings(cfg); err != nil {
@@ -70,7 +95,7 @@ func (h *SettingsHandler) UploadQR(c fiber.Ctx) error {
 	})
 }
 
-// removeSaasQrFiles elimina QR anteriores del mismo tipo (yape/plin) en storage/saas.
+// removeSaasQrFiles elimina QR anteriores del mismo método (key) en storage/saas.
 func removeSaasQrFiles(dir, kind string) {
 	prefix := "qr_" + kind
 	entries, err := os.ReadDir(dir)
