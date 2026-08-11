@@ -16,15 +16,15 @@ import (
 
 // SessionReport es el reporte de cierre/resumen de una sesión de caja.
 type SessionReport struct {
-	Session              SessionReportHeader   `json:"session"`
-	IncomeDetail         []IncomeDetailRow      `json:"income_detail"`
-	ExpenseDetail        []ExpenseDetailRow     `json:"expense_detail"`
-	CancelledSalesDetail []CancelledSaleRow     `json:"cancelled_sales_detail"`
-	TotalsByMethod       TotalsByMethodReport   `json:"totals_by_method"`
-	Totals               SessionTotals          `json:"totals"`
-	CashPhysical         SessionCashPhysical    `json:"cash_physical"`
-	Electronic           SessionElectronic      `json:"electronic"`
-	Detraction           SessionDetraction      `json:"detraction"`
+	Session              SessionReportHeader  `json:"session"`
+	IncomeDetail         []IncomeDetailRow    `json:"income_detail"`
+	ExpenseDetail        []ExpenseDetailRow   `json:"expense_detail"`
+	CancelledSalesDetail []CancelledSaleRow   `json:"cancelled_sales_detail"`
+	TotalsByMethod       TotalsByMethodReport `json:"totals_by_method"`
+	Totals               SessionTotals        `json:"totals"`
+	CashPhysical         SessionCashPhysical  `json:"cash_physical"`
+	Electronic           SessionElectronic    `json:"electronic"`
+	Detraction           SessionDetraction    `json:"detraction"`
 }
 
 // SessionDetraction ventas con detracción BN (SPOT): informativo, sin impacto en arqueo.
@@ -67,21 +67,21 @@ type SessionReportHeader struct {
 }
 
 type IncomeDetailRow struct {
-	Date           time.Time `json:"date"`
-	Type           string    `json:"type"`
-	DocNumber      string    `json:"doc_number"`
-	Reference      string    `json:"reference"`
-	Amount         float64   `json:"amount"`
-	PaymentMethod  string    `json:"payment_method"`
+	Date          time.Time `json:"date"`
+	Type          string    `json:"type"`
+	DocNumber     string    `json:"doc_number"`
+	Reference     string    `json:"reference"`
+	Amount        float64   `json:"amount"`
+	PaymentMethod string    `json:"payment_method"`
 }
 
 type ExpenseDetailRow struct {
-	Date           time.Time `json:"date"`
-	Type           string    `json:"type"`
-	DocNumber      string    `json:"doc_number"`
-	Reference      string    `json:"reference"`
-	Amount         float64   `json:"amount"`
-	PaymentMethod  string    `json:"payment_method"`
+	Date          time.Time `json:"date"`
+	Type          string    `json:"type"`
+	DocNumber     string    `json:"doc_number"`
+	Reference     string    `json:"reference"`
+	Amount        float64   `json:"amount"`
+	PaymentMethod string    `json:"payment_method"`
 }
 
 // CancelledSaleRow venta anulada vinculada a la sesión (reversión en caja).
@@ -129,7 +129,7 @@ type MovementReportRow struct {
 	CashSessionID uint      `json:"cash_session_id"`
 	Category      string    `json:"category"`
 	CashReference string    `json:"cash_reference"` // referencia del registro en caja (antes de derivar documento)
-	NotesDetail   string    `json:"notes_detail"`    // notas del movimiento en caja
+	NotesDetail   string    `json:"notes_detail"`   // notas del movimiento en caja
 }
 
 // MovementChannelSummary totales de un canal (efectivo o electrónico).
@@ -590,11 +590,17 @@ func (s *CashBankService) listOrphanSalesForSession(session *database.TenantCash
 	if session == nil || session.ID == 0 {
 		return nil, nil
 	}
+	// doc_type NOT IN NoteDocTypes: una nota de crédito/débito no tiene cash_session_id (se crea
+	// aparte de SaleService.Create, ver CreateCreditNoteAndVoidSale) y cae dentro de esta misma
+	// ventana de fecha/sucursal — sin este filtro, esta consulta la trae como si fuera una venta
+	// más («huérfana») y el arqueo la suma como ingreso nuevo con el método de pago de la venta
+	// que en realidad está anulando.
 	q := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
 		Where("(cash_session_id IS NULL OR cash_session_id = 0)").
 		Where("branch_id = ?", session.BranchID).
 		Where("created_at >= ?", session.OpenedAt).
-		Where("status NOT IN ?", []string{"cancelled", "draft"})
+		Where("status NOT IN ?", []string{"cancelled", "draft"}).
+		Where("doc_type NOT IN ?", salescope.NoteDocTypes)
 	if session.ClosedAt != nil {
 		q = q.Where("created_at <= ?", *session.ClosedAt)
 	}

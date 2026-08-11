@@ -160,14 +160,34 @@ func (s *CashBankService) getExpectedBalance(sessionID uint) float64 {
 	if err := s.db.First(&session, sessionID).Error; err != nil {
 		return 0
 	}
-	var totalIncome, totalExpense float64
-	s.db.Model(&database.TenantCashMovement{}).
-		Where("cash_session_id = ? AND type = ?", sessionID, "income").
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalIncome)
-	s.db.Model(&database.TenantCashMovement{}).
-		Where("cash_session_id = ? AND type = ?", sessionID, "expense").
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalExpense)
-	return session.OpeningBalance + totalIncome - totalExpense
+	income, expense := s.cashOnlyMovementTotals(sessionID)
+	return session.OpeningBalance + income - expense
+}
+
+// cashOnlyMovementTotals ingresos/egresos de la sesión que afectan el EFECTIVO FÍSICO de la caja.
+//
+// Antes se sumaba/restaba cualquier TenantCashMovement de la sesión sin mirar payment_method —
+// un egreso pagado por transferencia (plata que salió del banco, no del cajón) restaba igual que
+// uno en efectivo, así que el "esperado" podía dar negativo o simplemente falso apenas la caja
+// también registraba movimientos bancarios (pago a proveedor por transferencia, por ejemplo).
+// IsCashPaymentMethod ya es el criterio que usa el resto de este paquete para "qué cuenta como
+// efectivo" (ver payment_method_report.go) — se reusa acá para no tener dos definiciones de lo
+// mismo.
+func (s *CashBankService) cashOnlyMovementTotals(sessionID uint) (income, expense float64) {
+	var movements []database.TenantCashMovement
+	s.db.Where("cash_session_id = ? AND type IN ?", sessionID, []string{"income", "expense"}).
+		Find(&movements)
+	for _, m := range movements {
+		if !IsCashPaymentMethod(m.PaymentMethod) {
+			continue
+		}
+		if m.Type == "income" {
+			income += m.Amount
+		} else {
+			expense += m.Amount
+		}
+	}
+	return
 }
 
 // sumArqueo suma denominaciones: keys "200","100",...,"0.1" * cantidad.
@@ -203,10 +223,10 @@ func (s *CashBankService) SaveArqueo(sessionID, userID uint, arqueo map[string]f
 	expected := s.getExpectedBalance(sessionID)
 	diff := sum - expected
 	return sum, s.db.Model(&session).Updates(map[string]interface{}{
-		"arqueo_json":     string(arqueoJSON),
-		"closing_balance": sum,
+		"arqueo_json":      string(arqueoJSON),
+		"closing_balance":  sum,
 		"expected_balance": expected,
-		"difference":      diff,
+		"difference":       diff,
 	}).Error
 }
 
@@ -256,15 +276,15 @@ func (s *CashBankService) GetAnyOpenSessionInBranch(branchID uint) (*database.Te
 
 // OpenSessionListItem fila para listado de cajas abiertas en sucursal (solo lectura).
 type OpenSessionListItem struct {
-	ID              uint    `json:"id"`
-	BranchID        uint    `json:"branch_id"`
-	UserID          uint    `json:"user_id"`
-	UserName        string  `json:"user_name"`
-	OpeningBalance  float64 `json:"opening_balance"`
-	CurrentBalance  float64 `json:"current_balance"`
-	OpenedAt        string  `json:"opened_at"`
-	RegisterCode    *string `json:"register_code,omitempty"`
-	RegisterName    *string `json:"register_name,omitempty"`
+	ID             uint    `json:"id"`
+	BranchID       uint    `json:"branch_id"`
+	UserID         uint    `json:"user_id"`
+	UserName       string  `json:"user_name"`
+	OpeningBalance float64 `json:"opening_balance"`
+	CurrentBalance float64 `json:"current_balance"`
+	OpenedAt       string  `json:"opened_at"`
+	RegisterCode   *string `json:"register_code,omitempty"`
+	RegisterName   *string `json:"register_name,omitempty"`
 }
 
 // ListOpenSessionsInBranch todas las sesiones abiertas de una sucursal (varios cajeros).
@@ -300,14 +320,11 @@ func (s *CashBankService) ListOpenSessionsInBranch(branchID uint) ([]OpenSession
 	return items, nil
 }
 
+// sessionMovementTotals usada por ListOpenSessionsInBranch para mostrar el saldo actual de cada
+// caja abierta — mismo criterio de "qué es efectivo" que getExpectedBalance (cashOnlyMovementTotals),
+// para no calcular el mismo número con dos fórmulas distintas en dos pantallas.
 func (s *CashBankService) sessionMovementTotals(sessionID uint) (income, expense float64) {
-	s.db.Model(&database.TenantCashMovement{}).
-		Where("cash_session_id = ? AND type = ?", sessionID, "income").
-		Select("COALESCE(SUM(amount), 0)").Scan(&income)
-	s.db.Model(&database.TenantCashMovement{}).
-		Where("cash_session_id = ? AND type = ?", sessionID, "expense").
-		Select("COALESCE(SUM(amount), 0)").Scan(&expense)
-	return
+	return s.cashOnlyMovementTotals(sessionID)
 }
 
 // AddMovement registra un movimiento manual de caja. Verifica que la sesión exista y esté abierta.
