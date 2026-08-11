@@ -44,13 +44,25 @@ type SessionView struct {
 }
 
 // calcSessionTotals calcula ingresos, egresos y saldo de una sesión.
+// calcSessionTotals saldo de la página server-rendered "Caja" (/cashbank/cash) — mismo criterio
+// que CashBankService.getExpectedBalance/sessionMovementTotals: solo cuentan los movimientos
+// cuyo payment_method es efectivo (service.IsCashPaymentMethod). Antes sumaba/restaba cualquier
+// movimiento de la sesión sin mirar el método, así que un egreso por transferencia (plata que
+// salió del banco, no del cajón) restaba del efectivo igual que uno real.
 func calcSessionTotals(tdb *gorm.DB, sessionID uint, opening float64) (totalIn, totalOut, current float64) {
-	tdb.Model(&database.TenantCashMovement{}).
-		Where("cash_session_id = ? AND type = ?", sessionID, "income").
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalIn)
-	tdb.Model(&database.TenantCashMovement{}).
-		Where("cash_session_id = ? AND type = ?", sessionID, "expense").
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalOut)
+	var movements []database.TenantCashMovement
+	tdb.Where("cash_session_id = ? AND type IN ?", sessionID, []string{"income", "expense"}).
+		Find(&movements)
+	for _, m := range movements {
+		if !service.IsCashPaymentMethod(m.PaymentMethod) {
+			continue
+		}
+		if m.Type == "income" {
+			totalIn += m.Amount
+		} else {
+			totalOut += m.Amount
+		}
+	}
 	current = opening + totalIn - totalOut
 	return
 }
