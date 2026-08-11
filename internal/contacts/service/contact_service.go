@@ -179,12 +179,18 @@ func contactTypeLabel(t string) string {
 	}
 }
 
-// findDuplicateContact busca un contacto existente con el mismo documento cuyo tipo colisione
-// con contactType (ver contactTypesThatCollideWith). excludeID se usa desde Update para no
-// chocar contra el propio registro que se está editando.
+// findDuplicateContact busca un contacto ACTIVO existente con el mismo documento cuyo tipo
+// colisione con contactType (ver contactTypesThatCollideWith). excludeID se usa desde Update
+// para no chocar contra el propio registro que se está editando.
+//
+// Solo cuentan los activos a propósito: un contacto desactivado (la forma en que hoy se
+// "retiran" duplicados viejos sin borrar su historial, mientras no hay UNIQUE INDEX en BD)
+// no debe bloquear ediciones futuras del contacto que sí quedó vigente para ese documento —
+// si no, apenas alguien desactive un duplicado, el que quedó activo se vuelve imposible de
+// editar porque esta misma validación chocaría contra su gemelo dormido.
 func (s *ContactService) findDuplicateContact(tx *gorm.DB, docType, docNumber, contactType string, excludeID uint) (*database.TenantContact, error) {
 	var existing database.TenantContact
-	q := tx.Where("doc_type = ? AND doc_number = ? AND type IN ?", docType, docNumber, contactTypesThatCollideWith(contactType))
+	q := tx.Where("doc_type = ? AND doc_number = ? AND type IN ? AND active = ?", docType, docNumber, contactTypesThatCollideWith(contactType), true)
 	if excludeID != 0 {
 		q = q.Where("id <> ?", excludeID)
 	}

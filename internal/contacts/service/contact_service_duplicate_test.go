@@ -106,6 +106,32 @@ func TestContactServiceUpdate_excludesSelfFromDuplicateCheck(t *testing.T) {
 	}
 }
 
+// Un duplicado desactivado (la forma de "retirarlo" sin borrar su historial, mientras no hay
+// UNIQUE INDEX en BD) no debe bloquear la edición del contacto que quedó activo para ese
+// documento — si no, apenas se desactiva un duplicado, el que sigue vigente queda imposible
+// de editar.
+func TestContactServiceUpdate_inactiveDuplicateDoesNotBlockEditingTheActiveOne(t *testing.T) {
+	db := setupContactServiceDB(t)
+	svc := NewContactService(db)
+
+	dupA, err := svc.Create(ContactInput{Type: "customer", DocType: "6", DocNumber: "20123456789", BusinessName: "Acme SAC (duplicado viejo)"})
+	if err != nil {
+		t.Fatalf("alta no debería fallar: %v", err)
+	}
+	if err := db.Model(&database.TenantContact{}).Where("id = ?", dupA.ID).Update("active", false).Error; err != nil {
+		t.Fatalf("no se pudo desactivar: %v", err)
+	}
+
+	dupB, err := svc.Create(ContactInput{Type: "customer", DocType: "6", DocNumber: "20123456789", BusinessName: "Acme SAC"})
+	if err != nil {
+		t.Fatalf("crear un contacto nuevo para un documento cuyo único titular está inactivo no debería chocar: %v", err)
+	}
+
+	if err := svc.Update(dupB.ID, ContactInput{Type: "customer", DocType: "6", DocNumber: "20123456789", BusinessName: "Acme SAC actualizado"}); err != nil {
+		t.Fatalf("editar el contacto activo no debería chocar contra su gemelo desactivado: %v", err)
+	}
+}
+
 // Update sí debe chocar si se intenta reasignar el documento de otro contacto ya existente
 // con el mismo rol.
 func TestContactServiceUpdate_rejectsDocAlreadyUsedByAnother(t *testing.T) {
