@@ -12,6 +12,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Put("/saas-settings", h.PutAPI)
 	saAPI.Put("/saas-settings/operations-key", h.SetOperationsKeyAPI)
 	saAPI.Post("/saas-settings/upload-qr", h.UploadQR)
+	saAPI.Post("/saas-settings/upload-logo", h.UploadLogo)
 	saAPI.Post("/cron/saas-jobs", h.RunJobsAPI)
 	saAPI.Post("/tenants/:id/unblock", h.UnblockTenantAPI)
 }

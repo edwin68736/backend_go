@@ -61,15 +61,30 @@ type PaymentMethodConfig struct {
 	// el QR de yape/plin vivía en dos campos sueltos (YapeQRURL/PlinQRURL) sin relación con la
 	// lista de métodos — ver backfillPaymentMethodDefaults para la migración de esos datos viejos.
 	QRURL string `json:"qr_url,omitempty"`
+	// LogoURL: logo del método (ej. el ícono de Yape/Plin), se muestra junto al QR al tenant.
+	LogoURL string `json:"logo_url,omitempty"`
+	// ExtraInfo: texto libre (multilínea) con datos que el tenant necesita para pagar con este
+	// método — ej. número de Yape/Plin y titular. Se muestra tal cual al costado del QR.
+	ExtraInfo string `json:"extra_info,omitempty"`
 }
 
 type BankAccountConfig struct {
+	// ID: identificador estable generado al crear la cuenta (el struct no tenía uno; se agrega
+	// para poder asociarle un logo propio, igual que PaymentMethodConfig.Key). Cuentas guardadas
+	// antes de este cambio no lo traen — se les asigna uno recién al guardarse de nuevo desde el
+	// panel; mientras tanto simplemente no tienen logo propio (no rompe nada, es opcional).
+	ID            string `json:"id,omitempty"`
 	Bank          string `json:"bank"`
 	AccountNumber string `json:"account_number"`
 	CCI           string `json:"cci"`
 	Holder        string `json:"holder"`
 	Currency      string `json:"currency"`
 	Enabled       bool   `json:"enabled"`
+	// LogoURL: logo del banco, se muestra junto a los datos de la cuenta al tenant.
+	LogoURL string `json:"logo_url,omitempty"`
+	// ExtraInfo: texto libre (multilínea) con instrucciones adicionales para este depósito/
+	// transferencia (ej. "Solo depósitos en agencia", horarios, etc.).
+	ExtraInfo string `json:"extra_info,omitempty"`
 }
 
 // PaymentConfigView métodos/cuentas visibles para el tenant (solo activos).
@@ -144,6 +159,20 @@ func PaymentMethodByKey(methods []PaymentMethodConfig, key string) *PaymentMetho
 	for i := range methods {
 		if strings.ToLower(strings.TrimSpace(methods[i].Key)) == key {
 			return &methods[i]
+		}
+	}
+	return nil
+}
+
+// BankAccountByID busca una cuenta bancaria por ID (case-insensitive). nil si no existe.
+func BankAccountByID(accounts []BankAccountConfig, id string) *BankAccountConfig {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return nil
+	}
+	for i := range accounts {
+		if strings.ToLower(strings.TrimSpace(accounts[i].ID)) == id {
+			return &accounts[i]
 		}
 	}
 	return nil

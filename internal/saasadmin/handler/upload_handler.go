@@ -112,3 +112,110 @@ func removeSaasQrFiles(dir, kind string) {
 		}
 	}
 }
+
+// UploadLogo POST /api/superadmin/saas-settings/upload-logo
+// (multipart: target=method|bank, kind=<key del método o id de la cuenta>, file)
+//
+// Logo de un método de pago (target=method, cualquier Kind — qr o bank_account) o de una
+// cuenta bancaria (target=bank). Reusa la MISMA carpeta storage/saas/ que los QR
+// (storagepaths.SaasDir()) a propósito — no crea una carpeta aparte; solo cambia el prefijo
+// del archivo ("logo_" en vez de "qr_") para no chocar con la limpieza de QR viejos.
+func (h *SettingsHandler) UploadLogo(c fiber.Ctx) error {
+	target := strings.ToLower(strings.TrimSpace(c.FormValue("target")))
+	kind := strings.ToLower(strings.TrimSpace(c.FormValue("kind")))
+	if kind == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "kind requerido"})
+	}
+	if target != "method" && target != "bank" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "target debe ser 'method' o 'bank'"})
+	}
+
+	cfgPre, err := saas.LoadSettings()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if target == "method" {
+		if saas.PaymentMethodByKey(cfgPre.PaymentMethods, kind) == nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "método de pago no encontrado"})
+		}
+	} else if saas.BankAccountByID(cfgPre.BankAccounts, kind) == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cuenta bancaria no encontrada"})
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil || file == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "archivo requerido"})
+	}
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true}
+	if !allowed[ext] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "formato no permitido (jpg, png, webp)"})
+	}
+	if file.Size > uploadlimits.MaxFileBytes {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "archivo máximo 10 MB"})
+	}
+
+	dir := storagepaths.SaasDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("no se pudo crear carpeta %s: %v", dir, err),
+		})
+	}
+	logoKey := target + "_" + kind
+	removeSaasLogoFiles(dir, logoKey)
+
+	// Nombre único por subida: evita caché del navegador/CDN al recargar (misma ruta = imagen vieja).
+	filename := fmt.Sprintf("logo_%s_%d%s", logoKey, time.Now().Unix(), ext)
+	savePath := filepath.Join(dir, filename)
+	if err := c.SaveFile(file, savePath); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("error guardando logo en %s: %v", savePath, err),
+		})
+	}
+
+	publicURL := "/storage/saas/" + filename
+	cfg, err := saas.LoadSettings()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if target == "method" {
+		m := saas.PaymentMethodByKey(cfg.PaymentMethods, kind)
+		if m == nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "método de pago ya no existe"})
+		}
+		m.LogoURL = publicURL
+	} else {
+		b := saas.BankAccountByID(cfg.BankAccounts, kind)
+		if b == nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "cuenta bancaria ya no existe"})
+		}
+		b.LogoURL = publicURL
+	}
+	if err := saas.SaveSettings(cfg); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"target":  target,
+		"kind":    kind,
+		"url":     publicURL,
+	})
+}
+
+// removeSaasLogoFiles elimina logos anteriores del mismo target+kind en storage/saas.
+func removeSaasLogoFiles(dir, logoKey string) {
+	prefix := "logo_" + logoKey
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, prefix) {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
