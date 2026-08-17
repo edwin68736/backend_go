@@ -121,6 +121,12 @@ func (s *PaymentService) Reject(paymentID uint, adminNotes string, reviewerID ui
 	return saas.RejectPayment(paymentID, adminNotes, reviewerID)
 }
 
+// Revert anula un pago ya aprobado y deshace la extensión de suscripción/ciclo que produjo, para
+// que el tenant pueda repetir la renovación desde cero. Ver saas.RevertApprovedPayment.
+func (s *PaymentService) Revert(paymentID uint, reason string, actorID uint) error {
+	return saas.RevertApprovedPayment(paymentID, reason, actorID)
+}
+
 // PendingCount para dashboard.
 func PendingCount() (int64, error) {
 	var n int64

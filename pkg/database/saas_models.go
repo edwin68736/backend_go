@@ -43,6 +43,10 @@ const (
 	SaasPayApproved      = "approved"
 	SaasPayRejected      = "rejected"
 	SaasPayPending       = "pending" // legacy admin-created
+	// SaasPayReversed: pago que SÍ se había aprobado pero se anuló después (ver
+	// saas.RevertApprovedPayment) — deshace la extensión de suscripción/ciclo que esa
+	// aprobación había producido. Distinto de "rejected" (nunca llegó a aprobarse).
+	SaasPayReversed = "reversed"
 )
 
 // SaasPlatformSettings configuración global del SaaS (fila única ID=1).
@@ -50,12 +54,12 @@ type SaasPlatformSettings struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	ReminderDaysJSON               string  `gorm:"type:text" json:"reminder_days_json"` // ej. [7,5,3,1]
-	GracePeriodDays                int     `gorm:"default:3" json:"grace_period_days"`
+	ReminderDaysJSON string `gorm:"type:text" json:"reminder_days_json"` // ej. [7,5,3,1]
+	GracePeriodDays  int    `gorm:"default:3" json:"grace_period_days"`
 	// PaymentWindowDays: días para pagar un cobro ya emitido. Aplica a quien está usando el
 	// servicio sin haberlo pagado todavía (alta nueva); las renovaciones se rigen por la
 	// fecha de vencimiento del período contratado.
-	PaymentWindowDays int `gorm:"default:3" json:"payment_window_days"`
+	PaymentWindowDays              int     `gorm:"default:3" json:"payment_window_days"`
 	ReconnectionFee                float64 `gorm:"default:50" json:"reconnection_fee"`
 	AutoSuspendEnabled             bool    `gorm:"default:true" json:"auto_suspend_enabled"`
 	ProvisionalReactivationEnabled bool    `gorm:"default:true" json:"provisional_reactivation_enabled"`
@@ -85,25 +89,25 @@ func (SaasPlatformSettings) TableName() string { return "saas_platform_settings"
 
 // SaasBillingCycle obligación de pago generada por período.
 type SaasBillingCycle struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	TenantID        uint      `gorm:"not null;index" json:"tenant_id"`
-	SubscriptionID  uint      `gorm:"not null;uniqueIndex:idx_billing_cycle_sub_period,priority:1" json:"subscription_id"`
-	PlanID          uint      `gorm:"not null" json:"plan_id"`
-	PeriodStart     time.Time `gorm:"not null" json:"period_start"`
-	PeriodEnd       time.Time `gorm:"not null;uniqueIndex:idx_billing_cycle_sub_period,priority:2" json:"period_end"`
-	DueDate         time.Time `gorm:"not null;index" json:"due_date"`
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	TenantID       uint      `gorm:"not null;index" json:"tenant_id"`
+	SubscriptionID uint      `gorm:"not null;uniqueIndex:idx_billing_cycle_sub_period,priority:1" json:"subscription_id"`
+	PlanID         uint      `gorm:"not null" json:"plan_id"`
+	PeriodStart    time.Time `gorm:"not null" json:"period_start"`
+	PeriodEnd      time.Time `gorm:"not null;uniqueIndex:idx_billing_cycle_sub_period,priority:2" json:"period_end"`
+	DueDate        time.Time `gorm:"not null;index" json:"due_date"`
 	// Amount es el importe A COBRAR, ya con el descuento aplicado: toda la lógica de deuda,
 	// conciliación de pagos y mora sigue mirando este campo. Los tres siguientes son la
 	// memoria de cómo se calculó, para poder mostrarlo y auditarlo.
-	Amount          float64   `gorm:"not null" json:"amount"`
-	GrossAmount     float64   `gorm:"default:0" json:"gross_amount"`   // precio del plan × meses, sin descuento
-	MonthsCovered   int       `gorm:"default:0" json:"months_covered"` // meses que cubre el cobro
-	DiscountType    string    `gorm:"size:10" json:"discount_type"`    // "" | percent | fixed
-	DiscountValue   float64   `gorm:"default:0" json:"discount_value"`
-	ReconnectionFee float64   `gorm:"default:0" json:"reconnection_fee"`
-	Currency        string    `gorm:"size:10;default:'PEN'" json:"currency"`
-	Status          string    `gorm:"size:30;index;default:'pending'" json:"status"`
-	ProvisionalUsed bool      `gorm:"default:false" json:"provisional_used"`
+	Amount          float64 `gorm:"not null" json:"amount"`
+	GrossAmount     float64 `gorm:"default:0" json:"gross_amount"`   // precio del plan × meses, sin descuento
+	MonthsCovered   int     `gorm:"default:0" json:"months_covered"` // meses que cubre el cobro
+	DiscountType    string  `gorm:"size:10" json:"discount_type"`    // "" | percent | fixed
+	DiscountValue   float64 `gorm:"default:0" json:"discount_value"`
+	ReconnectionFee float64 `gorm:"default:0" json:"reconnection_fee"`
+	Currency        string  `gorm:"size:10;default:'PEN'" json:"currency"`
+	Status          string  `gorm:"size:30;index;default:'pending'" json:"status"`
+	ProvisionalUsed bool    `gorm:"default:false" json:"provisional_used"`
 	// Cuota documentos electrónicos (snapshot del plan al crear ciclo).
 	IsUnlimitedDocuments bool       `gorm:"default:false" json:"is_unlimited_documents"`
 	DocumentsLimit       int        `gorm:"default:0" json:"documents_limit"`

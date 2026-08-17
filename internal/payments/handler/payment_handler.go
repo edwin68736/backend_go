@@ -147,6 +147,29 @@ func (h *PaymentHandler) RejectAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// PATCH /api/superadmin/payments/:id/revert — anula un pago ya aprobado y deshace la extensión
+// de suscripción/ciclo que produjo (ver saas.RevertApprovedPayment). El pago queda 'reversed',
+// no se borra.
+func (h *PaymentHandler) RevertAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	c.Bind().JSON(&body)
+	if strings.TrimSpace(body.Reason) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "indica el motivo de la anulación"})
+	}
+
+	actorID, _ := c.Locals("sa_user_id").(uint)
+	if err := h.svc.Revert(uint(id), body.Reason, actorID); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 // POST /api/superadmin/payments/:id/fiscal-document — sube la boleta/factura del pago.
 //
 // Es el comprobante que la empresa entrega AL cliente por su pago de suscripción, distinto

@@ -15,5 +15,6 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/payments", h.CreateAPI)
 	saAPI.Patch("/payments/:id/approve", h.ApproveAPI)
 	saAPI.Patch("/payments/:id/reject", h.RejectAPI)
+	saAPI.Patch("/payments/:id/revert", h.RevertAPI)
 	saAPI.Post("/payments/:id/fiscal-document", h.UploadFiscalDocAPI)
 }

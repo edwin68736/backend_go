@@ -227,8 +227,19 @@ type SaasPayment struct {
 	SubmittedBy        *uint      `json:"submitted_by,omitempty"` // tenant user id
 	ReviewedBy         *uint      `json:"reviewed_by"`
 	ReviewedAt         *time.Time `json:"reviewed_at"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	// ReversedAt/ReversedBy/ReversalReason: cuándo y quién anuló un pago YA aprobado (ver
+	// saas.RevertApprovedPayment) — deshace la aprobación (suscripción, ciclo, tenant) pero el
+	// pago no se borra: queda como 'reversed', trazable para auditoría.
+	ReversedAt     *time.Time `json:"reversed_at,omitempty"`
+	ReversedBy     *uint      `json:"reversed_by,omitempty"`
+	ReversalReason string     `gorm:"size:500" json:"reversal_reason,omitempty"`
+	// PreApprovalSnapshotJSON: foto exacta de tenant/suscripción/ciclo justo ANTES de que este
+	// pago se aprobara (ver saas.approvalSnapshot). Es la memoria que usa RevertApprovedPayment
+	// para deshacer la aprobación con precisión, en vez de reconstruir el estado previo
+	// adivinando a partir de otros ciclos — vacío en pagos aprobados antes de que existiera esto.
+	PreApprovalSnapshotJSON string    `gorm:"type:text" json:"-"`
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 // CentralAjuste — configuración general del sistema central (una sola fila: ID=1).
