@@ -574,37 +574,14 @@ type PresentationSyncResult struct {
 	InitialStock float64
 }
 
-// hasValidPresentationInput indica si la lista trae al menos una presentación con nombre — las
-// filas sin nombre se descartan igual que en syncPresentations, así que no cuentan como variante.
-func hasValidPresentationInput(list []ProductPresentationInput) bool {
-	for _, p := range list {
-		if strings.TrimSpace(p.Name) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// validateSalePriceForSave exige precio de venta > 0, salvo que el producto termine con
-// presentaciones propias: ahí el precio real vive en cada presentación (ver syncPresentations) y
-// el del producto base es solo un contenedor. Un combo reutiliza este mismo campo como su precio
-// fijo, así que también lo exige — no hay excepción por tipo de afectación IGV (bonificación
-// incluida): lo que se zeroa ahí es el total cobrado, nunca el precio de referencia.
-func validateSalePriceForSave(salePrice float64, willHaveVariants bool) error {
-	if !willHaveVariants && salePrice <= 0 {
-		return errors.New("el precio de venta debe ser mayor a S/ 0")
-	}
-	return nil
-}
-
 func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []PresentationSyncResult, error) {
 	if input.Name == "" {
 		return nil, nil, errors.New("nombre es requerido")
 	}
-	willHaveVariants := input.Presentations != nil && hasValidPresentationInput(*input.Presentations)
-	if err := validateSalePriceForSave(input.SalePrice, willHaveVariants); err != nil {
-		return nil, nil, err
-	}
+	// No se exige sale_price > 0 aquí a propósito: se permite crear un producto "base" sin
+	// precio (contenedor pendiente de presentaciones, o combo que se configura después) y
+	// terminarlo de armar en una edición posterior. Lo que nunca se permite es VENDERLO en 0 —
+	// esa barrera está en SaleService.Create (validateSaleItemPrices), no aquí.
 	// Sin código el producto no se puede facturar (SUNAT lo exige por línea) y el error
 	// aparecía recién al emitir. Se completa aquí para que nunca nazca uno inutilizable.
 	if err := s.ensureProductCode(&input); err != nil {
@@ -810,16 +787,6 @@ func normalizeProductCatalogFields(p *database.TenantProduct) {
 func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSyncResult, error) {
 	var existing database.TenantProduct
 	if err := s.db.First(&existing, id).Error; err != nil {
-		return nil, err
-	}
-
-	// input.Presentations == nil significa "no tocar presentaciones": el estado final depende de
-	// lo que ya tenía guardado, no de lo que llegó en este request.
-	willHaveVariants := existing.HasVariants
-	if input.Presentations != nil {
-		willHaveVariants = hasValidPresentationInput(*input.Presentations)
-	}
-	if err := validateSalePriceForSave(input.SalePrice, willHaveVariants); err != nil {
 		return nil, err
 	}
 
