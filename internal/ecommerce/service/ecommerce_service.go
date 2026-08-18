@@ -295,6 +295,15 @@ func (s *EcommerceService) CreateOrder(input CreateOrderInput) (*database.Tenant
 	}
 	total := 0.0
 	for _, it := range input.Items {
+		// Precio real obligatorio: si no se corrige aquí, el pedido se guarda igual y el error
+		// solo aparece tarde, al convertirlo a venta (SaleService.Create lo rechaza).
+		if !(it.UnitPrice > 0) {
+			label := strings.TrimSpace(it.Name)
+			if label == "" {
+				label = "un producto del pedido"
+			}
+			return nil, fmt.Errorf("'%s' no tiene un precio de venta válido (S/ 0.00)", label)
+		}
 		total += it.Quantity * it.UnitPrice
 	}
 	itemsJSON, err := json.Marshal(input.Items)
