@@ -509,6 +509,9 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		DiscountAmount float64                `json:"discount_amount"`
 		DiscountMode   string                 `json:"discount_mode"`
 		DiscountValue  float64                `json:"discount_value"`
+		// ComandaIDs: dividir cuenta — factura solo estas comandas (deben estar pendientes en la
+		// sesión). Vacío = cobra todo lo pendiente (comportamiento clásico).
+		ComandaIDs []uint `json:"comanda_ids"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -557,6 +560,7 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		DiscountMode:    body.DiscountMode,
 		DiscountValue:   body.DiscountValue,
 		CentralTenantID: centralTenantID,
+		ComandaIDs:      body.ComandaIDs,
 	}, taxCfg)
 	if err != nil {
 		st := fiber.StatusBadRequest

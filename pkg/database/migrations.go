@@ -1899,6 +1899,9 @@ type TenantComanda struct {
 	IgvAffectationType string     `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
 	PriceIncludesIgv   bool       `gorm:"default:true" json:"price_includes_igv"`
 	Status             string     `gorm:"size:20;default:'pendiente'" json:"status"` // pendiente, preparacion, lista, entregada
+	// BilledAt: marca "ya incluida en un cobro" independiente de Status (que es 100% de cocina).
+	// NULL = pendiente de facturar. Ver V112ComandaBilledAt para el porqué de separarlo de Status.
+	BilledAt           *time.Time `gorm:"index" json:"billed_at,omitempty"`
 	Printed            bool       `gorm:"default:false" json:"printed"`
 	PrintedAt          *time.Time `json:"printed_at"`
 	PrintedByID        *uint      `gorm:"index" json:"printed_by_id"`
