@@ -362,6 +362,59 @@ func (s *RestaurantService) UpdateSession(sessionID uint, in UpdateSessionInput)
 	return s.db.Model(&sess).Updates(updates).Error
 }
 
+// MoveSessionTable reasigna una sesión abierta a otra mesa (el cliente se cambia de mesa). No
+// toca ítems/comandas, solo table_id — la mesa origen queda libre y la destino ocupada. Requiere
+// que la destino no tenga ya otra sesión open (índice ux_open_session_per_table lo garantiza a
+// nivel de BD; aquí se valida antes para dar un error legible).
+func (s *RestaurantService) MoveSessionTable(sessionID, newTableID, branchID uint) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var sess database.TenantTableSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&sess, sessionID).Error; err != nil {
+			return errors.New("pedido no encontrado")
+		}
+		if sess.Status != sessionStatusOpen {
+			return errors.New("el pedido ya está cerrado")
+		}
+		if sess.TableID == nil {
+			return errors.New("este pedido no está asignado a una mesa")
+		}
+		oldTableID := *sess.TableID
+		if oldTableID == newTableID {
+			return errors.New("la sesión ya está en esa mesa")
+		}
+
+		var newTable database.TenantRestaurantTable
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&newTable, newTableID).Error; err != nil {
+			return errors.New("mesa destino no encontrada")
+		}
+		if !newTable.Active {
+			return errors.New("la mesa destino está inactiva")
+		}
+		if newTable.BranchID != branchID || sess.BranchID != branchID {
+			return errors.New("la mesa destino no pertenece a esta sucursal")
+		}
+
+		existing, err := s.findOpenSessionForTableLocked(tx, newTableID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			return errors.New("la mesa destino ya está ocupada")
+		}
+
+		if err := tx.Model(&sess).Update("table_id", newTableID).Error; err != nil {
+			if isDuplicateOpenSessionError(err) {
+				return errors.New("la mesa destino ya está ocupada")
+			}
+			return err
+		}
+		if err := s.syncTableStatusFromOpenSession(tx, oldTableID); err != nil {
+			return err
+		}
+		return s.syncTableStatusFromOpenSession(tx, newTableID)
+	})
+}
+
 func (s *RestaurantService) UpdateOrderStatus(sessionID uint, orderStatus string) error {
 	var sess database.TenantTableSession
 	if err := s.db.First(&sess, sessionID).Error; err != nil {

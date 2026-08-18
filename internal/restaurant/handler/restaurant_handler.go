@@ -767,6 +767,31 @@ func (h *RestaurantHandler) UpdateSession(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// PATCH /api/restaurant/sessions/:id/table — cambia la mesa de una sesión abierta.
+func (h *RestaurantHandler) MoveSessionTable(c fiber.Ctx) error {
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		TableID uint `json:"table_id"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	if body.TableID == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "mesa destino requerida"})
+	}
+	bid, err := activeBranch(c)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchRequired})
+	}
+	if err := svc(c).MoveSessionTable(id, body.TableID, bid); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 // PUT /api/restaurant/sessions/:id/order-status
 func (h *RestaurantHandler) UpdateOrderStatus(c fiber.Ctx) error {
 	id, err := parseID(c)
