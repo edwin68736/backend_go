@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -761,13 +762,57 @@ func (s *RestaurantService) cancelComandaTx(tx *gorm.DB, c *database.TenantComan
 	}).Error; err != nil {
 		return err
 	}
+
 	taxCfg := tax.LoadFromDB(tx)
-	affType, priceIncludes := comandaIgvForCalc(tx, c)
-	_, _, deduct := tax.CalcItem(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg)
-	deduct = money.RoundSunat(deduct)
-	if err := tx.Model(&database.TenantTableSession{}).Where("id = ?", c.SessionID).
-		UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", deduct)).Error; err != nil {
-		return err
+	var deduct float64
+	if c.ComboParentKey != "" {
+		// Comanda de componente de combo: su UnitPrice propio es 0 (el precio real, el fijo del
+		// combo, se sumó UNA sola vez a total_amount al agregar el pedido — ver AddOrder). Si se
+		// descontara acá con CalcItem(c.UnitPrice=0, ...) nunca se restaría nada, y ese sobrante
+		// se queda pegado en la mesa para siempre aunque se anule todo. Solo se descuenta el
+		// precio del combo cuando se anula su ÚLTIMO componente todavía activo, para no
+		// descontarlo ni de más (una vez por componente) ni de menos (nunca).
+		var stillActive int64
+		if err := tx.Model(&database.TenantComanda{}).
+			Where("combo_parent_key = ? AND id != ? AND cancelled_at IS NULL", c.ComboParentKey, c.ID).
+			Count(&stillActive).Error; err != nil {
+			return err
+		}
+		if stillActive == 0 {
+			var payload comboPayload
+			if err := json.Unmarshal([]byte(c.ComboJSON), &payload); err == nil {
+				affType := strings.TrimSpace(payload.IgvAffectationType)
+				if affType == "" {
+					affType = "10"
+				}
+				deduct = money.RoundSunat(tax.CalcItemPayableTotal(
+					payload.ComboPrice, payload.ComboQuantity, 0, affType, payload.PriceIncludesIgv, taxCfg,
+				))
+			}
+		}
+	} else {
+		affType, priceIncludes := comandaIgvForCalc(tx, c)
+		// CalcItemPayableTotal, no CalcItem: debe ser el mismo cálculo que usó AddOrder al sumar
+		// (bonificación código 15 suma 0), si no la anulación de un ítem en bonificación
+		// descontaría de más.
+		deduct = money.RoundSunat(tax.CalcItemPayableTotal(c.UnitPrice, c.Quantity, 0, affType, priceIncludes, taxCfg))
+	}
+
+	if deduct > 0 {
+		// GREATEST() no es portable (no existe en SQLite, sí en MySQL/MariaDB) — se calcula el
+		// piso en Go para no depender del motor.
+		var curSess database.TenantTableSession
+		if err := tx.Select("id", "total_amount").First(&curSess, c.SessionID).Error; err != nil {
+			return err
+		}
+		newTotal := money.RoundSunat(curSess.TotalAmount - deduct)
+		if newTotal < 0 {
+			newTotal = 0
+		}
+		if err := tx.Model(&database.TenantTableSession{}).Where("id = ?", c.SessionID).
+			UpdateColumn("total_amount", newTotal).Error; err != nil {
+			return err
+		}
 	}
 	return s.syncSessionOrderStatus(tx, c.SessionID)
 }
