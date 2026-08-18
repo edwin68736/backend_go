@@ -574,9 +574,36 @@ type PresentationSyncResult struct {
 	InitialStock float64
 }
 
+// hasValidPresentationInput indica si la lista trae al menos una presentación con nombre — las
+// filas sin nombre se descartan igual que en syncPresentations, así que no cuentan como variante.
+func hasValidPresentationInput(list []ProductPresentationInput) bool {
+	for _, p := range list {
+		if strings.TrimSpace(p.Name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSalePriceForSave exige precio de venta > 0, salvo que el producto termine con
+// presentaciones propias: ahí el precio real vive en cada presentación (ver syncPresentations) y
+// el del producto base es solo un contenedor. Un combo reutiliza este mismo campo como su precio
+// fijo, así que también lo exige — no hay excepción por tipo de afectación IGV (bonificación
+// incluida): lo que se zeroa ahí es el total cobrado, nunca el precio de referencia.
+func validateSalePriceForSave(salePrice float64, willHaveVariants bool) error {
+	if !willHaveVariants && salePrice <= 0 {
+		return errors.New("el precio de venta debe ser mayor a S/ 0")
+	}
+	return nil
+}
+
 func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []PresentationSyncResult, error) {
 	if input.Name == "" {
 		return nil, nil, errors.New("nombre es requerido")
+	}
+	willHaveVariants := input.Presentations != nil && hasValidPresentationInput(*input.Presentations)
+	if err := validateSalePriceForSave(input.SalePrice, willHaveVariants); err != nil {
+		return nil, nil, err
 	}
 	// Sin código el producto no se puede facturar (SUNAT lo exige por línea) y el error
 	// aparecía recién al emitir. Se completa aquí para que nunca nazca uno inutilizable.
@@ -786,6 +813,16 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 		return nil, err
 	}
 
+	// input.Presentations == nil significa "no tocar presentaciones": el estado final depende de
+	// lo que ya tenía guardado, no de lo que llegó en este request.
+	willHaveVariants := existing.HasVariants
+	if input.Presentations != nil {
+		willHaveVariants = hasValidPresentationInput(*input.Presentations)
+	}
+	if err := validateSalePriceForSave(input.SalePrice, willHaveVariants); err != nil {
+		return nil, err
+	}
+
 	igvType := input.IgvAffectationType
 	if igvType == "" {
 		igvType = "10"
@@ -928,6 +965,19 @@ func (s *ProductService) filterExtraModifierGroupIDs(groupIDs []uint) []uint {
 // recreaba TODO en cada guardado — inofensivo cuando la presentación solo tenía precio, pero
 // destructivo ahora que puede tener stock e historial de movimientos ligados a su ID.
 func (s *ProductService) syncPresentations(productID uint, inputs []ProductPresentationInput) ([]PresentationSyncResult, error) {
+	// Validar todas antes de escribir nada: la presentación reemplaza el precio base en el POS
+	// (ver TenantProductPresentation), así que un precio en 0 dejaría vender esa variante gratis
+	// sin ser una bonificación real.
+	for _, in := range inputs {
+		name := strings.TrimSpace(in.Name)
+		if name == "" {
+			continue
+		}
+		if in.SalePrice <= 0 {
+			return nil, fmt.Errorf("la presentación '%s' debe tener un precio de venta mayor a S/ 0", name)
+		}
+	}
+
 	var existing []database.TenantProductPresentation
 	if err := s.db.Where("product_id = ?", productID).Find(&existing).Error; err != nil {
 		return nil, err

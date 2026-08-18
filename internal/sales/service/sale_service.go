@@ -44,6 +44,26 @@ func NewSaleService(db *gorm.DB) *SaleService {
 	return &SaleService{db: db}
 }
 
+// validateSaleItemPrices exige un precio unitario real (>0) en cada línea de venta. No distingue
+// por tipo de afectación IGV: en bonificación (código 15) lo único que se fuerza a 0 es el total
+// cobrado (ver CalcItemPayableTotal), el precio de referencia siempre debe ser real.
+func validateSaleItemPrices(items []SaleItemInput) error {
+	for _, it := range items {
+		if it.UnitPrice > 0 {
+			continue
+		}
+		label := strings.TrimSpace(it.Description)
+		if label == "" {
+			label = strings.TrimSpace(it.Code)
+		}
+		if label == "" {
+			label = "un ítem de la venta"
+		}
+		return fmt.Errorf("'%s' no tiene un precio de venta válido (S/ 0.00)", label)
+	}
+	return nil
+}
+
 // productIsCatalogService: servicios no consumen inventario aunque un registro legacy tenga manage_stock en true.
 func productIsCatalogService(p *database.TenantProduct) bool {
 	if p == nil {
@@ -152,6 +172,13 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// SUNAT exige código en cada línea: sin él la venta se guardaba y reventaba recién al
 	// emitir, con el cliente esperando. Se completa antes de calcular nada.
 	fillMissingItemCodes(s.db, input.Items)
+	// Precio real obligatorio en toda línea (ya con combos resueltos): en bonificación (código
+	// IGV 15) lo que se zeroa es el total cobrado, no el precio de referencia — así que esto no
+	// bloquea bonificaciones legítimas, solo precios en 0 por error de catálogo/carrito. Es la
+	// última barrera si alguien llama a la API directo sin pasar por el frontend.
+	if err := validateSaleItemPrices(input.Items); err != nil {
+		return nil, err
+	}
 
 	series, err := docseries.ValidateForBranch(s.db, input.SeriesID, input.BranchID)
 	if err != nil {
