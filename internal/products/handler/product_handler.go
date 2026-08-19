@@ -193,7 +193,10 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		PreparationAreaID    *uint   `json:"preparation_area_id"`
 		PreparationArea      string  `json:"preparation_area"`
 		ImageURL             string  `json:"image_url"`
-		ModifierGroupIDs     []uint  `json:"modifier_group_ids"`
+		// BranchID: catálogo por sucursal para productos/servicios normales (no restaurante).
+		// nil u omitido = producto global (visible/vendible en todas las sucursales).
+		BranchID         *uint  `json:"branch_id"`
+		ModifierGroupIDs []uint `json:"modifier_group_ids"`
 		Presentations        []struct {
 			Name         string  `json:"name"`
 			SalePrice    float64 `json:"sale_price"`
@@ -288,6 +291,10 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 			return c.Status(403).JSON(fiber.Map{"error": berr.Error(), "code": branch.CodeBranchRequired})
 		}
 		input.BranchID = branchID
+	} else if body.BranchID != nil {
+		// Catálogo por sucursal: el usuario elige explícitamente a qué sucursal pertenece
+		// el producto/servicio (no necesariamente la sucursal activa).
+		input.BranchID = *body.BranchID
 	}
 	p, presResults, err := service.NewProductService(db(c)).Create(input)
 	if err != nil {
@@ -382,8 +389,11 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		PreparationAreaID    *uint   `json:"preparation_area_id"`
 		PreparationArea      string  `json:"preparation_area"`
 		// nil = conservar la imagen actual; "" = quitarla.
-		ImageURL         *string `json:"image_url"`
-		Active           *bool   `json:"active"`
+		ImageURL *string `json:"image_url"`
+		Active   *bool   `json:"active"`
+		// BranchID: catálogo por sucursal. nil = conservar la sucursal actual del producto;
+		// 0 = volverlo global (visible en todas); >0 = asignarlo a esa sucursal.
+		BranchID         *uint   `json:"branch_id"`
 		ModifierGroupIDs *[]uint `json:"modifier_group_ids"`
 		Presentations    *[]struct {
 			ID        uint    `json:"id"`
@@ -440,6 +450,12 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		PreparationAreaID:    body.PreparationAreaID,
 		PreparationArea:      body.PreparationArea,
 		ModifierGroupIDs:     body.ModifierGroupIDs,
+		// Por defecto se conserva la sucursal actual (Update() sí escribe branch_id): sin esto,
+		// un edit sin el campo reseteraría a global cualquier producto ya asignado a una sucursal.
+		BranchID: existing.BranchID,
+	}
+	if body.BranchID != nil {
+		input.BranchID = *body.BranchID
 	}
 	if body.ImageURL != nil {
 		input.ImageURL = *body.ImageURL
@@ -602,6 +618,13 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		msOnly := c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1"
 		if msOnly || params.RestaurantOnly {
 			params.BranchID = branch.ActiveBranchID(c)
+		}
+	}
+	// Catálogo distinto por sucursal (productos/servicios normales): opt-in explícito para no
+	// afectar a los demás consumidores de este mismo endpoint (transferencias, combos, etc.).
+	if c.Query("scope_branch") == "true" || c.Query("scope_branch") == "1" {
+		if bid := branch.ActiveBranchID(c); bid > 0 {
+			params.ScopeBranchID = bid
 		}
 	}
 	if perPage > 0 {

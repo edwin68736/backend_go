@@ -1,4 +1,4 @@
-package service
+﻿package service
 
 import (
 	"errors"
@@ -42,7 +42,13 @@ type ProductListParams struct {
 	MaxPrice                 *float64
 	ShowInDigitalCatalogOnly bool // solo productos publicados en el Catálogo Digital (tienda pública)
 	BranchID                 uint // >0: restaurante → tenant_products.branch_id; inventario ERP → stock en sucursal
-	Limit                    int  // 0 = sin límite (comportamiento anterior)
+	// ScopeBranchID filtra el catálogo por sucursal dueña (tenant_products.branch_id), igual que
+	// RestaurantOnly+BranchID pero para productos/servicios normales. A diferencia de ese filtro,
+	// es permisivo: incluye tanto los productos de la sucursal como los globales (branch_id = 0),
+	// para no romper el catálogo compartido existente. Independiente de BranchID a propósito, para
+	// no alterar el filtro de stock que ya usan transferencias/inventario/POS.
+	ScopeBranchID uint
+	Limit         int // 0 = sin límite (comportamiento anterior)
 	Offset                   int
 	SortBy                   string // id, code, name, category, price, stock
 	SortDir                  string // asc, desc
@@ -61,6 +67,8 @@ type BranchStockRow struct {
 type ProductListItem struct {
 	database.TenantProduct
 	CategoryName string `json:"category_name,omitempty"`
+	// BranchName: solo cuando el producto tiene sucursal asignada (BranchID > 0).
+	BranchName string `json:"branch_name,omitempty"`
 }
 
 // ProductReportItem extiende el producto con totales, stock por sucursal y series.
@@ -146,6 +154,12 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 				WHERE pr.product_id = tenant_products.id AND ps.branch_id = ?
 			))`, false, bid, bid)
 		}
+	}
+	if params.ScopeBranchID > 0 {
+		// Catalogo distinto por sucursal (productos/servicios normales, no restaurante):
+		// un producto sin sucursal asignada (branch_id = 0) es global y aparece en todas;
+		// uno con sucursal asignada solo aparece en la suya.
+		q = q.Where("("+p+"branch_id = 0 OR "+p+"branch_id = ?)", params.ScopeBranchID)
 	}
 	if params.StockLessThan != nil {
 		thr := *params.StockLessThan
@@ -266,11 +280,33 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 			catName[c.ID] = c.Name
 		}
 	}
+	branchName := map[uint]string{}
+	seenBranch := map[uint]struct{}{}
+	var branchIDs []uint
+	for _, p := range products {
+		if p.BranchID > 0 {
+			if _, ok := seenBranch[p.BranchID]; ok {
+				continue
+			}
+			seenBranch[p.BranchID] = struct{}{}
+			branchIDs = append(branchIDs, p.BranchID)
+		}
+	}
+	if len(branchIDs) > 0 {
+		var branches []database.TenantBranch
+		s.db.Where("id IN ?", branchIDs).Find(&branches)
+		for _, b := range branches {
+			branchName[b.ID] = b.Name
+		}
+	}
 	out := make([]ProductListItem, len(products))
 	for i, p := range products {
 		item := ProductListItem{TenantProduct: p}
 		if p.CategoryID != nil {
 			item.CategoryName = catName[*p.CategoryID]
+		}
+		if p.BranchID > 0 {
+			item.BranchName = branchName[p.BranchID]
 		}
 		out[i] = item
 	}
@@ -503,9 +539,11 @@ func (s *ProductService) GetByCodeInBranch(code string, branchID uint) (*databas
 	return &p, err
 }
 
-// EnsureRestaurantBranchAccess valida que un plato pertenezca a la sucursal activa.
+// EnsureRestaurantBranchAccess valida que un producto/plato pertenezca a la sucursal activa.
+// Nombre histórico (nació para la Carta de restaurante); hoy protege cualquier producto o
+// servicio con branch_id asignado (ver ProductListParams.ScopeBranchID / "catálogo por sucursal").
 func (s *ProductService) EnsureRestaurantBranchAccess(p *database.TenantProduct, branchID uint) error {
-	if p == nil || !p.IsRestaurant || branchID == 0 {
+	if p == nil || branchID == 0 {
 		return nil
 	}
 	if p.BranchID == 0 {
@@ -589,7 +627,9 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 	}
 
 	if input.Code != "" {
-		scopeBranch := input.IsRestaurant && input.BranchID > 0
+		// Antes solo aplicaba a Carta (restaurante); ahora cualquier producto/servicio con
+		// sucursal asignada (catálogo por sucursal) también permite repetir código entre sucursales.
+		scopeBranch := input.BranchID > 0
 		existing, err := s.findProductByCodeUnscoped(input.Code, input.BranchID, scopeBranch)
 		if err != nil {
 			return nil, nil, err
@@ -876,6 +916,7 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 		"has_variants":            draft.HasVariants,
 		"has_modifiers":           draft.HasModifiers,
 		"is_restaurant":           draft.IsRestaurant,
+		"branch_id":               input.BranchID,
 		"show_in_digital_catalog": draft.ShowInDigitalCatalog,
 		"preparation_area_id":     draft.PreparationAreaID,
 		"preparation_area":        draft.PreparationArea,
