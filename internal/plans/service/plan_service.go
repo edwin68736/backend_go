@@ -125,7 +125,7 @@ func (s *PlanService) Update(id uint, input CreatePlanInput) error {
 func syncBillingCyclesDocumentQuota(planID uint) {
 	var cycles []database.SaasBillingCycle
 	database.CentralDB.Where("plan_id = ? AND status IN ?", planID,
-		[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).Find(&cycles)
+		[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue, database.SaasInvoicePendingReview}).Find(&cycles)
 	for i := range cycles {
 		_ = docusage.SyncCycleDocumentQuotaFromPlan(&cycles[i], planID)
 	}

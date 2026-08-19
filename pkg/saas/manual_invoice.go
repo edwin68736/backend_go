@@ -8,6 +8,9 @@ import (
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/saas/docusage"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // RenewalInvoiceInput cobro de renovación emitido por el superadmin.
@@ -263,7 +266,9 @@ func ListInvoices(status string, limit int) ([]InvoiceListRow, error) {
 	q := database.CentralDB.Model(&database.SaasBillingCycle{})
 	switch strings.TrimSpace(status) {
 	case "", "open":
-		q = q.Where("status IN ?", []string{database.SaasInvoicePending, database.SaasInvoiceOverdue})
+		q = q.Where("status IN ?", []string{
+			database.SaasInvoicePending, database.SaasInvoiceOverdue, database.SaasInvoicePendingReview,
+		})
 	case "all":
 		// sin filtro
 	default:
@@ -314,31 +319,53 @@ func ListTenantInvoices(tenantID uint, limit int) ([]database.SaasBillingCycle, 
 	return rows, err
 }
 
-// CancelInvoice anula un cobro pendiente. Un cobro ya pagado no se toca.
-func CancelInvoice(cycleID uint) error {
-	var cycle database.SaasBillingCycle
-	if err := database.CentralDB.First(&cycle, cycleID).Error; err != nil {
-		return errors.New("cobro no encontrado")
-	}
-	if cycle.Status == database.SaasInvoicePaid {
-		return errors.New("el cobro ya fue pagado y no puede anularse")
-	}
-	if cycle.Status == database.SaasInvoiceRejected {
-		return errors.New("el cobro ya está anulado")
-	}
+// CancelInvoice anula un cobro no pagado. Un cobro ya pagado no se toca.
+//
+// Si tenía un comprobante esperando revisión (pending/pending_review), se rechaza en cascada
+// como parte de la misma anulación — no tiene sentido dejar al pago "en revisión" para siempre
+// sobre un cobro que el admin decidió anular. Un pago YA aprobado sí bloquea: eso significaría
+// que el ciclo debería estar 'paid', no anulable por esta vía (revisar la inconsistencia a mano).
+func CancelInvoice(cycleID uint, reason string, actorID uint) error {
+	return database.CentralDB.Transaction(func(tx *gorm.DB) error {
+		var cycle database.SaasBillingCycle
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cycle, cycleID).Error; err != nil {
+			return errors.New("cobro no encontrado")
+		}
+		if cycle.Status == database.SaasInvoicePaid {
+			return errors.New("el cobro ya fue pagado y no puede anularse")
+		}
+		if cycle.Status == database.SaasInvoiceRejected {
+			return errors.New("el cobro ya está anulado")
+		}
 
-	// Un pago vivo apunta a este cobro: anularlo dejaría el comprobante del cliente sin
-	// deuda a la que aplicarse. Primero hay que resolver el pago (aprobarlo o rechazarlo).
-	var attached int64
-	database.CentralDB.Model(&database.SaasPayment{}).
-		Where("billing_cycle_id = ? AND status IN ?", cycleID,
-			[]string{database.SaasPayPending, database.SaasPayPendingReview, database.SaasPayApproved}).
-		Count(&attached)
-	if attached > 0 {
-		return errors.New("este cobro tiene un pago asociado; revísalo o recházalo antes de anular el cobro")
-	}
+		var approvedCount int64
+		tx.Model(&database.SaasPayment{}).
+			Where("billing_cycle_id = ? AND status = ?", cycleID, database.SaasPayApproved).
+			Count(&approvedCount)
+		if approvedCount > 0 {
+			return errors.New("este cobro tiene un pago aprobado asociado; revísalo antes de anular el cobro")
+		}
 
-	return database.CentralDB.Model(&cycle).Update("status", database.SaasInvoiceRejected).Error
+		note := "Rechazado automáticamente: el cobro fue anulado por un administrador"
+		if strings.TrimSpace(reason) != "" {
+			note = fmt.Sprintf("%s (%s)", note, strings.TrimSpace(reason))
+		}
+		aid := actorID
+		if err := CascadeRejectPendingPaymentsForCycleTx(tx, cycleID, "admin", &aid, note); err != nil {
+			return err
+		}
+
+		if err := tx.Model(&cycle).Update("status", database.SaasInvoiceRejected).Error; err != nil {
+			return err
+		}
+		sid := cycle.SubscriptionID
+		invoiceNote := "cobro anulado manualmente"
+		if strings.TrimSpace(reason) != "" {
+			invoiceNote = fmt.Sprintf("%s: %s", invoiceNote, strings.TrimSpace(reason))
+		}
+		LogEventTx(tx, cycle.TenantID, &sid, EventInvoiceSuperseded, "admin", &aid, invoiceNote, "")
+		return nil
+	})
 }
 
 // InvoiceCancelWarning advertencia previa a anular (no impide hacerlo, lo explica).
@@ -366,7 +393,7 @@ func InvoiceCancelInfo(cycle *database.SaasBillingCycle) InvoiceCancelWarning {
 	var open int64
 	database.CentralDB.Model(&database.SaasBillingCycle{}).
 		Where("tenant_id = ? AND status IN ?", cycle.TenantID,
-			[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).
+			[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue, database.SaasInvoicePendingReview}).
 		Count(&open)
 	out.IsOnlyOpenInvoice = open <= 1
 	return out

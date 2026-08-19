@@ -31,9 +31,17 @@ const (
 
 // Estados de ciclo de cobro / factura SaaS.
 const (
-	SaasInvoicePending  = "pending"
-	SaasInvoicePaid     = "paid"
-	SaasInvoiceOverdue  = "overdue"
+	SaasInvoicePending = "pending"
+	SaasInvoicePaid    = "paid"
+	SaasInvoiceOverdue = "overdue"
+	// SaasInvoicePendingReview: el tenant ya subió un comprobante para este ciclo y está
+	// esperando que un admin lo apruebe o rechace. Mientras esté en este estado el ciclo NO
+	// debe ser tocado por el cron de vencidos (RunLimaDailyEvaluation solo barre 'pending') ni
+	// mostrar el botón de pago en los paneles tenant — ver saas.SubmitPayment/RejectPayment.
+	SaasInvoicePendingReview = "pending_review"
+	// SaasInvoiceRejected: NO es "pago rechazado" — es la cancelación administrativa manual de
+	// una factura completa (ver manual_invoice.go). Un pago individual rechazado no usa este
+	// valor; el ciclo vuelve a 'pending'/'overdue' (ver RejectPayment).
 	SaasInvoiceRejected = "rejected"
 )
 

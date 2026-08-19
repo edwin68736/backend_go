@@ -254,11 +254,26 @@ func (s *SubscriptionService) Cancel(id uint, reason string) error {
 		}).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&database.SaasBillingCycle{}).
-			Where("subscription_id = ? AND status IN ?", sub.ID,
-				[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).
-			Update("status", database.SaasInvoiceRejected).Error; err != nil {
+		var cycles []database.SaasBillingCycle
+		if err := tx.Where("subscription_id = ? AND status IN ?", sub.ID,
+			[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue, database.SaasInvoicePendingReview}).
+			Find(&cycles).Error; err != nil {
 			return err
+		}
+		for i := range cycles {
+			c := &cycles[i]
+			// Igual que al anular un cobro individual: un comprobante en revisión sobre un ciclo
+			// que la cancelación de la suscripción va a anular se rechaza en cascada, no se deja
+			// huérfano "en revisión" para siempre.
+			if c.Status == database.SaasInvoicePendingReview {
+				if err := saas.CascadeRejectPendingPaymentsForCycleTx(tx, c.ID, "admin", nil,
+					fmt.Sprintf("Rechazado automáticamente: la suscripción #%d fue anulada (%s)", sub.ID, reason)); err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(c).Update("status", database.SaasInvoiceRejected).Error; err != nil {
+				return err
+			}
 		}
 		return tx.Model(&database.Tenant{}).Where("id = ?", sub.TenantID).
 			Update("status", database.TenantStatusSuspended).Error
@@ -345,6 +360,18 @@ func (s *SubscriptionService) AdjustValidity(id, saUserID uint, clientIP string,
 		return nil, errors.New("tenant no encontrado")
 	}
 
+	// Bloquear si hay un comprobante en revisión: mover la vigencia ahora dejaría el ciclo que
+	// el admin está a punto de aprobar/rechazar desalineado con el nuevo vencimiento (o, peor,
+	// realignCurrentBillingCycle lo saltearía en silencio por no calzar con pending/overdue).
+	// Resolver primero el pago; ajustar vigencia después.
+	var reviewCount int64
+	database.CentralDB.Model(&database.SaasBillingCycle{}).
+		Where("subscription_id = ? AND status = ?", sub.ID, database.SaasInvoicePendingReview).
+		Count(&reviewCount)
+	if reviewCount > 0 {
+		return nil, errors.New("hay un comprobante en revisión para esta suscripción; apruébalo o recházalo antes de ajustar la vigencia")
+	}
+
 	manuallySuspended := sub.Status == database.SaasSubSuspended
 	oldEndStr := sub.EndDate.In(saas.LimaLocation()).Format("2006-01-02")
 	newEndStr := newEnd.In(saas.LimaLocation()).Format("2006-01-02")
@@ -428,7 +455,9 @@ func realignCurrentBillingCycle(tx *gorm.DB, subID uint, oldEnd, newEnd time.Tim
 	}
 
 	// El ciclo del período vigente es el que terminaba justo en el vencimiento anterior. Si las
-	// fechas ya venían desalineadas, se usa el impago más próximo a vencer.
+	// fechas ya venían desalineadas, se usa el impago más próximo a vencer. No hay que
+	// contemplar pending_review acá: AdjustValidity ya bloqueó antes de llegar a esta función si
+	// la suscripción tiene algún ciclo en revisión (ver el check al inicio de AdjustValidity).
 	var target *database.SaasBillingCycle
 	for i := range cycles {
 		c := &cycles[i]

@@ -59,6 +59,16 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 			if c.TenantID != in.TenantID {
 				return errors.New("ciclo no pertenece al tenant")
 			}
+			// Estado del ciclo como fuente de verdad (ver saas_models.go: SaasInvoicePendingReview):
+			// no se puede subir un comprobante para un ciclo ya pagado, ni para uno anulado
+			// administrativamente. Un ciclo ya en pending_review SÍ se acepta (reenvío): el
+			// comprobante anterior queda superado más abajo (supersedePriorPendingPayments).
+			switch c.Status {
+			case database.SaasInvoicePaid:
+				return errors.New("este período ya fue pagado")
+			case database.SaasInvoiceRejected:
+				return errors.New("esta factura fue anulada; contacta a soporte")
+			}
 			cycle = &c
 		}
 
@@ -122,6 +132,17 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 			return err
 		}
 		payment = p
+
+		// El ciclo pasa a pending_review en cuanto hay un comprobante esperando aprobación: es lo
+		// que hace que /subscription/summary deje de mostrar "Pagar ahora" mientras se revisa (ver
+		// RejectPayment para el camino de vuelta) y que el cron de vencidos (que solo barre
+		// 'pending') deje de tocarlo. Idempotente si ya estaba en pending_review (reenvío).
+		if cycle != nil && cycle.Status != database.SaasInvoicePendingReview {
+			if err := tx.Model(&database.SaasBillingCycle{}).Where("id = ?", cycle.ID).
+				Update("status", database.SaasInvoicePendingReview).Error; err != nil {
+				return err
+			}
+		}
 
 		// Cupo para otorgar provisional: por ciclo (provisional_used, 1 vez por ciclo) o, sin
 		// ciclo (solicitud de plan nueva, ver renewal_request.go: SubmitRenewalRequest), por que
@@ -665,6 +686,17 @@ func RejectPayment(paymentID uint, adminNotes string, reviewerID uint) error {
 			return nil
 		}
 
+		// El ciclo vuelve de pending_review a un estado real (pending si su plazo sigue vigente,
+		// overdue si ya se agotó) — es lo que hace reaparecer el botón "Pagar ahora" en el panel
+		// del tenant SOLO al rechazar, y no antes. Mismo criterio de plazo que usa el cron diario
+		// (RunLimaDailyEvaluation), para no reabrir un ciclo como "pending" un día que el cron ya
+		// lo habría marcado "overdue".
+		if payment.BillingCycleID != nil {
+			if err := revertCycleAfterRejectionTx(tx, *payment.BillingCycleID, now); err != nil {
+				return err
+			}
+		}
+
 		var subID *uint
 		if payment.SubscriptionID != nil {
 			subID = payment.SubscriptionID
@@ -714,6 +746,29 @@ func isDuplicateOfPaidCycle(tx *gorm.DB, billingCycleID *uint, paymentID uint) b
 		Where("billing_cycle_id = ? AND status = ? AND id <> ?", *billingCycleID, database.SaasPayApproved, paymentID).
 		Count(&approvedCount)
 	return approvedCount > 0
+}
+
+// revertCycleAfterRejectionTx saca un ciclo de pending_review al rechazar el pago que lo había
+// puesto ahí, devolviéndolo a 'pending' o 'overdue' según si su plazo de pago (mismo cálculo que
+// el cron RunLimaDailyEvaluation) ya se agotó o no. No hace nada si el ciclo no existe o ya no
+// está en pending_review (p. ej. lo superó un pago posterior — ver supersedePriorPendingPayments).
+func revertCycleAfterRejectionTx(tx *gorm.DB, cycleID uint, now time.Time) error {
+	var cycle database.SaasBillingCycle
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cycle, cycleID).Error; err != nil {
+		return nil // ciclo no encontrado: nada que revertir
+	}
+	if cycle.Status != database.SaasInvoicePendingReview {
+		return nil
+	}
+	cfg, _ := LoadSettings()
+	payWindow := EffectivePaymentWindowDays(cfg)
+	overdueLimit := CalendarDateLima(now).AddDate(0, 0, -payWindow)
+	newStatus := database.SaasInvoicePending
+	if cycle.DueDate.Before(overdueLimit) {
+		newStatus = database.SaasInvoiceOverdue
+	}
+	return tx.Model(&database.SaasBillingCycle{}).Where("id = ?", cycleID).
+		Update("status", newStatus).Error
 }
 
 // startDate: piso opcional para el inicio de una suscripción SIN nada previo que continuar (alta
@@ -824,7 +879,7 @@ func voidOverlappingUnpaidCyclesTx(
 	var cycles []database.SaasBillingCycle
 	if err := tx.Where("tenant_id = ? AND subscription_id <> ? AND status IN ?",
 		tenantID, keepSubscriptionID,
-		[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue}).
+		[]string{database.SaasInvoicePending, database.SaasInvoiceOverdue, database.SaasInvoicePendingReview}).
 		Find(&cycles).Error; err != nil {
 		return err
 	}
@@ -833,6 +888,15 @@ func voidOverlappingUnpaidCyclesTx(
 		// Intervalos [inicio, fin) que se cruzan en al menos un día.
 		if !c.PeriodStart.Before(newEnd) || !newStart.Before(c.PeriodEnd) {
 			continue
+		}
+		// Si había un comprobante en revisión sobre este ciclo, se rechaza en cascada: el cobro
+		// que cubría ya no existe (lo reemplazó la nueva suscripción), así que dejar el pago
+		// "en revisión" para siempre sería mostrarle al tenant una espera que nunca se resuelve.
+		if c.Status == database.SaasInvoicePendingReview {
+			if err := CascadeRejectPendingPaymentsForCycleTx(tx, c.ID, "system", nil,
+				"Rechazado automáticamente: el período quedó cubierto por una nueva suscripción"); err != nil {
+				return err
+			}
 		}
 		if err := tx.Model(c).Update("status", database.SaasInvoiceRejected).Error; err != nil {
 			return err
@@ -847,6 +911,31 @@ func voidOverlappingUnpaidCyclesTx(
 				"period_end":        CalendarDateLima(c.PeriodEnd).Format("2006-01-02"),
 				"superseded_by_sub": keepSubscriptionID,
 			}))
+	}
+	return nil
+}
+
+// CascadeRejectPendingPaymentsForCycleTx rechaza automáticamente cualquier pago pending/
+// pending_review que haya quedado ligado a un ciclo que se está anulando por una causa
+// administrativa o del sistema (el cobro que cubrían deja de existir) — no por una decisión
+// sobre el comprobante en sí. Evita que el pago quede huérfano "en revisión" para siempre.
+// Exportada: la usa tanto pkg/saas (voidOverlappingUnpaidCyclesTx, CancelInvoice) como
+// internal/subscriptions/service (Cancel de suscripción completa).
+func CascadeRejectPendingPaymentsForCycleTx(tx *gorm.DB, cycleID uint, actorType string, actorID *uint, reason string) error {
+	var pending []database.SaasPayment
+	if err := tx.Where("billing_cycle_id = ? AND status IN ?", cycleID,
+		[]string{database.SaasPayPending, database.SaasPayPendingReview}).Find(&pending).Error; err != nil {
+		return err
+	}
+	now := NowLima()
+	for _, p := range pending {
+		if err := tx.Model(&database.SaasPayment{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
+			"status": database.SaasPayRejected, "admin_notes": reason,
+			"reviewed_by": actorID, "reviewed_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		LogEventTx(tx, p.TenantID, p.SubscriptionID, EventPaymentRejected, actorType, actorID, reason, "")
 	}
 	return nil
 }

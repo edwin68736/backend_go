@@ -96,7 +96,8 @@ func (h *SubscriptionHandler) ListInvoicesAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": out})
 }
 
-// PATCH /api/superadmin/billing-cycles/:id/cancel — anula un cobro no pagado.
+// PATCH /api/superadmin/billing-cycles/:id/cancel — anula un cobro no pagado. Si tenía un
+// comprobante en revisión, se rechaza en cascada como parte de la misma anulación.
 func (h *SubscriptionHandler) CancelInvoiceAPI(c fiber.Ctx) error {
 	if err := requireSuperAdminRole(c); err != nil {
 		return err
@@ -105,7 +106,12 @@ func (h *SubscriptionHandler) CancelInvoiceAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	if err := saas.CancelInvoice(uint(id)); err != nil {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	c.Bind().JSON(&body)
+	saUserID, _ := c.Locals("sa_user_id").(uint)
+	if err := saas.CancelInvoice(uint(id), body.Reason, saUserID); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
