@@ -90,6 +90,16 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 			if err := supersedePriorPendingPayments(tx, cycle.ID, NowLima()); err != nil {
 				return err
 			}
+		} else {
+			// Mismo problema, camino sin ciclo: una solicitud de renovación (SubmitRenewalRequest
+			// — "elegir plan"/renovar sin factura previa) no tiene billing_cycle_id con el que
+			// agrupar, así que supersedePriorPendingPayments no la alcanza. Sin esto, cada
+			// solicitud nueva se apilaba sin cerrar la anterior y has_pending_payment_review
+			// (state.go, cuenta TODO saas_payments.status=pending_review del tenant) se quedaba
+			// pegado en true para siempre, aunque el tenant ya hubiera vuelto a enviar otra.
+			if err := supersedePriorPendingRenewalRequestsTx(tx, in.TenantID, NowLima()); err != nil {
+				return err
+			}
 		}
 
 		status := database.SaasPayPendingReview
@@ -341,6 +351,17 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 		}
 		if err != nil {
 			return err
+		}
+		// El pago que llegó sin billing_cycle_id (solicitud de renovación, ver
+		// SubmitRenewalRequest) queda enlazado al ciclo que terminó pagando — sin esto el pago
+		// aprobado se quedaba con billing_cycle_id NULL para siempre aunque el ciclo sí supiera
+		// qué pago lo saldó (cycle.payment_id): el enlace solo iba en un sentido. Rompía, entre
+		// otras cosas, el comprobante del tenant (InvoiceView.ReceiptURL) para ese período.
+		if cycle != nil && payment.BillingCycleID == nil {
+			if err := tx.Model(&payment).Update("billing_cycle_id", cycle.ID).Error; err != nil {
+				return err
+			}
+			payment.BillingCycleID = &cycle.ID
 		}
 
 		// Completa el snapshot con el resultado de la extensión: si abrió una suscripción nueva
@@ -1106,6 +1127,30 @@ func supersedePriorPendingPayments(tx *gorm.DB, cycleID uint, now time.Time) err
 	}
 	for _, p := range prior {
 		note := "Superado automáticamente: se subió un comprobante más reciente para este ciclo"
+		if err := tx.Model(&database.SaasPayment{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
+			"status":      database.SaasPayRejected,
+			"admin_notes": note,
+			"reviewed_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		LogEventTx(tx, p.TenantID, p.SubscriptionID, EventPaymentRejected, "system", nil, note, "")
+	}
+	return nil
+}
+
+// supersedePriorPendingRenewalRequestsTx es supersedePriorPendingPayments para el camino SIN
+// ciclo (SubmitRenewalRequest — "elegir plan"/renovar sin factura previa emitida): agrupa por
+// tenant_id en vez de billing_cycle_id, ya que estos pagos nunca tienen uno.
+func supersedePriorPendingRenewalRequestsTx(tx *gorm.DB, tenantID uint, now time.Time) error {
+	var prior []database.SaasPayment
+	if err := tx.Where("tenant_id = ? AND billing_cycle_id IS NULL AND status IN ?",
+		tenantID, []string{database.SaasPayPendingReview, database.SaasPayPending}).
+		Find(&prior).Error; err != nil {
+		return err
+	}
+	for _, p := range prior {
+		note := "Superado automáticamente: se envió una solicitud de renovación más reciente"
 		if err := tx.Model(&database.SaasPayment{}).Where("id = ?", p.ID).Updates(map[string]interface{}{
 			"status":      database.SaasPayRejected,
 			"admin_notes": note,
