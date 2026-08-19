@@ -43,6 +43,11 @@ type InvoiceView struct {
 	// período puede haber tenido más de un intento de pago (rechazados, anulados) antes del que
 	// finalmente lo saldó.
 	FiscalDocURL string `json:"fiscal_doc_url,omitempty"`
+	// ReceiptURL comprobante que el TENANT subió (voucher/captura de yape, transferencia, etc.)
+	// del pago más reciente ligado a este ciclo — sea cual sea su estado (pending_review,
+	// approved, rejected). Distinto de FiscalDocURL: ese es la boleta/factura que el admin le
+	// emite AL tenant; este es lo que el tenant mismo adjuntó como prueba de pago.
+	ReceiptURL string `json:"receipt_url,omitempty"`
 }
 
 type PaymentView struct {
@@ -197,6 +202,29 @@ func ListInvoicesView(tenantID uint) []InvoiceView {
 		}
 	}
 
+	// Comprobante que el TENANT subió, por ciclo: el del intento MÁS RECIENTE, sea cual sea su
+	// estado (en revisión, aprobado, rechazado) — a diferencia del bloque de arriba (boleta/
+	// factura, que solo existe para el que finalmente pagó). Una sola consulta para todos los
+	// ciclos de esta página, quedándose con el primero (más reciente) por billing_cycle_id.
+	cycleIDs := make([]uint, 0, len(cycles))
+	for _, c := range cycles {
+		cycleIDs = append(cycleIDs, c.ID)
+	}
+	receiptByCycle := map[uint]string{}
+	if len(cycleIDs) > 0 {
+		var payments []database.SaasPayment
+		database.CentralDB.Where("billing_cycle_id IN ?", cycleIDs).
+			Order("created_at desc").Find(&payments)
+		for _, p := range payments {
+			if p.BillingCycleID == nil || p.ReceiptURL == "" {
+				continue
+			}
+			if _, seen := receiptByCycle[*p.BillingCycleID]; !seen {
+				receiptByCycle[*p.BillingCycleID] = p.ReceiptURL
+			}
+		}
+	}
+
 	out := make([]InvoiceView, 0, len(cycles))
 	for _, c := range cycles {
 		v := InvoiceView{
@@ -205,6 +233,7 @@ func ListInvoicesView(tenantID uint) []InvoiceView {
 			DueDate:     c.DueDate.In(lima()).Format(timeRFC3339Lima),
 			PeriodStart: c.PeriodStart.In(lima()).Format(timeRFC3339Lima),
 			PeriodEnd:   c.PeriodEnd.In(lima()).Format(timeRFC3339Lima),
+			ReceiptURL:  receiptByCycle[c.ID],
 		}
 		if c.PaymentID != nil {
 			v.FiscalDocURL = fiscalDocByPayment[*c.PaymentID]
