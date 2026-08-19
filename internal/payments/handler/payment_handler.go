@@ -10,6 +10,7 @@ import (
 
 	"tukifac/internal/payments/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
@@ -26,13 +27,30 @@ func NewPaymentHandler() *PaymentHandler {
 	return &PaymentHandler{svc: service.NewPaymentService()}
 }
 
-// GET /api/superadmin/payments?status=
+// GET /api/superadmin/payments?status=&q=&date_from=&date_to=&page=&per_page=
 func (h *PaymentHandler) ListAPI(c fiber.Ctx) error {
-	payments, err := h.svc.List(c.Query("status"))
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	perPage, _ := strconv.Atoi(c.Query("per_page", "25"))
+	page, perPage = pagination.Normalize(page, perPage)
+
+	payments, total, err := h.svc.List(service.PaymentListParams{
+		Status:   c.Query("status"),
+		Query:    c.Query("q"),
+		DateFrom: c.Query("date_from"),
+		DateTo:   c.Query("date_to"),
+		Page:     page,
+		PerPage:  perPage,
+	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"data": payments})
+	return c.JSON(fiber.Map{
+		"data":        payments,
+		"page":        page,
+		"per_page":    perPage,
+		"total":       total,
+		"total_pages": pagination.TotalPages(total, perPage),
+	})
 }
 
 // GET /api/superadmin/payments/:id

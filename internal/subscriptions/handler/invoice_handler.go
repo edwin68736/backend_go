@@ -3,6 +3,7 @@ package handler
 import (
 	"strconv"
 
+	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
@@ -117,12 +118,23 @@ func (h *SubscriptionHandler) CancelInvoiceAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
-// GET /api/superadmin/billing-cycles?status=&limit= — cobros de todas las empresas.
+// GET /api/superadmin/billing-cycles?status=&q=&date_from=&date_to=&page=&per_page= — cobros
+// de todas las empresas.
 //
 // Sin status trae solo los que siguen por cobrar, que es lo que hay que revisar.
 func (h *SubscriptionHandler) ListAllInvoicesAPI(c fiber.Ctx) error {
-	limit, _ := strconv.Atoi(c.Query("limit"))
-	rows, err := saas.ListInvoices(c.Query("status"), limit)
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	perPage, _ := strconv.Atoi(c.Query("per_page", "25"))
+	page, perPage = pagination.Normalize(page, perPage)
+
+	rows, total, err := saas.ListInvoices(saas.ListInvoicesParams{
+		Status:   c.Query("status"),
+		Query:    c.Query("q"),
+		DateFrom: c.Query("date_from"),
+		DateTo:   c.Query("date_to"),
+		Page:     page,
+		PerPage:  perPage,
+	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -130,8 +142,15 @@ func (h *SubscriptionHandler) ListAllInvoicesAPI(c fiber.Ctx) error {
 	for _, r := range rows {
 		m := invoiceRow(r.InvoiceRow)
 		m["tenant_name"] = r.TenantName
+		m["tenant_ruc"] = r.TenantRUC
 		m["covers_active_period"] = r.CoversActivePeriod
 		out = append(out, m)
 	}
-	return c.JSON(fiber.Map{"data": out})
+	return c.JSON(fiber.Map{
+		"data":        out,
+		"page":        page,
+		"per_page":    perPage,
+		"total":       total,
+		"total_pages": pagination.TotalPages(total, perPage),
+	})
 }

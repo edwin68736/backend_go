@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas/docusage"
 
 	"gorm.io/gorm"
@@ -250,34 +251,65 @@ func ToInvoiceRow(c *database.SaasBillingCycle) InvoiceRow {
 type InvoiceListRow struct {
 	InvoiceRow
 	TenantName string
+	TenantRUC  string
 	// CoversActivePeriod el período ya empezó y todavía no termina: anular este cobro deja al
 	// cliente con el servicio corriendo y sin deuda. La UI lo advierte antes de confirmar.
 	CoversActivePeriod bool
 }
 
+// ListInvoicesParams filtros de /superadmin/billing-cycles — mismo patrón que
+// PaymentListParams: búsqueda por empresa/RUC (join a tenants), rango de fechas sobre due_date
+// (cuándo vence el cobro, la fecha que ya se muestra en la tabla) y paginación.
+type ListInvoicesParams struct {
+	Status   string
+	Query    string
+	DateFrom string // AAAA-MM-DD, inclusive
+	DateTo   string // AAAA-MM-DD, inclusive
+	Page     int
+	PerPage  int
+}
+
 // ListInvoices cobros de todas las empresas, del vencimiento más próximo al más lejano.
 //
-// status vacío = solo los que siguen por cobrar (pendientes y vencidos), que es lo que el
-// administrador necesita revisar; "all" trae todo el historial.
-func ListInvoices(status string, limit int) ([]InvoiceListRow, error) {
-	if limit <= 0 {
-		limit = 100
-	}
+// status vacío = solo los que siguen por cobrar (pendientes, vencidos y en revisión), que es
+// lo que el administrador necesita revisar; "all" trae todo el historial.
+func ListInvoices(params ListInvoicesParams) ([]InvoiceListRow, int64, error) {
+	page, perPage := pagination.Normalize(params.Page, params.PerPage)
 	q := database.CentralDB.Model(&database.SaasBillingCycle{})
-	switch strings.TrimSpace(status) {
+	switch strings.TrimSpace(params.Status) {
 	case "", "open":
-		q = q.Where("status IN ?", []string{
+		// Columna calificada: al unirse con tenants (búsqueda por empresa/RUC) "status" queda
+		// ambiguo, porque tenants también tiene su propia columna status.
+		q = q.Where("saas_billing_cycles.status IN ?", []string{
 			database.SaasInvoicePending, database.SaasInvoiceOverdue, database.SaasInvoicePendingReview,
 		})
 	case "all":
 		// sin filtro
 	default:
-		q = q.Where("status = ?", status)
+		q = q.Where("saas_billing_cycles.status = ?", params.Status)
+	}
+	if strings.TrimSpace(params.Query) != "" {
+		like := "%" + strings.TrimSpace(params.Query) + "%"
+		q = q.Joins("JOIN tenants ON tenants.id = saas_billing_cycles.tenant_id").
+			Where("tenants.name LIKE ? OR tenants.ruc LIKE ? OR tenants.slug LIKE ?", like, like, like)
+	}
+	if from, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(params.DateFrom), LimaLocation()); err == nil {
+		q = q.Where("saas_billing_cycles.due_date >= ?", from)
+	}
+	if to, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(params.DateTo), LimaLocation()); err == nil {
+		q = q.Where("saas_billing_cycles.due_date <= ?", EndOfDayLima(to))
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
 	}
 
 	var rows []database.SaasBillingCycle
-	if err := q.Order("due_date asc").Limit(limit).Find(&rows).Error; err != nil {
-		return nil, err
+	if err := q.Order("saas_billing_cycles.due_date asc").
+		Limit(perPage).Offset(pagination.Offset(page, perPage)).
+		Find(&rows).Error; err != nil {
+		return nil, 0, err
 	}
 
 	// Nombres en una sola consulta: el listado puede traer muchas empresas distintas.
@@ -285,12 +317,12 @@ func ListInvoices(status string, limit int) ([]InvoiceListRow, error) {
 	for i := range rows {
 		ids = append(ids, rows[i].TenantID)
 	}
-	names := make(map[uint]string, len(ids))
+	tenantsByID := make(map[uint]database.Tenant, len(ids))
 	if len(ids) > 0 {
 		var tenants []database.Tenant
-		database.CentralDB.Select("id", "name").Where("id IN ?", ids).Find(&tenants)
+		database.CentralDB.Select("id", "name", "ruc").Where("id IN ?", ids).Find(&tenants)
 		for _, t := range tenants {
-			names[t.ID] = t.Name
+			tenantsByID[t.ID] = t
 		}
 	}
 
@@ -298,14 +330,16 @@ func ListInvoices(status string, limit int) ([]InvoiceListRow, error) {
 	out := make([]InvoiceListRow, 0, len(rows))
 	for i := range rows {
 		c := &rows[i]
+		t := tenantsByID[c.TenantID]
 		out = append(out, InvoiceListRow{
 			InvoiceRow: ToInvoiceRow(c),
-			TenantName: names[c.TenantID],
+			TenantName: t.Name,
+			TenantRUC:  t.RUC,
 			CoversActivePeriod: !CalendarDateLima(c.PeriodEnd).Before(now) &&
 				!CalendarDateLima(c.PeriodStart).After(now),
 		})
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // ListTenantInvoices cobros del tenant, del más reciente al más antiguo.
