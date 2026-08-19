@@ -667,10 +667,15 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 		return nil, nil, err
 	}
 	p.PriceIncludesIgv = input.PriceIncludesIgv
-	if err := gormutil.PersistBoolWithDefault(s.db, p, "manage_stock", input.ManageStock); err != nil {
+	// p.ManageStock (no input.ManageStock): para un servicio, normalizeProductServiceFields ya
+	// lo forzó a false — reforzar con el input crudo aquí lo desharía en el struct que se
+	// devuelve (y lo serializa el handler), aunque la fila en BD sí hubiera quedado bien (este
+	// helper no escribe nada cuando value=true, así que dependía en silencio de que el INSERT
+	// de arriba ya lo hubiera hecho bien). Con p.ManageStock queda correcto en los dos lados
+	// siempre, no solo cuando el caller no manda manage_stock=true para un servicio.
+	if err := gormutil.PersistBoolWithDefault(s.db, p, "manage_stock", p.ManageStock); err != nil {
 		return nil, nil, err
 	}
-	p.ManageStock = input.ManageStock
 
 	if input.ModifierGroupIDs != nil {
 		s.syncModifierGroups(p.ID, *input.ModifierGroupIDs)
@@ -682,6 +687,11 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 			return nil, nil, err
 		}
 		presResults = res
+		// syncPresentations ya escribió has_variants en la fila (según haya o no presentaciones)
+		// con un UPDATE aparte — reflejarlo también en el struct que se devuelve, para que la
+		// respuesta del alta no diga has_variants=false justo después de crear un producto o
+		// servicio CON presentaciones.
+		p.HasVariants = len(presResults) > 0
 	}
 	if input.ComboGroups != nil {
 		if err := s.syncComboGroups(p, *input.ComboGroups); err != nil {
@@ -750,6 +760,12 @@ func (s *ProductService) reactivateProductFromInput(id uint, input ProductInput)
 }
 
 // normalizeProductServiceFields fuerza reglas SUNAT/ERP para filas type=service.
+//
+// HasVariants NO se fuerza a false: un servicio puede tener presentaciones (ej. "Corte simple"
+// / "Corte + barba", "Consulta 30min" / "Consulta 1h"), igual que un producto — syncPresentations
+// ya recalcula has_variants según haya o no filas en tenant_product_presentations, sin importar
+// el type (ver product_service.go, syncPresentations). Lo que sí sigue sin aplicar a servicios es
+// todo lo que modela inventario físico: stock, series, vencimiento, área de preparación.
 func normalizeProductServiceFields(p *database.TenantProduct) {
 	if !strings.EqualFold(strings.TrimSpace(p.Type), "service") {
 		return
@@ -758,7 +774,6 @@ func normalizeProductServiceFields(p *database.TenantProduct) {
 	p.Unit = "ZZ"
 	p.ManageStock = false
 	p.ManageSeries = false
-	p.HasVariants = false
 	p.HasModifiers = false
 	p.IsRestaurant = false
 	p.MinStock = 0

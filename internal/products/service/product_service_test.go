@@ -17,7 +17,10 @@ func setupProductServiceTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&database.TenantProduct{}, &database.TenantCategory{}, &database.TenantPreparationArea{}); err != nil {
+	if err := db.AutoMigrate(
+		&database.TenantProduct{}, &database.TenantCategory{}, &database.TenantPreparationArea{},
+		&database.TenantProductPresentation{},
+	); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -358,5 +361,59 @@ func TestPreparationAreaCRUD_linksProductByID(t *testing.T) {
 	}
 	if err := svc.DeletePreparationArea(aid); err == nil {
 		t.Fatal("expected delete blocked with linked products")
+	}
+}
+
+// Un servicio SÍ puede tener presentaciones (ej. "Corte simple" / "Corte + barba") — solo lo
+// que modela inventario físico (stock, series, vencimiento) sigue forzado a apagado.
+func TestProductCreate_ServiceCanHavePresentations(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	presentations := []ProductPresentationInput{
+		{Name: "Corte simple", SalePrice: 25},
+		{Name: "Corte + barba", SalePrice: 35},
+	}
+	p, _, err := svc.Create(ProductInput{
+		Code: "SRV-CORTE", Name: "Corte de cabello", Type: "service", Unit: "NIU",
+		SalePrice: 25, TaxRate: 18, IgvAffectationType: "10",
+		ManageStock: true, // debe ignorarse igual que antes: un servicio nunca maneja stock
+		Active:      true,
+		Presentations: &presentations,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if p.Type != "service" {
+		t.Fatalf("type = %q, se esperaba service", p.Type)
+	}
+	if p.ManageStock {
+		t.Fatalf("ManageStock = true, un servicio nunca debe manejar stock")
+	}
+	if !p.HasVariants {
+		t.Fatalf("HasVariants = false, se esperaba true (tiene 2 presentaciones)")
+	}
+
+	var rows []database.TenantProductPresentation
+	if err := db.Where("product_id = ?", p.ID).Order("id asc").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("presentaciones guardadas = %d, se esperaban 2", len(rows))
+	}
+	if rows[0].Name != "Corte simple" || rows[0].SalePrice != 25 {
+		t.Errorf("presentación 0 = %+v, no coincide con lo enviado", rows[0])
+	}
+	if rows[1].Name != "Corte + barba" || rows[1].SalePrice != 35 {
+		t.Errorf("presentación 1 = %+v, no coincide con lo enviado", rows[1])
+	}
+
+	var loaded database.TenantProduct
+	db.First(&loaded, p.ID)
+	if !loaded.HasVariants {
+		t.Errorf("has_variants en BD = false, se esperaba true")
+	}
+	if loaded.ManageStock {
+		t.Errorf("manage_stock en BD = true, se esperaba false")
 	}
 }
