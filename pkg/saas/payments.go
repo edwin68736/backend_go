@@ -346,7 +346,7 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 			}
 			var newCycle *database.SaasBillingCycle
 			sub, newCycle, err = extendSubscriptionTx(tx, payment.TenantID, planID, extendMonths,
-				fmt.Sprintf("Pago #%d aprobado", paymentID), nil, renewalDiscountForApproval(planID, extendMonths))
+				fmt.Sprintf("Pago #%d aprobado", paymentID), nil, PlanCycleDiscount(planID, extendMonths))
 			cycle = newCycle
 		}
 		if err != nil {
@@ -598,12 +598,15 @@ func RevertApprovedPayment(paymentID uint, reason string, actorID uint) error {
 	return nil
 }
 
-// renewalDiscountForApproval descuento del ciclo fijo del plan (si `months` calza con uno
-// habilitado, ver saas.FixedPlanCycleMonths) a aplicar cuando se aprueba un pago que llegó sin
-// ningún ciclo ya emitido — el caso de una solicitud de plan de autoservicio (SubmitRenewalRequest).
-// Lectura fuera de la transacción abierta a propósito (mismo patrón que LoadSettings dentro de
-// SubmitPayment): es una lectura pura, SaasPlanCycle no se modifica en esta transacción.
-func renewalDiscountForApproval(planID uint, months int) Discount {
+// PlanCycleDiscount descuento del ciclo fijo del plan (si `months` calza con uno habilitado,
+// ver FixedPlanCycleMonths) — la MISMA tabla que ya usa el autoservicio del tenant
+// (SubmitRenewalRequest) y la aprobación de un pago sin ciclo (ver abajo). Exportada para que
+// el alta de empresas desde el panel central (internal/superadmin/service/tenant_service.go)
+// también la use: el descuento de una empresa nueva no debe depender de lo que el admin
+// escriba a mano, sino de lo que el plan tiene configurado para esos meses.
+// Lectura fuera de cualquier transacción a propósito (mismo patrón que LoadSettings dentro de
+// SubmitPayment): es una lectura pura, SaasPlanCycle no se modifica acá.
+func PlanCycleDiscount(planID uint, months int) Discount {
 	var plan database.SaasPlan
 	if database.CentralDB.First(&plan, planID).Error != nil {
 		return Discount{}

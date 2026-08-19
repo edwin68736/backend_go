@@ -14,7 +14,13 @@ import (
 // startDate opcional: la empresa se registra hoy, pero su suscripción (y primer cobro) puede
 // arrancar unos días después — nil = arranca hoy, como antes. Debe ser hoy o futuro (validado en
 // extendSubscriptionTx).
-func ProvisionInitialSubscription(tenantID uint, planName string, months int, notes string, startDate *time.Time, discount ...Discount) (*database.SaasSubscription, error) {
+//
+// El descuento del cobro inicial NO se recibe del llamador: sale de PlanCycleDiscount(plan.ID,
+// months) — la misma tabla de ciclos configurados que ya usa el autoservicio del tenant
+// (SubmitRenewalRequest) y la aprobación de una renovación sin ciclo. Antes el panel central
+// dejaba que el admin escribiera el tipo/valor a mano al dar de alta una empresa, lo cual podía
+// no coincidir con lo que el plan tiene pactado para esa cantidad de meses.
+func ProvisionInitialSubscription(tenantID uint, planName string, months int, notes string, startDate *time.Time) (*database.SaasSubscription, error) {
 	if tenantID == 0 {
 		return nil, errors.New("tenant_id requerido")
 	}
@@ -28,7 +34,8 @@ func ProvisionInitialSubscription(tenantID uint, planName string, months int, no
 		}
 		return nil, err
 	}
-	sub, err := ExtendSubscription(tenantID, plan.ID, months, notes, startDate, discount...)
+	discount := PlanCycleDiscount(plan.ID, months)
+	sub, err := ExtendSubscription(tenantID, plan.ID, months, notes, startDate, discount)
 	if err != nil {
 		return nil, err
 	}

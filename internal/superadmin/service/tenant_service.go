@@ -57,9 +57,6 @@ type CreateTenantInput struct {
 	StartDate      string `json:"start_date"`
 	Rubro          string `json:"rubro"`           // general | gastronomico
 	TaxpayerRegime string `json:"taxpayer_regime"` // general | nrus — régimen tributario del contribuyente
-	// Descuento opcional sobre el cobro inicial (precio del plan × meses).
-	DiscountType  string  `json:"discount_type"`
-	DiscountValue float64 `json:"discount_value"`
 }
 
 // Create provisioning completo y transaccional (rollback automático si falla cualquier paso).
@@ -169,10 +166,11 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 		return nil, fmt.Errorf("asignando permisos al Administrador: %w", err)
 	}
 
-	// 5–6. Suscripción + billing cycle (módulos según plan vía syncTenantModulesFromPlanTx)
+	// 5–6. Suscripción + billing cycle (módulos según plan vía syncTenantModulesFromPlanTx).
+	// El descuento lo calcula ProvisionInitialSubscription según el plan y los meses elegidos
+	// (PlanCycleDiscount) — ya no se recibe del formulario.
 	if _, err = saas.ProvisionInitialSubscription(
 		tenant.ID, plan, months, "Suscripción creada al registrar la empresa", startDate,
-		saas.Discount{Type: input.DiscountType, Value: input.DiscountValue},
 	); err != nil {
 		return nil, fmt.Errorf("suscripción SaaS: %w", err)
 	}
