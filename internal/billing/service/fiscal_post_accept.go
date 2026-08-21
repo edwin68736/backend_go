@@ -9,6 +9,8 @@ import (
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 	"tukifac/pkg/logger"
+
+	"gorm.io/gorm"
 )
 
 // PostFiscalAcceptSideEffects acciones tras aceptación SUNAT (NC anula venta, guía/retención/percepción sincronizan registro auxiliar).
@@ -68,6 +70,20 @@ func (s *BillingService) PostFiscalAcceptSideEffects(saleID uint, pipeline strin
 		slog.Uint64("nc_sale_id", uint64(saleID)),
 		slog.Uint64("original_sale_id", uint64(origID)),
 	)
+
+	// Si `orig` había deducido anticipos, repone el saldo de los vouchers origen y marca esas
+	// aplicaciones como revertidas — si no, esos anticipos quedaban con saldo reducido para
+	// siempre y no volvían a aparecer en la lista de anticipos disponibles.
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		return prepaymentsvc.NewService(tx).ReverseApplicationsForConsumerSaleTx(tx, origID)
+	}); err != nil {
+		logger.L.Warn("nc_void_reverse_prepayment_applications_failed",
+			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+			slog.Uint64("nc_sale_id", uint64(saleID)),
+			slog.Uint64("original_sale_id", uint64(origID)),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func (s *BillingService) syncLinkedDespatchStatus(saleID uint, pipeline string) {

@@ -1332,6 +1332,9 @@ type TenantSalePrepaymentApplication struct {
 	Amount           float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
 	Total            float64   `gorm:"type:decimal(15,2);not null" json:"total"`
 	CreatedAt        time.Time `json:"created_at"`
+	// ReversedAt: NULL = deducción vigente. Se marca (sin borrar la fila) cuando la venta que
+	// dedujo se anula por nota de crédito, y se repone el balance_amount del voucher origen.
+	ReversedAt *time.Time `json:"reversed_at,omitempty"`
 }
 
 func (TenantSalePrepaymentApplication) TableName() string {

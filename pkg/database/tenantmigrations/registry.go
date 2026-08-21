@@ -84,6 +84,7 @@ var TenantMigrations = []TenantMigration{
 	V110QuotationItemPresentation{},
 	V111SaleReissueAudit{},
 	V112ComandaBilledAt{},
+	V113PrepaymentApplicationReversedAt{},
 }
 
 // ByVersion mapa versión → migración.
