@@ -1243,15 +1243,24 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		CountCancelled int64   `gorm:"column:count_cancelled"`
 		CountActive    int64   `gorm:"column:count_active"`
 	}
+	// Una nota de crédito es la reversión de la venta anulada, no una venta nueva ni una resta
+	// aparte: su propia venta original ya queda excluida de sum_active (status != 'cancelled') y
+	// contabilizada en sum_cancelled a su valor real. Si la NC también restara su total, la
+	// reversión se contaría dos veces (una por excluir la original, otra por restar la NC) y el
+	// neto quedaría negativo de más. netTotal simplemente la excluye (aporta 0): su efecto ya
+	// está reflejado en que la original no se cuenta como venta vigente.
+	const netTotal = "(CASE WHEN tenant_sales.doc_type = 'NOTA_CREDITO' THEN 0 ELSE tenant_sales.total END)"
+	const netSubtotal = "(CASE WHEN tenant_sales.doc_type = 'NOTA_CREDITO' THEN 0 ELSE tenant_sales.subtotal END)"
+	const netTax = "(CASE WHEN tenant_sales.doc_type = 'NOTA_CREDITO' THEN 0 ELSE tenant_sales.tax_amount END)"
 	var row aggRow
 	err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
 		Where("tenant_sales.id IN (?)", idSub).
 		Select(`
-			COALESCE(SUM(tenant_sales.total), 0) AS sum_total,
-			COALESCE(SUM(tenant_sales.subtotal), 0) AS sum_subtotal,
-			COALESCE(SUM(tenant_sales.tax_amount), 0) AS sum_tax,
+			COALESCE(SUM(` + netTotal + `), 0) AS sum_total,
+			COALESCE(SUM(` + netSubtotal + `), 0) AS sum_subtotal,
+			COALESCE(SUM(` + netTax + `), 0) AS sum_tax,
 			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' THEN tenant_sales.total ELSE 0 END), 0) AS sum_cancelled,
-			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN tenant_sales.total ELSE 0 END), 0) AS sum_active,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN ` + netTotal + ` ELSE 0 END), 0) AS sum_active,
 			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' THEN 1 ELSE 0 END), 0) AS count_cancelled,
 			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN 1 ELSE 0 END), 0) AS count_active
 		`).
@@ -1324,7 +1333,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 
 	var fromHeader []payRow
 	err = salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
-		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, COALESCE(SUM(tenant_sales.total), 0) AS total`).
+		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, COALESCE(SUM(` + netTotal + `), 0) AS total`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
 		Where("NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = tenant_sales.id)").
