@@ -720,6 +720,11 @@ type TenantCompanyConfig struct {
 	UpdatedAt                      time.Time `json:"updated_at"`
 }
 
+// TenantDocumentSeries.IsDefault: comprobante preferido al iniciar una venta (POS, registro de
+// ventas), por sucursal. Solo aplica a category=venta (nota de venta/factura/boleta); a lo sumo
+// una serie activa por (branch_id, category=venta) debe tener is_default=true — se aplica en
+// CompanyService.CreateSeries/UpdateSeries, no con un índice único (MySQL no soporta índices
+// únicos parciales sin columnas generadas).
 type TenantDocumentSeries struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	BranchID    uint      `gorm:"not null;index" json:"branch_id"`
@@ -729,6 +734,7 @@ type TenantDocumentSeries struct {
 	Series      string    `gorm:"size:10;not null" json:"series"`
 	Correlative uint      `gorm:"default:1" json:"correlative"`
 	Active      bool      `gorm:"default:true" json:"active"`
+	IsDefault   bool      `gorm:"default:false" json:"is_default"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
