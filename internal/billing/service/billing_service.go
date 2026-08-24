@@ -1624,6 +1624,14 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 	docNum := fmt.Sprintf("%s-%s", series.Series, correlativoStr)
 	numberStr := fmt.Sprintf("%s-%08d", series.Series, nextCorr)
 
+	// Destinatario → TenantContact real, tanto si la guía nace de una venta como si se emite de
+	// forma independiente: sin esto sale.ContactID quedaba siempre NULL y el PDF del panel caía
+	// al "Cliente genérico" (ver resolveOrCreateDespatchContact).
+	contactID, err := s.resolveOrCreateDespatchContact(input.Destinatario)
+	if err != nil {
+		return nil, fmt.Errorf("resolver contacto destinatario: %w", err)
+	}
+
 	guiaSale := database.TenantSale{
 		BranchID:      input.BranchID,
 		SeriesID:      input.SeriesID,
@@ -1635,6 +1643,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		Currency:      "PEN",
 		Status:        "paid",
 		BillingStatus: "pending",
+		ContactID:     contactID,
 	}
 	if err := s.db.Create(&guiaSale).Error; err != nil {
 		return nil, fmt.Errorf("crear venta guía: %w", err)

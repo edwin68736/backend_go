@@ -9,6 +9,8 @@ import (
 	salecontext "tukifac/internal/fiscal/salecontext"
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
+
+	"gorm.io/gorm"
 )
 
 func isGuiaSaleDocType(docType string) bool {
@@ -253,6 +255,49 @@ func (s *BillingService) despatchAddDocFromSale(sourceSaleID uint, emisorRUC str
 		TipoDesc: tipoDesc,
 		Emisor:   strings.TrimSpace(emisorRUC),
 	}
+}
+
+// resolveOrCreateDespatchContact busca (o crea) el TenantContact del destinatario de la guía por
+// número de documento, para que la venta-guía quede con ContactID poblado igual que cualquier
+// otra venta — sin esto, sale.ContactID quedaba siempre NULL (se creó o no desde una venta
+// origen, el destinatario real solo se guardaba en tenant_despatches, nunca en tenant_sales), y
+// print_data.go (PDF del panel) solo mira sale.ContactID: al no encontrarlo, caía siempre al
+// "Cliente genérico" (doc 99999999) sin importar quién fuera el destinatario real de la guía.
+func (s *BillingService) resolveOrCreateDespatchContact(dest DespatchDestinatarioInput) (*uint, error) {
+	numDoc := strings.TrimSpace(dest.NumDoc)
+	if numDoc == "" {
+		return nil, nil
+	}
+	tipoDoc := strings.TrimSpace(dest.TipoDoc)
+	if tipoDoc == "" {
+		tipoDoc = "6"
+	}
+	var contact database.TenantContact
+	err := s.db.Where("doc_number = ? AND active = ?", numDoc, true).First(&contact).Error
+	if err == nil {
+		return &contact.ID, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	addr, ubi := database.NormalizeTenantContactAddressUbigeo(dest.Address, dest.Ubigeo)
+	razon := strings.TrimSpace(dest.RznSocial)
+	if razon == "" {
+		razon = numDoc
+	}
+	contact = database.TenantContact{
+		Type:         "customer",
+		DocType:      tipoDoc,
+		DocNumber:    numDoc,
+		BusinessName: razon,
+		Address:      addr,
+		Ubigeo:       ubi,
+		Active:       true,
+	}
+	if err := s.db.Create(&contact).Error; err != nil {
+		return nil, err
+	}
+	return &contact.ID, nil
 }
 
 func (s *BillingService) linkDespatchFiscalReference(sourceSaleID uint, sunatCode, fullNumber string, guiaSaleID uint) {
