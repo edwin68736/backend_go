@@ -230,9 +230,18 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 			"invoice": ncInvoice,
 		})
 	}
+	// Solo el motivo "01" anula la venta al aceptarse (ver PostFiscalAcceptSideEffects) — el
+	// mensaje no puede decir siempre "se anulará" ahora que hay otros motivos disponibles.
+	message := "Nota de crédito encolada"
+	if ncSale != nil {
+		code := strings.TrimSpace(ncSale.NoteReasonCode)
+		if code == "" || code == "01" {
+			message = "Nota de crédito encolada; la venta original se anulará al aceptar SUNAT"
+		}
+	}
 	return c.JSON(fiber.Map{
 		"success": true,
-		"message": "Nota de crédito encolada; la venta original se anulará al aceptar SUNAT",
+		"message": message,
 		"async":   true,
 		"nc_sale": ncSale,
 		"invoice": ncInvoice,
