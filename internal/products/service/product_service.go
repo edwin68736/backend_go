@@ -130,10 +130,17 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	}
 	if params.BranchID > 0 {
 		bid := params.BranchID
-		if params.RestaurantOnly {
-			// Carta Tukichef: catálogo exclusivo por sucursal (branch_id en el producto).
-			q = q.Where(p+"branch_id = ?", bid)
-		} else {
+		// Un producto con branch_id propio (>0) queda exclusivo de esa sucursal en CUALQUIER
+		// listado filtrado por sucursal — antes esto solo se respetaba con RestaurantOnly
+		// (carta Tukichef); POS/inventario/listado general de Tukifac ignoraban por completo
+		// el branch_id del producto y mostraban todo sin importar la sucursal activa, aunque
+		// el tenant hubiera asignado sus productos a una sucursal específica. branch_id vacío/0
+		// sigue significando "disponible en todas las sucursales" (comportamiento de siempre
+		// para el comercio general, que no asigna productos por sucursal).
+		q = q.Where(p+"branch_id IS NULL OR "+p+"branch_id = 0 OR "+p+"branch_id = ?", bid)
+		if !params.RestaurantOnly {
+			// Fuera de la carta, además hay que respetar el stock por sucursal para productos
+			// que sí lo gestionan (comportamiento sin cambios).
 			// Productos con variantes: el stock vive en tenant_product_presentation_stocks, no en
 			// tenant_product_stocks — sin este OR, un producto con variantes nunca tiene fila en
 			// la tabla vieja y quedaría invisible en cualquier listado filtrado por sucursal
@@ -503,9 +510,13 @@ func (s *ProductService) GetByCodeInBranch(code string, branchID uint) (*databas
 	return &p, err
 }
 
-// EnsureRestaurantBranchAccess valida que un plato pertenezca a la sucursal activa.
+// EnsureRestaurantBranchAccess valida que un producto asignado a una sucursal específica
+// (branch_id > 0) pertenezca a la sucursal activa. Antes solo se exigía para platos de
+// restaurante (IsRestaurant) — igual que el filtro de listado (ver buildListQuery), un
+// producto de comercio general asignado a una sucursal también debe quedar exclusivo de
+// ella, no solo la carta de Tukichef.
 func (s *ProductService) EnsureRestaurantBranchAccess(p *database.TenantProduct, branchID uint) error {
-	if p == nil || !p.IsRestaurant || branchID == 0 {
+	if p == nil || branchID == 0 {
 		return nil
 	}
 	if p.BranchID == 0 {
