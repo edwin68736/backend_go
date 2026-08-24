@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"tukifac/config"
-	salesvc "tukifac/internal/sales/service"
 	detraccionsvc "tukifac/internal/detraccion"
-	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/internal/fiscal/salecontext"
+	prepaymentsvc "tukifac/internal/prepayment"
+	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
@@ -24,6 +24,7 @@ import (
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/sunat"
+	"tukifac/pkg/sunatnote"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
 
@@ -299,31 +300,31 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		}
 	}
 	payload := &facturador.InvoicePayload{
-		UBLVersion:        "2.1",
-		TipoOperacion:     tipoOperacion,
-		TipoDoc:           tipoDoc,
-		Serie:             serie,
-		Correlativo:       correlativo,
-		FechaEmision:      fechaEmision,
-		FecVencimiento:    fecVencimiento,
-		FormaPago:         &facturador.InvoiceFormaPago{Tipo: "Contado"},
-		Company:           facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
-		Client:            facturador.InvoiceClient{TipoDoc: clientTipoDoc, NumDoc: clientNumDoc, RznSocial: clientRzn, Address: clientAddr},
-		TipoMoneda:        tipoMoneda,
-		MtoOperGravadas:   sunatTotals.MtoOperGravadas,
-		MtoOperExoneradas: sunatTotals.MtoOperExoneradas,
-		MtoOperInafectas:  sunatTotals.MtoOperInafectas,
-		MtoOperGratuitas:  sunatTotals.MtoOperGratuitas,
-		MtoIGVGratuitas:   sunatTotals.MtoIGVGratuitas,
-		MtoIGV:            sunatTotals.MtoIGV,
-		TotalImpuestos:    sunatTotals.TotalImpuestos,
-		ValorVenta:        sunatTotals.ValorVenta,
-		SubTotal:          sunatTotals.MtoImpVenta,
-		MtoImpVenta:       sunatTotals.MtoImpVenta,
-		Descuentos:        docDescuentos,
+		UBLVersion:         "2.1",
+		TipoOperacion:      tipoOperacion,
+		TipoDoc:            tipoDoc,
+		Serie:              serie,
+		Correlativo:        correlativo,
+		FechaEmision:       fechaEmision,
+		FecVencimiento:     fecVencimiento,
+		FormaPago:          &facturador.InvoiceFormaPago{Tipo: "Contado"},
+		Company:            facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
+		Client:             facturador.InvoiceClient{TipoDoc: clientTipoDoc, NumDoc: clientNumDoc, RznSocial: clientRzn, Address: clientAddr},
+		TipoMoneda:         tipoMoneda,
+		MtoOperGravadas:    sunatTotals.MtoOperGravadas,
+		MtoOperExoneradas:  sunatTotals.MtoOperExoneradas,
+		MtoOperInafectas:   sunatTotals.MtoOperInafectas,
+		MtoOperGratuitas:   sunatTotals.MtoOperGratuitas,
+		MtoIGVGratuitas:    sunatTotals.MtoIGVGratuitas,
+		MtoIGV:             sunatTotals.MtoIGV,
+		TotalImpuestos:     sunatTotals.TotalImpuestos,
+		ValorVenta:         sunatTotals.ValorVenta,
+		SubTotal:           sunatTotals.MtoImpVenta,
+		MtoImpVenta:        sunatTotals.MtoImpVenta,
+		Descuentos:         docDescuentos,
 		SumOtrosDescuentos: sumOtrosDescuentos,
-		Details:           details,
-		Legends:           legends,
+		Details:            details,
+		Legends:            legends,
 	}
 	if fiscalEnrich, err := salecontext.LoadInvoiceEnrichment(s.db, saleID, sale.Total); err == nil && fiscalEnrich != nil {
 		salecontext.ApplyToInvoicePayload(payload, fiscalEnrich)
@@ -376,9 +377,14 @@ func (s *BillingService) ResendToSUNAT(saleID uint) (*database.TenantInvoice, er
 	return s.SendToSUNAT(saleID)
 }
 
-// CreateCreditNoteAndVoidSale genera una nota de crédito para anular la venta y la envía a SUNAT; luego anula la venta original.
-// La venta debe ser factura o boleta ya aceptada por SUNAT.
-func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string) (*database.TenantSale, *database.TenantInvoice, error) {
+// CreateCreditNoteAndVoidSale genera una nota de crédito y la envía a SUNAT. La venta debe
+// ser factura o boleta ya aceptada por SUNAT. reasonCode es el código del catálogo SUNAT 09
+// (pkg/sunatnote); vacío se interpreta como "01" (anulación de la operación), único motivo
+// que el sistema podía emitir antes de este campo — por eso solo ese código dispara la
+// anulación de la venta original al aceptarse (ver PostFiscalAcceptSideEffects): elegir
+// otro motivo (descuento, devolución, etc.) registra la nota sin tocar la venta ni el stock,
+// a la espera de la Fase 2 (notas parciales) para reversión proporcional.
+func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string, reasonCode string) (*database.TenantSale, *database.TenantInvoice, error) {
 	if !s.facturadorConfigured() {
 		return nil, nil, errors.New("la anulación con nota de crédito requiere facturador configurado")
 	}
@@ -399,9 +405,16 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	if orig.BillingStatus != "accepted" {
 		return nil, nil, errors.New("el comprobante debe estar aceptado por SUNAT antes de anularlo con nota de crédito")
 	}
+	reasonCode = strings.TrimSpace(reasonCode)
+	if reasonCode == "" {
+		reasonCode = "01"
+	}
+	if sunatnote.ReasonLabel("07", reasonCode) == "" {
+		return nil, nil, fmt.Errorf("motivo de nota de crédito inválido: %q no existe en el catálogo SUNAT 09", reasonCode)
+	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		return nil, nil, errors.New("indique el motivo de anulación")
+		reason = sunatnote.ReasonLabel("07", reasonCode)
 	}
 	if orig.ContactID == nil {
 		return nil, nil, errors.New("para nota de crédito electrónica debe asignar un cliente con dirección y ubigeo en la venta original")
@@ -435,6 +448,7 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 		Currency:       orig.Currency,
 		PaymentMethod:  orig.PaymentMethod,
 		Notes:          reason,
+		NoteReasonCode: reasonCode,
 		Status:         "paid",
 		BillingStatus:  "pending",
 		OriginalSaleID: &origIDRef,
@@ -492,8 +506,11 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	return &ncSale, &inv, nil
 }
 
-// CreateDebitNoteForSale genera una nota de débito (08) vinculada a una venta aceptada y la encola a SUNAT.
-func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint) (*database.TenantSale, *database.TenantInvoice, error) {
+// CreateDebitNoteForSale genera una nota de débito (08) vinculada a una venta aceptada y la
+// encola a SUNAT. reasonCode es el código del catálogo SUNAT 10 (pkg/sunatnote); vacío se
+// interpreta como "02" (aumento en el valor), el único motivo que el sistema emitía antes de
+// este campo.
+func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint, reason string, reasonCode string) (*database.TenantSale, *database.TenantInvoice, error) {
 	if !s.facturadorConfigured() {
 		return nil, nil, errors.New("la nota de débito requiere facturador configurado")
 	}
@@ -514,9 +531,20 @@ func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint) (*database.
 	if orig.ContactID == nil {
 		return nil, nil, errors.New("debe asignar un cliente con dirección y ubigeo en la venta original")
 	}
-	var ndSeries database.TenantDocumentSeries
-	if err := s.db.Where("branch_id = ? AND category = ? AND active = ?", orig.BranchID, "nota_debito", true).First(&ndSeries).Error; err != nil {
-		return nil, nil, errors.New("no hay serie de nota de débito configurada para esta sucursal")
+	reasonCode = strings.TrimSpace(reasonCode)
+	if reasonCode == "" {
+		reasonCode = "02"
+	}
+	if sunatnote.ReasonLabel("08", reasonCode) == "" {
+		return nil, nil, fmt.Errorf("motivo de nota de débito inválido: %q no existe en el catálogo SUNAT 10", reasonCode)
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = sunatnote.ReasonLabel("08", reasonCode)
+	}
+	ndSeries, err := s.resolveDebitNoteSeries(orig.BranchID, &orig)
+	if err != nil {
+		return nil, nil, err
 	}
 	saleSvc := salesvc.NewSaleService(s.db)
 	nextCorr, err := saleSvc.NextCorrelative(ndSeries.ID)
@@ -541,7 +569,8 @@ func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint) (*database.
 		Total:          orig.Total,
 		Currency:       orig.Currency,
 		PaymentMethod:  orig.PaymentMethod,
-		Notes:          "Aumento en el valor",
+		Notes:          reason,
+		NoteReasonCode: reasonCode,
 		Status:         "paid",
 		BillingStatus:  "pending",
 		OriginalSaleID: &origIDRef,
@@ -632,6 +661,39 @@ func (s *BillingService) resolveCreditNoteSeries(branchID uint, orig *database.T
 	return database.TenantDocumentSeries{}, fmt.Errorf(
 		"ninguna serie de nota de crédito coincide con %s: configure serie %s## (ej. %s01) para anular %ss; las series FC## son solo para facturas y BC## solo para boletas",
 		docLabel, prefix, prefix, docLabel,
+	)
+}
+
+// resolveDebitNoteSeries elige la serie ND (SUNAT 08) según el comprobante afectado: FD##
+// factura, BD## boleta — mismo criterio que resolveCreditNoteSeries. Antes CreateDebitNoteForSale
+// tomaba cualquier serie activa de categoría nota_debito sin verificar el prefijo, así que en
+// teoría una serie FD01 podía "aumentar" tanto facturas como boletas sin control.
+func (s *BillingService) resolveDebitNoteSeries(branchID uint, orig *database.TenantSale) (database.TenantDocumentSeries, error) {
+	if orig == nil {
+		return database.TenantDocumentSeries{}, errors.New("venta original no indicada")
+	}
+	prefix := docseries.DebitNoteSeriesPrefixForAffected(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID))
+	var rows []database.TenantDocumentSeries
+	err := s.db.Where("branch_id = ? AND category = ? AND active = ? AND TRIM(sunat_code) = ?",
+		branchID, "nota_debito", true, "08").Order("id ASC").Find(&rows).Error
+	if err != nil {
+		return database.TenantDocumentSeries{}, err
+	}
+	for _, row := range rows {
+		if docseries.SeriesMatchesDebitNotePrefix(row.Series, prefix) {
+			return row, nil
+		}
+	}
+	docLabel := docseries.AffectedDocLabel(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID))
+	if len(rows) == 0 {
+		return database.TenantDocumentSeries{}, fmt.Errorf(
+			"no hay serie de nota de débito en esta sucursal — cree una serie %s## activa (categoría Nota de débito, SUNAT 08) para %ss",
+			prefix, docLabel,
+		)
+	}
+	return database.TenantDocumentSeries{}, fmt.Errorf(
+		"ninguna serie de nota de débito coincide con %s: configure serie %s## (ej. %s01); las series FD## son solo para facturas y BD## solo para boletas",
+		docLabel, prefix, prefix,
 	)
 }
 
@@ -1364,29 +1426,29 @@ type DespatchDestinatarioInput struct {
 }
 
 type DespatchEnvioInput struct {
-	CodTraslado              string  `json:"cod_traslado"`
-	DesTraslado              string  `json:"des_traslado"`
-	ModTraslado              string  `json:"mod_traslado"`
-	FecTraslado              string  `json:"fec_traslado"`
-	FecEntregaTransportista  string  `json:"fec_entrega_transportista,omitempty"`
-	PartidaUbigueo           string  `json:"partida_ubigueo"`
-	PartidaDireccion         string  `json:"partida_direccion"`
-	LlegadaUbigueo           string  `json:"llegada_ubigueo"`
-	LlegadaDireccion         string  `json:"llegada_direccion"`
-	PesoTotal                float64 `json:"peso_total"`
-	UndPesoTotal             string  `json:"und_peso_total"`
-	NumBultos                int     `json:"num_bultos"`
-	TransportistaRUC         string  `json:"transportista_ruc,omitempty"`
-	TransportistaRazon       string  `json:"transportista_razon,omitempty"`
-	TransportistaPlaca       string  `json:"transportista_placa,omitempty"`
-	TransportistaMTC         string  `json:"transportista_mtc,omitempty"`
-	VehiculoHabCert          string  `json:"vehiculo_hab_cert,omitempty"`
-	VehiculoCodEmisor        string  `json:"vehiculo_cod_emisor,omitempty"`
-	ChoferTipoDoc            string  `json:"chofer_tipo_doc,omitempty"`
-	ChoferDoc                string  `json:"chofer_doc,omitempty"`
-	ChoferLicencia           string  `json:"chofer_licencia,omitempty"`
-	ChoferNombres            string  `json:"chofer_nombres,omitempty"`
-	ChoferApellidos          string  `json:"chofer_apellidos,omitempty"`
+	CodTraslado             string  `json:"cod_traslado"`
+	DesTraslado             string  `json:"des_traslado"`
+	ModTraslado             string  `json:"mod_traslado"`
+	FecTraslado             string  `json:"fec_traslado"`
+	FecEntregaTransportista string  `json:"fec_entrega_transportista,omitempty"`
+	PartidaUbigueo          string  `json:"partida_ubigueo"`
+	PartidaDireccion        string  `json:"partida_direccion"`
+	LlegadaUbigueo          string  `json:"llegada_ubigueo"`
+	LlegadaDireccion        string  `json:"llegada_direccion"`
+	PesoTotal               float64 `json:"peso_total"`
+	UndPesoTotal            string  `json:"und_peso_total"`
+	NumBultos               int     `json:"num_bultos"`
+	TransportistaRUC        string  `json:"transportista_ruc,omitempty"`
+	TransportistaRazon      string  `json:"transportista_razon,omitempty"`
+	TransportistaPlaca      string  `json:"transportista_placa,omitempty"`
+	TransportistaMTC        string  `json:"transportista_mtc,omitempty"`
+	VehiculoHabCert         string  `json:"vehiculo_hab_cert,omitempty"`
+	VehiculoCodEmisor       string  `json:"vehiculo_cod_emisor,omitempty"`
+	ChoferTipoDoc           string  `json:"chofer_tipo_doc,omitempty"`
+	ChoferDoc               string  `json:"chofer_doc,omitempty"`
+	ChoferLicencia          string  `json:"chofer_licencia,omitempty"`
+	ChoferNombres           string  `json:"chofer_nombres,omitempty"`
+	ChoferApellidos         string  `json:"chofer_apellidos,omitempty"`
 }
 
 type DespatchDetailInput struct {
@@ -1829,16 +1891,16 @@ type RetentionProveedorInput struct {
 }
 
 type RetentionDetailInput struct {
-	TipoDoc        string                    `json:"tipo_doc"`
-	NumDoc         string                    `json:"num_doc"`
-	FechaEmision   string                    `json:"fecha_emision"`
-	ImpTotal       float64                   `json:"imp_total"`
-	Moneda         string                    `json:"moneda"`
-	Pagos          []retentionPaymentInput   `json:"pagos"`
-	FechaRetencion string                    `json:"fecha_retencion"`
-	ImpRetenido    float64                   `json:"imp_retenido"`
-	ImpPagar       float64                   `json:"imp_pagar"`
-	TipoCambio     *retentionExchangeInput   `json:"tipo_cambio,omitempty"`
+	TipoDoc        string                  `json:"tipo_doc"`
+	NumDoc         string                  `json:"num_doc"`
+	FechaEmision   string                  `json:"fecha_emision"`
+	ImpTotal       float64                 `json:"imp_total"`
+	Moneda         string                  `json:"moneda"`
+	Pagos          []retentionPaymentInput `json:"pagos"`
+	FechaRetencion string                  `json:"fecha_retencion"`
+	ImpRetenido    float64                 `json:"imp_retenido"`
+	ImpPagar       float64                 `json:"imp_pagar"`
+	TipoCambio     *retentionExchangeInput `json:"tipo_cambio,omitempty"`
 }
 
 func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*database.TenantRetention, error) {

@@ -53,6 +53,9 @@ func ValidateSeriesConfig(docType, category, documentCode, seriesName string) er
 	if def.Category == "nota_credito" {
 		return ValidateNotaCreditoSeriesCode(seriesName)
 	}
+	if def.Category == "nota_debito" {
+		return ValidateNotaDebitoSeriesCode(seriesName)
+	}
 	return nil
 }
 

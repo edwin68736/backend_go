@@ -1154,6 +1154,10 @@ type TenantSale struct {
 	BillingStatus        string     `gorm:"size:30;default:'pending'" json:"billing_status"` // pending, sent, accepted, rejected
 	RestaurantSessionID  *uint      `gorm:"index" json:"restaurant_session_id,omitempty"`    // pedido restaurante que originó la venta
 	OriginalSaleID       *uint      `gorm:"index" json:"original_sale_id"`                   // Si es NOTA_CREDITO: venta que se anuló
+	// Motivo SUNAT elegido al emitir la nota (catálogo 09 para NC, catálogo 10 para ND).
+	// Vacío en notas emitidas antes de existir este campo — se interpreta como "01" (NC) /
+	// "02" (ND), el único motivo que el sistema podía emitir hasta ahora.
+	NoteReasonCode string `gorm:"size:5" json:"note_reason_code,omitempty"`
 	// Si esta venta es factura/boleta (01/03) generada desde una nota de venta (00), apunta al ID de esa NV.
 	IssuedFromNotaSaleID *uint `gorm:"index" json:"issued_from_nota_sale_id,omitempty"`
 	// Origen comercial: direct | converted_from_nota | api | migration | legacy
@@ -1894,31 +1898,31 @@ type TenantComanda struct {
 	// PresentationID: variante/presentación elegida (ej. color), cuando el producto vende por
 	// presentación con stock propio. Se resuelve del mismo modifiers_json (type:"variant") y se
 	// persiste aparte para no tener que reparsear JSON al facturar/descontar stock.
-	PresentationID     *uint      `gorm:"index" json:"presentation_id,omitempty"`
-	ProductCode        string     `gorm:"size:100" json:"product_code"`
-	ProductName        string     `gorm:"size:255;not null" json:"product_name"`
-	PreparationArea    string     `gorm:"size:50" json:"preparation_area"`  // snapshot slug al enviar (cocina, bar, etc.)
-	PreparationAreaID  *uint      `gorm:"index" json:"preparation_area_id"` // vínculo estable al área (el slug puede renombrarse)
-	Quantity           float64    `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitPrice          float64    `gorm:"type:decimal(15,2);not null" json:"unit_price"`
-	Notes              string     `gorm:"size:500" json:"notes"`                 // instrucciones especiales (sin cebolla, etc.)
-	ModifiersJSON      string     `gorm:"type:text" json:"modifiers_json"`       // variantes y extras [{ option_id, option_name, extra_price, type, ... }]
-	ComboParentKey     string     `gorm:"size:64;index" json:"combo_parent_key"` // agrupa las N comandas explotadas de un mismo combo
-	ComboJSON          string     `gorm:"type:text" json:"combo_json"`           // snapshot del combo dueño [{ combo_id, combo_name, group_id, ... }]
-	IgvAffectationType string     `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
-	PriceIncludesIgv   bool       `gorm:"default:true" json:"price_includes_igv"`
-	Status             string     `gorm:"size:20;default:'pendiente'" json:"status"` // pendiente, preparacion, lista, entregada
+	PresentationID     *uint   `gorm:"index" json:"presentation_id,omitempty"`
+	ProductCode        string  `gorm:"size:100" json:"product_code"`
+	ProductName        string  `gorm:"size:255;not null" json:"product_name"`
+	PreparationArea    string  `gorm:"size:50" json:"preparation_area"`  // snapshot slug al enviar (cocina, bar, etc.)
+	PreparationAreaID  *uint   `gorm:"index" json:"preparation_area_id"` // vínculo estable al área (el slug puede renombrarse)
+	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitPrice          float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
+	Notes              string  `gorm:"size:500" json:"notes"`                 // instrucciones especiales (sin cebolla, etc.)
+	ModifiersJSON      string  `gorm:"type:text" json:"modifiers_json"`       // variantes y extras [{ option_id, option_name, extra_price, type, ... }]
+	ComboParentKey     string  `gorm:"size:64;index" json:"combo_parent_key"` // agrupa las N comandas explotadas de un mismo combo
+	ComboJSON          string  `gorm:"type:text" json:"combo_json"`           // snapshot del combo dueño [{ combo_id, combo_name, group_id, ... }]
+	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
+	PriceIncludesIgv   bool    `gorm:"default:true" json:"price_includes_igv"`
+	Status             string  `gorm:"size:20;default:'pendiente'" json:"status"` // pendiente, preparacion, lista, entregada
 	// BilledAt: marca "ya incluida en un cobro" independiente de Status (que es 100% de cocina).
 	// NULL = pendiente de facturar. Ver V112ComandaBilledAt para el porqué de separarlo de Status.
-	BilledAt           *time.Time `gorm:"index" json:"billed_at,omitempty"`
-	Printed            bool       `gorm:"default:false" json:"printed"`
-	PrintedAt          *time.Time `json:"printed_at"`
-	PrintedByID        *uint      `gorm:"index" json:"printed_by_id"`
-	CancelledAt        *time.Time `json:"cancelled_at"`
-	CancelledByID      *uint      `gorm:"index" json:"cancelled_by_id"`
-	CancelReason       string     `gorm:"size:255" json:"cancel_reason"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	BilledAt      *time.Time `gorm:"index" json:"billed_at,omitempty"`
+	Printed       bool       `gorm:"default:false" json:"printed"`
+	PrintedAt     *time.Time `json:"printed_at"`
+	PrintedByID   *uint      `gorm:"index" json:"printed_by_id"`
+	CancelledAt   *time.Time `json:"cancelled_at"`
+	CancelledByID *uint      `gorm:"index" json:"cancelled_by_id"`
+	CancelReason  string     `gorm:"size:255" json:"cancel_reason"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // TenantRestaurantSetting configuración del módulo restaurante (una fila por tenant).

@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"strings"
 
-	salesvc "tukifac/internal/sales/service"
 	prepaymentsvc "tukifac/internal/prepayment"
+	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 	"tukifac/pkg/logger"
@@ -34,6 +34,14 @@ func (s *BillingService) PostFiscalAcceptSideEffects(saleID uint, pipeline strin
 	_ = prepaymentsvc.NewService(s.db).OnFiscalAccept(saleID)
 
 	if sale.DocType != "NOTA_CREDITO" || sale.OriginalSaleID == nil {
+		return
+	}
+	// Solo el motivo "01" (anulación de la operación) implica anular la venta completa y
+	// restaurar el 100% del stock — antes era el único motivo que el sistema podía emitir,
+	// así que este gate no cambia nada para notas ya en curso (reasonCode vacío = "01").
+	// Otro motivo (descuento, devolución, etc.) registra la nota sin tocar la venta ni el
+	// stock: la reversión proporcional a lo que corresponda es la Fase 2 (notas parciales).
+	if reasonCode := strings.TrimSpace(sale.NoteReasonCode); reasonCode != "" && reasonCode != "01" {
 		return
 	}
 	origID := *sale.OriginalSaleID

@@ -217,11 +217,12 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	var body struct {
-		Reason string `json:"reason"`
+		Reason     string `json:"reason"`
+		ReasonCode string `json:"reason_code"`
 	}
 	_ = c.Bind().Body(&body)
 	svc := billingSvc(c)
-	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason))
+	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error":   err.Error(),
@@ -243,8 +244,13 @@ func (h *BillingHandler) CreateDebitNoteAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	var body struct {
+		Reason     string `json:"reason"`
+		ReasonCode string `json:"reason_code"`
+	}
+	_ = c.Bind().Body(&body)
 	svc := billingSvc(c)
-	ndSale, ndInvoice, err := svc.CreateDebitNoteForSale(uint(saleID))
+	ndSale, ndInvoice, err := svc.CreateDebitNoteForSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error":   err.Error(),
