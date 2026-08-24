@@ -217,12 +217,13 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	var body struct {
-		Reason     string `json:"reason"`
-		ReasonCode string `json:"reason_code"`
+		Reason     string                      `json:"reason"`
+		ReasonCode string                      `json:"reason_code"`
+		Items      []service.NoteItemSelection `json:"items"`
 	}
 	_ = c.Bind().Body(&body)
 	svc := billingSvc(c)
-	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode))
+	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode), body.Items)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error":   err.Error(),

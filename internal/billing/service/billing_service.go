@@ -381,10 +381,14 @@ func (s *BillingService) ResendToSUNAT(saleID uint) (*database.TenantInvoice, er
 // ser factura o boleta ya aceptada por SUNAT. reasonCode es el código del catálogo SUNAT 09
 // (pkg/sunatnote); vacío se interpreta como "01" (anulación de la operación), único motivo
 // que el sistema podía emitir antes de este campo — por eso solo ese código dispara la
-// anulación de la venta original al aceptarse (ver PostFiscalAcceptSideEffects): elegir
-// otro motivo (descuento, devolución, etc.) registra la nota sin tocar la venta ni el stock,
-// a la espera de la Fase 2 (notas parciales) para reversión proporcional.
-func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string, reasonCode string) (*database.TenantSale, *database.TenantInvoice, error) {
+// anulación de la venta original al aceptarse (ver PostFiscalAcceptSideEffects).
+//
+// selections: ítems y cantidades elegidos por el usuario (Fase 2 — notas parciales). Solo se
+// usan cuando reasonCode es uno de los que mueven bienes (IsPartialCreditNoteReason) y viene
+// no vacío; en ese caso la nota se arma SOLO con esas líneas, con sus propios totales
+// proporcionales — no se copia el 100% de la venta. Vacío o motivo no-parcial: comportamiento
+// de siempre (copia completa, mismos totales que la venta original).
+func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string, reasonCode string, selections []NoteItemSelection) (*database.TenantSale, *database.TenantInvoice, error) {
 	if !s.facturadorConfigured() {
 		return nil, nil, errors.New("la anulación con nota de crédito requiere facturador configurado")
 	}
@@ -431,6 +435,23 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	numberStr := fmt.Sprintf("%s-%08d", ncSeries.Series, nextCorr)
 	now := time.Now()
 	origIDRef := originalSaleID
+
+	var origItems []database.TenantSaleItem
+	s.db.Where("sale_id = ?", originalSaleID).Find(&origItems)
+
+	// Nota parcial (Fase 2): el usuario eligió ítems/cantidades y el motivo mueve bienes —
+	// la nota se arma solo con esas líneas y sus propios totales, no con el 100% de la venta.
+	partial := IsPartialCreditNoteReason(reasonCode) && len(selections) > 0
+	var partialItems []database.TenantSaleItem
+	subtotal, taxAmount, total := orig.Subtotal, orig.TaxAmount, orig.Total
+	if partial {
+		var err error
+		partialItems, subtotal, taxAmount, total, err = buildPartialNoteItems(originalSaleID, origItems, selections)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
 	ncSale := database.TenantSale{
 		BranchID:       orig.BranchID,
 		ContactID:      orig.ContactID,
@@ -442,9 +463,9 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 		Correlative:    nextCorr,
 		Number:         numberStr,
 		IssueDate:      now,
-		Subtotal:       orig.Subtotal,
-		TaxAmount:      orig.TaxAmount,
-		Total:          orig.Total,
+		Subtotal:       subtotal,
+		TaxAmount:      taxAmount,
+		Total:          total,
 		Currency:       orig.Currency,
 		PaymentMethod:  orig.PaymentMethod,
 		Notes:          reason,
@@ -459,25 +480,30 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	if err := s.reserveGenericDocument("credit_note", ncSale.ID, ncSale.Number); err != nil {
 		return nil, nil, err
 	}
-	var origItems []database.TenantSaleItem
-	s.db.Where("sale_id = ?", originalSaleID).Find(&origItems)
-	for _, it := range origItems {
-		ncItem := database.TenantSaleItem{
-			SaleID:             ncSale.ID,
-			ProductID:          it.ProductID,
-			Code:               it.Code,
-			Description:        it.Description,
-			Unit:               it.Unit,
-			Quantity:           it.Quantity,
-			UnitPrice:          it.UnitPrice,
-			Discount:           it.Discount,
-			TaxRate:            it.TaxRate,
-			IgvAffectationType: it.IgvAffectationType,
-			Subtotal:           it.Subtotal,
-			TaxAmount:          it.TaxAmount,
-			Total:              it.Total,
+	if partial {
+		for i := range partialItems {
+			partialItems[i].SaleID = ncSale.ID
+			s.db.Create(&partialItems[i])
 		}
-		s.db.Create(&ncItem)
+	} else {
+		for _, it := range origItems {
+			ncItem := database.TenantSaleItem{
+				SaleID:             ncSale.ID,
+				ProductID:          it.ProductID,
+				Code:               it.Code,
+				Description:        it.Description,
+				Unit:               it.Unit,
+				Quantity:           it.Quantity,
+				UnitPrice:          it.UnitPrice,
+				Discount:           it.Discount,
+				TaxRate:            it.TaxRate,
+				IgvAffectationType: it.IgvAffectationType,
+				Subtotal:           it.Subtotal,
+				TaxAmount:          it.TaxAmount,
+				Total:              it.Total,
+			}
+			s.db.Create(&ncItem)
+		}
 	}
 	notePayload, err := s.buildCreditNotePayload(ncSale.ID)
 	if err != nil {

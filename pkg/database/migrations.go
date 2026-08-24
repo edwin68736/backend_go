@@ -1234,6 +1234,10 @@ type TenantSaleItem struct {
 	// ItemNote nota libre de esta línea (p. ej. "segundo uso"). Queda en el snapshot de la
 	// venta; NO modifica el producto del catálogo.
 	ItemNote string `gorm:"size:255" json:"item_note"`
+	// OriginalSaleItemID: en una línea de nota de crédito parcial, la línea de la venta
+	// original de la que nace (para revertir stock exacto vía tenant_stock_movements.sale_item_id).
+	// NULL en cualquier otro caso (venta normal, o nota que copia el 100%).
+	OriginalSaleItemID *uint `gorm:"index" json:"original_sale_item_id,omitempty"`
 }
 
 // TenantSaleFiscalProfile información adicional fiscal de una venta (1:1).

@@ -21,6 +21,7 @@ func RegisterRoutes(api fiber.Router) {
 	// Devoluciones pendientes: anulaciones cuyo dinero aún no salió de ninguna caja.
 	api.Get("/sales/pending-refunds", mod, loadRest, middleware.RequireSalesAccess("view"), h.PendingRefundsAPI)
 	api.Post("/sales/pending-refunds/apply", mod, loadRest, h.ApplyPendingRefundAPI)
+	api.Post("/sales/pending-refunds/apply-note", mod, loadRest, h.ApplyPendingNoteRefundAPI)
 	api.Get("/sales/:id", mod, loadRest, middleware.RequireSalesAccess("view"), h.GetAPI)
 	api.Post("/sales/:id/email-receipt", mod, loadRest, middleware.RequireSalesAccess("view"), h.EmailReceiptAPI)
 }

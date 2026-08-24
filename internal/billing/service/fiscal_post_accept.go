@@ -39,9 +39,14 @@ func (s *BillingService) PostFiscalAcceptSideEffects(saleID uint, pipeline strin
 	// Solo el motivo "01" (anulación de la operación) implica anular la venta completa y
 	// restaurar el 100% del stock — antes era el único motivo que el sistema podía emitir,
 	// así que este gate no cambia nada para notas ya en curso (reasonCode vacío = "01").
-	// Otro motivo (descuento, devolución, etc.) registra la nota sin tocar la venta ni el
-	// stock: la reversión proporcional a lo que corresponda es la Fase 2 (notas parciales).
 	if reasonCode := strings.TrimSpace(sale.NoteReasonCode); reasonCode != "" && reasonCode != "01" {
+		// Motivo que mueve bienes (descuento, devolución, etc. — Fase 2): repone stock solo
+		// de lo que la nota devuelve, sin anular la venta original. Motivo que no mueve bienes
+		// (corrección de RUC/descripción, ajustes de exportación/IVAP/fecha de pago): la nota
+		// queda registrada sin ningún efecto sobre venta o stock.
+		if IsPartialCreditNoteReason(reasonCode) {
+			s.applyPartialCreditNoteSideEffects(saleID, &sale)
+		}
 		return
 	}
 	origID := *sale.OriginalSaleID
@@ -92,6 +97,37 @@ func (s *BillingService) PostFiscalAcceptSideEffects(saleID uint, pipeline strin
 			slog.Any("error", err),
 		)
 	}
+}
+
+// applyPartialCreditNoteSideEffects repone el stock que corresponde a una nota de crédito
+// parcial (Fase 2) — solo lo que la nota devuelve, no toda la venta — y deja registrado el
+// monto de la nota como devolución pendiente (ver sale_pending_refunds.go), sin anular la
+// venta original ni tocar anticipos: esos efectos son propios de la anulación total (motivo
+// "01") y no aplican a un descuento o devolución parcial.
+func (s *BillingService) applyPartialCreditNoteSideEffects(saleID uint, sale *database.TenantSale) {
+	var inv database.TenantInvoice
+	if err := s.db.Where("sale_id = ?", saleID).First(&inv).Error; err != nil {
+		return
+	}
+	if !billingstate.HasAcceptanceEvidence(&inv) {
+		if inv.SunatStatus != "accepted" && inv.SunatCDRCode != "0" {
+			return
+		}
+	}
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		return salesvc.RestorePartialStockFromKardexTx(tx, sale, "NC/"+sale.Number, 0)
+	}); err != nil {
+		logger.L.Warn("nc_partial_restore_stock_failed",
+			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+			slog.Uint64("nc_sale_id", uint64(saleID)),
+			slog.Any("error", err),
+		)
+		return
+	}
+	logger.L.Info("nc_partial_restore_stock_ok",
+		slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+		slog.Uint64("nc_sale_id", uint64(saleID)),
+	)
 }
 
 func (s *BillingService) syncLinkedDespatchStatus(saleID uint, pipeline string) {
