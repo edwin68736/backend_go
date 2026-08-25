@@ -81,3 +81,55 @@ func TestListBankMovementsPaged_FiltersPaginationAndSummary(t *testing.T) {
 		t.Fatalf("date filter: total=%d rows=%d want 2/2", dateTotal, len(dateRows))
 	}
 }
+
+func TestListBankMovementsPaged_MarksReversedRows(t *testing.T) {
+	db := setupFinancialReversalTestDB(t)
+	svc := NewCashBankService(db)
+
+	acc := &database.TenantBankAccount{Name: "BBVA", PaymentMethod: "transferencia", Balance: 0, Active: true}
+	if err := db.Create(acc).Error; err != nil {
+		t.Fatal(err)
+	}
+	orig := &database.TenantBankMovement{
+		BankAccountID: acc.ID, Type: "credit", Amount: 100,
+		Date: time.Date(2026, 8, 1, 0, 0, 0, 0, time.Local), UserID: 1,
+	}
+	if err := db.Create(orig).Error; err != nil {
+		t.Fatal(err)
+	}
+	untouched := &database.TenantBankMovement{
+		BankAccountID: acc.ID, Type: "credit", Amount: 50,
+		Date: time.Date(2026, 8, 2, 0, 0, 0, 0, time.Local), UserID: 1,
+	}
+	if err := db.Create(untouched).Error; err != nil {
+		t.Fatal(err)
+	}
+	reversal := &database.TenantBankMovement{
+		BankAccountID: acc.ID, Type: "debit", Amount: 100, ReversalOfID: &orig.ID,
+		Date: time.Date(2026, 8, 5, 0, 0, 0, 0, time.Local), UserID: 1,
+	}
+	if err := db.Create(reversal).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rows, total, _, err := svc.ListBankMovementsPaged(acc.ID, BankMovementListParams{Page: 1, PerPage: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Fatalf("total: got %d want 3", total)
+	}
+	byID := make(map[uint]BankMovementRow, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if !byID[orig.ID].IsReversed {
+		t.Fatalf("orig movement should be marked IsReversed=true")
+	}
+	if byID[untouched.ID].IsReversed {
+		t.Fatalf("untouched movement should be marked IsReversed=false")
+	}
+	if byID[reversal.ID].IsReversed {
+		t.Fatalf("the reversal row itself should be marked IsReversed=false (nobody reversed IT)")
+	}
+}

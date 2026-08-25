@@ -940,9 +940,18 @@ type BankMovementListSummary struct {
 	SumDebit  float64 `json:"sum_debit"`
 }
 
+// BankMovementRow fila de movimiento + IsReversed: si algún otro movimiento apunta a esta fila
+// con reversal_of_id, es decir, ya se revirtió (anulación de venta o devolución de nota parcial).
+// Se calcula aparte de la fila en sí porque abarca toda la cuenta, no solo la página actual —
+// el original y su reversión pueden caer en páginas distintas según el orden de fecha.
+type BankMovementRow struct {
+	database.TenantBankMovement
+	IsReversed bool `json:"is_reversed"`
+}
+
 // ListBankMovementsPaged lista movimientos paginados y filtrados por fecha/tipo, con el total de
 // filas (para armar la paginación) y el resumen de ingresos/egresos del período completo.
-func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMovementListParams) ([]database.TenantBankMovement, int64, BankMovementListSummary, error) {
+func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMovementListParams) ([]BankMovementRow, int64, BankMovementListSummary, error) {
 	q := s.db.Model(&database.TenantBankMovement{}).Where("bank_account_id = ?", accountID)
 	if params.DateFrom != nil {
 		q = q.Where("date >= ?", params.DateFrom)
@@ -984,8 +993,32 @@ func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMove
 	}
 
 	var movements []database.TenantBankMovement
-	err := q.Order("date DESC, created_at DESC").
+	if err := q.Order("date DESC, created_at DESC").
 		Limit(perPage).Offset((page - 1) * perPage).
-		Find(&movements).Error
-	return movements, total, summary, err
+		Find(&movements).Error; err != nil {
+		return nil, total, summary, err
+	}
+
+	rows := make([]BankMovementRow, len(movements))
+	ids := make([]uint, len(movements))
+	for i, m := range movements {
+		rows[i] = BankMovementRow{TenantBankMovement: m}
+		ids[i] = m.ID
+	}
+	if len(ids) > 0 {
+		var reversedIDs []uint
+		if err := s.db.Model(&database.TenantBankMovement{}).
+			Where("reversal_of_id IN ?", ids).
+			Pluck("reversal_of_id", &reversedIDs).Error; err != nil {
+			return rows, total, summary, err
+		}
+		reversedSet := make(map[uint]bool, len(reversedIDs))
+		for _, id := range reversedIDs {
+			reversedSet[id] = true
+		}
+		for i := range rows {
+			rows[i].IsReversed = reversedSet[rows[i].ID]
+		}
+	}
+	return rows, total, summary, nil
 }
