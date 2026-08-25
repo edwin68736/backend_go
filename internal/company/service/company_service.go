@@ -535,7 +535,11 @@ func (s *CompanyService) DeleteSeries(id uint) error {
 // (evita que el formulario legacy, que no la conoce, la desmarque sin querer en cada edición);
 // &true/&false la fija explícitamente, desmarcando las demás de la misma sucursal+categoría.
 func (s *CompanyService) UpdateSeries(id uint, seriesName string, active bool, docType string, correlative *uint, isDefault *bool) error {
-	inUse, usageInfo, err := s.seriesUsageSvc().IsSeriesInUse(id)
+	// HasRealFiscalUsage (no IsSeriesInUse): una serie cuyas únicas ventas asociadas están
+	// 'rejected' por SUNAT no tiene numeración fiscal real que proteger — se puede corregir
+	// (típico: serie con formato inválido, ej. "005" en vez de "B002", que SUNAT rechaza antes
+	// de validar el documento). Ver HasRealFiscalUsage.
+	inUse, usageInfo, err := s.seriesUsageSvc().HasRealFiscalUsage(id)
 	if err != nil {
 		return err
 	}
