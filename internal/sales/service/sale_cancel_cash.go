@@ -75,9 +75,12 @@ func reverseSaleCashTx(
 		}
 	}
 
-	// Los movimientos bancarios no dependen de la caja: se revierten siempre.
+	// Los movimientos bancarios no dependen de la caja: se revierten siempre. Se busca por
+	// sale_id (vínculo tipado) o por reference (texto libre, movimientos previos a esa
+	// columna) para no perder movimientos antiguos.
 	var bankCredits []database.TenantBankMovement
-	if err := tx.Where("reference = ? AND type = ?", sale.Number, "credit").Find(&bankCredits).Error; err != nil {
+	if err := tx.Where("(sale_id = ? OR reference = ?) AND type = ?", sale.ID, sale.Number, "credit").
+		Find(&bankCredits).Error; err != nil {
 		return err
 	}
 	for _, bm := range bankCredits {

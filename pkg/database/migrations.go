@@ -1766,7 +1766,11 @@ type TenantBankMovement struct {
 	Date          time.Time `gorm:"not null" json:"date"`
 	UserID        uint      `gorm:"not null" json:"user_id"`
 	ReversalOfID  *uint     `gorm:"index" json:"reversal_of_id,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	// SaleID/PurchaseID: vínculo tipado al documento de origen (además de Reference, texto
+	// libre heredado). Nulo en movimientos manuales.
+	SaleID     *uint     `gorm:"index" json:"sale_id,omitempty"`
+	PurchaseID *uint     `gorm:"index" json:"purchase_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type TenantExternalModule struct {

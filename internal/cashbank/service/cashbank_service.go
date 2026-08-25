@@ -366,7 +366,7 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 	if reference != "" {
 		desc += " " + reference
 	}
-	return s.RecordPaymentToAccount(nil, paymentMethod, amount, movType == "income", reference, desc, userID)
+	return s.RecordPaymentToAccount(nil, paymentMethod, amount, movType == "income", reference, desc, userID, nil, nil)
 }
 
 func (s *CashBankService) GetMovements(sessionID uint) ([]database.TenantCashMovement, error) {
@@ -465,7 +465,8 @@ func (s *CashBankService) GetAccountByPaymentMethod(paymentMethod string) (*data
 
 // RecordPaymentToAccount registra un movimiento en la cuenta asociada al método de pago y actualiza el saldo.
 // db puede ser una transacción (tx) o nil para usar s.db. isCredit=true = ingreso (aumenta saldo), false = egreso.
-func (s *CashBankService) RecordPaymentToAccount(db *gorm.DB, paymentMethod string, amount float64, isCredit bool, reference, description string, userID uint) error {
+// saleID/purchaseID: vínculo tipado opcional al documento de origen (nil si no aplica).
+func (s *CashBankService) RecordPaymentToAccount(db *gorm.DB, paymentMethod string, amount float64, isCredit bool, reference, description string, userID uint, saleID, purchaseID *uint) error {
 	if amount <= 0 {
 		return nil
 	}
@@ -492,6 +493,8 @@ func (s *CashBankService) RecordPaymentToAccount(db *gorm.DB, paymentMethod stri
 		Reference:     reference,
 		Date:          now,
 		UserID:        userID,
+		SaleID:        saleID,
+		PurchaseID:    purchaseID,
 		CreatedAt:     now,
 	}).Error; err != nil {
 		return err
@@ -760,7 +763,7 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 	pm, err := s.GetPaymentMethodByCode(paymentMethodCode)
 	if err != nil || pm == nil {
 		// Fallback legacy: intentar RecordPaymentToAccount (cuenta por payment_method en TenantBankAccount)
-		return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID)
+		return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID, saleID, nil)
 	}
 	switch pm.DestinationType {
 	case "detraction", "receivable":
@@ -800,7 +803,7 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 			bankAccID = acc.ID
 		}
 		if bankAccID == 0 {
-			return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID)
+			return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID, saleID, nil)
 		}
 		delta := amount
 		if err := exec.Create(&database.TenantBankMovement{
@@ -811,6 +814,7 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 			Reference:     saleNumber,
 			Date:          time.Now(),
 			UserID:        userID,
+			SaleID:        saleID,
 			CreatedAt:     time.Now(),
 		}).Error; err != nil {
 			return err

@@ -128,6 +128,31 @@ func (s *BillingService) applyPartialCreditNoteSideEffects(saleID uint, sale *da
 		slog.Uint64("tenant_id", uint64(s.centralTenantID)),
 		slog.Uint64("nc_sale_id", uint64(saleID)),
 	)
+
+	// Devuelve el dinero en Cuentas/Bancos si la venta original se cobró ahí (independiente del
+	// resultado de la reposición de stock arriba: son efectos separados, uno no debe bloquear
+	// al otro). Si se cobró en efectivo, no hace nada acá — ese caso lo cubre la devolución
+	// pendiente manual de Caja (sale_pending_refunds.go).
+	origID := uint(0)
+	if sale.OriginalSaleID != nil {
+		origID = *sale.OriginalSaleID
+	}
+	var origNumber string
+	if origID > 0 {
+		var orig database.TenantSale
+		if s.db.Select("number").First(&orig, origID).Error == nil {
+			origNumber = orig.Number
+		}
+	}
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		return salesvc.RestorePartialSaleBankRefundTx(tx, sale, origID, origNumber, 0)
+	}); err != nil {
+		logger.L.Warn("nc_partial_bank_refund_failed",
+			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+			slog.Uint64("nc_sale_id", uint64(saleID)),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func (s *BillingService) syncLinkedDespatchStatus(saleID uint, pipeline string) {

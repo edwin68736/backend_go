@@ -218,7 +218,8 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		// Descontar de la cuenta asociada al método de pago (egreso), dentro de la misma tx.
 		if input.PaymentMethod != "" {
 			cbSvc := cashbanksvc.NewCashBankService(tx)
-			if err := cbSvc.RecordPaymentToAccount(tx, input.PaymentMethod, total, false, docNumber, "Compra "+docNumber, input.UserID); err != nil {
+			purchaseID := purchase.ID
+			if err := cbSvc.RecordPaymentToAccount(tx, input.PaymentMethod, total, false, docNumber, "Compra "+docNumber, input.UserID, nil, &purchaseID); err != nil {
 				return err
 			}
 		}

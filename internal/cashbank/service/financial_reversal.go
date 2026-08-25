@@ -54,6 +54,8 @@ func (s *CashBankService) CreateBankReversal(tx *gorm.DB, original database.Tena
 		Date:          now,
 		UserID:        uid,
 		ReversalOfID:  &origID,
+		SaleID:        original.SaleID,
+		PurchaseID:    original.PurchaseID,
 		CreatedAt:     now,
 	}
 	if err := exec.Create(&rev).Error; err != nil {
