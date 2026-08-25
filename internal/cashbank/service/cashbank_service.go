@@ -921,3 +921,71 @@ func (s *CashBankService) ListBankMovements(accountID uint) ([]database.TenantBa
 	err := s.db.Where("bank_account_id = ?", accountID).Order("date DESC, created_at DESC").Find(&movements).Error
 	return movements, err
 }
+
+// BankMovementListParams filtros/paginación para el listado de movimientos de una cuenta bancaria.
+type BankMovementListParams struct {
+	DateFrom *time.Time
+	DateTo   *time.Time
+	// Type: "" = todos | "credit" | "debit". Cualquier otro valor se ignora (se trata como "").
+	Type string
+	Page    int
+	PerPage int
+}
+
+// BankMovementListSummary totales del período/filtros aplicados (no solo la página actual) —
+// mismo patrón que SaleListSummary, para que las tarjetas de resumen del front cuadren con el
+// total real aunque solo se muestre una página de filas.
+type BankMovementListSummary struct {
+	SumCredit float64 `json:"sum_credit"`
+	SumDebit  float64 `json:"sum_debit"`
+}
+
+// ListBankMovementsPaged lista movimientos paginados y filtrados por fecha/tipo, con el total de
+// filas (para armar la paginación) y el resumen de ingresos/egresos del período completo.
+func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMovementListParams) ([]database.TenantBankMovement, int64, BankMovementListSummary, error) {
+	q := s.db.Model(&database.TenantBankMovement{}).Where("bank_account_id = ?", accountID)
+	if params.DateFrom != nil {
+		q = q.Where("date >= ?", params.DateFrom)
+	}
+	if params.DateTo != nil {
+		q = q.Where("date <= ?", params.DateTo)
+	}
+	if params.Type == "credit" || params.Type == "debit" {
+		q = q.Where("type = ?", params.Type)
+	}
+
+	var summaryRow struct {
+		SumCredit float64
+		SumDebit  float64
+	}
+	sumQ := q.Session(&gorm.Session{}).Select(`
+		COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) AS sum_credit,
+		COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END), 0) AS sum_debit`)
+	if err := sumQ.Scan(&summaryRow).Error; err != nil {
+		return nil, 0, BankMovementListSummary{}, err
+	}
+	summary := BankMovementListSummary{SumCredit: summaryRow.SumCredit, SumDebit: summaryRow.SumDebit}
+
+	var total int64
+	if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, 0, summary, err
+	}
+
+	page := params.Page
+	if page < 1 {
+		page = 1
+	}
+	perPage := params.PerPage
+	if perPage <= 0 {
+		perPage = 25
+	}
+	if perPage > 200 {
+		perPage = 200
+	}
+
+	var movements []database.TenantBankMovement
+	err := q.Order("date DESC, created_at DESC").
+		Limit(perPage).Offset((page - 1) * perPage).
+		Find(&movements).Error
+	return movements, total, summary, err
+}

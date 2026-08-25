@@ -501,17 +501,36 @@ func (h *CashBankHandler) UpdateBankAccountAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
-// GET /api/cashbank/bank-accounts/:id/movements
+// GET /api/cashbank/bank-accounts/:id/movements?page=&per_page=&from=&to=&type=
 func (h *CashBankHandler) GetBankMovementsAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	movements, err := service.NewCashBankService(db(c)).ListBankMovements(uint(id))
+	page, _ := strconv.Atoi(c.Query("page"))
+	perPage, _ := strconv.Atoi(c.Query("per_page"))
+	params := service.BankMovementListParams{
+		Type:    c.Query("type"),
+		Page:    page,
+		PerPage: perPage,
+	}
+	if from := c.Query("from"); from != "" {
+		if t, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
+			start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+			params.DateFrom = &start
+		}
+	}
+	if to := c.Query("to"); to != "" {
+		if t, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
+			end := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.Local)
+			params.DateTo = &end
+		}
+	}
+	movements, total, summary, err := service.NewCashBankService(db(c)).ListBankMovementsPaged(uint(id), params)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"data": movements})
+	return c.JSON(fiber.Map{"data": movements, "total": total, "summary": summary})
 }
 
 // POST /api/cashbank/bank-accounts/:id/movements
@@ -530,8 +549,11 @@ func (h *CashBankHandler) AddBankMovementAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	date, _ := time.Parse("2006-01-02", body.Date)
-	if date.IsZero() {
+	// ParseInLocation (no Parse a secas): la conexión MySQL usa loc=Local, así que un date-only
+	// parseado como UTC se corre un día hacia atrás al guardarse (medianoche UTC = 19:00 del día
+	// anterior en hora Perú) — se detectó al construir el filtro from/to de ListBankMovementsPaged.
+	date, err := time.ParseInLocation("2006-01-02", body.Date, time.Local)
+	if err != nil {
 		date = time.Now()
 	}
 	if err := service.NewCashBankService(db(c)).AddBankMovement(
