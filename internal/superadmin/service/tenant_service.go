@@ -67,6 +67,17 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	if input.AdminEmail == "" || input.AdminPassword == "" {
 		return nil, errors.New("email y contraseña del administrador son requeridos")
 	}
+	// Sin esto, Address/Ubigeo vacíos caían en el default de conveniencia "Arequipa" / "040101"
+	// (pkg/database/tenant_contact_defaults.go, pensado solo para no romper la emisión SUNAT de
+	// tenants de prueba) y terminaba impreso como domicilio fiscal real de empresas de otras
+	// regiones. El frontend ya lo exige, pero se valida también acá por si algún otro caller
+	// (API interna, importación masiva, etc.) pasa por alto ese formulario.
+	if strings.TrimSpace(input.Address) == "" {
+		return nil, errors.New("la dirección es requerida")
+	}
+	if strings.TrimSpace(input.Ubigeo) == "" {
+		return nil, errors.New("debe seleccionar departamento, provincia y distrito")
+	}
 
 	slug, err := resolveCreateSlug(input)
 	if err != nil {
