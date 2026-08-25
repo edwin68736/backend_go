@@ -89,6 +89,7 @@ var TenantMigrations = []TenantMigration{
 	V115NoteReasonCode{},
 	V116DebitNoteBDSeries{},
 	V117NoteItemOrigin{},
+	V118NoteManualAffectedDoc{},
 }
 
 // ByVersion mapa versión → migración.

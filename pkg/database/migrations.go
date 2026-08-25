@@ -1158,6 +1158,11 @@ type TenantSale struct {
 	// Vacío en notas emitidas antes de existir este campo — se interpreta como "01" (NC) /
 	// "02" (ND), el único motivo que el sistema podía emitir hasta ahora.
 	NoteReasonCode string `gorm:"size:5" json:"note_reason_code,omitempty"`
+	// Documento afectado declarado a mano (Fase 3 — nota de crédito/débito independiente,
+	// sin venta local que referenciar): tipo (01 factura / 03 boleta) y serie-número
+	// ("F001-123"). Vacío en cualquier nota con original_sale_id.
+	ManualAffectedDocType   string `gorm:"size:5" json:"manual_affected_doc_type,omitempty"`
+	ManualAffectedDocNumber string `gorm:"size:20" json:"manual_affected_doc_number,omitempty"`
 	// Si esta venta es factura/boleta (01/03) generada desde una nota de venta (00), apunta al ID de esa NV.
 	IssuedFromNotaSaleID *uint `gorm:"index" json:"issued_from_nota_sale_id,omitempty"`
 	// Origen comercial: direct | converted_from_nota | api | migration | legacy

@@ -277,6 +277,31 @@ func (h *BillingHandler) CreateDebitNoteAPI(c fiber.Ctx) error {
 	})
 }
 
+// CreateIndependentNoteAPI emite una NC/ND que no nace de una venta de Tukifac (Fase 3) — el
+// comprobante afectado se declara a mano (tipo, serie, número).
+func (h *BillingHandler) CreateIndependentNoteAPI(c fiber.Ctx) error {
+	var body service.IndependentNoteInput
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	svc := billingSvc(c)
+	noteSale, invoice, err := svc.CreateIndependentNote(body)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   err.Error(),
+			"nc_sale": noteSale,
+			"invoice": invoice,
+		})
+	}
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Nota encolada para emisión SUNAT",
+		"async":   true,
+		"nc_sale": noteSale,
+		"invoice": invoice,
+	})
+}
+
 func (h *BillingHandler) GetInvoiceAPI(c fiber.Ctx) error {
 	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
 	if err != nil {

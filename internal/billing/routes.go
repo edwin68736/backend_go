@@ -23,6 +23,8 @@ func RegisterRoutes(api fiber.Router) {
 	)
 	api.Post("/billing/void-with-credit-note/:saleId", middleware.RequireModule("billing"), h.VoidWithCreditNoteAPI)
 	api.Post("/billing/debit-notes/:saleId", middleware.RequireModule("billing"), h.CreateDebitNoteAPI)
+	// Nota de crédito/débito independiente (Fase 3): sin venta local, documento afectado a mano.
+	api.Post("/billing/notes/independent", middleware.RequireModule("billing"), h.CreateIndependentNoteAPI)
 	api.Get("/billing/invoice/:saleId", middleware.RequireModule("billing"), h.GetInvoiceAPI)
 	api.Get("/billing/invoice/:saleId/document/:kind", middleware.RequireModule("billing"), h.GetInvoiceDocumentAPI)
 	// Resúmenes diarios y comunicaciones de baja

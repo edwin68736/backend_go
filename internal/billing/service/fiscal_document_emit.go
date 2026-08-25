@@ -178,17 +178,30 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 	if hasOrig {
 		tipDocAfectado = affectedDocumentSunatType(&orig, getSeriesSunatCode(s.db, orig.SeriesID))
 		numDocAfectado = formatAffectedDocumentNumber(&orig)
+	} else {
+		// Nota independiente (Fase 3): no hay venta local que referenciar — el documento
+		// afectado se declaró a mano al crear la nota (ver CreateIndependentNote) y quedó
+		// en estos dos campos, igual que data_affected_document en el sistema legado.
+		tipDocAfectado = strings.TrimSpace(noteSale.ManualAffectedDocType)
+		numDocAfectado = strings.TrimSpace(noteSale.ManualAffectedDocNumber)
 	}
-	if tipoDoc == "07" && (!hasOrig || tipDocAfectado == "" || numDocAfectado == "") {
+	if tipoDoc == "07" && (tipDocAfectado == "" || numDocAfectado == "") {
 		return nil, errors.New("la nota de crédito debe referenciar la factura o boleta que anula (tipDocAfectado y numDocfectado)")
 	}
-	if tipoDoc == "07" && hasOrig {
-		wantPrefix := docseries.CreditNoteSeriesPrefixForAffected(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID))
+	if tipoDoc == "07" && tipDocAfectado != "" {
+		affectedDocType := "BOLETA"
+		if tipDocAfectado == "01" {
+			affectedDocType = "FACTURA"
+		}
+		if hasOrig {
+			affectedDocType = orig.DocType
+		}
+		wantPrefix := docseries.CreditNoteSeriesPrefixForAffected(affectedDocType, tipDocAfectado)
 		if !docseries.SeriesMatchesCreditNotePrefix(noteSale.Series, wantPrefix) {
 			return nil, fmt.Errorf(
 				"la serie %s no anula %ss: use %s## (ej. %s01) según SUNAT",
 				noteSale.Series,
-				docseries.AffectedDocLabel(orig.DocType, getSeriesSunatCode(s.db, orig.SeriesID)),
+				docseries.AffectedDocLabel(affectedDocType, tipDocAfectado),
 				wantPrefix,
 				wantPrefix,
 			)
