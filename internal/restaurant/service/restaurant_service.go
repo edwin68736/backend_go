@@ -581,10 +581,12 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 			resolvedStaff = sess.StaffID
 		}
 
-		var lastOrder database.TenantTableOrder
-		nextNum := 1
-		if tx.Where("session_id = ?", sessionID).Order("order_number DESC").First(&lastOrder).Error == nil {
-			nextNum = lastOrder.OrderNumber + 1
+		// "Pedido #N" por sucursal+día (no por sesión de mesa): antes se reiniciaba en 1 cada
+		// vez que la mesa se cerraba y volvía a abrirse, permitiendo varios "Pedido #1"
+		// simultáneos el mismo día. Ver reserveDailyComandaNumber.
+		nextNum, err := reserveDailyComandaNumber(tx, sess.BranchID, time.Now())
+		if err != nil {
+			return err
 		}
 
 		order = database.TenantTableOrder{

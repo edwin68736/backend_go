@@ -1886,6 +1886,21 @@ type TenantDeliveryDriver struct {
 	DeliveryCompany *TenantDeliveryCompany `gorm:"foreignKey:DeliveryCompanyID" json:"delivery_company,omitempty"`
 }
 
+// TenantBranchDailyComandaCounter contador atómico de "Pedido #N" por sucursal y día de negocio
+// (YYYYMMDD, hora local). Antes ese número se calculaba como MAX(order_number)+1 por sesión de
+// mesa (TenantTableSession) — se reiniciaba en 1 cada vez que una mesa se cerraba y volvía a
+// abrirse, permitiendo varios "Pedido #1" simultáneos el mismo día en mesas distintas. Este
+// contador es independiente de la mesa: una fila por sucursal+día, incrementada con el mismo
+// patrón de SELECT...FOR UPDATE que ya usa el correlativo de series SUNAT (pkg/docseries).
+type TenantBranchDailyComandaCounter struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	BranchID     uint      `gorm:"not null;uniqueIndex:ux_branch_daily_comanda_counter" json:"branch_id"`
+	BusinessDate string    `gorm:"size:8;not null;uniqueIndex:ux_branch_daily_comanda_counter" json:"business_date"` // YYYYMMDD
+	LastNumber   int       `gorm:"not null;default:0" json:"last_number"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // TenantTableOrder representa una ronda/comanda de cocina (ticket) dentro de la sesión.
 type TenantTableOrder struct {
 	ID          uint       `gorm:"primaryKey" json:"id"`
@@ -1893,7 +1908,9 @@ type TenantTableOrder struct {
 	WaiterID    *uint      `gorm:"index" json:"waiter_id,omitempty"` // deprecado
 	StaffID     *uint      `gorm:"index" json:"staff_id"`
 	UserID      uint       `gorm:"not null;index" json:"user_id"`
-	OrderNumber int        `gorm:"not null" json:"order_number"` // número de comanda/ronda en la sesión
+	// "Pedido #N" que ve mesero/cocina/ticket — único por sucursal y día de negocio (ver
+	// TenantBranchDailyComandaCounter), NO por sesión de mesa. Antes se reiniciaba por mesa.
+	OrderNumber int `gorm:"not null" json:"order_number"`
 	Notes       string     `gorm:"type:text" json:"notes"`
 	Status      string     `gorm:"size:20;default:'active'" json:"status"` // active, cancelled
 	PrintedAt   *time.Time `json:"printed_at"`
