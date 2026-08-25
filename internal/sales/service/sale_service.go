@@ -1388,9 +1388,13 @@ type SalesByProductRow struct {
 	Unit          string  `json:"unit"`
 	QuantitySold  float64 `json:"quantity_sold"`
 	TotalAmount   float64 `json:"total_amount"`
+	// LinesCount/AvgLineAmount: métricas técnicas de granularidad interna (cuántas filas de
+	// detalle tuvo el producto, no cuántas ventas) — no se muestran en el reporte del front
+	// porque no tienen lectura de negocio clara, pero se dejan calculadas por si se reusan.
 	LinesCount    int64   `json:"lines_count"`
 	SalesCount    int64   `json:"sales_count"`
-	AvgLineAmount float64 `json:"avg_line_amount"` // total_amount / lines_count (precio medio por línea del producto)
+	AvgLineAmount float64 `json:"avg_line_amount"` // total_amount / lines_count
+	AvgUnitPrice  float64 `json:"avg_unit_price"`  // total_amount / quantity_sold (precio promedio de venta por unidad)
 }
 
 // SalesByProductSummary totales del período (mismos filtros que las filas).
@@ -1408,6 +1412,11 @@ type SalesByProductParams struct {
 	DateTo     *time.Time
 	BranchID   uint
 	CategoryID uint
+	// Q busca por código o nombre de producto (LIKE, case-insensitive).
+	Q string
+	// ProductType filtra por tenant_products.type: "product" o "service". Vacío = todos.
+	// Ítems sin producto de catálogo (product_id=0, ítems manuales) se tratan como "product".
+	ProductType string
 }
 
 func (s *SaleService) salesByProductBaseQuery(params SalesByProductParams) *gorm.DB {
@@ -1427,6 +1436,13 @@ func (s *SaleService) salesByProductBaseQuery(params SalesByProductParams) *gorm
 	}
 	if params.CategoryID > 0 {
 		q = q.Where("p.category_id = ?", params.CategoryID)
+	}
+	if qStr := strings.TrimSpace(params.Q); qStr != "" {
+		like := "%" + qStr + "%"
+		q = q.Where("p.code LIKE ? OR p.name LIKE ? OR tenant_sale_items.description LIKE ?", like, like, like)
+	}
+	if pt := strings.TrimSpace(params.ProductType); pt != "" {
+		q = q.Where("COALESCE(NULLIF(p.type, ''), 'product') = ?", pt)
 	}
 	return q
 }
@@ -1485,6 +1501,10 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 		if r.LinesCount > 0 {
 			avgLine = r.TotalAmount / float64(r.LinesCount)
 		}
+		avgUnit := float64(0)
+		if r.QuantitySold > 0 {
+			avgUnit = r.TotalAmount / r.QuantitySold
+		}
 		out[i] = SalesByProductRow{
 			ProductID:     r.ProductID,
 			ProductCode:   r.ProductCode,
@@ -1497,6 +1517,7 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 			LinesCount:    r.LinesCount,
 			SalesCount:    r.SalesCount,
 			AvgLineAmount: avgLine,
+			AvgUnitPrice:  avgUnit,
 		}
 		sumAmt += r.TotalAmount
 		sumQty += r.QuantitySold

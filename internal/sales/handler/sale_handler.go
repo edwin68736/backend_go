@@ -443,10 +443,12 @@ func (h *SaleHandler) ListByProductAPI(c fiber.Ctx) error {
 		}
 	}
 	params := service.SalesByProductParams{
-		DateFrom:   dateFrom,
-		DateTo:     dateTo,
-		BranchID:   uint(branchID),
-		CategoryID: uint(catID),
+		DateFrom:    dateFrom,
+		DateTo:      dateTo,
+		BranchID:    uint(branchID),
+		CategoryID:  uint(catID),
+		Q:           c.Query("q"),
+		ProductType: c.Query("product_type"),
 	}
 	rows, summary, err := svc.SalesByProduct(params)
 	if err != nil {
