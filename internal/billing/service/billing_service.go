@@ -1252,7 +1252,13 @@ func (s *BillingService) GetSummaryStatus(id uint) (*database.TenantSunatSummary
 }
 
 // CreateVoidedInput es un comprobante a dar de baja para una comunicación de baja.
+// También lo reutiliza CreateReversion (retención/percepción, 20/40) — por eso TipoDoc/Serie/
+// Correlativo se mantienen como campos de texto en vez de reemplazarlos por SaleID.
 type CreateVoidedInput struct {
+	// SaleID: forma preferida para comunicación de baja — resuelve tipo/serie/correlativo
+	// desde la venta real en vez de confiar en lo que el cliente tipeó. Vacío (0) mantiene el
+	// camino viejo por texto libre, que sigue usando CreateReversion.
+	SaleID        uint   `json:"sale_id,omitempty"`
 	TipoDoc       string `json:"tipo_doc"` // 01, 03, 07, 08
 	Serie         string `json:"serie"`
 	Correlativo   string `json:"correlativo"`
@@ -1266,6 +1272,104 @@ func (s *BillingService) ListVoided() ([]database.TenantSunatVoided, error) {
 	return list, err
 }
 
+// voidedCommunicationWindowDays plazo que da SUNAT para comunicar la baja de un comprobante
+// enviado individualmente: hasta 7 días calendario contados desde el día calendario siguiente
+// a la aceptación. Pasado ese plazo, corresponde nota de crédito, no comunicación de baja.
+const voidedCommunicationWindowDays = 8 // día siguiente (+1) + 7 días de plazo
+
+// voidedDetailKey normaliza tipo+serie+correlativo para comparar duplicados sin que un "05"
+// vs "5" o mayúscula/minúscula en la serie hagan pasar dos veces el mismo comprobante.
+func voidedDetailKey(tipoDoc, serie, correlativo string) string {
+	c := strings.TrimLeft(strings.TrimSpace(correlativo), "0")
+	if c == "" {
+		c = "0"
+	}
+	return strings.TrimSpace(tipoDoc) + "|" + strings.ToUpper(strings.TrimSpace(serie)) + "|" + c
+}
+
+// loadAlreadyVoidedKeys comprobantes que ya están en una comunicación de baja pendiente o
+// aceptada — evita reenviar el mismo comprobante dos veces. No hay tabla normalizada de
+// detalles: se parsea el payload guardado de cada comunicación.
+func (s *BillingService) loadAlreadyVoidedKeys() (map[string]bool, error) {
+	var records []database.TenantSunatVoided
+	if err := s.db.Where("status IN ?", []string{"accepted", "pending"}).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	keys := make(map[string]bool)
+	for _, r := range records {
+		var payload facturador.VoidedPayload
+		if json.Unmarshal([]byte(r.PayloadJSON), &payload) != nil {
+			continue
+		}
+		for _, d := range payload.Details {
+			keys[voidedDetailKey(d.TipoDoc, d.Serie, d.Correlativo)] = true
+		}
+	}
+	return keys, nil
+}
+
+// resolveAndValidateVoidedDetail valida una línea de comunicación de baja contra el
+// comprobante real del tenant: solo boletas (03) — SUNAT no admite comunicación de baja para
+// facturas ni notas, esas se anulan con una nota de crédito —, que exista, que ya esté
+// aceptada por SUNAT, dentro del plazo de 7 días calendario, y que no haya sido dada de baja
+// antes. Con SaleID, tipo/serie/correlativo se resuelven desde la venta real y se ignora lo
+// que haya llegado por texto — así el usuario no puede tipear un comprobante que no existe.
+func (s *BillingService) resolveAndValidateVoidedDetail(d CreateVoidedInput, alreadyVoided map[string]bool) (CreateVoidedInput, error) {
+	motivo := strings.TrimSpace(d.DesMotivoBaja)
+	if motivo == "" {
+		return d, errors.New("el motivo de la baja es obligatorio")
+	}
+	if len(motivo) > 100 {
+		return d, errors.New("el motivo no puede superar 100 caracteres")
+	}
+
+	var sale database.TenantSale
+	if d.SaleID > 0 {
+		if err := s.db.First(&sale, d.SaleID).Error; err != nil {
+			return d, errors.New("comprobante no encontrado")
+		}
+	} else {
+		serie := strings.ToUpper(strings.TrimSpace(d.Serie))
+		correlativo := strings.TrimSpace(d.Correlativo)
+		if serie == "" || correlativo == "" {
+			return d, errors.New("serie y correlativo son obligatorios")
+		}
+		if err := s.db.Where("series = ? AND correlative = ?", serie, correlativo).First(&sale).Error; err != nil {
+			return d, fmt.Errorf("no se encontró el comprobante %s-%s en este tenant", serie, correlativo)
+		}
+	}
+
+	sunatCode := strings.TrimSpace(getSeriesSunatCode(s.db, sale.SeriesID))
+	label := fmt.Sprintf("%s-%d", sale.Series, sale.Correlative)
+	if sunatCode != "03" {
+		return d, fmt.Errorf(
+			"%s no es una boleta (tipo %s): la comunicación de baja solo aplica a boletas — para anular una factura o una nota, emita una nota de crédito",
+			label, sunatCode,
+		)
+	}
+	if sale.BillingStatus != "accepted" {
+		return d, fmt.Errorf("%s todavía no está aceptado por SUNAT", label)
+	}
+	deadline := time.Date(sale.IssueDate.Year(), sale.IssueDate.Month(), sale.IssueDate.Day(), 23, 59, 59, 0, sale.IssueDate.Location()).
+		AddDate(0, 0, voidedCommunicationWindowDays)
+	if time.Now().After(deadline) {
+		return d, fmt.Errorf(
+			"%s ya superó el plazo de 7 días calendario para comunicar la baja (vencía el %s) — emita una nota de crédito en su lugar",
+			label, deadline.Format("02/01/2006"),
+		)
+	}
+	if alreadyVoided[voidedDetailKey("03", sale.Series, strconv.FormatUint(uint64(sale.Correlative), 10))] {
+		return d, fmt.Errorf("%s ya fue dado de baja antes", label)
+	}
+
+	return CreateVoidedInput{
+		TipoDoc:       "03",
+		Serie:         sale.Series,
+		Correlativo:   strconv.FormatUint(uint64(sale.Correlative), 10),
+		DesMotivoBaja: motivo,
+	}, nil
+}
+
 // CreateVoided envía una comunicación de baja a SUNAT. Si la respuesta trae ticket, guarda pendiente; si trae CDR directo, guarda estado y CDR.
 func (s *BillingService) CreateVoided(details []CreateVoidedInput) (*database.TenantSunatVoided, error) {
 	if !s.facturadorConfigured() {
@@ -1274,6 +1378,25 @@ func (s *BillingService) CreateVoided(details []CreateVoidedInput) (*database.Te
 	if len(details) == 0 {
 		return nil, errors.New("se requiere al menos un comprobante para dar de baja")
 	}
+	alreadyVoided, err := s.loadAlreadyVoidedKeys()
+	if err != nil {
+		return nil, err
+	}
+	resolved := make([]CreateVoidedInput, len(details))
+	seen := make(map[string]bool, len(details))
+	for i, d := range details {
+		rd, err := s.resolveAndValidateVoidedDetail(d, alreadyVoided)
+		if err != nil {
+			return nil, fmt.Errorf("línea %d: %w", i+1, err)
+		}
+		key := voidedDetailKey(rd.TipoDoc, rd.Serie, rd.Correlativo)
+		if seen[key] {
+			return nil, fmt.Errorf("línea %d: %s-%s está repetido en esta misma comunicación", i+1, rd.Serie, rd.Correlativo)
+		}
+		seen[key] = true
+		resolved[i] = rd
+	}
+	details = resolved
 	companyCfg, companyAddr, err := s.getCompanyConfigAndAddress()
 	if err != nil {
 		return nil, fmt.Errorf("configuración de empresa: %w", err)
