@@ -76,6 +76,15 @@ func RegisterRoutes(api fiber.Router) {
 	api.Post("/categories", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.CategoryCreateAPI)
 	api.Put("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.CategoryUpdateAPI)
 	api.Delete("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.CategoryDeleteAPI)
+	api.Get("/brands",
+		middleware.RequireModule("products"),
+		middleware.LoadRestaurantPermissions(),
+		middleware.RequireProductsViewOrRestaurantCatalog(),
+		h.BrandListAPI,
+	)
+	api.Post("/brands", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.BrandCreateAPI)
+	api.Put("/brands/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.BrandUpdateAPI)
+	api.Delete("/brands/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.BrandDeleteAPI)
 	api.Get("/preparation-areas",
 		middleware.RequireModule("products"),
 		middleware.LoadRestaurantPermissions(),

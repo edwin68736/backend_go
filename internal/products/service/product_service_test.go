@@ -18,7 +18,7 @@ func setupProductServiceTestDB(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(
-		&database.TenantProduct{}, &database.TenantCategory{}, &database.TenantPreparationArea{},
+		&database.TenantProduct{}, &database.TenantCategory{}, &database.TenantBrand{}, &database.TenantPreparationArea{},
 		&database.TenantProductPresentation{},
 	); err != nil {
 		t.Fatal(err)
@@ -328,6 +328,99 @@ func TestCategoryCRUD_sortOrderAndDeleteGuard(t *testing.T) {
 	}
 	if err := svc.DeleteCategory(c2.ID); err == nil {
 		t.Fatal("expected delete blocked with linked product")
+	}
+}
+
+func TestBrandCRUD_sortOrderAndDeleteGuard(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	order1 := 10
+	b1, err := svc.CreateBrand("Samsung", "", &order1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := svc.CreateBrand("LG", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b2.SortOrder <= b1.SortOrder {
+		t.Fatalf("auto sort_order got %d want > %d", b2.SortOrder, b1.SortOrder)
+	}
+
+	brands, err := svc.ListBrands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(brands) != 2 || brands[0].Name != "Samsung" {
+		t.Fatalf("list order: %#v", brands)
+	}
+
+	order5 := 5
+	if _, err := svc.UpdateBrand(b2.ID, "LG Electronics", "desc", order5); err != nil {
+		t.Fatal(err)
+	}
+	brands, _ = svc.ListBrands()
+	if brands[0].Name != "LG Electronics" {
+		t.Fatalf("after update order: %#v", brands)
+	}
+
+	if err := svc.DeleteBrand(b1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	bid := b2.ID
+	if _, _, err := svc.Create(ProductInput{
+		Code: "P1", Name: "Prod", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		BrandID: &bid, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteBrand(b2.ID); err == nil {
+		t.Fatal("expected delete blocked with linked product")
+	}
+
+	items, err := svc.ListBrandsWithCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range items {
+		if it.ID == b2.ID {
+			found = true
+			if it.ProductCount != 1 {
+				t.Fatalf("product_count: got %d want 1", it.ProductCount)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("marca b2 no encontrada en ListBrandsWithCounts")
+	}
+}
+
+// La marca de un producto debe resolverse en brand_name igual que category_name.
+func TestAttachCategoryNames_alsoResolvesBrandName(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+
+	b, err := svc.CreateBrand("Sony", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bid := b.ID
+	p, _, err := svc.Create(ProductInput{
+		Code: "P2", Name: "Televisor", Type: "product", Unit: "NIU",
+		SalePrice: 10, TaxRate: 18, IgvAffectationType: "10",
+		BrandID: &bid, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	item := svc.ProductListItemFrom(*p)
+	if item.BrandName != "Sony" {
+		t.Fatalf("brand_name: got %q want %q", item.BrandName, "Sony")
 	}
 }
 

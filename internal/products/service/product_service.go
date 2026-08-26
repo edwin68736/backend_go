@@ -27,6 +27,7 @@ func NewProductService(db *gorm.DB) *ProductService {
 type ProductListParams struct {
 	Query                    string
 	CategoryID               uint
+	BrandID                  uint
 	Type                     string
 	ActiveOnly               bool
 	InactiveOnly             bool   // solo productos inactivos (panel restaurante)
@@ -57,10 +58,11 @@ type BranchStockRow struct {
 	Quantity   float64 `json:"quantity"`
 }
 
-// ProductListItem producto en listados API con nombre de categoría.
+// ProductListItem producto en listados API con nombre de categoría/marca.
 type ProductListItem struct {
 	database.TenantProduct
 	CategoryName string `json:"category_name,omitempty"`
+	BrandName    string `json:"brand_name,omitempty"`
 }
 
 // ProductReportItem extiende el producto con totales, stock por sucursal y series.
@@ -82,6 +84,9 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	}
 	if params.CategoryID > 0 {
 		q = q.Where(p+"category_id = ?", params.CategoryID)
+	}
+	if params.BrandID > 0 {
+		q = q.Where(p+"brand_id = ?", params.BrandID)
 	}
 	t := strings.ToLower(strings.TrimSpace(params.Type))
 	if t != "" {
@@ -256,14 +261,23 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 	catName := map[uint]string{}
 	seenCat := map[uint]struct{}{}
 	var catIDs []uint
+	brandName := map[uint]string{}
+	seenBrand := map[uint]struct{}{}
+	var brandIDs []uint
 	for _, p := range products {
 		if p.CategoryID != nil {
 			cid := *p.CategoryID
-			if _, ok := seenCat[cid]; ok {
-				continue
+			if _, ok := seenCat[cid]; !ok {
+				seenCat[cid] = struct{}{}
+				catIDs = append(catIDs, cid)
 			}
-			seenCat[cid] = struct{}{}
-			catIDs = append(catIDs, cid)
+		}
+		if p.BrandID != nil {
+			bid := *p.BrandID
+			if _, ok := seenBrand[bid]; !ok {
+				seenBrand[bid] = struct{}{}
+				brandIDs = append(brandIDs, bid)
+			}
 		}
 	}
 	if len(catIDs) > 0 {
@@ -273,11 +287,21 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 			catName[c.ID] = c.Name
 		}
 	}
+	if len(brandIDs) > 0 {
+		var brands []database.TenantBrand
+		s.db.Where("id IN ?", brandIDs).Find(&brands)
+		for _, b := range brands {
+			brandName[b.ID] = b.Name
+		}
+	}
 	out := make([]ProductListItem, len(products))
 	for i, p := range products {
 		item := ProductListItem{TenantProduct: p}
 		if p.CategoryID != nil {
 			item.CategoryName = catName[*p.CategoryID]
+		}
+		if p.BrandID != nil {
+			item.BrandName = brandName[*p.BrandID]
 		}
 		out[i] = item
 	}
@@ -530,6 +554,7 @@ func (s *ProductService) EnsureRestaurantBranchAccess(p *database.TenantProduct,
 
 type ProductInput struct {
 	CategoryID           *uint
+	BrandID              *uint
 	Code                 string
 	Name                 string
 	Description          string
@@ -630,6 +655,7 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 
 	p := &database.TenantProduct{
 		CategoryID:           input.CategoryID,
+		BrandID:              input.BrandID,
 		Code:                 input.Code,
 		Name:                 input.Name,
 		Description:          input.Description,
@@ -872,6 +898,7 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 
 	upd := map[string]interface{}{
 		"category_id":             input.CategoryID,
+		"brand_id":                input.BrandID,
 		"code":                    input.Code,
 		"name":                    input.Name,
 		"description":             input.Description,
@@ -1212,6 +1239,128 @@ func (s *ProductService) DeleteCategory(id uint) error {
 		return fmt.Errorf("no se puede eliminar: hay %d producto(s) vinculados", linked)
 	}
 	return s.db.Delete(&cat).Error
+}
+
+// ========= Marcas =========
+
+// BrandListItem marca con conteo de productos.
+type BrandListItem struct {
+	database.TenantBrand
+	ProductCount int64 `json:"product_count"`
+}
+
+func (s *ProductService) nextBrandSortOrder() (int, error) {
+	var maxOrder *int
+	err := s.db.Model(&database.TenantBrand{}).Select("MAX(sort_order)").Scan(&maxOrder).Error
+	if err != nil {
+		return 0, err
+	}
+	if maxOrder == nil {
+		return 1, nil
+	}
+	return *maxOrder + 1, nil
+}
+
+func (s *ProductService) ListBrands() ([]database.TenantBrand, error) {
+	var brands []database.TenantBrand
+	err := s.db.Where("active = ?", true).Order("sort_order ASC, name ASC").Find(&brands).Error
+	return brands, err
+}
+
+func (s *ProductService) ListBrandsWithCounts() ([]BrandListItem, error) {
+	var brands []database.TenantBrand
+	if err := s.db.Order("sort_order ASC, name ASC").Find(&brands).Error; err != nil {
+		return nil, err
+	}
+	if len(brands) == 0 {
+		return nil, nil
+	}
+	ids := make([]uint, len(brands))
+	for i, b := range brands {
+		ids[i] = b.ID
+	}
+	type countRow struct {
+		BrandID uint
+		Count   int64
+	}
+	var counts []countRow
+	if err := s.db.Model(&database.TenantProduct{}).
+		Select("brand_id, COUNT(*) AS count").
+		Where("brand_id IN ?", ids).
+		Group("brand_id").
+		Scan(&counts).Error; err != nil {
+		return nil, err
+	}
+	countMap := make(map[uint]int64, len(counts))
+	for _, r := range counts {
+		countMap[r.BrandID] = r.Count
+	}
+	out := make([]BrandListItem, len(brands))
+	for i, b := range brands {
+		out[i] = BrandListItem{TenantBrand: b, ProductCount: countMap[b.ID]}
+	}
+	return out, nil
+}
+
+func (s *ProductService) GetBrand(id uint) (*database.TenantBrand, error) {
+	var b database.TenantBrand
+	if err := s.db.First(&b, id).Error; err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (s *ProductService) CreateBrand(name, description string, sortOrder *int) (*database.TenantBrand, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("nombre de marca requerido")
+	}
+	order := 0
+	if sortOrder != nil {
+		order = *sortOrder
+	} else {
+		next, err := s.nextBrandSortOrder()
+		if err != nil {
+			return nil, err
+		}
+		order = next
+	}
+	b := &database.TenantBrand{Name: name, Description: strings.TrimSpace(description), SortOrder: order, Active: true}
+	err := s.db.Create(b).Error
+	return b, err
+}
+
+func (s *ProductService) UpdateBrand(id uint, name, description string, sortOrder int) (*database.TenantBrand, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("nombre de marca requerido")
+	}
+	var b database.TenantBrand
+	if err := s.db.First(&b, id).Error; err != nil {
+		return nil, errors.New("marca no encontrada")
+	}
+	b.Name = name
+	b.Description = strings.TrimSpace(description)
+	b.SortOrder = sortOrder
+	if err := s.db.Save(&b).Error; err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (s *ProductService) DeleteBrand(id uint) error {
+	var b database.TenantBrand
+	if err := s.db.First(&b, id).Error; err != nil {
+		return errors.New("marca no encontrada")
+	}
+	var linked int64
+	if err := s.db.Model(&database.TenantProduct{}).Where("brand_id = ?", id).Count(&linked).Error; err != nil {
+		return err
+	}
+	if linked > 0 {
+		return fmt.Errorf("no se puede eliminar: hay %d producto(s) vinculados", linked)
+	}
+	return s.db.Delete(&b).Error
 }
 
 func (s *ProductService) resolvePreparationAreaFields(p *database.TenantProduct) error {

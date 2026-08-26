@@ -790,6 +790,18 @@ type TenantCategory struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// TenantBrand marca de producto (mismo rol que TenantCategory, sin jerarquía).
+type TenantBrand struct {
+	ID          uint           `gorm:"primaryKey" json:"id"`
+	Name        string         `gorm:"size:255;not null" json:"name"`
+	Description string         `gorm:"size:255" json:"description"`
+	SortOrder   int            `gorm:"default:0;index" json:"sort_order"`
+	Active      bool           `gorm:"default:true" json:"active"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
 // TenantPreparationArea área de preparación configurable (cocina, bar, etc.) para productos restaurante.
 type TenantPreparationArea struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
@@ -805,6 +817,7 @@ type TenantPreparationArea struct {
 type TenantProduct struct {
 	ID                 uint    `gorm:"primaryKey" json:"id"`
 	CategoryID         *uint   `gorm:"index" json:"category_id"`
+	BrandID            *uint   `gorm:"index" json:"brand_id"`
 	Code               string  `gorm:"size:100;not null;index" json:"code"`
 	Name               string  `gorm:"size:255;not null" json:"name"`
 	Description        string  `gorm:"type:text" json:"description"`
