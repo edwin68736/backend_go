@@ -1775,7 +1775,11 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 	}
 	correlativoStr := strconv.FormatUint(uint64(nextCorr), 10)
 	now := time.Now()
-	fechaEmision := facturador.FormatFiscalDateTime(now)
+	// FormatFiscalDateTimeExact (no FormatFiscalDateTime): la GRE valida fechaEmision con
+	// precisión de hora contra la recepción real en SUNAT, a diferencia de facturas/boletas
+	// donde solo importa la fecha calendario. Con la hora fija a mediodía, una guía emitida en
+	// la mañana llegaba "fechada en el futuro" y SUNAT la rechazaba (código 2108).
+	fechaEmision := facturador.FormatFiscalDateTimeExact(now)
 	fecTraslado := strings.TrimSpace(input.Envio.FecTraslado)
 	if fecTraslado == "" {
 		fecTraslado = fechaEmision
