@@ -2,14 +2,26 @@ package handler
 
 import (
 	"strconv"
-	"strings"
 
 	"tukifac/internal/subscriptions/service"
+	"tukifac/pkg/database"
 	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
 )
+
+// subscriptionStatus lee el estado actual de una suscripción directo de BD — usado solo para
+// capturar el "from" en la auditoría antes de cada operación de escritura (el service no expone
+// un GetByID propio). Falla en silencio (string vacío) si no se encuentra: la auditoría no debe
+// bloquear la operación real.
+func subscriptionStatus(id uint) (tenantID uint, status string) {
+	var sub database.SaasSubscription
+	if err := database.CentralDB.First(&sub, id).Error; err != nil {
+		return 0, ""
+	}
+	return sub.TenantID, sub.Status
+}
 
 type SubscriptionHandler struct {
 	svc *service.SubscriptionService
@@ -66,6 +78,18 @@ func (h *SubscriptionHandler) CreateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	saUserID, _ := c.Locals("sa_user_id").(uint)
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  sub.TenantID,
+		UserID:    saUserID,
+		Action:    "subscription_created",
+		Entity:    "saas_subscription",
+		EntityID:  sub.ID,
+		Payload:   saas.MetaJSON(fiber.Map{"to": sub.Status, "plan_id": sub.PlanID}),
+		IPAddress: c.IP(),
+	})
+
 	// El cobro del alta va en la respuesta para poder registrar el pago en el mismo paso,
 	// sin una consulta extra para averiguar qué ciclo se acaba de emitir.
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -85,18 +109,33 @@ func (h *SubscriptionHandler) SuspendAPI(c fiber.Ctx) error {
 		Reason string `json:"reason"`
 	}
 	c.Bind().JSON(&body)
+
+	tenantID, oldStatus := subscriptionStatus(uint(id))
 	if err := h.svc.Suspend(uint(id), body.Reason); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	saUserID, _ := c.Locals("sa_user_id").(uint)
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  tenantID,
+		UserID:    saUserID,
+		Action:    "subscription_suspended",
+		Entity:    "saas_subscription",
+		EntityID:  uint(id),
+		Payload:   saas.MetaJSON(fiber.Map{"from": oldStatus, "to": database.SaasSubSuspended, "reason": body.Reason}),
+		IPAddress: c.IP(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
 }
 
 // PATCH /api/superadmin/subscriptions/:id/cancel — anula la suscripción (alta no concretada
 // o baja del cliente). Conserva los datos del tenant.
+//
+// Autorización: suscripciones.change_status (Fase 5 etapa 3) — ya NO es superadmin-only
+// hardcodeado, mismo criterio que suspend/reactivate. El permiso ya estaba anticipado para el rol
+// Admin desde la Fase 1.
 func (h *SubscriptionHandler) CancelAPI(c fiber.Ctx) error {
-	if err := requireSuperAdminRole(c); err != nil {
-		return err
-	}
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
@@ -105,9 +144,23 @@ func (h *SubscriptionHandler) CancelAPI(c fiber.Ctx) error {
 		Reason string `json:"reason"`
 	}
 	c.Bind().JSON(&body)
+
+	tenantID, oldStatus := subscriptionStatus(uint(id))
 	if err := h.svc.Cancel(uint(id), body.Reason); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	saUserID, _ := c.Locals("sa_user_id").(uint)
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  tenantID,
+		UserID:    saUserID,
+		Action:    "subscription_cancelled",
+		Entity:    "saas_subscription",
+		EntityID:  uint(id),
+		Payload:   saas.MetaJSON(fiber.Map{"from": oldStatus, "to": database.SaasSubCancelled, "reason": body.Reason}),
+		IPAddress: c.IP(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
 }
 
@@ -121,17 +174,37 @@ func (h *SubscriptionHandler) ReactivateAPI(c fiber.Ctx) error {
 		ExtraMonths int `json:"extra_months"`
 	}
 	c.Bind().JSON(&body)
+
+	tenantID, oldStatus := subscriptionStatus(uint(id))
 	if err := h.svc.Reactivate(uint(id), body.ExtraMonths); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	saUserID, _ := c.Locals("sa_user_id").(uint)
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  tenantID,
+		UserID:    saUserID,
+		Action:    "subscription_reactivated",
+		Entity:    "saas_subscription",
+		EntityID:  uint(id),
+		Payload:   saas.MetaJSON(fiber.Map{"from": oldStatus, "to": database.SaasSubActive, "extra_months": body.ExtraMonths}),
+		IPAddress: c.IP(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
 }
 
 // PATCH /api/superadmin/subscriptions/:id/adjust-validity
+//
+// Autorización: suscripciones.update (Fase 5 etapa 3) — ya NO es superadmin-only hardcodeado.
+// Análisis: modificar manualmente la vigencia es sensible (impacto financiero/de acceso), pero no
+// es equivalente a un bypass de sistema como destroy-complete/operations-key — es una acción de
+// atención al cliente corregible con otra llamada, no irreversible ni destructiva de datos, y
+// suscripciones.update ya estaba anticipado para el rol Admin desde el catálogo de la Fase 1
+// (mismo razonamiento ya aprobado para empresas.master_access en el Grupo 1). La invalidación de
+// sesión no aplica aquí: esta operación no modifica rol/permisos/Active/TokenVersion de ningún
+// SuperAdminUser, solo la vigencia de una suscripción — no hay nada que invalidar.
 func (h *SubscriptionHandler) AdjustValidityAPI(c fiber.Ctx) error {
-	if err := requireSuperAdminRole(c); err != nil {
-		return err
-	}
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
@@ -146,14 +219,6 @@ func (h *SubscriptionHandler) AdjustValidityAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true, "data": sub})
-}
-
-func requireSuperAdminRole(c fiber.Ctx) error {
-	role, _ := c.Locals("sa_user_role").(string)
-	if strings.TrimSpace(role) != "superadmin" {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No autorizado"})
-	}
-	return nil
 }
 
 // POST /api/superadmin/cron/check-expirations

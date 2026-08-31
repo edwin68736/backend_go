@@ -117,6 +117,26 @@ func (h *PaymentHandler) CreateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	// Auditoría: Create aplica la aprobación en el mismo paso (ver comentario en routes.go), así
+	// que se audita igual que un approve. Nunca se registra el comprobante ni datos del método de
+	// pago más allá de su tipo.
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID: payment.TenantID,
+		UserID:   saUserID,
+		Action:   "payment_created_and_approved",
+		Entity:   "saas_payment",
+		EntityID: payment.ID,
+		Payload: saas.MetaJSON(fiber.Map{
+			"to":             payment.Status,
+			"amount":         payment.Amount,
+			"currency":       payment.Currency,
+			"period_months":  payment.PeriodMonths,
+			"payment_method": payment.PaymentMethod,
+		}),
+		IPAddress: c.IP(),
+	})
+
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": payment})
 }
 
@@ -136,6 +156,7 @@ func (h *PaymentHandler) ApproveAPI(c fiber.Ctx) error {
 	c.Bind().JSON(&body)
 
 	reviewerID, _ := c.Locals("sa_user_id").(uint)
+	previous, _ := h.svc.GetByID(uint(id))
 	if err := h.svc.Approve(uint(id), service.ApproveInput{
 		PlanID:       body.PlanID,
 		AdminNotes:   body.AdminNotes,
@@ -144,7 +165,31 @@ func (h *PaymentHandler) ApproveAPI(c fiber.Ctx) error {
 	}); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	oldStatus := ""
+	if previous != nil {
+		oldStatus = previous.Status
+	}
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  paymentTenantID(previous),
+		UserID:    reviewerID,
+		Action:    "payment_approved",
+		Entity:    "saas_payment",
+		EntityID:  uint(id),
+		Payload:   saas.MetaJSON(fiber.Map{"from": oldStatus, "to": database.SaasPayApproved}),
+		IPAddress: c.IP(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
+}
+
+// paymentTenantID extrae TenantID de forma segura cuando GetByID falló antes de la operación
+// (previous == nil) — la auditoría no debe fallar por eso, queda con TenantID=0.
+func paymentTenantID(p *service.PaymentDetail) uint {
+	if p == nil {
+		return 0
+	}
+	return p.TenantID
 }
 
 // PATCH /api/superadmin/payments/:id/reject
@@ -159,9 +204,25 @@ func (h *PaymentHandler) RejectAPI(c fiber.Ctx) error {
 	c.Bind().JSON(&body)
 
 	reviewerID, _ := c.Locals("sa_user_id").(uint)
+	previous, _ := h.svc.GetByID(uint(id))
 	if err := h.svc.Reject(uint(id), body.AdminNotes, reviewerID); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	oldStatus := ""
+	if previous != nil {
+		oldStatus = previous.Status
+	}
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  paymentTenantID(previous),
+		UserID:    reviewerID,
+		Action:    "payment_rejected",
+		Entity:    "saas_payment",
+		EntityID:  uint(id),
+		Payload:   saas.MetaJSON(fiber.Map{"from": oldStatus, "to": database.SaasPayRejected, "reason": body.AdminNotes}),
+		IPAddress: c.IP(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
 }
 
@@ -182,9 +243,25 @@ func (h *PaymentHandler) RevertAPI(c fiber.Ctx) error {
 	}
 
 	actorID, _ := c.Locals("sa_user_id").(uint)
+	previous, _ := h.svc.GetByID(uint(id))
 	if err := h.svc.Revert(uint(id), body.Reason, actorID); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	oldStatus := ""
+	if previous != nil {
+		oldStatus = previous.Status
+	}
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  paymentTenantID(previous),
+		UserID:    actorID,
+		Action:    "payment_reverted",
+		Entity:    "saas_payment",
+		EntityID:  uint(id),
+		Payload:   saas.MetaJSON(fiber.Map{"from": oldStatus, "to": database.SaasPayReversed, "reason": body.Reason}),
+		IPAddress: c.IP(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
 }
 

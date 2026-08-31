@@ -3,6 +3,7 @@ package handler
 import (
 	"strconv"
 
+	"tukifac/pkg/database"
 	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
 
@@ -57,10 +58,11 @@ func (h *SubscriptionHandler) PreviewInvoiceAPI(c fiber.Ctx) error {
 }
 
 // POST /api/superadmin/billing-cycles — emite el cobro de la próxima renovación.
+//
+// Autorización: suscripciones.create (Fase 5 etapa 3) — ya NO es superadmin-only hardcodeado,
+// mismo criterio que POST /subscriptions (genera un compromiso de cobro, no una suscripción, pero
+// es la misma familia de "crear" dentro del módulo).
 func (h *SubscriptionHandler) CreateInvoiceAPI(c fiber.Ctx) error {
-	if err := requireSuperAdminRole(c); err != nil {
-		return err
-	}
 	var body renewalInvoiceBody
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -76,6 +78,18 @@ func (h *SubscriptionHandler) CreateInvoiceAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	saUserID, _ := c.Locals("sa_user_id").(uint)
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  cycle.TenantID,
+		UserID:    saUserID,
+		Action:    "billing_cycle_created",
+		Entity:    "saas_billing_cycle",
+		EntityID:  cycle.ID,
+		Payload:   saas.MetaJSON(fiber.Map{"to": cycle.Status, "amount": cycle.Amount, "months": body.Months}),
+		IPAddress: c.IP(),
+	})
+
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": invoiceRow(saas.ToInvoiceRow(cycle))})
 }
 
@@ -99,10 +113,12 @@ func (h *SubscriptionHandler) ListInvoicesAPI(c fiber.Ctx) error {
 
 // PATCH /api/superadmin/billing-cycles/:id/cancel — anula un cobro no pagado. Si tenía un
 // comprobante en revisión, se rechaza en cascada como parte de la misma anulación.
+//
+// Autorización: suscripciones.change_status (Fase 5 etapa 3) — ya NO es superadmin-only
+// hardcodeado, mismo criterio que suspend/reactivate/cancel de suscripción. La validación de
+// negocio (no se puede anular un cobro ya pagado, ya anulado, o con un pago aprobado asociado)
+// sigue intacta dentro de saas.CancelInvoice — RBAC no la reemplaza.
 func (h *SubscriptionHandler) CancelInvoiceAPI(c fiber.Ctx) error {
-	if err := requireSuperAdminRole(c); err != nil {
-		return err
-	}
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
@@ -112,9 +128,24 @@ func (h *SubscriptionHandler) CancelInvoiceAPI(c fiber.Ctx) error {
 	}
 	c.Bind().JSON(&body)
 	saUserID, _ := c.Locals("sa_user_id").(uint)
+
+	var previous database.SaasBillingCycle
+	database.CentralDB.First(&previous, id)
+
 	if err := saas.CancelInvoice(uint(id), body.Reason, saUserID); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	database.CentralDB.Create(&database.AuditLog{
+		TenantID:  previous.TenantID,
+		UserID:    saUserID,
+		Action:    "billing_cycle_cancelled",
+		Entity:    "saas_billing_cycle",
+		EntityID:  uint(id),
+		Payload:   saas.MetaJSON(fiber.Map{"from": previous.Status, "to": database.SaasInvoiceRejected, "reason": body.Reason}),
+		IPAddress: c.IP(),
+	})
+
 	return c.JSON(fiber.Map{"success": true})
 }
 

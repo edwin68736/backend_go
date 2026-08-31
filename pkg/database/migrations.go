@@ -38,14 +38,27 @@ type Tenant struct {
 }
 
 type SuperAdminUser struct {
-	ID        uint           `gorm:"primaryKey" json:"id"`
-	Name      string         `gorm:"size:255;not null" json:"name"`
-	Email     string         `gorm:"size:255;uniqueIndex;not null" json:"email"`
-	Password  string         `gorm:"size:255;not null" json:"-"`
-	Role      string         `gorm:"size:50;default:'admin'" json:"role"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	ID       uint   `gorm:"primaryKey" json:"id"`
+	Name     string `gorm:"size:255;not null" json:"name"`
+	Email    string `gorm:"size:255;uniqueIndex;not null" json:"email"`
+	Password string `gorm:"size:255;not null" json:"-"`
+	// Role es el mecanismo de bypass total ("superadmin") — no depende de RoleID/permisos de BD.
+	// Se mantiene por compatibilidad y como red de seguridad anti-lockout. Comparar SIEMPRE con
+	// igualdad exacta ("superadmin"), nunca con contains/prefix.
+	Role string `gorm:"size:50;default:'admin'" json:"role"`
+	// RoleID referencia el rol granular (SARole) para usuarios no-superadmin. NULL = sin permisos
+	// (nunca debe interpretarse como acceso total). Ver SARolePermission para el detalle de permisos.
+	RoleID *uint `gorm:"index" json:"role_id"`
+	// Active permite desactivar el acceso de un usuario sin eliminarlo. El middleware de auth debe
+	// verificarlo en cada request (no solo confiar en el JWT).
+	Active bool `gorm:"default:true;not null" json:"active"`
+	// TokenVersion invalida sesiones activas: se incrementa al cambiar rol/permisos/estado o al
+	// forzar un reset de seguridad. El JWT lleva la versión vigente al momento del login; el
+	// middleware la compara contra la BD y rechaza el token si no coincide.
+	TokenVersion uint           `gorm:"default:0;not null" json:"-"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (u *SuperAdminUser) SetPassword(password string) error {
@@ -59,6 +72,102 @@ func (u *SuperAdminUser) SetPassword(password string) error {
 
 func (u *SuperAdminUser) CheckPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password)) == nil
+}
+
+// IncrementTokenVersion invalida TODAS las sesiones activas de este usuario: cualquier JWT ya
+// emitido deja de pasar la verificación de sesión (middleware.verifySuperAdminSession) en el
+// siguiente request, sin importar que su firma y expiración sigan siendo válidas.
+//
+// Punto de invalidación de sesión ÚNICO y centralizado — cualquier operación que cambie rol,
+// permisos efectivos, estado (Active) o credenciales de un SuperAdminUser debe llamar a este
+// método (nunca incrementar `token_version` a mano en otro lugar). Usa un UPDATE atómico
+// (token_version = token_version + 1) para no perder incrementos concurrentes.
+func (u *SuperAdminUser) IncrementTokenVersion(db *gorm.DB) error {
+	if err := db.Model(u).UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
+		return err
+	}
+	u.TokenVersion++
+	return nil
+}
+
+// =================== RBAC DEL PANEL CENTRAL (SuperAdmin) ===================
+//
+// Réplica del patrón ya usado para el RBAC de tenants (TenantRole/TenantPermission/
+// TenantRolePermission, ver internal/users/service/role_service.go), pero aplicado a la BD
+// central (tukifac_saas) para los usuarios del panel central (SuperAdminUser). Son sistemas
+// independientes: este RBAC central NO debe leerse ni modificarse desde el RBAC de tenants,
+// y viceversa.
+//
+// El superadmin real (SuperAdminUser.Role == "superadmin") sigue teniendo bypass total y no
+// depende de estas tablas — es el mecanismo de emergencia anti-lockout. SARole/SAPermission
+// gobiernan únicamente a los usuarios "admin" con permisos granulares.
+//
+// Importante: "empresas.destroy" (borrado completo de un tenant) y el endpoint que rota la
+// operations-key (PUT /saas-settings/operations-key) quedan DELIBERADAMENTE fuera de este
+// catálogo de permisos — no son otorgables a ningún rol. Permanecen protegidos por un chequeo
+// de bypass superadmin hardcodeado en el handler (igual que hoy), nunca por SARolePermission.
+
+type SARole struct {
+	ID          uint           `gorm:"primaryKey" json:"id"`
+	Name        string         `gorm:"size:100;not null;uniqueIndex" json:"name"`
+	Description string         `gorm:"size:255" json:"description"`
+	IsSystem    bool           `gorm:"default:false" json:"is_system"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+type SAPermission struct {
+	ID     uint   `gorm:"primaryKey" json:"id"`
+	Module string `gorm:"size:100;not null" json:"module"`
+	Action string `gorm:"size:100;not null" json:"action"`
+	Label  string `gorm:"size:255" json:"label"`
+}
+
+type SARolePermission struct {
+	RoleID       uint `gorm:"primaryKey" json:"role_id"`
+	PermissionID uint `gorm:"primaryKey" json:"permission_id"`
+}
+
+// =================== FASE 7 — MIGRACIÓN REAL DE RoleID (usuarios reales) ===================
+//
+// Ver internal/superadmin/service/sa_user_role_migration.go para el mecanismo completo. Estas
+// dos tablas son deliberadamente independientes de SuperAdminUser: nunca se JOINean con lógica de
+// negocio ni se leen en ningún camino de autenticación/autorización — solo existen para hacer la
+// migración reversible (backup) y mutuamente excluyente entre ejecuciones concurrentes (lock).
+
+// SAUserRoleMigrationBackup conserva el estado ANTES y DESPUÉS de cada fila que una ejecución de
+// la migración de RoleID modificó — asociado a un RunID concreto (nunca ambiguo: "qué ejecución
+// tocó a este usuario" siempre se puede responder). Es la base del rollback (Fase 7 §11): el
+// rollback restaura RoleIDBefore SOLO si el estado actual del usuario todavía coincide con
+// RoleIDAfter/RoleAfter (si algo más lo cambió desde entonces, el rollback debe abortar, no
+// pisarlo — ver comprobación de conflicto en RollbackUserRoleMigration).
+type SAUserRoleMigrationBackup struct {
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	RunID           string     `gorm:"size:64;not null;index" json:"run_id"`
+	UserID          uint       `gorm:"not null;index" json:"user_id"`
+	RoleBefore      string     `gorm:"size:50" json:"role_before"`
+	RoleIDBefore    *uint      `json:"role_id_before"`
+	RoleAfter       string     `gorm:"size:50" json:"role_after"`
+	RoleIDAfter     *uint      `json:"role_id_after"`
+	ActiveBefore    bool       `json:"active_before"`
+	DeletedAtBefore *time.Time `json:"deleted_at_before"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+// SAMigrationLock es un mutex a nivel de BD (no un booleano en memoria, ver Fase 7 §12):
+// adquirirlo es un INSERT con LockName como PRIMARY KEY — si ya existe una fila con ese nombre, el
+// INSERT falla por violación de clave primaria (atómico tanto en MySQL/InnoDB como en SQLite, sin
+// depender de ningún locking específico de motor). Liberarlo es un DELETE de esa fila, siempre en
+// un `defer`, corra la migración con éxito o falle. Limitación documentada: si el proceso muere
+// entre adquirir y liberar (crash, kill -9), la fila queda huérfana y bloquea ejecuciones futuras
+// hasta que un operador la borre manualmente tras confirmar que ningún proceso sigue corriendo —
+// no hay expiración automática (evita la complejidad y las condiciones de carrera de un TTL, y no
+// fue pedido explícitamente).
+type SAMigrationLock struct {
+	LockName string    `gorm:"primaryKey;size:100" json:"lock_name"`
+	LockedAt time.Time `json:"locked_at"`
+	LockedBy string    `gorm:"size:255" json:"locked_by"`
 }
 
 type TenantModule struct {
@@ -315,6 +424,11 @@ func MigrateCentral() error {
 		&UbiRegion{},
 		&UbiProvincia{},
 		&UbiDistrito{},
+		&SARole{},
+		&SAPermission{},
+		&SARolePermission{},
+		&SAUserRoleMigrationBackup{},
+		&SAMigrationLock{},
 	)
 }
 
@@ -473,23 +587,47 @@ func SyncModuleCodeMetadata() error {
 	return nil
 }
 
+// ensureBootstrapSuperadmin crea el superadmin de arranque SOLO si no existe ya un superadmin
+// OPERATIVO — Role=="superadmin" && Active==true (y no eliminado: gorm.DeletedAt lo excluye
+// automáticamente en cualquier consulta sobre un modelo con soft-delete, sin necesidad de
+// agregarlo a mano al Where).
+//
+// Fase 6 (pre-migración, Grupo 7): la condición ANTERIOR contaba "cualquier SuperAdminUser"
+// (Count sin Where), así que un solo usuario "admin" ya bastaba para que el bootstrap NO creara
+// el superadmin de emergencia — dejando potencialmente el sistema sin ningún superadmin real.
+// Extraída a su propia función (antes vivía inline en SeedCentral) para poder testear esta
+// condición de forma aislada, sin arrastrar el resto del seed (módulos, planes, etc.).
+//
+// Nota (edge case documentado, no resuelto aquí — ver informe de Fase 6): si existe un
+// SuperAdminUser con email "superadmin@saas.com" pero inactivo o eliminado, y NINGÚN superadmin
+// operativo, este método intentará crear uno nuevo con ese mismo email fijo y Create() fallará
+// por la unique-index de email. Es una falla ruidosa (SeedCentral retorna error, el arranque
+// falla), no silenciosa — pero requeriría una decisión de negocio (¿reactivar el existente?
+// ¿usar otro email?) que no estaba autorizada en esta fase.
+func ensureBootstrapSuperadmin(db *gorm.DB) error {
+	var operationalSuperadmins int64
+	if err := db.Model(&SuperAdminUser{}).Where("role = ? AND active = ?", "superadmin", true).
+		Count(&operationalSuperadmins).Error; err != nil {
+		return err
+	}
+	if operationalSuperadmins > 0 {
+		return nil
+	}
+	admin := &SuperAdminUser{
+		Name:  "Super Administrador",
+		Email: "superadmin@saas.com",
+		Role:  "superadmin",
+	}
+	if err := admin.SetPassword("superadmin123"); err != nil {
+		return err
+	}
+	return db.Create(admin).Error
+}
+
 // SeedCentral inserta datos iniciales en la BD central.
 func SeedCentral() error {
-	// Super admin
-	var adminCount int64
-	CentralDB.Model(&SuperAdminUser{}).Count(&adminCount)
-	if adminCount == 0 {
-		admin := &SuperAdminUser{
-			Name:  "Super Administrador",
-			Email: "superadmin@saas.com",
-			Role:  "superadmin",
-		}
-		if err := admin.SetPassword("superadmin123"); err != nil {
-			return err
-		}
-		if err := CentralDB.Create(admin).Error; err != nil {
-			return err
-		}
+	if err := ensureBootstrapSuperadmin(CentralDB); err != nil {
+		return err
 	}
 
 	// Módulos del catálogo global
@@ -587,6 +725,11 @@ func SeedCentral() error {
 	CentralDB.Model(&CentralAjuste{}).Count(&ajusteCount)
 	if ajusteCount == 0 {
 		CentralDB.Create(&CentralAjuste{ID: 1, NombreSistema: "Tukifac"})
+	}
+
+	// RBAC del panel central (roles/permisos de SuperAdminUser) — idempotente, ver sa_rbac_seed.go
+	if err := SASeedRolesAndPermissions(CentralDB); err != nil {
+		return err
 	}
 
 	return nil
@@ -1916,14 +2059,14 @@ type TenantBranchDailyComandaCounter struct {
 
 // TenantTableOrder representa una ronda/comanda de cocina (ticket) dentro de la sesión.
 type TenantTableOrder struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`
-	SessionID   uint       `gorm:"not null;index" json:"session_id"`
-	WaiterID    *uint      `gorm:"index" json:"waiter_id,omitempty"` // deprecado
-	StaffID     *uint      `gorm:"index" json:"staff_id"`
-	UserID      uint       `gorm:"not null;index" json:"user_id"`
+	ID        uint  `gorm:"primaryKey" json:"id"`
+	SessionID uint  `gorm:"not null;index" json:"session_id"`
+	WaiterID  *uint `gorm:"index" json:"waiter_id,omitempty"` // deprecado
+	StaffID   *uint `gorm:"index" json:"staff_id"`
+	UserID    uint  `gorm:"not null;index" json:"user_id"`
 	// "Pedido #N" que ve mesero/cocina/ticket — único por sucursal y día de negocio (ver
 	// TenantBranchDailyComandaCounter), NO por sesión de mesa. Antes se reiniciaba por mesa.
-	OrderNumber int `gorm:"not null" json:"order_number"`
+	OrderNumber int        `gorm:"not null" json:"order_number"`
 	Notes       string     `gorm:"type:text" json:"notes"`
 	Status      string     `gorm:"size:20;default:'active'" json:"status"` // active, cancelled
 	PrintedAt   *time.Time `json:"printed_at"`
