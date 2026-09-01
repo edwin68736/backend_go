@@ -144,30 +144,36 @@ type PrintDespatchDriver struct {
 
 // PrintFiscalContext datos adicionales para impresión/PDF.
 type PrintFiscalContext struct {
-	PurchaseOrderNumber         string                     `json:"purchase_order_number,omitempty"`
-	FiscalObservations          string                     `json:"fiscal_observations,omitempty"`
-	Guias                       []PrintGuiaRef             `json:"guias,omitempty"`
-	HasIgvRetention             bool                       `json:"has_igv_retention,omitempty"`
-	IgvRetentionAmount          float64                    `json:"igv_retention_amount,omitempty"`
-	NetCollectible              float64                    `json:"net_collectible,omitempty"`
-	RetentionApplied            bool                       `json:"retention_applied,omitempty"`
-	HasDetraccion               bool                       `json:"has_detraccion,omitempty"`
-	DetraccionGoodCode          string                     `json:"detraccion_good_code,omitempty"`
-	DetraccionGoodLabel         string                     `json:"detraccion_good_label,omitempty"`
-	DetraccionRatePercent       float64                    `json:"detraccion_rate_percent,omitempty"`
-	DetraccionAmount            float64                    `json:"detraccion_amount,omitempty"`
-	DetraccionBankAccount       string                     `json:"detraccion_bank_account,omitempty"`
-	DetraccionPaymentMethodCode string                     `json:"detraccion_payment_method_code,omitempty"`
-	DetraccionNetPayable        float64                    `json:"detraccion_net_payable,omitempty"`
-	HasPrepaymentEmit           bool                       `json:"has_prepayment_emit,omitempty"`
-	PrepaymentLabel             string                     `json:"prepayment_label,omitempty"`
-	PrepaymentAffectationGroup  string                     `json:"prepayment_affectation_group,omitempty"`
-	PrepaymentRelatedDocType    string                     `json:"prepayment_related_doc_type,omitempty"`
-	HasPrepaymentDeduction      bool                       `json:"has_prepayment_deduction,omitempty"`
-	PrepaymentDeductionTotal    float64                    `json:"prepayment_deduction_total,omitempty"`
-	PrepaymentDeductions        []PrintPrepaymentDeduction `json:"prepayment_deductions,omitempty"`
-	ShowTermsConditions         bool                       `json:"show_terms_conditions,omitempty"`
-	TermsText                   string                     `json:"terms_text,omitempty"`
+	PurchaseOrderNumber          string         `json:"purchase_order_number,omitempty"`
+	FiscalObservations           string         `json:"fiscal_observations,omitempty"`
+	Guias                        []PrintGuiaRef `json:"guias,omitempty"`
+	HasIgvRetention              bool           `json:"has_igv_retention,omitempty"`
+	IgvRetentionAmount           float64        `json:"igv_retention_amount,omitempty"`
+	NetCollectible               float64        `json:"net_collectible,omitempty"`
+	RetentionApplied             bool           `json:"retention_applied,omitempty"`
+	HasDetraccion                bool           `json:"has_detraccion,omitempty"`
+	DetraccionGoodCode           string         `json:"detraccion_good_code,omitempty"`
+	DetraccionGoodLabel          string         `json:"detraccion_good_label,omitempty"`
+	DetraccionRatePercent        float64        `json:"detraccion_rate_percent,omitempty"`
+	DetraccionAmount             float64        `json:"detraccion_amount,omitempty"`
+	DetraccionBankAccount        string         `json:"detraccion_bank_account,omitempty"`
+	DetraccionPaymentMethodCode  string         `json:"detraccion_payment_method_code,omitempty"`
+	DetraccionPaymentMethodLabel string         `json:"detraccion_payment_method_label,omitempty"`
+	DetraccionNetPayable         float64        `json:"detraccion_net_payable,omitempty"`
+	// DetraccionLegendText es la leyenda SUNAT (catálogo 2006) que debe figurar en todo
+	// comprobante sujeto a detracción — mismo texto que se envía en el XML vía
+	// pkg/facturador/legend.go, pero el PDF local no lo mostraba (bug reportado: la
+	// factura no muestra la misma "Información Adicional" que el PDF del facturador).
+	DetraccionLegendText       string                     `json:"detraccion_legend_text,omitempty"`
+	HasPrepaymentEmit          bool                       `json:"has_prepayment_emit,omitempty"`
+	PrepaymentLabel            string                     `json:"prepayment_label,omitempty"`
+	PrepaymentAffectationGroup string                     `json:"prepayment_affectation_group,omitempty"`
+	PrepaymentRelatedDocType   string                     `json:"prepayment_related_doc_type,omitempty"`
+	HasPrepaymentDeduction     bool                       `json:"has_prepayment_deduction,omitempty"`
+	PrepaymentDeductionTotal   float64                    `json:"prepayment_deduction_total,omitempty"`
+	PrepaymentDeductions       []PrintPrepaymentDeduction `json:"prepayment_deductions,omitempty"`
+	ShowTermsConditions        bool                       `json:"show_terms_conditions,omitempty"`
+	TermsText                  string                     `json:"terms_text,omitempty"`
 }
 
 type PrintGuiaRef struct {
@@ -790,9 +796,13 @@ func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *Prin
 		}
 		cat, _ := detraccionpkg.DefaultCatalog()
 		label := det.GoodCode
+		paymentMethodLabel := det.PaymentMethodCode
 		if cat != nil {
 			if g, ok := cat.GoodByCode(det.GoodCode); ok {
 				label = g.Description
+			}
+			if pm, ok := cat.PaymentMethodByCode(det.PaymentMethodCode); ok {
+				paymentMethodLabel = pm.Description
 			}
 		}
 		fc.HasDetraccion = true
@@ -801,6 +811,8 @@ func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *Prin
 		fc.DetraccionRatePercent = det.RatePercent
 		fc.DetraccionAmount = money.RoundSunat(det.DetractionAmountPen)
 		fc.DetraccionBankAccount = det.BankAccount
+		fc.DetraccionPaymentMethodLabel = paymentMethodLabel
+		fc.DetraccionLegendText = detraccionpkg.Legend2006Text
 		fc.DetraccionPaymentMethodCode = det.PaymentMethodCode
 		fc.DetraccionNetPayable = money.RoundSunat(det.NetPayablePen)
 	}
