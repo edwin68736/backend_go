@@ -488,7 +488,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 		var lastDue *time.Time
 		var instErr error
-		creditInstallmentRows, lastDue, instErr = validateCreditInstallments(installments, creditTarget, currency, loc)
+		creditInstallmentRows, lastDue, instErr = validateCreditInstallments(installments, creditTarget, currency, loc, input.IssueDate)
 		if instErr != nil {
 			return nil, instErr
 		}
