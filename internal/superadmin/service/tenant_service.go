@@ -37,20 +37,20 @@ func NewTenantService() *TenantService {
 }
 
 type CreateTenantInput struct {
-	Name               string `json:"name"`
-	Email              string `json:"email"`
-	Phone              string `json:"phone"`
-	RUC                string `json:"ruc"`
-	Plan               string `json:"plan"`
-	Slug               string `json:"slug"`
-	Address            string `json:"address"`
-	Ubigeo             string `json:"ubigeo"` // código 6 dígitos del distrito
-	AdminEmail         string `json:"admin_email"`
-	AdminPassword      string `json:"admin_password"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	Phone         string `json:"phone"`
+	RUC           string `json:"ruc"`
+	Plan          string `json:"plan"`
+	Slug          string `json:"slug"`
+	Address       string `json:"address"`
+	Ubigeo        string `json:"ubigeo"` // código 6 dígitos del distrito
+	AdminEmail    string `json:"admin_email"`
+	AdminPassword string `json:"admin_password"`
 	// SubscriptionMonths duración de la suscripción inicial. Toda empresa nace con una
 	// suscripción —las gratuitas también, vinculadas al plan gratis—, así que 0 se corrige a 1
 	// en vez de saltarse el alta.
-	SubscriptionMonths int    `json:"subscription_months"`
+	SubscriptionMonths int `json:"subscription_months"`
 	// StartDate opcional (YYYY-MM-DD): la empresa se registra hoy pero su suscripción/primer
 	// cobro puede arrancar unos días después. Vacío = arranca hoy (comportamiento de siempre).
 	// Debe ser hoy o una fecha futura — se valida al crear la suscripción.
@@ -94,6 +94,21 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 		return nil, errors.New("ya existe una empresa con ese subdominio. Elige otro identificador")
 	}
 
+	// Bug reportado: el RUC nunca se validaba como único (solo el slug) — se pudieron crear
+	// dos tenants con el mismo RUC (misma empresa registrada dos veces). La columna tampoco
+	// tenía índice en BD (ver RUC en pkg/database/migrations.go), así que este chequeo es el
+	// único resguardo real hasta que el próximo AutoMigrate cree el índice único.
+	ruc := strings.TrimSpace(input.RUC)
+	if ruc != "" {
+		var rucCount int64
+		if err = s.db.Unscoped().Model(&database.Tenant{}).Where("ruc = ?", ruc).Count(&rucCount).Error; err != nil {
+			return nil, err
+		}
+		if rucCount > 0 {
+			return nil, errors.New("ya existe una empresa registrada con ese RUC")
+		}
+	}
+
 	// Sin default: el catálogo de planes lo define el superadmin y no tiene por qué existir
 	// uno llamado «trial». Antes se asumía ese nombre y el alta fallaba con un error opaco de
 	// plan no encontrado en vez de decir que faltaba elegirlo.
@@ -120,7 +135,7 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	regime := string(taxregime.Normalize(input.TaxpayerRegime))
 	tenant = &database.Tenant{
 		Name: input.Name, Slug: slug, DBName: dbName, Plan: plan, Status: "active",
-		Email: input.Email, Phone: input.Phone, RUC: input.RUC, Rubro: rubro,
+		Email: input.Email, Phone: input.Phone, RUC: ruc, Rubro: rubro,
 		TaxpayerRegime: regime,
 		Address:        input.Address, Ubigeo: input.Ubigeo, TrialEndsAt: &trialEnd,
 	}
@@ -139,7 +154,7 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 
 	seedIn := database.TenantSeedInput{
 		AdminEmail: input.AdminEmail, AdminPassword: input.AdminPassword,
-		CompanyName: input.Name, RUC: input.RUC,
+		CompanyName: input.Name, RUC: ruc,
 		Address: input.Address, Ubigeo: input.Ubigeo,
 		Phone: input.Phone, Email: input.Email,
 		Rubro:          rubro,
@@ -371,11 +386,25 @@ func (s *TenantService) Update(id uint, input database.Tenant) error {
 		newPlan = &plan
 	}
 
+	// Mismo chequeo que en Create: sin esto, editar el RUC de un tenant puede hacerlo
+	// colisionar con el de otro (bug reportado — dos tenants terminaron con el mismo RUC).
+	ruc := strings.TrimSpace(input.RUC)
+	if ruc != "" {
+		var rucCount int64
+		if err := s.db.Unscoped().Model(&database.Tenant{}).
+			Where("ruc = ? AND id <> ?", ruc, id).Count(&rucCount).Error; err != nil {
+			return err
+		}
+		if rucCount > 0 {
+			return errors.New("ya existe una empresa registrada con ese RUC")
+		}
+	}
+
 	updates := map[string]interface{}{
 		"name":    input.Name,
 		"email":   input.Email,
 		"phone":   input.Phone,
-		"ruc":     input.RUC,
+		"ruc":     ruc,
 		"status":  input.Status,
 		"address": input.Address,
 		"ubigeo":  input.Ubigeo,

@@ -20,7 +20,7 @@ type Tenant struct {
 	Status             string         `gorm:"size:50;default:'active'" json:"status"`
 	Email              string         `gorm:"size:255" json:"email"`
 	Phone              string         `gorm:"size:50" json:"phone"`
-	RUC                string         `gorm:"size:20" json:"ruc"`
+	RUC                string         `gorm:"size:20;uniqueIndex" json:"ruc"`                         // único: ver TenantService.Create/Update (bug: dos tenants con mismo RUC)
 	Rubro              string         `gorm:"size:30;default:'general';index" json:"rubro"`           // general | gastronomico
 	TaxpayerRegime     string         `gorm:"size:20;default:'general';index" json:"taxpayer_regime"` // general | nrus — régimen tributario del contribuyente
 	Address            string         `gorm:"size:500" json:"address"`
