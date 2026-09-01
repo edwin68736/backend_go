@@ -11,6 +11,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/salescope"
 	"tukifac/pkg/taxpayment"
 
 	"gorm.io/gorm"
@@ -221,6 +222,9 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 	}
 	if sale.Status == "cancelled" {
 		return errors.New("no se puede cobrar una venta anulada")
+	}
+	if salescope.IsNoteDocType(sale.DocType) {
+		return errors.New("una nota de crédito/débito no es una venta cobrable")
 	}
 
 	var det *database.TenantSaleDetraccion

@@ -133,3 +133,65 @@ func TestListBankMovementsPaged_MarksReversedRows(t *testing.T) {
 		t.Fatalf("the reversal row itself should be marked IsReversed=false (nobody reversed IT)")
 	}
 }
+
+// Bug reportado: "Cobro FC01-00000001" (una nota de crédito) sumando al saldo de Cuentas
+// Bancarias como si fuera un ingreso real. La causa raíz (ReceivableService tratando la nota como
+// cobrable) se corrige en internal/receivables/service/balance.go; este test cubre el backstop de
+// lectura en ListBankMovementsPaged — cualquier movimiento cuyo sale_id apunte a una nota de
+// crédito/débito, sin importar cómo haya llegado a existir, no debe listarse ni sumar al resumen.
+func TestListBankMovementsPaged_ExcludesMovementsLinkedToCreditOrDebitNotes(t *testing.T) {
+	db := setupFinancialReversalTestDB(t)
+	svc := NewCashBankService(db)
+
+	acc := &database.TenantBankAccount{Name: "BBVA", PaymentMethod: "transferencia", Balance: 0, Active: true}
+	if err := db.Create(acc).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	realSale := &database.TenantSale{Number: "F001-00000001", DocType: "FACTURA", Status: "paid", Total: 1090}
+	if err := db.Create(realSale).Error; err != nil {
+		t.Fatal(err)
+	}
+	creditNote := &database.TenantSale{Number: "FC01-00000001", DocType: "NOTA_CREDITO", Status: "paid", Total: 65}
+	if err := db.Create(creditNote).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Cobro real de una factura — debe seguir contando.
+	if err := db.Create(&database.TenantBankMovement{
+		BankAccountID: acc.ID, Type: "credit", Amount: 1090, SaleID: &realSale.ID,
+		Date: time.Date(2026, 8, 20, 0, 0, 0, 0, time.Local), UserID: 1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// El bug en sí: un "Cobro" generado para la nota de crédito — NO debe contar.
+	if err := db.Create(&database.TenantBankMovement{
+		BankAccountID: acc.ID, Type: "credit", Amount: 65, SaleID: &creditNote.ID,
+		Date: time.Date(2026, 8, 20, 0, 0, 0, 0, time.Local), UserID: 1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Movimiento manual (sale_id NULL) — no debe verse afectado por el filtro.
+	if err := db.Create(&database.TenantBankMovement{
+		BankAccountID: acc.ID, Type: "credit", Amount: 10,
+		Date: time.Date(2026, 8, 20, 0, 0, 0, 0, time.Local), UserID: 1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rows, total, summary, err := svc.ListBankMovementsPaged(acc.ID, BankMovementListParams{Page: 1, PerPage: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total: got %d want 2 (el movimiento de la nota de crédito debe quedar excluido)", total)
+	}
+	for _, r := range rows {
+		if r.SaleID != nil && *r.SaleID == creditNote.ID {
+			t.Fatalf("el movimiento vinculado a la nota de crédito no debió listarse: %+v", r)
+		}
+	}
+	if summary.SumCredit != 1100 { // 1090 (factura real) + 10 (manual) — NO 1165
+		t.Fatalf("summary.SumCredit = %.2f, want 1100 (sin la nota de crédito)", summary.SumCredit)
+	}
+}

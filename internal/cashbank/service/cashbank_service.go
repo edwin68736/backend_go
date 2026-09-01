@@ -9,6 +9,7 @@ import (
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/salescope"
 	"tukifac/pkg/taxpayment"
 
 	"gorm.io/gorm"
@@ -952,7 +953,15 @@ type BankMovementRow struct {
 // ListBankMovementsPaged lista movimientos paginados y filtrados por fecha/tipo, con el total de
 // filas (para armar la paginación) y el resumen de ingresos/egresos del período completo.
 func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMovementListParams) ([]BankMovementRow, int64, BankMovementListSummary, error) {
-	q := s.db.Model(&database.TenantBankMovement{}).Where("bank_account_id = ?", accountID)
+	q := s.db.Model(&database.TenantBankMovement{}).Where("bank_account_id = ?", accountID).
+		// Backstop de lectura: ningún movimiento cuyo sale_id apunte a una nota de crédito/débito
+		// debe sumar aquí ni al resumen del período — una nota nunca es un cobro real (ver
+		// receivables/service/balance.go HasOpenReceivable, que evita que se genere uno nuevo; esto
+		// cubre además cualquier fila ya existente de antes de ese fix, o creada por otra vía). Los
+		// movimientos manuales (sale_id NULL) y los de reversión (que llevan el sale_id de la venta
+		// ORIGINAL, nunca el de la nota — ver CreateBankReversal) no se ven afectados.
+		Where("sale_id IS NULL OR sale_id NOT IN (?)",
+			s.db.Model(&database.TenantSale{}).Select("id").Where("doc_type IN ?", salescope.NoteDocTypes))
 	if params.DateFrom != nil {
 		q = q.Where("date >= ?", params.DateFrom)
 	}

@@ -18,7 +18,11 @@ func setupFinancialReversalTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range []interface{}{&database.TenantBankAccount{}, &database.TenantBankMovement{}} {
+	// TenantSale: no la usan los tests de este archivo, pero ListBankMovementsPaged (probado en
+	// bank_movements_paged_test.go, que reutiliza este mismo helper) ahora hace un subquery contra
+	// ella para excluir movimientos de notas de crédito/débito — sin migrarla, esa consulta falla
+	// con "no such table" incluso cuando el resultado esperado no depende de ninguna fila real.
+	for _, m := range []interface{}{&database.TenantBankAccount{}, &database.TenantBankMovement{}, &database.TenantSale{}} {
 		if err := db.AutoMigrate(m); err != nil {
 			t.Fatal(err)
 		}
