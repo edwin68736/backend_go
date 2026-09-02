@@ -243,7 +243,7 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 			codMotivo = "02"
 		}
 	}
-	desMotivo := strings.TrimSpace(noteSale.Notes)
+	desMotivo := facturador.SanitizeFreeText(noteSale.Notes)
 	if desMotivo == "" {
 		desMotivo = sunatnote.ReasonLabel(tipoDoc, codMotivo)
 	}

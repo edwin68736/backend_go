@@ -1315,7 +1315,7 @@ func (s *BillingService) loadAlreadyVoidedKeys() (map[string]bool, error) {
 // antes. Con SaleID, tipo/serie/correlativo se resuelven desde la venta real y se ignora lo
 // que haya llegado por texto — así el usuario no puede tipear un comprobante que no existe.
 func (s *BillingService) resolveAndValidateVoidedDetail(d CreateVoidedInput, alreadyVoided map[string]bool) (CreateVoidedInput, error) {
-	motivo := strings.TrimSpace(d.DesMotivoBaja)
+	motivo := facturador.SanitizeFreeText(d.DesMotivoBaja)
 	if motivo == "" {
 		return d, errors.New("el motivo de la baja es obligatorio")
 	}
@@ -2126,7 +2126,7 @@ func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*da
 		Tasa:         input.Tasa,
 		ImpRetenido:  roundMoney(input.ImpRetenido),
 		ImpPagado:    roundMoney(input.ImpPagado),
-		Observacion:  strings.TrimSpace(input.Observacion),
+		Observacion:  facturador.SanitizeFreeText(input.Observacion),
 		Details:      details,
 	}
 	issueDate := time.Now()
@@ -2370,7 +2370,7 @@ func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*
 		Tasa:         input.Tasa,
 		ImpPercibido: roundMoney(input.ImpPercibido),
 		ImpCobrado:   roundMoney(input.ImpCobrado),
-		Observacion:  strings.TrimSpace(input.Observacion),
+		Observacion:  facturador.SanitizeFreeText(input.Observacion),
 		Details:      details,
 	}
 	issueDate := time.Now()
@@ -2523,7 +2523,7 @@ func (s *BillingService) CreateReversion(details []CreateVoidedInput) (*database
 		if err := validateReversionDetail(d.TipoDoc, d.Serie, d.Correlativo, d.DesMotivoBaja); err != nil {
 			return nil, fmt.Errorf("línea %d: %w", i+1, err)
 		}
-		voidedDetails[i] = facturador.VoidedDetail{TipoDoc: d.TipoDoc, Serie: strings.ToUpper(strings.TrimSpace(d.Serie)), Correlativo: strings.TrimSpace(d.Correlativo), DesMotivoBaja: strings.TrimSpace(d.DesMotivoBaja)}
+		voidedDetails[i] = facturador.VoidedDetail{TipoDoc: d.TipoDoc, Serie: strings.ToUpper(strings.TrimSpace(d.Serie)), Correlativo: strings.TrimSpace(d.Correlativo), DesMotivoBaja: facturador.SanitizeFreeText(d.DesMotivoBaja)}
 	}
 	payload := &facturador.VoidedPayload{
 		Company:         facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
