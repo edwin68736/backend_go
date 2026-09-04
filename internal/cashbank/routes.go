@@ -30,6 +30,8 @@ func RegisterRoutes(api fiber.Router) {
 		mod, loadRest, middleware.RequireCashbankAccess("delete_session"), h.DeleteSessionAPI)
 	api.Post("/cashbank/sessions/:id/arqueo",
 		mod, loadRest, middleware.RequireCashbankAccess("view"), h.SaveArqueoAPI)
+	api.Get("/cashbank/sessions/:id/balance",
+		mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetSessionBalanceAPI)
 	api.Get("/cashbank/sessions/:id/movements",
 		mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetMovementsAPI)
 	api.Post("/cashbank/sessions/:id/movements",

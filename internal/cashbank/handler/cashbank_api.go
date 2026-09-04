@@ -168,6 +168,30 @@ func (h *CashBankHandler) GetMovementsAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": movements})
 }
 
+// GetSessionBalanceAPI GET /api/cashbank/sessions/:id/balance — fuente única de saldo: totales
+// por método de pago (efectivo, Yape, Plin, transferencia, tarjeta, otros) + total de la sesión +
+// el efectivo esperado (mismo cálculo que usa el cierre/arqueo). El frontend consume esto en vez
+// de sumar movimientos por su cuenta.
+func (h *CashBankHandler) GetSessionBalanceAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewCashBankService(db(c))
+	sess, err := svc.GetSessionByID(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !canAccessCashSession(c, sess) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede ver el saldo de esta sesión"})
+	}
+	summary, err := svc.GetSessionBalanceSummary(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": summary})
+}
+
 // POST /api/cashbank/sessions/:id/movements
 func (h *CashBankHandler) AddMovementAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
