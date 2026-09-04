@@ -466,6 +466,27 @@ func (s *CashBankService) GetAccountByPaymentMethod(paymentMethod string) (*data
 	return &acc, nil
 }
 
+// resolveAccountForPaymentMethod cuenta destino para un método de pago — Fase 4: prioriza el FK
+// tenant_payment_methods.bank_account_id (fuente principal para configuraciones nuevas); si el
+// método no tiene un TenantPaymentMethod activo o ese método no tiene cuenta vinculada por FK
+// (o el FK apunta a una cuenta ya eliminada), cae al texto legado
+// tenant_bank_accounts.payment_method — compatibilidad con tenants configurados solo por esa
+// vía, sin migración de datos ni eliminación de ninguna columna.
+//
+// recordDirectedPayment (rama "bank_account", usada por ventas/compras) ya priorizaba el FK
+// correctamente por su cuenta; el hueco estaba acá, en RecordPaymentToAccount (usada por
+// AddMovement — ingresos/egresos manuales — y como fallback cuando el método no se encuentra
+// en tenant_payment_methods), que solo miraba el texto legado.
+func (s *CashBankService) resolveAccountForPaymentMethod(paymentMethod string) (*database.TenantBankAccount, error) {
+	if pm, err := s.GetPaymentMethodByCode(paymentMethod); err == nil && pm != nil && pm.BankAccountID != nil && *pm.BankAccountID > 0 {
+		var acc database.TenantBankAccount
+		if err := s.db.First(&acc, *pm.BankAccountID).Error; err == nil {
+			return &acc, nil
+		}
+	}
+	return s.GetAccountByPaymentMethod(paymentMethod)
+}
+
 // RecordPaymentToAccount registra un movimiento en la cuenta asociada al método de pago y actualiza el saldo.
 // db puede ser una transacción (tx) o nil para usar s.db. isCredit=true = ingreso (aumenta saldo), false = egreso.
 // saleID/purchaseID: vínculo tipado opcional al documento de origen (nil si no aplica).
@@ -483,7 +504,7 @@ func (s *CashBankService) RecordPaymentToAccount(db *gorm.DB, paymentMethod stri
 	if db != nil {
 		exec = db
 	}
-	acc, err := s.GetAccountByPaymentMethod(paymentMethod)
+	acc, err := s.resolveAccountForPaymentMethod(paymentMethod)
 	if err != nil || acc == nil {
 		return nil // sin cuenta configurada para este método, no fallar
 	}
