@@ -300,6 +300,16 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	} else if paymentcondition.IsCashCode(sale.PaymentConditionCode) {
 		pd.PaymentCondition = paymentcondition.NameCash
 	}
+	// ValidUntil alimenta "Fecha Vencimiento" en el PDF (receiptPdfA4.ts resolveDueDate cae a
+	// issue_date si viene vacío). Antes solo lo llenaba quotations/service/print_data.go — acá
+	// nunca se asignaba, así que toda factura/boleta (a crédito o no) mostraba la fecha de
+	// emisión disfrazada de vencimiento. Con contado no se notaba (son iguales); con crédito
+	// quedaba en evidencia junto a la tabla de CUOTAS, que sí trae la fecha real: bug reportado
+	// con el tenant RUC 20548414424 (F001-86: "Fecha Vencimiento: 2026-08-31" en la cabecera vs.
+	// "VENCIMIENTO: 2026-09-20" en CUOTAS, ambas de la misma venta).
+	if sale.DueDate != nil {
+		pd.ValidUntil = sale.DueDate.Format("02/01/2006")
+	}
 
 	var creditRows []database.TenantSaleCreditInstallment
 	if db.Where("sale_id = ?", sale.ID).Order("installment_no ASC").Find(&creditRows).Error == nil && len(creditRows) > 0 {
