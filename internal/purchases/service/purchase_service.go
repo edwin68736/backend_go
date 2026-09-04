@@ -185,6 +185,25 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	if status == "" {
 		status = "received"
 	}
+
+	// Resolver sesión de caja SOLO si el método de pago resuelve a efectivo — a diferencia de
+	// ventas, una compra por Yape/transferencia/tarjeta no debe exigir caja abierta (no hay
+	// gaveta física de por medio). ResolveCashSessionForPayments ya implementa exactamente esta
+	// regla condicional (la usa ResolveCashSessionForSale con el mismo criterio); se reusa tal
+	// cual en vez de reescribirla.
+	var cashSessionID *uint
+	if input.PaymentMethod != "" {
+		cbSvcResolve := cashbanksvc.NewCashBankService(s.db)
+		resolved, err := cbSvcResolve.ResolveCashSessionForPayments(
+			input.BranchID, input.UserID, nil,
+			[]cashbanksvc.PaymentLineInput{{Method: input.PaymentMethod, Amount: total}},
+		)
+		if err != nil {
+			return nil, err
+		}
+		cashSessionID = resolved
+	}
+
 	purchase := &database.TenantPurchase{
 		BranchID:         input.BranchID,
 		ContactID:        input.ContactID,
@@ -202,6 +221,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		Notes:            input.Notes,
 		PriceIncludesIgv: input.PriceIncludesIgv,
 		Status:           status,
+		CashSessionID:    cashSessionID,
 	}
 	docNumber := input.Series + "-" + input.Number
 
@@ -215,13 +235,12 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		if err := tx.Create(&purchaseItems).Error; err != nil {
 			return err
 		}
-		// Descontar de la cuenta asociada al método de pago (egreso), dentro de la misma tx.
+		// Egreso por el método de pago: a caja física (efectivo) o a la cuenta bancaria/
+		// billetera correspondiente — mismo enrutamiento que ventas, en sentido egreso.
 		if input.PaymentMethod != "" {
 			cbSvc := cashbanksvc.NewCashBankService(tx)
 			purchaseID := purchase.ID
-			// cash_session_id: nil por ahora — se resuelve y persiste en la propia compra en
-			// una fase posterior (junto con el tratamiento de compras en efectivo).
-			if err := cbSvc.RecordPaymentToAccount(tx, input.PaymentMethod, total, false, docNumber, "Compra "+docNumber, input.UserID, nil, &purchaseID, nil); err != nil {
+			if err := cbSvc.RecordExpensePayment(tx, input.PaymentMethod, total, cashSessionID, docNumber, "Compra "+docNumber, &purchaseID, input.UserID); err != nil {
 				return err
 			}
 		}
@@ -382,6 +401,33 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 		if strings.TrimSpace(p.PaymentMethod) != "" && p.Total > 0 {
 			cbSvc := cashbanksvc.NewCashBankService(tx)
 			desc := "Reversión por anulación de compra"
+
+			// Efectivo (Fase 3): revertir el egreso de tenant_cash_movements de esta compra,
+			// si la sesión donde se registró sigue abierta — mismo criterio que usa la
+			// reversión de ventas (CreateCashReversal no reabre ni reasigna sesión). Revertir
+			// en una sesión ya cerrada necesitaría el mismo mecanismo de "devolución
+			// pendiente" que ya existe para ventas (sale_cancel_cash.go) — deliberadamente
+			// fuera de esta fase; si se da el caso, se avisa en vez de fallar en silencio y
+			// dejar la compra anulada sin haber revertido el efectivo.
+			var cashMovs []database.TenantCashMovement
+			if err := tx.Where("purchase_id = ? AND type = ?", purchaseID, "expense").Find(&cashMovs).Error; err != nil {
+				return err
+			}
+			for _, cm := range cashMovs {
+				var sess database.TenantCashSession
+				if err := tx.First(&sess, cm.CashSessionID).Error; err != nil {
+					return err
+				}
+				if sess.Status != "open" {
+					return fmt.Errorf("no se puede anular: la sesión de caja donde se registró el pago en efectivo de esta compra ya está cerrada (sesión %d)", sess.ID)
+				}
+				if err := cbSvc.CreateCashReversal(tx, cm, "Anulación compra", ref, desc, userID); err != nil {
+					return err
+				}
+			}
+
+			// Yape/Plin/transferencia/tarjeta: no dependen de ninguna sesión, se revierten
+			// siempre (igual que en ventas).
 			if err := cbSvc.ReverseBankMovementsByReference(tx, docNumber, "debit", desc, ref, userID); err != nil {
 				return err
 			}

@@ -759,48 +759,106 @@ func (s *CashBankService) ResolveCashSessionForPayments(
 
 // RecordPayment distribuye un pago según la configuración del método: a caja (TenantCashMovement) o a cuenta bancaria (TenantBankMovement).
 // cashSessionID: requerido cuando destination_type=cash. saleNumber y description para referencias.
+// Firma y comportamiento sin cambios (Tukichef la llama directamente desde restaurant_service.go)
+// — es un wrapper fino sobre recordDirectedPayment con dirección "income"/"Venta".
 func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, amount float64, cashSessionID *uint, saleNumber, description string, saleID *uint, userID uint) error {
-	if amount <= 0 {
+	return s.recordDirectedPayment(tx, directedPaymentInput{
+		paymentMethodCode: paymentMethodCode,
+		amount:            amount,
+		cashSessionID:     cashSessionID,
+		reference:         saleNumber,
+		description:       description,
+		saleID:            saleID,
+		userID:            userID,
+		cashType:          "income",
+		cashCategory:      "Venta",
+		bankType:          "credit",
+	})
+}
+
+// RecordExpensePayment es el equivalente de RecordPayment para EGRESOS ligados a un método de
+// pago configurado (hoy: compras) — mismo enrutamiento cash/bank_account que RecordPayment,
+// pero como egreso: TenantCashMovement type=expense/category="Compra", o TenantBankMovement
+// type=debit con el saldo de la cuenta restando en vez de sumando.
+//
+// Función hermana en vez de agregarle una dirección a RecordPayment: RecordPayment la llama
+// Tukichef directamente (restaurant_service.go) y no se quiso arriesgar su firma ni su
+// comportamiento. Ambas comparten la lógica de enrutamiento vía recordDirectedPayment.
+func (s *CashBankService) RecordExpensePayment(tx *gorm.DB, paymentMethodCode string, amount float64, cashSessionID *uint, docNumber, description string, purchaseID *uint, userID uint) error {
+	return s.recordDirectedPayment(tx, directedPaymentInput{
+		paymentMethodCode: paymentMethodCode,
+		amount:            amount,
+		cashSessionID:     cashSessionID,
+		reference:         docNumber,
+		description:       description,
+		purchaseID:        purchaseID,
+		userID:            userID,
+		cashType:          "expense",
+		cashCategory:      "Compra",
+		bankType:          "debit",
+	})
+}
+
+type directedPaymentInput struct {
+	paymentMethodCode string
+	amount            float64
+	cashSessionID     *uint
+	reference         string
+	description       string
+	saleID            *uint
+	purchaseID        *uint
+	userID            uint
+	cashType          string // "income" | "expense" (tenant_cash_movements.type)
+	cashCategory      string // "Venta" | "Compra" (tenant_cash_movements.category)
+	bankType          string // "credit" | "debit" (tenant_bank_movements.type)
+}
+
+// recordDirectedPayment enrutamiento compartido de RecordPayment/RecordExpensePayment: mismo
+// método de pago → mismo destino (caja o cuenta bancaria), solo cambia el sentido del dinero.
+func (s *CashBankService) recordDirectedPayment(tx *gorm.DB, in directedPaymentInput) error {
+	if in.amount <= 0 {
 		return nil
 	}
-	if taxpayment.IsDetractionCode(paymentMethodCode) || paymentcondition.IsCreditCode(paymentMethodCode) {
+	if taxpayment.IsDetractionCode(in.paymentMethodCode) || paymentcondition.IsCreditCode(in.paymentMethodCode) {
 		return nil
 	}
 	exec := s.db
 	if tx != nil {
 		exec = tx
 	}
-	pm, err := s.GetPaymentMethodByCode(paymentMethodCode)
+	isCredit := in.bankType == "credit"
+	pm, err := s.GetPaymentMethodByCode(in.paymentMethodCode)
 	if err != nil || pm == nil {
 		// Fallback legacy: intentar RecordPaymentToAccount (cuenta por payment_method en TenantBankAccount)
-		return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID, saleID, nil, cashSessionID)
+		return s.RecordPaymentToAccount(tx, in.paymentMethodCode, in.amount, isCredit, in.reference, in.description, in.userID, in.saleID, in.purchaseID, in.cashSessionID)
 	}
 	switch pm.DestinationType {
 	case "detraction", "receivable":
 		return errors.New("tipo de destino obsoleto; use tenant_payment_methods operativos")
 	case "cash":
-		if cashSessionID == nil || *cashSessionID == 0 {
+		if in.cashSessionID == nil || *in.cashSessionID == 0 {
 			return errors.New("se requiere sesión de caja abierta del usuario para pagos en efectivo")
 		}
 		var st database.TenantCashSession
-		if err := exec.First(&st, *cashSessionID).Error; err != nil {
+		if err := exec.First(&st, *in.cashSessionID).Error; err != nil {
 			return errors.New("sesión de caja no encontrada")
 		}
 		if st.Status != "open" {
 			return errors.New("no se puede registrar pago en una caja cerrada")
 		}
-		if userID > 0 && sessionOwnerID(&st) != userID {
+		if in.userID > 0 && sessionOwnerID(&st) != in.userID {
 			return errors.New("el pago en efectivo debe registrarse en su propia sesión de caja")
 		}
 		return exec.Create(&database.TenantCashMovement{
-			CashSessionID: *cashSessionID,
-			Type:          "income",
-			Amount:        amount,
+			CashSessionID: *in.cashSessionID,
+			Type:          in.cashType,
+			Amount:        in.amount,
 			PaymentMethod: pm.Code,
-			Category:      "Venta",
-			Reference:     saleNumber,
-			SaleID:        saleID,
-			UserID:        userID,
+			Category:      in.cashCategory,
+			Reference:     in.reference,
+			SaleID:        in.saleID,
+			PurchaseID:    in.purchaseID,
+			UserID:        in.userID,
 			CreatedAt:     time.Now(),
 		}).Error
 	case "bank_account":
@@ -813,19 +871,23 @@ func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, a
 			bankAccID = acc.ID
 		}
 		if bankAccID == 0 {
-			return s.RecordPaymentToAccount(tx, paymentMethodCode, amount, true, saleNumber, description, userID, saleID, nil, cashSessionID)
+			return s.RecordPaymentToAccount(tx, in.paymentMethodCode, in.amount, isCredit, in.reference, in.description, in.userID, in.saleID, in.purchaseID, in.cashSessionID)
 		}
-		delta := amount
+		delta := in.amount
+		if !isCredit {
+			delta = -in.amount
+		}
 		if err := exec.Create(&database.TenantBankMovement{
 			BankAccountID: bankAccID,
-			Type:          "credit",
-			Amount:        amount,
-			Description:   description,
-			Reference:     saleNumber,
+			Type:          in.bankType,
+			Amount:        in.amount,
+			Description:   in.description,
+			Reference:     in.reference,
 			Date:          time.Now(),
-			UserID:        userID,
-			SaleID:        saleID,
-			CashSessionID: cashSessionID,
+			UserID:        in.userID,
+			SaleID:        in.saleID,
+			PurchaseID:    in.purchaseID,
+			CashSessionID: in.cashSessionID,
 			CreatedAt:     time.Now(),
 		}).Error; err != nil {
 			return err
