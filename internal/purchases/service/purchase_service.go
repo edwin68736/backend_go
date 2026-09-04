@@ -219,7 +219,9 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		if input.PaymentMethod != "" {
 			cbSvc := cashbanksvc.NewCashBankService(tx)
 			purchaseID := purchase.ID
-			if err := cbSvc.RecordPaymentToAccount(tx, input.PaymentMethod, total, false, docNumber, "Compra "+docNumber, input.UserID, nil, &purchaseID); err != nil {
+			// cash_session_id: nil por ahora — se resuelve y persiste en la propia compra en
+			// una fase posterior (junto con el tratamiento de compras en efectivo).
+			if err := cbSvc.RecordPaymentToAccount(tx, input.PaymentMethod, total, false, docNumber, "Compra "+docNumber, input.UserID, nil, &purchaseID, nil); err != nil {
 				return err
 			}
 		}
