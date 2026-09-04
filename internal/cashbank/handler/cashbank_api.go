@@ -192,6 +192,36 @@ func (h *CashBankHandler) GetSessionBalanceAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": summary})
 }
 
+// ReverseMovementAPI POST /api/cashbank/movements/:id/reverse — revierte un movimiento MANUAL
+// (ingreso/egreso sin venta/compra asociada). El original nunca se borra ni se modifica: se crea
+// un movimiento nuevo de signo opuesto con reversal_of_id, trazable, dentro de la misma sesión.
+func (h *CashBankHandler) ReverseMovementAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewCashBankService(db(c))
+	var mov database.TenantCashMovement
+	if err := db(c).First(&mov, uint(id)).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Movimiento no encontrado"})
+	}
+	sess, err := svc.GetSessionByID(mov.CashSessionID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sesión de caja no encontrada"})
+	}
+	if !canAccessCashSession(c, sess) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede revertir movimientos de esta sesión"})
+	}
+	var body struct {
+		Notes string `json:"notes"`
+	}
+	_ = c.Bind().Body(&body)
+	if err := svc.ReverseManualMovement(db(c), uint(id), userID(c), body.Notes); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 // POST /api/cashbank/sessions/:id/movements
 func (h *CashBankHandler) AddMovementAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)

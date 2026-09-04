@@ -36,6 +36,8 @@ func RegisterRoutes(api fiber.Router) {
 		mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetMovementsAPI)
 	api.Post("/cashbank/sessions/:id/movements",
 		mod, loadRest, middleware.RequireCashbankAccess("movements"), h.AddMovementAPI)
+	api.Post("/cashbank/movements/:id/reverse",
+		mod, loadRest, middleware.RequireCashbankAccess("movements"), h.ReverseMovementAPI)
 	api.Get("/cashbank/sessions/:id/report", mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetSessionReportAPI)
 	api.Get("/cashbank/sessions/:id/report/products", mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetSessionProductsReportAPI)
 	api.Get("/cashbank/reports/movements", mod, loadRest, middleware.RequireCashbankAccess("view"), h.ListMovementsReportAPI)
