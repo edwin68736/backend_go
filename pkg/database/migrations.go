@@ -1781,6 +1781,11 @@ type TenantPurchase struct {
 	PaymentMethod string     `gorm:"size:50" json:"payment_method"`
 	Notes         string     `gorm:"type:text" json:"notes"`
 	Status        string     `gorm:"size:30;default:'received'" json:"status"`
+	// CashSessionID: sesión de Caja (turno) en la que se registró la compra — mismo patrón que
+	// TenantSale.CashSessionID. Trazabilidad de "qué compras ocurrieron en esta sesión",
+	// independiente del método de pago. Nulo en compras anteriores a esta columna o sin sesión
+	// resuelta (p. ej. compra pagada por un método que no requiere caja abierta).
+	CashSessionID *uint `gorm:"index" json:"cash_session_id,omitempty"`
 	// PriceIncludesIgv: criterio con el que se registró la compra. Si es true, los unit_cost
 	// tecleados ya traían IGV y se desagregó; si es false, el IGV se sumó encima.
 	PriceIncludesIgv bool           `gorm:"default:false" json:"price_includes_igv"`
@@ -1924,9 +1929,15 @@ type TenantBankMovement struct {
 	ReversalOfID  *uint     `gorm:"index" json:"reversal_of_id,omitempty"`
 	// SaleID/PurchaseID: vínculo tipado al documento de origen (además de Reference, texto
 	// libre heredado). Nulo en movimientos manuales.
-	SaleID     *uint     `gorm:"index" json:"sale_id,omitempty"`
-	PurchaseID *uint     `gorm:"index" json:"purchase_id,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	SaleID     *uint `gorm:"index" json:"sale_id,omitempty"`
+	PurchaseID *uint `gorm:"index" json:"purchase_id,omitempty"`
+	// CashSessionID: sesión de Caja (turno) en la que ocurrió este movimiento — igual que ya
+	// tiene TenantSale.CashSessionID, para que un pago no efectivo (Yape/Plin/transferencia/
+	// tarjeta) de una venta o compra sea trazable directamente a su sesión sin depender de un
+	// join indirecto por sale_id/purchase_id. Nulo en movimientos anteriores a esta columna o
+	// sin sesión resuelta (p. ej. compra sin caja abierta).
+	CashSessionID *uint     `gorm:"index" json:"cash_session_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type TenantExternalModule struct {
