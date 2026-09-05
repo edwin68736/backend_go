@@ -1781,14 +1781,22 @@ type TenantPurchase struct {
 	PaymentMethod string     `gorm:"size:50" json:"payment_method"`
 	Notes         string     `gorm:"type:text" json:"notes"`
 	Status        string     `gorm:"size:30;default:'received'" json:"status"`
-	// CashSessionID: sesión de Caja (turno) en la que se registró la compra — mismo patrón que
-	// TenantSale.CashSessionID, y ahora exigida/resuelta igual que en una venta
-	// (ResolveCashSessionForPurchase) para CUALQUIER compra con pago inmediato, sin importar el
-	// método (efectivo, Yape, Plin, transferencia, tarjeta). Trazabilidad de "qué compras
-	// ocurrieron en esta sesión", independiente del método de pago. Nulo solo en: compras
-	// anteriores a que se exigiera esta resolución (compatibilidad histórica, ver
-	// listNonCashPurchasesForSession), o compras SIN método de pago (a crédito/por cobrar, sin
-	// pago inmediato — no hay ninguna operación financiera todavía que trazar a una sesión).
+	// CashSessionID: sesión de Caja (turno) en la que se REGISTRÓ el documento de compra — mismo
+	// patrón que TenantSale.CashSessionID. Se exige y resuelve SIEMPRE (ResolveCashSessionForPurchase),
+	// para TODA compra sin importar el método ni si tiene pago inmediato — incluida una compra
+	// 100% a crédito (Fase 2 / decisión A): registrar el documento exige caja abierta del
+	// usuario, igual que ya exige toda venta, aunque no se mueva dinero todavía.
+	//
+	// Este campo NUNCA se modifica después de creado — ni por un pago inmediato distinto, ni por
+	// un pago a proveedor posterior (PayableService.Pay, Fase 2 — CxP). La Caja donde ocurre CADA
+	// pago vive en TenantPurchasePayment.CashSessionID, un campo distinto con un significado
+	// distinto: "dónde se registró el documento" vs. "dónde ocurrió este pago" no deben
+	// confundirse ni fusionarse en un solo campo (ver TenantSalePayment para el mismo criterio
+	// del lado de ventas).
+	//
+	// Nulo únicamente en compras anteriores a que se exigiera esta resolución (compatibilidad
+	// histórica — ver listNonCashPurchasesForSession, que solo debe encontrar candidatas para
+	// ese caso histórico, nunca compras nuevas).
 	CashSessionID *uint `gorm:"index" json:"cash_session_id,omitempty"`
 	// PriceIncludesIgv: criterio con el que se registró la compra. Si es true, los unit_cost
 	// tecleados ya traían IGV y se desagregó; si es false, el IGV se sumó encima.
@@ -1796,6 +1804,38 @@ type TenantPurchase struct {
 	CreatedAt        time.Time      `json:"created_at"`
 	UpdatedAt        time.Time      `json:"updated_at"`
 	DeletedAt        gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantPurchasePayable cuenta por pagar (CxP) de una compra a crédito — 1:1 con TenantPurchase,
+// solo existe cuando la compra se registró con PaymentMethod vacío (sin pago inmediato). Mismo
+// patrón que TenantSaleCreditInstallment/CxC, pero como una única obligación con saldo corriente
+// en vez de un calendario de cuotas: a diferencia de una venta, una compra hoy no tiene concepto
+// de cronograma de vencimientos por línea (una sola DueDate en TenantPurchase, ya reutilizada acá
+// sin duplicarla). Varios pagos parciales se aplican contra esta misma fila (PaidAmount se
+// acumula), no contra un arreglo de cuotas.
+type TenantPurchasePayable struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	PurchaseID     uint      `gorm:"not null;uniqueIndex" json:"purchase_id"`
+	OriginalAmount float64   `gorm:"type:decimal(15,2);not null" json:"original_amount"`
+	PaidAmount     float64   `gorm:"type:decimal(15,2);default:0" json:"paid_amount"`
+	Status         string    `gorm:"size:20;default:'pending'" json:"status"` // pending, partial, paid
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// TenantPurchasePayment registra cada pago a proveedor contra una compra — mismo patrón que
+// TenantSalePayment, con su propia CashSessionID: la Caja donde OCURRIÓ ESE pago, que puede ser
+// distinta de TenantPurchase.CashSessionID (la Caja donde se REGISTRÓ la compra, que nunca se
+// modifica por un pago posterior — ver P0).
+type TenantPurchasePayment struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	PurchaseID    uint      `gorm:"not null;index" json:"purchase_id"`
+	Method        string    `gorm:"size:50;not null" json:"method"`
+	Amount        float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
+	Reference     string    `gorm:"size:100" json:"reference"`
+	Notes         string    `gorm:"size:255" json:"notes"`
+	CashSessionID *uint     `gorm:"index" json:"cash_session_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type TenantPurchaseItem struct {

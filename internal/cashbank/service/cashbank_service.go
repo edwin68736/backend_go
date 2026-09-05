@@ -740,6 +740,18 @@ func (s *CashBankService) ResolveCashSessionForCollection(
 		"debe abrir una sesión de caja antes de registrar un cobro")
 }
 
+// ResolveCashSessionForPayable exige sesión de caja abierta del propio usuario para un PAGO A
+// PROVEEDOR posterior (compra a crédito ya registrada) — mismo mecanismo que
+// ResolveCashSessionForCollection (su equivalente en ventas/CxC), sin importar el método de pago.
+func (s *CashBankService) ResolveCashSessionForPayable(
+	branchID, userID uint,
+	cashSessionID *uint,
+	payments []PaymentLineInput,
+) (*uint, error) {
+	return s.resolveCashSessionRequired(branchID, userID, cashSessionID, payments,
+		"debe abrir una sesión de caja antes de registrar un pago a proveedor")
+}
+
 // resolveCashSessionRequired resuelve la sesión de caja del usuario para una operación que SIEMPRE
 // debe quedar vinculada a una sesión (venta o compra), sin importar el método de pago — a
 // diferencia de ResolveCashSessionForPayments, que solo exige/resuelve sesión cuando el destino es

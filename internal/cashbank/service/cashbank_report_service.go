@@ -17,16 +17,27 @@ import (
 
 // SessionReport es el reporte de cierre/resumen de una sesión de caja.
 type SessionReport struct {
-	Session              SessionReportHeader    `json:"session"`
-	IncomeDetail         []IncomeDetailRow      `json:"income_detail"`
-	ExpenseDetail        []ExpenseDetailRow     `json:"expense_detail"`
-	CancelledSalesDetail []CancelledSaleRow     `json:"cancelled_sales_detail"`
-	TotalsByMethod       TotalsByMethodReport   `json:"totals_by_method"`
-	Totals               SessionTotals          `json:"totals"`
-	CashPhysical         SessionCashPhysical    `json:"cash_physical"`
-	Electronic           SessionElectronic      `json:"electronic"`
-	Detraction           SessionDetraction      `json:"detraction"`
-	CreditGenerated      SessionCreditGenerated `json:"credit_generated"`
+	Session              SessionReportHeader     `json:"session"`
+	IncomeDetail         []IncomeDetailRow       `json:"income_detail"`
+	ExpenseDetail        []ExpenseDetailRow      `json:"expense_detail"`
+	CancelledSalesDetail []CancelledSaleRow      `json:"cancelled_sales_detail"`
+	TotalsByMethod       TotalsByMethodReport    `json:"totals_by_method"`
+	Totals               SessionTotals           `json:"totals"`
+	CashPhysical         SessionCashPhysical     `json:"cash_physical"`
+	Electronic           SessionElectronic       `json:"electronic"`
+	Detraction           SessionDetraction       `json:"detraction"`
+	CreditGenerated      SessionCreditGenerated  `json:"credit_generated"`
+	PayableGenerated     SessionPayableGenerated `json:"payable_generated"`
+}
+
+// SessionPayableGenerated compras a crédito (CxP — Fase 2) REGISTRADAS en esta sesión, con su
+// monto original — no representan dinero pagado, se excluyen de ExpenseDetail/TotalPurchases/
+// TotalExpense (mismo criterio que CreditGenerated del lado de ventas). El saldo pendiente real
+// (cuánto de esto ya se pagó, en qué sesión) se consulta en internal/payables (CxP). Informativo,
+// sin impacto en arqueo.
+type SessionPayableGenerated struct {
+	Total     float64            `json:"total"`
+	Purchases []ExpenseDetailRow `json:"purchases"`
 }
 
 // SessionCreditGenerated ventas registradas a crédito (condición "credito"/"credit") sin cobrar
@@ -423,13 +434,15 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		}
 	}
 
-	// Compras NO-EFECTIVO: nunca pasan por tenant_cash_movements (arriba), así que sin este paso
-	// quedaban invisibles en ExpenseDetail/TotalsByMethod.Purchases pese a existir en
-	// tenant_purchases. Se leen directo de tenant_purchases (mismo dato que ya usa el camino en
-	// efectivo vía pur.Series/pur.Number/m.Amount, sin acudir a tenant_bank_movements) y solo se
-	// suman a TotalPurchases — nunca a TotalExpense/FinalBalance/CashPhysical.PhysicalBalance, que
-	// deben seguir siendo solo efectivo. seenPurchaseIDs evita sumar dos veces una compra que ya
-	// se haya contado arriba.
+	// Compras NO-EFECTIVO pagadas al contado: nunca pasan por tenant_cash_movements (arriba), así
+	// que sin este paso quedaban invisibles en ExpenseDetail/TotalsByMethod.Purchases pese a
+	// existir en tenant_purchases. Se leen directo de tenant_purchases (mismo dato que ya usa el
+	// camino en efectivo vía pur.Series/pur.Number/m.Amount, sin acudir a tenant_bank_movements) y
+	// solo se suman a TotalPurchases — nunca a TotalExpense/FinalBalance/CashPhysical
+	// .PhysicalBalance, que deben seguir siendo solo efectivo. seenPurchaseIDs evita sumar dos
+	// veces una compra que ya se haya contado arriba. Las compras a crédito (PaymentMethod vacío)
+	// nunca aparecen aquí — IsCashPaymentMethod("") es true (ver normalizeReportMethod), así que
+	// el filtro de esa función ya las excluye; se tratan aparte, más abajo (CxP — Fase 2).
 	nonCashPurchases, _ := s.listNonCashPurchasesForSession(&session)
 	for _, p := range nonCashPurchases {
 		if _, ok := seenPurchaseIDs[p.ID]; ok {
@@ -443,6 +456,39 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			Type:          "compra",
 			DocNumber:     p.Series + "-" + p.Number,
 			Amount:        p.Total,
+			PaymentMethod: method,
+		})
+	}
+
+	// CxP (Fase 2) — dos fuentes, análogas a CreditGenerated/pagos posteriores de CxC:
+	//  1. Compras a crédito REGISTRADAS en esta sesión (purchase.cash_session_id = sessionID):
+	//     no representan dinero pagado — se informan aparte en PayableGenerated, nunca en
+	//     TotalPurchases/ExpenseDetail/TotalExpense.
+	//  2. Pagos a proveedor NO-EFECTIVO que OCURRIERON en esta sesión (TenantPurchasePayment
+	//     .cash_session_id = sessionID), que puede ser una sesión distinta de aquella en la que
+	//     se registró la compra (P0: el pago tiene su propia Caja). Los pagos en efectivo no
+	//     necesitan este paso: ya generan su propio TenantCashMovement, capturado arriba.
+	creditPurchases, _ := s.listCreditPurchasesRegisteredInSession(&session)
+	for _, p := range creditPurchases {
+		report.PayableGenerated.Total += p.Total
+		report.PayableGenerated.Purchases = append(report.PayableGenerated.Purchases, ExpenseDetailRow{
+			Date:      p.CreatedAt,
+			Type:      "cxp_generada",
+			DocNumber: p.Series + "-" + p.Number,
+			Amount:    p.Total,
+		})
+	}
+
+	payablePayments, _ := s.listNonCashPayablePaymentsForSession(sessionID)
+	for _, pp := range payablePayments {
+		method := normalizeReportMethod(pp.Method)
+		report.Totals.TotalPurchases += pp.Amount
+		purchasesByMethod[method] += pp.Amount
+		report.ExpenseDetail = append(report.ExpenseDetail, ExpenseDetailRow{
+			Date:          pp.CreatedAt,
+			Type:          "pago_proveedor",
+			DocNumber:     pp.PurchaseDocNumber,
+			Amount:        pp.Amount,
 			PaymentMethod: method,
 		})
 	}
@@ -759,6 +805,61 @@ func (s *CashBankService) listNonCashPurchasesForSession(session *database.Tenan
 			continue
 		}
 		out = append(out, p)
+	}
+	return out, nil
+}
+
+// listCreditPurchasesRegisteredInSession compras a crédito (CxP — Fase 2, PaymentMethod vacío)
+// cuyo documento se REGISTRÓ en esta sesión (purchase.cash_session_id = session.ID) — vínculo
+// directo únicamente: una compra a crédito nueva siempre lo tiene (ResolveCashSessionForPurchase
+// ya lo exige desde P0), no hace falta un fallback huérfano por sucursal+fecha para esto.
+func (s *CashBankService) listCreditPurchasesRegisteredInSession(session *database.TenantCashSession) ([]database.TenantPurchase, error) {
+	if session == nil || session.ID == 0 {
+		return nil, nil
+	}
+	var purchases []database.TenantPurchase
+	err := s.db.Where("cash_session_id = ? AND status != ? AND (payment_method IS NULL OR payment_method = ?)",
+		session.ID, "cancelled", "").
+		Order("created_at ASC").Find(&purchases).Error
+	return purchases, err
+}
+
+// payablePaymentRow pago a proveedor (TenantPurchasePayment) no-efectivo, con el número de
+// documento de la compra ya resuelto (evita otra consulta por fila en el llamador).
+type payablePaymentRow struct {
+	Amount            float64
+	Method            string
+	CreatedAt         time.Time
+	PurchaseDocNumber string
+}
+
+// listNonCashPayablePaymentsForSession pagos a proveedor NO-EFECTIVO (CxP — Fase 2) que
+// OCURRIERON en esta sesión — TenantPurchasePayment.cash_session_id = sessionID, que puede ser
+// una sesión distinta de aquella en la que se registró la compra (P0: el pago tiene su propia
+// Caja, independiente de la del documento). Los pagos en efectivo no pasan por aquí: ya generan
+// su propio TenantCashMovement, capturado por el loop principal de movimientos más arriba —
+// incluirlos aquí también los duplicaría.
+func (s *CashBankService) listNonCashPayablePaymentsForSession(sessionID uint) ([]payablePaymentRow, error) {
+	if sessionID == 0 {
+		return nil, nil
+	}
+	var payments []database.TenantPurchasePayment
+	if err := s.db.Where("cash_session_id = ?", sessionID).Order("created_at ASC").Find(&payments).Error; err != nil {
+		return nil, err
+	}
+	out := make([]payablePaymentRow, 0, len(payments))
+	for _, p := range payments {
+		if IsCashPaymentMethod(normalizeReportMethod(p.Method)) {
+			continue
+		}
+		docNumber := ""
+		var pur database.TenantPurchase
+		if s.db.First(&pur, p.PurchaseID).Error == nil {
+			docNumber = pur.Series + "-" + pur.Number
+		}
+		out = append(out, payablePaymentRow{
+			Amount: p.Amount, Method: p.Method, CreatedAt: p.CreatedAt, PurchaseDocNumber: docNumber,
+		})
 	}
 	return out, nil
 }

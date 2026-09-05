@@ -33,6 +33,8 @@ func setupPurchaseServiceTestDB(t *testing.T) *gorm.DB {
 		&database.TenantPaymentMethod{},
 		&database.TenantCashSession{},
 		&database.TenantCashMovement{},
+		&database.TenantPurchasePayable{},
+		&database.TenantPurchasePayment{},
 	}
 	for _, m := range models {
 		if err := db.AutoMigrate(m); err != nil {
@@ -115,6 +117,7 @@ func TestCatalogPriceUpdates_RejectsInvalidSalePrice(t *testing.T) {
 func TestPurchaseCreate_UpdatesCatalogPrices(t *testing.T) {
 	db := setupPurchaseServiceTestDB(t)
 	svc := NewPurchaseService(db)
+	newOpenCashSession(t, db, 1, 1) // toda compra exige sesión de caja abierta, aun a crédito
 
 	product := &database.TenantProduct{
 		Code:               "P001",
@@ -174,6 +177,7 @@ func TestPurchaseCreate_UpdatesCatalogPrices(t *testing.T) {
 func TestPurchaseCreate_UpdatesPurchasePriceOnlyWhenSaleFlagOff(t *testing.T) {
 	db := setupPurchaseServiceTestDB(t)
 	svc := NewPurchaseService(db)
+	newOpenCashSession(t, db, 1, 1) // toda compra exige sesión de caja abierta, aun a crédito
 
 	product := &database.TenantProduct{
 		Code:               "P002",
@@ -230,6 +234,7 @@ func TestPurchaseCreate_UpdatesPurchasePriceOnlyWhenSaleFlagOff(t *testing.T) {
 func TestPurchaseCreate_SkipsPurchasePriceWhenUnitCostZero(t *testing.T) {
 	db := setupPurchaseServiceTestDB(t)
 	svc := NewPurchaseService(db)
+	newOpenCashSession(t, db, 1, 1) // toda compra exige sesión de caja abierta, aun a crédito
 
 	product := &database.TenantProduct{
 		Code:               "P003",
@@ -614,6 +619,7 @@ func createPurchaseWithIgvFlag(t *testing.T, affectation string, priceIncludesIg
 	t.Helper()
 	db := setupPurchaseServiceTestDB(t)
 	svc := NewPurchaseService(db)
+	newOpenCashSession(t, db, 1, 1) // toda compra exige sesión de caja abierta, aun a crédito
 
 	p, err := svc.Create(CreatePurchaseInput{
 		BranchID:         1,

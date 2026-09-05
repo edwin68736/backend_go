@@ -186,27 +186,27 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		status = "received"
 	}
 
-	// Resolver sesión de caja: se exige para cualquier compra que registre un pago inmediato,
-	// sin importar el método (efectivo, Yape, Plin, transferencia, tarjeta, etc.) — igual que ya
-	// exige ResolveCashSessionForSale para ventas, y con el mismo criterio de resolución
-	// determinística (sesión abierta del propio usuario en la sucursal, GetOpenSession). Antes
-	// solo se resolvía/exigía cuando el método era efectivo, y una compra no-efectivo quedaba con
-	// cash_session_id NULL sin ninguna forma determinística de saber a qué sesión pertenecía.
+	// Resolver sesión de caja: se exige SIEMPRE, para TODA compra, sin importar el método —
+	// incluida una compra 100% a crédito sin pago inmediato (Fase 2 / decisión A). Simétrico a
+	// ResolveCashSessionForSale en ventas: hasta una venta puramente a crédito exige caja abierta
+	// del usuario para registrarse; una compra debe comportarse igual, porque
+	// TenantPurchase.CashSessionID representa "dónde se registró el documento", no "dónde se
+	// pagó" — esa segunda pregunta la responde TenantPurchasePayment.CashSessionID (Fase 2),
+	// nunca este campo.
 	//
-	// Si input.PaymentMethod está vacío (compra a crédito/por cobrar, sin pago inmediato) no hay
-	// ninguna operación financiera que trazar todavía — no se exige sesión, igual que antes;
-	// tampoco se llama a RecordExpensePayment más abajo en ese caso.
-	var cashSessionID *uint
-	if input.PaymentMethod != "" {
-		cbSvcResolve := cashbanksvc.NewCashBankService(s.db)
-		resolved, err := cbSvcResolve.ResolveCashSessionForPurchase(
-			input.BranchID, input.UserID, nil,
-			[]cashbanksvc.PaymentLineInput{{Method: input.PaymentMethod, Amount: total}},
-		)
-		if err != nil {
-			return nil, err
-		}
-		cashSessionID = resolved
+	// ResolveCashSessionForPurchase ya resuelve esto correctamente aunque PaymentMethod esté
+	// vacío: el método "" nunca activa la rama needsCash de ResolveCashSessionForPayments (no
+	// coincide con ningún código de efectivo ni con IsCreditCode(""), que es false para cadena
+	// vacía), así que esa función devuelve nil de inmediato y resolveCashSessionRequired cae en
+	// su última rama — GetOpenSession del usuario, exigida sin importar el método — exactamente
+	// el mismo camino que ya usa una compra al contado.
+	cbSvcResolve := cashbanksvc.NewCashBankService(s.db)
+	cashSessionID, err := cbSvcResolve.ResolveCashSessionForPurchase(
+		input.BranchID, input.UserID, nil,
+		[]cashbanksvc.PaymentLineInput{{Method: input.PaymentMethod, Amount: total}},
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	purchase := &database.TenantPurchase{
@@ -246,6 +246,20 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			cbSvc := cashbanksvc.NewCashBankService(tx)
 			purchaseID := purchase.ID
 			if err := cbSvc.RecordExpensePayment(tx, input.PaymentMethod, total, cashSessionID, docNumber, "Compra "+docNumber, &purchaseID, input.UserID); err != nil {
+				return err
+			}
+		} else if total > 0 {
+			// Compra a crédito (Fase 2 — CxP): sin pago inmediato, se registra la obligación
+			// pendiente. Un pago inicial ("adelanto"), si lo hay, se aplica después con
+			// PayableService.Pay — misma llamada que un pago posterior cualquiera, exactamente
+			// igual que un cobro inmediato de una venta a crédito no se distingue de uno
+			// posterior desde receivables.Collect.
+			if err := tx.Create(&database.TenantPurchasePayable{
+				PurchaseID:     purchase.ID,
+				OriginalAmount: total,
+				PaidAmount:     0,
+				Status:         "pending",
+			}).Error; err != nil {
 				return err
 			}
 		}
@@ -403,7 +417,16 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 	docNumber := p.Series + "-" + p.Number
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if strings.TrimSpace(p.PaymentMethod) != "" && p.Total > 0 {
+		// p.Total > 0 basta como condición (ya no se exige PaymentMethod != "" aquí): una compra
+		// a crédito (Fase 2 — CxP) no tiene pago al registrarse, pero puede tener uno o más pagos
+		// a proveedor posteriores (TenantPurchasePayment vía PayableService.Pay), cada uno con la
+		// MISMA referencia docNumber que ya usa el pago inmediato — así que las mismas consultas
+		// de abajo (por purchase_id para efectivo, por reference para banco) ya encuentran esos
+		// pagos también, sin necesitar un mecanismo de reversión distinto. Si la compra a crédito
+		// nunca recibió ningún pago, ambas consultas no encuentran nada y no pasa nada (idéntico
+		// a antes). El saldo de CxP pendiente de una compra anulada se excluye por estado en las
+		// consultas de PayableService (no se actualiza aquí la fila de tenant_purchase_payables).
+		if p.Total > 0 {
 			cbSvc := cashbanksvc.NewCashBankService(tx)
 			desc := "Reversión por anulación de compra"
 
