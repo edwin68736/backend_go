@@ -58,6 +58,14 @@ func (s *CashBankService) CreateBankReversal(tx *gorm.DB, original database.Tena
 		ReversalOfID:  &origID,
 		SaleID:        original.SaleID,
 		PurchaseID:    original.PurchaseID,
+		// CashSessionID: se conserva la del movimiento original (la sesión donde ocurrió
+		// realmente el pago que se está revirtiendo) — nunca se inventa una nueva. Antes esta
+		// reversión quedaba con cash_session_id=NULL aunque el original sí lo tuviera, lo que la
+		// hacía invisible para GetSessionBalanceSummary(sessionID) de esa misma sesión (la
+		// consulta filtra por cash_session_id=?, y NULL nunca coincide) — una venta/compra
+		// anulada seguía apareciendo como ingreso activo en el balance en vivo de su sesión
+		// original. Mismo criterio que ya usa CreateCashReversal para tenant_cash_movements.
+		CashSessionID: original.CashSessionID,
 		CreatedAt:     now,
 	}
 	if err := exec.Create(&rev).Error; err != nil {

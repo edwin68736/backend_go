@@ -1457,11 +1457,12 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		recordIdx := 0
 		for _, p := range input.Payments {
 			tx.Create(&database.TenantSalePayment{
-				SaleID:    sale.ID,
-				Method:    p.Method,
-				Amount:    p.Amount,
-				Reference: p.Reference,
-				Notes:     p.Notes,
+				SaleID:        sale.ID,
+				Method:        p.Method,
+				Amount:        p.Amount,
+				Reference:     p.Reference,
+				Notes:         p.Notes,
+				CashSessionID: input.CashSessionID,
 			})
 			desc := "Venta " + sale.Number
 			recordAmt := p.Amount
@@ -1627,11 +1628,12 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 		recordIdx := 0
 		for _, p := range payments {
 			tx.Create(&database.TenantSalePayment{
-				SaleID:    saleID,
-				Method:    p.Method,
-				Amount:    p.Amount,
-				Reference: p.Reference,
-				Notes:     p.Notes,
+				SaleID:        saleID,
+				Method:        p.Method,
+				Amount:        p.Amount,
+				Reference:     p.Reference,
+				Notes:         p.Notes,
+				CashSessionID: sale.CashSessionID,
 			})
 			desc := "Venta " + sale.Number
 			recordAmt := p.Amount

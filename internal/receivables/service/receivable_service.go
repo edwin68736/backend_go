@@ -267,7 +267,10 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 		}
 		payLines = append(payLines, cashbanksvc.PaymentLineInput{Method: p.Method, Amount: p.Amount})
 	}
-	cashSessionID, err := cbSvc.ResolveCashSessionForPayments(sale.BranchID, in.UserID, in.CashSessionID, payLines)
+	// ResolveCashSessionForCollection exige sesión de caja del usuario para CUALQUIER cobro,
+	// sin importar el método (antes: ResolveCashSessionForPayments, que solo la exigía para
+	// efectivo — un cobro 100% Yape/Plin/transferencia/tarjeta podía registrarse sin sesión).
+	cashSessionID, err := cbSvc.ResolveCashSessionForCollection(sale.BranchID, in.UserID, in.CashSessionID, payLines)
 	if err != nil {
 		return err
 	}
@@ -278,10 +281,14 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 			if p.Amount <= 0 || p.Method == "" {
 				continue
 			}
+			// CashSessionID aquí es la Caja donde OCURRIÓ este cobro — puede ser distinta de
+			// sale.CashSessionID (la Caja donde se REGISTRÓ la venta), que nunca se toca en este
+			// flujo. Ver comentario del campo en pkg/database/migrations.go.
 			if err := tx.Create(&database.TenantSalePayment{
-				SaleID: saleID,
-				Method: p.Method,
-				Amount: p.Amount,
+				SaleID:        saleID,
+				Method:        p.Method,
+				Amount:        p.Amount,
+				CashSessionID: cashSessionID,
 			}).Error; err != nil {
 				return err
 			}
@@ -317,12 +324,14 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 		} else {
 			newStatus = "credit"
 		}
+		// sale.CashSessionID NUNCA se toca aquí: representa exclusivamente dónde se REGISTRÓ la
+		// venta, no dónde se cobró. Cada cobro conserva su propia Caja en
+		// TenantSalePayment.CashSessionID (arriba) y en el TenantCashMovement/TenantBankMovement
+		// que crea RecordPayment — eso es suficiente para saber "dónde ocurrió cada pago" sin
+		// pisar la sesión de registro de la venta.
 		updates := map[string]interface{}{"status": newStatus}
 		if paidAfter > 0 && newStatus == "paid" {
 			updates["payment_method"] = salessvc.PrimaryDirectPaymentMethod(in.Payments, sale.PaymentMethod)
-		}
-		if cashSessionID != nil && *cashSessionID > 0 {
-			updates["cash_session_id"] = *cashSessionID
 		}
 		return tx.Model(&sale).Updates(updates).Error
 	})

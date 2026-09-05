@@ -725,6 +725,21 @@ func (s *CashBankService) ResolveCashSessionForPurchase(
 		"debe abrir una sesión de caja antes de registrar compras")
 }
 
+// ResolveCashSessionForCollection exige sesión de caja abierta del propio usuario para un COBRO
+// posterior (venta a crédito ya registrada) — mismo mecanismo que ResolveCashSessionForSale/
+// ResolveCashSessionForPurchase, sin importar el método de pago. Antes, ReceivableService.Collect
+// llamaba directo a ResolveCashSessionForPayments (la versión condicional, que solo exige/resuelve
+// sesión cuando el destino es efectivo), así que un cobro 100% no-efectivo podía registrarse sin
+// ninguna sesión. Esta función cierra esa brecha reutilizando el mismo patrón ya probado.
+func (s *CashBankService) ResolveCashSessionForCollection(
+	branchID, userID uint,
+	cashSessionID *uint,
+	payments []PaymentLineInput,
+) (*uint, error) {
+	return s.resolveCashSessionRequired(branchID, userID, cashSessionID, payments,
+		"debe abrir una sesión de caja antes de registrar un cobro")
+}
+
 // resolveCashSessionRequired resuelve la sesión de caja del usuario para una operación que SIEMPRE
 // debe quedar vinculada a una sesión (venta o compra), sin importar el método de pago — a
 // diferencia de ResolveCashSessionForPayments, que solo exige/resuelve sesión cuando el destino es

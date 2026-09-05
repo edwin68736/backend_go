@@ -617,10 +617,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 			if err := tx.Create(&database.TenantSalePayment{
-				SaleID:    sale.ID,
-				Method:    p.Method,
-				Amount:    p.Amount,
-				Reference: strings.TrimSpace(p.Reference),
+				SaleID:        sale.ID,
+				Method:        p.Method,
+				Amount:        p.Amount,
+				Reference:     strings.TrimSpace(p.Reference),
+				CashSessionID: input.CashSessionID,
 			}).Error; err != nil {
 				return err
 			}

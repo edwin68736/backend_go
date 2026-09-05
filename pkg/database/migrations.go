@@ -2175,7 +2175,13 @@ type TenantSalePayment struct {
 	Amount    float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
 	Reference string    `gorm:"size:100" json:"reference"` // nro. de operación, voucher, etc.
 	Notes     string    `gorm:"size:255" json:"notes"`
-	CreatedAt time.Time `json:"created_at"`
+	// CashSessionID: sesión de Caja donde OCURRIÓ este pago — no necesariamente la misma que
+	// tenant_sales.cash_session_id (que representa dónde se REGISTRÓ el documento y nunca debe
+	// modificarse). Una venta a crédito puede registrarse en la Caja 25 y cobrarse después en la
+	// Caja 30 y luego en la 35: cada TenantSalePayment conserva la suya, la venta conserva la 25.
+	// Nulo en pagos anteriores a esta columna (ver listado de compatibilidad histórica al poblarla).
+	CashSessionID *uint     `gorm:"index" json:"cash_session_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // TenantMembership — cuota recurrente entre el tenant y un cliente (gimnasio, colegio, etc.).

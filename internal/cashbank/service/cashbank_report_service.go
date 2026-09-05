@@ -9,6 +9,7 @@ import (
 	"tukifac/internal/sales/nvdisplay"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
+	"tukifac/pkg/paymentcondition"
 	"tukifac/pkg/salescope"
 
 	"gorm.io/gorm"
@@ -16,15 +17,27 @@ import (
 
 // SessionReport es el reporte de cierre/resumen de una sesión de caja.
 type SessionReport struct {
-	Session              SessionReportHeader  `json:"session"`
-	IncomeDetail         []IncomeDetailRow    `json:"income_detail"`
-	ExpenseDetail        []ExpenseDetailRow   `json:"expense_detail"`
-	CancelledSalesDetail []CancelledSaleRow   `json:"cancelled_sales_detail"`
-	TotalsByMethod       TotalsByMethodReport `json:"totals_by_method"`
-	Totals               SessionTotals        `json:"totals"`
-	CashPhysical         SessionCashPhysical  `json:"cash_physical"`
-	Electronic           SessionElectronic    `json:"electronic"`
-	Detraction           SessionDetraction    `json:"detraction"`
+	Session              SessionReportHeader    `json:"session"`
+	IncomeDetail         []IncomeDetailRow      `json:"income_detail"`
+	ExpenseDetail        []ExpenseDetailRow     `json:"expense_detail"`
+	CancelledSalesDetail []CancelledSaleRow     `json:"cancelled_sales_detail"`
+	TotalsByMethod       TotalsByMethodReport   `json:"totals_by_method"`
+	Totals               SessionTotals          `json:"totals"`
+	CashPhysical         SessionCashPhysical    `json:"cash_physical"`
+	Electronic           SessionElectronic      `json:"electronic"`
+	Detraction           SessionDetraction      `json:"detraction"`
+	CreditGenerated      SessionCreditGenerated `json:"credit_generated"`
+}
+
+// SessionCreditGenerated ventas registradas a crédito (condición "credito"/"credit") sin cobrar
+// en esta sesión — no representan dinero recibido. Se excluyen explícitamente de
+// IncomeDetail/TotalSales/TotalSalesDirect/TotalSalesCommercial/Electronic (mismo criterio que ya
+// se aplica a la detracción SPOT) para no mostrarlas como ingreso electrónico ni de ningún otro
+// tipo: el saldo pendiente real se consulta en internal/receivables (CxC). Informativo, sin
+// impacto en arqueo.
+type SessionCreditGenerated struct {
+	Total float64           `json:"total"`
+	Sales []IncomeDetailRow `json:"sales"`
 }
 
 // SessionDetraction ventas con detracción BN (SPOT): informativo, sin impacto en arqueo.
@@ -289,6 +302,22 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				})
 				continue
 			}
+			if paymentcondition.IsCreditCode(meth) || paymentcondition.IsCreditCode(p.Method) {
+				// Crédito generado, no cobrado — no es dinero recibido; se registra aparte para
+				// no inflar TotalSales/Electronic con un pago que nunca ocurrió. paidBySale
+				// deliberadamente NO se incrementa aquí, así el saldo a crédito real se ve
+				// reflejado en el CxC de internal/receivables, no duplicado en este reporte.
+				report.CreditGenerated.Total += p.Amount
+				report.CreditGenerated.Sales = append(report.CreditGenerated.Sales, IncomeDetailRow{
+					Date:          p.CreatedAt,
+					Type:          "credito_generado",
+					DocNumber:     displayDocNumbers[sale.ID],
+					Reference:     p.Reference,
+					Amount:        p.Amount,
+					PaymentMethod: meth,
+				})
+				continue
+			}
 			salesByMethod[meth] += reportAmt
 			report.Totals.TotalSales += reportAmt
 			report.Totals.TotalSalesDirect += reportAmt
@@ -307,6 +336,20 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			if paidBySale[sale.ID] == 0 && sale.Total != 0 {
 				meth := normalizeReportMethod(sale.PaymentMethod)
 				if IsDetractionPaymentMethod(meth) {
+					continue
+				}
+				if paymentcondition.IsCreditCode(meth) || paymentcondition.IsCreditCode(sale.PaymentMethod) {
+					// Venta a crédito sin ningún TenantSalePayment (sin adelanto): el fallback de
+					// abajo normalmente atribuye sale.Total al método de la venta, pero aquí ese
+					// método es "credito" — no hubo ningún cobro real. Mismo criterio que arriba.
+					report.CreditGenerated.Total += sale.Total
+					report.CreditGenerated.Sales = append(report.CreditGenerated.Sales, IncomeDetailRow{
+						Date:          sale.CreatedAt,
+						Type:          "credito_generado",
+						DocNumber:     displayDocNumbers[sale.ID],
+						Amount:        sale.Total,
+						PaymentMethod: meth,
+					})
 					continue
 				}
 				salesByMethod[meth] += sale.Total

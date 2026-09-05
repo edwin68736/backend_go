@@ -81,3 +81,56 @@ func TestCreateBankReversal_CompensatesDebit(t *testing.T) {
 		t.Fatalf("expected 1 reversal, got %d", cnt)
 	}
 }
+
+// Corrección P0: la reversión debe conservar el cash_session_id del movimiento original — la
+// Caja donde ocurrió el pago que se está revirtiendo, nunca una inventada. Antes de esta
+// corrección quedaba NULL, lo que hacía invisible la reversión para
+// GetSessionBalanceSummary(sessionID) de esa misma sesión.
+func TestCreateBankReversal_PreservesCashSessionID(t *testing.T) {
+	db := setupFinancialReversalTestDB(t)
+	svc := NewCashBankService(db)
+
+	acc := &database.TenantBankAccount{Name: "Yape", PaymentMethod: "yape", Balance: 500, Active: true}
+	if err := db.Create(acc).Error; err != nil {
+		t.Fatal(err)
+	}
+	sessionID := uint(30)
+	orig := database.TenantBankMovement{
+		BankAccountID: acc.ID,
+		Type:          "credit",
+		Amount:        500,
+		Description:   "Venta F001-1",
+		Reference:     "F001-1",
+		Date:          time.Now(),
+		UserID:        1,
+		CashSessionID: &sessionID,
+	}
+	if err := db.Create(&orig).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de venta", "ANUL/F001-1", 2); err != nil {
+		t.Fatal(err)
+	}
+
+	var rev database.TenantBankMovement
+	if err := db.Where("reversal_of_id = ?", orig.ID).First(&rev).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rev.CashSessionID == nil || *rev.CashSessionID != sessionID {
+		t.Fatalf("reversal.cash_session_id = %v, want %d (heredado del movimiento original)", rev.CashSessionID, sessionID)
+	}
+	if rev.ReversalOfID == nil || *rev.ReversalOfID != orig.ID {
+		t.Fatalf("reversal_of_id incorrecto: %+v", rev.ReversalOfID)
+	}
+
+	// Sigue protegido contra doble reversión con la sesión ya poblada.
+	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de venta", "ANUL/F001-1", 2); err != nil {
+		t.Fatal(err)
+	}
+	var cnt int64
+	db.Model(&database.TenantBankMovement{}).Where("reversal_of_id = ?", orig.ID).Count(&cnt)
+	if cnt != 1 {
+		t.Fatalf("expected 1 reversal, got %d (no debe duplicarse)", cnt)
+	}
+}
