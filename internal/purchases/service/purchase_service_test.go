@@ -353,7 +353,12 @@ func TestPurchaseCreate_BankMovementInSameTransaction(t *testing.T) {
 	}
 	pid := product.ID
 
-	_, err := svc.Create(CreatePurchaseInput{
+	// Una compra no-efectivo también exige sesión de caja abierta del usuario — igual que una
+	// venta, y por el mismo motivo: quedar vinculada de forma determinística, no por
+	// sucursal+fecha. No genera ningún TenantCashMovement (el pago fue por transferencia).
+	session := newOpenCashSession(t, db, 1, 1)
+
+	purchase, err := svc.Create(CreatePurchaseInput{
 		BranchID: 1, UserID: 1, DocType: "FACTURA", Series: "F001", Number: "200",
 		IssueDate: time.Now(), PaymentMethod: "transferencia",
 		Items: []PurchaseItemInput{{
@@ -365,11 +370,26 @@ func TestPurchaseCreate_BankMovementInSameTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	if purchase.CashSessionID == nil || *purchase.CashSessionID != session.ID {
+		t.Fatalf("purchase.CashSessionID = %v, want %d", purchase.CashSessionID, session.ID)
+	}
 
 	var movCount int64
 	db.Model(&database.TenantBankMovement{}).Count(&movCount)
 	if movCount != 1 {
 		t.Fatalf("bank movements: got %d want 1", movCount)
+	}
+	var bankMov database.TenantBankMovement
+	if err := db.Where("purchase_id = ?", purchase.ID).First(&bankMov).Error; err != nil {
+		t.Fatal(err)
+	}
+	if bankMov.CashSessionID == nil || *bankMov.CashSessionID != session.ID {
+		t.Errorf("bank_movement.cash_session_id = %v, want %d", bankMov.CashSessionID, session.ID)
+	}
+	var cashMovCount int64
+	db.Model(&database.TenantCashMovement{}).Where("purchase_id = ?", purchase.ID).Count(&cashMovCount)
+	if cashMovCount != 0 {
+		t.Errorf("no debe crearse ningún TenantCashMovement para una compra por transferencia, got %d", cashMovCount)
 	}
 
 	var loadedAcc database.TenantBankAccount
@@ -487,6 +507,7 @@ func TestPurchaseVoid_ReversesBankDebit(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := product.ID
+	newOpenCashSession(t, db, 1, 1)
 
 	purchase, err := svc.Create(CreatePurchaseInput{
 		BranchID: 1, UserID: 1, DocType: "FACTURA", Series: "F001", Number: "300",

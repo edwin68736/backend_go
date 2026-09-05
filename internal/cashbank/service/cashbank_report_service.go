@@ -653,19 +653,28 @@ func (s *CashBankService) listOrphanSalesForSession(session *database.TenantCash
 // leyendo tenant_cash_movements (donde una compra no-efectivo nunca aparece: recordDirectedPayment,
 // rama bank_account, solo crea un TenantBankMovement, nunca un TenantCashMovement).
 //
-// purchase_service.Create solo resuelve/exige cash_session_id cuando el método de pago es
-// efectivo (ver comentario de TenantPurchase.CashSessionID: "... compra pagada por un método que
-// no requiere caja abierta") — hoy en producción una compra no-efectivo SIEMPRE queda con
-// cash_session_id NULL. Por eso esta función junta dos fuentes, igual que ya hace
-// listOrphanSalesForSession para ventas:
-//  1. vínculo directo (cash_session_id = esta sesión) — cubre el caso en que, en el futuro o vía
-//     un llamador distinto, sí se resuelva una sesión explícita para un pago no-efectivo (ahora
-//     validada por ValidateCashSessionForUser, ver commit 895b153);
-//  2. huérfanas (cash_session_id NULL) atribuidas por sucursal + ventana de fecha de la sesión —
-//     el camino real que toma HOY toda compra no-efectivo.
+// Junta dos fuentes, en orden de preferencia:
 //
-// Las compras en EFECTIVO se excluyen explícitamente (IsCashPaymentMethod): esas ya tienen su
-// propio TenantCashMovement y ya se cuentan más arriba — incluirlas aquí las duplicaría.
+//  1. VÍNCULO DIRECTO (cash_session_id = esta sesión) — el mecanismo real y determinístico para
+//     compras NUEVAS. purchase_service.Create ahora exige y resuelve sesión de caja para
+//     cualquier compra con pago inmediato, sin importar el método (ResolveCashSessionForPurchase,
+//     mismo criterio que ResolveCashSessionForSale ya usa para ventas: la sesión abierta del
+//     propio usuario, nunca "la primera sesión de la sucursal"). Una compra nueva por
+//     Yape/Plin/transferencia/tarjeta ya llega aquí con esta columna poblada.
+//  2. HUÉRFANAS (cash_session_id NULL), atribuidas por sucursal + ventana de fecha de la sesión —
+//     SOLO COMPATIBILIDAD HISTÓRICA. Cubre exclusivamente compras creadas ANTES de que
+//     purchase_service.Create exigiera sesión para pagos no-efectivo (dato ya persistido, no se
+//     migra ni se corrige retroactivamente). Para una compra nueva con método de pago, esta rama
+//     no debería aportar nada — si una compra nueva con pago inmediato aparece solo por esta vía,
+//     es indicio de un bug en la resolución de sesión, no el comportamiento esperado. (Una compra
+//     nueva SIN método de pago — a crédito, sin pago inmediato — legítimamente no pasa por
+//     ResolveCashSessionForPurchase y por tanto tampoco por esta rama: normalizeReportMethod("")
+//     la trata como "efectivo" y el filtro de abajo la descarta, ya que no representa ningún
+//     movimiento de dinero que trazar todavía.)
+//
+// Las compras en EFECTIVO se excluyen explícitamente (IsCashPaymentMethod) de ambas fuentes: esas
+// ya tienen su propio TenantCashMovement y ya se cuentan más arriba — incluirlas aquí las
+// duplicaría.
 func (s *CashBankService) listNonCashPurchasesForSession(session *database.TenantCashSession) ([]database.TenantPurchase, error) {
 	if session == nil || session.ID == 0 {
 		return nil, nil

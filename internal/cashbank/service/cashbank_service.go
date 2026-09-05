@@ -706,8 +706,36 @@ func (s *CashBankService) ResolveCashSessionForSale(
 	cashSessionID *uint,
 	payments []PaymentLineInput,
 ) (*uint, error) {
-	const errNoCash = "debe abrir una sesión de caja antes de registrar ventas"
+	return s.resolveCashSessionRequired(branchID, userID, cashSessionID, payments,
+		"debe abrir una sesión de caja antes de registrar ventas")
+}
 
+// ResolveCashSessionForPurchase exige sesión de caja abierta del propio usuario, igual que
+// ResolveCashSessionForSale — cualquier compra (efectivo o no) queda vinculada de forma
+// determinística a la sesión del usuario que la registra, sin importar el método de pago.
+// Antes, una compra no-efectivo no pasaba por aquí y quedaba con cash_session_id NULL (ver
+// purchase_service.Create); esta función es el mismo mecanismo ya usado y probado para ventas,
+// solo con el mensaje de error propio de compras.
+func (s *CashBankService) ResolveCashSessionForPurchase(
+	branchID, userID uint,
+	cashSessionID *uint,
+	payments []PaymentLineInput,
+) (*uint, error) {
+	return s.resolveCashSessionRequired(branchID, userID, cashSessionID, payments,
+		"debe abrir una sesión de caja antes de registrar compras")
+}
+
+// resolveCashSessionRequired resuelve la sesión de caja del usuario para una operación que SIEMPRE
+// debe quedar vinculada a una sesión (venta o compra), sin importar el método de pago — a
+// diferencia de ResolveCashSessionForPayments, que solo exige/resuelve sesión cuando el destino es
+// efectivo. Compartida por ResolveCashSessionForSale y ResolveCashSessionForPurchase para no
+// duplicar esta lógica ni divergir entre ambas.
+func (s *CashBankService) resolveCashSessionRequired(
+	branchID, userID uint,
+	cashSessionID *uint,
+	payments []PaymentLineInput,
+	errNoCash string,
+) (*uint, error) {
 	resolved, err := s.ResolveCashSessionForPayments(branchID, userID, cashSessionID, payments)
 	if err != nil {
 		return nil, err

@@ -1847,7 +1847,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		return nil, fmt.Errorf("nota de venta en USD: %w", err)
 	}
 	nvID := notaSaleID
-	return s.Create(CreateSaleInput{
+	issued, err := s.Create(CreateSaleInput{
 		BranchID:                nota.BranchID,
 		ContactID:               contactID,
 		UserID:                  userID,
@@ -1869,6 +1869,31 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		IssuedFromNotaSaleID:    &nvID,
 		CentralTenantID:         centralTenantID,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Trazabilidad documental (no monetaria): esta factura/boleta no representa un nuevo
+	// movimiento de dinero — el pago real ya se registró (y ya quedó vinculado a su sesión de
+	// caja) cuando se creó la nota de venta original; por eso SkipPaymentDistribution=true arriba
+	// y ningún RecordPayment se vuelve a llamar. Pero el comprobante SÍ debe quedar trazable a la
+	// MISMA sesión que la nota, para que "en qué turno ocurrió esta venta" sea consultable desde
+	// el documento fiscal final, no solo desde la nota interna.
+	//
+	// Se asigna por UPDATE directo (no vía CreateSaleInput.CashSessionID) a propósito: si se
+	// pasara por ahí, sale_service.Create validaría la sesión con ValidateCashSessionForUser como
+	// si fuera un cobro en vivo (sesión abierta + del mismo usuario) — pero aquí puede pasar horas
+	// o días entre la nota y su emisión electrónica, la sesión original bien puede estar ya
+	// cerrada, y quien emite el comprobante (p. ej. contabilidad) puede no ser el mismo usuario
+	// que atendió la venta. Nada de eso invalida la trazabilidad histórica: solo se está anotando
+	// en qué sesión ocurrió realmente la venta, no autorizando un cobro nuevo.
+	if nota.CashSessionID != nil {
+		if err := s.db.Model(&database.TenantSale{}).Where("id = ?", issued.ID).
+			Update("cash_session_id", nota.CashSessionID).Error; err != nil {
+			return issued, err
+		}
+		issued.CashSessionID = nota.CashSessionID
+	}
+	return issued, nil
 }
 
 // SummaryStats retorna estadísticas resumidas de ventas.

@@ -1782,9 +1782,13 @@ type TenantPurchase struct {
 	Notes         string     `gorm:"type:text" json:"notes"`
 	Status        string     `gorm:"size:30;default:'received'" json:"status"`
 	// CashSessionID: sesión de Caja (turno) en la que se registró la compra — mismo patrón que
-	// TenantSale.CashSessionID. Trazabilidad de "qué compras ocurrieron en esta sesión",
-	// independiente del método de pago. Nulo en compras anteriores a esta columna o sin sesión
-	// resuelta (p. ej. compra pagada por un método que no requiere caja abierta).
+	// TenantSale.CashSessionID, y ahora exigida/resuelta igual que en una venta
+	// (ResolveCashSessionForPurchase) para CUALQUIER compra con pago inmediato, sin importar el
+	// método (efectivo, Yape, Plin, transferencia, tarjeta). Trazabilidad de "qué compras
+	// ocurrieron en esta sesión", independiente del método de pago. Nulo solo en: compras
+	// anteriores a que se exigiera esta resolución (compatibilidad histórica, ver
+	// listNonCashPurchasesForSession), o compras SIN método de pago (a crédito/por cobrar, sin
+	// pago inmediato — no hay ninguna operación financiera todavía que trazar a una sesión).
 	CashSessionID *uint `gorm:"index" json:"cash_session_id,omitempty"`
 	// PriceIncludesIgv: criterio con el que se registró la compra. Si es true, los unit_cost
 	// tecleados ya traían IGV y se desagregó; si es false, el IGV se sumó encima.
@@ -1934,8 +1938,7 @@ type TenantBankMovement struct {
 	// CashSessionID: sesión de Caja (turno) en la que ocurrió este movimiento — igual que ya
 	// tiene TenantSale.CashSessionID, para que un pago no efectivo (Yape/Plin/transferencia/
 	// tarjeta) de una venta o compra sea trazable directamente a su sesión sin depender de un
-	// join indirecto por sale_id/purchase_id. Nulo en movimientos anteriores a esta columna o
-	// sin sesión resuelta (p. ej. compra sin caja abierta).
+	// join indirecto por sale_id/purchase_id. Nulo en movimientos anteriores a esta columna.
 	CashSessionID *uint     `gorm:"index" json:"cash_session_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 }

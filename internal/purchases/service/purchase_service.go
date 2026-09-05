@@ -186,15 +186,20 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		status = "received"
 	}
 
-	// Resolver sesión de caja SOLO si el método de pago resuelve a efectivo — a diferencia de
-	// ventas, una compra por Yape/transferencia/tarjeta no debe exigir caja abierta (no hay
-	// gaveta física de por medio). ResolveCashSessionForPayments ya implementa exactamente esta
-	// regla condicional (la usa ResolveCashSessionForSale con el mismo criterio); se reusa tal
-	// cual en vez de reescribirla.
+	// Resolver sesión de caja: se exige para cualquier compra que registre un pago inmediato,
+	// sin importar el método (efectivo, Yape, Plin, transferencia, tarjeta, etc.) — igual que ya
+	// exige ResolveCashSessionForSale para ventas, y con el mismo criterio de resolución
+	// determinística (sesión abierta del propio usuario en la sucursal, GetOpenSession). Antes
+	// solo se resolvía/exigía cuando el método era efectivo, y una compra no-efectivo quedaba con
+	// cash_session_id NULL sin ninguna forma determinística de saber a qué sesión pertenecía.
+	//
+	// Si input.PaymentMethod está vacío (compra a crédito/por cobrar, sin pago inmediato) no hay
+	// ninguna operación financiera que trazar todavía — no se exige sesión, igual que antes;
+	// tampoco se llama a RecordExpensePayment más abajo en ese caso.
 	var cashSessionID *uint
 	if input.PaymentMethod != "" {
 		cbSvcResolve := cashbanksvc.NewCashBankService(s.db)
-		resolved, err := cbSvcResolve.ResolveCashSessionForPayments(
+		resolved, err := cbSvcResolve.ResolveCashSessionForPurchase(
 			input.BranchID, input.UserID, nil,
 			[]cashbanksvc.PaymentLineInput{{Method: input.PaymentMethod, Amount: total}},
 		)
