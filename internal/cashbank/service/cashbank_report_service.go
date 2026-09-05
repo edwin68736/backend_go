@@ -241,6 +241,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 	purchasesByMethod := make(map[string]float64)
 	manualIncomeByMethod := make(map[string]float64)
 	manualExpenseByMethod := make(map[string]float64)
+	seenPurchaseIDs := make(map[uint]struct{})
 
 	var sessionSales []database.TenantSale
 	if err := s.db.Where("cash_session_id = ? AND status NOT IN ?", sessionID, []string{"cancelled", "draft"}).
@@ -360,6 +361,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				row.Type = "compra"
 				report.Totals.TotalPurchases += m.Amount
 				purchasesByMethod[paymentMethod] += m.Amount
+				seenPurchaseIDs[*m.PurchaseID] = struct{}{}
 				var pur database.TenantPurchase
 				if s.db.First(&pur, *m.PurchaseID).Error == nil {
 					row.DocNumber = pur.Series + "-" + pur.Number
@@ -376,6 +378,30 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				report.ExpenseDetail = append(report.ExpenseDetail, row)
 			}
 		}
+	}
+
+	// Compras NO-EFECTIVO: nunca pasan por tenant_cash_movements (arriba), así que sin este paso
+	// quedaban invisibles en ExpenseDetail/TotalsByMethod.Purchases pese a existir en
+	// tenant_purchases. Se leen directo de tenant_purchases (mismo dato que ya usa el camino en
+	// efectivo vía pur.Series/pur.Number/m.Amount, sin acudir a tenant_bank_movements) y solo se
+	// suman a TotalPurchases — nunca a TotalExpense/FinalBalance/CashPhysical.PhysicalBalance, que
+	// deben seguir siendo solo efectivo. seenPurchaseIDs evita sumar dos veces una compra que ya
+	// se haya contado arriba.
+	nonCashPurchases, _ := s.listNonCashPurchasesForSession(&session)
+	for _, p := range nonCashPurchases {
+		if _, ok := seenPurchaseIDs[p.ID]; ok {
+			continue
+		}
+		method := normalizeReportMethod(p.PaymentMethod)
+		report.Totals.TotalPurchases += p.Total
+		purchasesByMethod[method] += p.Total
+		report.ExpenseDetail = append(report.ExpenseDetail, ExpenseDetailRow{
+			Date:          p.CreatedAt,
+			Type:          "compra",
+			DocNumber:     p.Series + "-" + p.Number,
+			Amount:        p.Total,
+			PaymentMethod: method,
+		})
 	}
 
 	report.Totals.FinalBalance = report.Session.OpeningBalance + report.Totals.TotalIncome - report.Totals.TotalExpense
@@ -620,6 +646,69 @@ func (s *CashBankService) listOrphanSalesForSession(session *database.TenantCash
 	var sales []database.TenantSale
 	err := q.Order("created_at ASC").Find(&sales).Error
 	return sales, err
+}
+
+// listNonCashPurchasesForSession compras NO-EFECTIVO (Yape/Plin/transferencia/tarjeta) de la
+// sesión, para completar ExpenseDetail/TotalsByMethod.Purchases — que hasta ahora solo se armaban
+// leyendo tenant_cash_movements (donde una compra no-efectivo nunca aparece: recordDirectedPayment,
+// rama bank_account, solo crea un TenantBankMovement, nunca un TenantCashMovement).
+//
+// purchase_service.Create solo resuelve/exige cash_session_id cuando el método de pago es
+// efectivo (ver comentario de TenantPurchase.CashSessionID: "... compra pagada por un método que
+// no requiere caja abierta") — hoy en producción una compra no-efectivo SIEMPRE queda con
+// cash_session_id NULL. Por eso esta función junta dos fuentes, igual que ya hace
+// listOrphanSalesForSession para ventas:
+//  1. vínculo directo (cash_session_id = esta sesión) — cubre el caso en que, en el futuro o vía
+//     un llamador distinto, sí se resuelva una sesión explícita para un pago no-efectivo (ahora
+//     validada por ValidateCashSessionForUser, ver commit 895b153);
+//  2. huérfanas (cash_session_id NULL) atribuidas por sucursal + ventana de fecha de la sesión —
+//     el camino real que toma HOY toda compra no-efectivo.
+//
+// Las compras en EFECTIVO se excluyen explícitamente (IsCashPaymentMethod): esas ya tienen su
+// propio TenantCashMovement y ya se cuentan más arriba — incluirlas aquí las duplicaría.
+func (s *CashBankService) listNonCashPurchasesForSession(session *database.TenantCashSession) ([]database.TenantPurchase, error) {
+	if session == nil || session.ID == 0 {
+		return nil, nil
+	}
+	var linked []database.TenantPurchase
+	if err := s.db.Where("cash_session_id = ? AND status != ?", session.ID, "cancelled").
+		Order("created_at ASC").Find(&linked).Error; err != nil {
+		return nil, err
+	}
+
+	orphanQ := s.db.Model(&database.TenantPurchase{}).
+		Where("(cash_session_id IS NULL OR cash_session_id = 0)").
+		Where("branch_id = ?", session.BranchID).
+		Where("created_at >= ?", session.OpenedAt).
+		Where("status != ?", "cancelled")
+	if session.ClosedAt != nil {
+		orphanQ = orphanQ.Where("created_at <= ?", *session.ClosedAt)
+	}
+	var orphans []database.TenantPurchase
+	if err := orphanQ.Order("created_at ASC").Find(&orphans).Error; err != nil {
+		return nil, err
+	}
+
+	seen := make(map[uint]struct{}, len(linked))
+	for _, p := range linked {
+		seen[p.ID] = struct{}{}
+	}
+	all := linked
+	for _, p := range orphans {
+		if _, ok := seen[p.ID]; ok {
+			continue
+		}
+		all = append(all, p)
+	}
+
+	out := make([]database.TenantPurchase, 0, len(all))
+	for _, p := range all {
+		if IsCashPaymentMethod(normalizeReportMethod(p.PaymentMethod)) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func (s *CashBankService) scanOrphanSalePaymentRows(f MovementReportFilters) ([]salePayRow, error) {

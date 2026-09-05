@@ -197,28 +197,16 @@ func TestSession_ventaEfectivo_ventaNoEfectivo_compraEfectivo_compraNoEfectivo(t
 		t.Errorf("TotalsByMethod.Sales incompleto: %+v", report.TotalsByMethod.Sales)
 	}
 
-	// Trazabilidad de COMPRAS — HALLAZGO ADICIONAL descubierto al escribir este test, fuera del
-	// alcance de esta tarea (el bug encargado era específicamente PhysicalBalance/FinalBalance,
-	// ya corregido arriba): a diferencia de las ventas, GetSessionReport arma el detalle de
-	// compras leyendo ÚNICAMENTE tenant_cash_movements (con purchase_id no nulo). Una compra en
-	// efectivo sí pasa por ahí (recordDirectedPayment rama "cash" crea un TenantCashMovement),
-	// pero una compra no-efectivo NUNCA crea un TenantCashMovement — recordDirectedPayment rama
-	// "bank_account" solo crea un TenantBankMovement, que este reporte no consulta (a diferencia
-	// de GetSessionBalanceSummary, que sí lo hace y por eso arriba "transferencia".Net = -120 es
-	// correcto). Resultado real y actual: la compra por transferencia queda invisible en
-	// TotalsByMethod.Purchases/ExpenseDetail del reporte antiguo — no es un doble conteo ni afecta
-	// PhysicalBalance (que sigue siendo correcto), es una ausencia. Se documenta aquí tal como se
-	// comporta hoy, sin corregirlo, y se reporta como hallazgo aparte al usuario.
+	// Trazabilidad de COMPRAS: efectivo y transferencia se clasifican ambas (corrección de
+	// listNonCashPurchasesForSession — antes la compra no-efectivo era invisible aquí porque
+	// GetSessionReport solo leía tenant_cash_movements, donde una compra no-efectivo nunca
+	// aparece).
 	purchasesByMethod := map[string]float64{}
 	for _, mt := range report.TotalsByMethod.Purchases {
 		purchasesByMethod[mt.Method] = mt.Total
 	}
-	if purchasesByMethod["efectivo"] != 80 {
-		t.Errorf("TotalsByMethod.Purchases: efectivo = %v, want 80", purchasesByMethod["efectivo"])
-	}
-	if _, ok := purchasesByMethod["transferencia"]; ok {
-		t.Errorf("TotalsByMethod.Purchases trae 'transferencia' — si esto empieza a fallar es que el "+
-			"hallazgo documentado arriba ya fue corregido en otra tarea; got %+v", report.TotalsByMethod.Purchases)
+	if purchasesByMethod["efectivo"] != 80 || purchasesByMethod["transferencia"] != 120 {
+		t.Errorf("TotalsByMethod.Purchases incompleto: %+v", report.TotalsByMethod.Purchases)
 	}
 
 	// --- Sin doble conteo ---
@@ -238,8 +226,8 @@ func TestSession_ventaEfectivo_ventaNoEfectivo_compraEfectivo_compraNoEfectivo(t
 	if ventaSum != 350 {
 		t.Errorf("suma de IncomeDetail venta = %v, want 350 (200+150, sin doble conteo)", ventaSum)
 	}
-	// Exactamente 1 fila de compra en ExpenseDetail (solo la de efectivo — ver hallazgo arriba),
-	// suma 80. Ninguna de las dos se duplica.
+	// Exactamente 2 filas de compra en ExpenseDetail (efectivo + transferencia), suma 200 — ninguna
+	// se duplica ni se cuenta dos veces.
 	compraRows := 0
 	var compraSum float64
 	for _, row := range report.ExpenseDetail {
@@ -248,10 +236,14 @@ func TestSession_ventaEfectivo_ventaNoEfectivo_compraEfectivo_compraNoEfectivo(t
 			compraSum += row.Amount
 		}
 	}
-	if compraRows != 1 {
-		t.Errorf("ExpenseDetail trae %d filas de compra, want 1 (ver hallazgo de compras no-efectivo arriba)", compraRows)
+	if compraRows != 2 {
+		t.Errorf("ExpenseDetail trae %d filas de compra, want 2", compraRows)
 	}
-	if compraSum != 80 {
-		t.Errorf("suma de ExpenseDetail compra = %v, want 80", compraSum)
+	if compraSum != 200 {
+		t.Errorf("suma de ExpenseDetail compra = %v, want 200 (80+120, sin doble conteo)", compraSum)
 	}
+
+	// La compra no-efectivo NO debe afectar el efectivo físico: PhysicalBalance/FinalBalance ya se
+	// verificaron arriba como wantExpected (220) — este total no incluye los 120 de la
+	// transferencia, pese a que la compra ahora sí aparece en TotalsByMethod/ExpenseDetail.
 }
