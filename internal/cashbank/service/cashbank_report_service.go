@@ -327,7 +327,18 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		paymentMethod := normalizeReportMethod(m.PaymentMethod)
 
 		if m.Type == "income" {
-			report.Totals.TotalIncome += m.Amount
+			// TotalIncome/TotalExpense/FinalBalance alimentan CashPhysical.PhysicalBalance más
+			// abajo, que se muestra como "saldo físico esperado en efectivo" (Excel, PDF, resumen
+			// en pantalla). tenant_cash_movements también registra movimientos manuales por Yape/
+			// Plin/transferencia (para trazabilidad de sesión), así que sin este filtro un egreso o
+			// ingreso no-efectivo inflaba o desinflaba el "físico" sin haber tocado el cajón. Mismo
+			// criterio que ya usa cashOnlyMovementTotals/getExpectedBalance (el cálculo real de
+			// cierre/arqueo): IsCashPaymentMethod. El detalle (IncomeDetail/ExpenseDetail,
+			// manualIncomeByMethod/manualExpenseByMethod, TotalsByMethod.Movements) no cambia — los
+			// medios no-efectivo se siguen listando igual, solo se excluyen de este total físico.
+			if IsCashPaymentMethod(paymentMethod) {
+				report.Totals.TotalIncome += m.Amount
+			}
 			if m.SaleID != nil {
 				continue
 			}
@@ -341,7 +352,9 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			manualIncomeByMethod[paymentMethod] += m.Amount
 			report.IncomeDetail = append(report.IncomeDetail, row)
 		} else {
-			report.Totals.TotalExpense += m.Amount
+			if IsCashPaymentMethod(paymentMethod) {
+				report.Totals.TotalExpense += m.Amount
+			}
 			row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: paymentMethod}
 			if m.PurchaseID != nil {
 				row.Type = "compra"
