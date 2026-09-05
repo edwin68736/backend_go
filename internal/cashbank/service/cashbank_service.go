@@ -757,6 +757,17 @@ func (s *CashBankService) ResolveCashSessionForPayments(
 		}
 	}
 	if !needsCash {
+		// El pago no requiere efectivo (Yape/Plin/transferencia/tarjeta), pero si el llamador
+		// igual indicó una sesión de caja (p. ej. cash_session_id enviado por el frontend para
+		// trazabilidad), esa sesión debe validarse con la misma regla que ya se aplica a los
+		// pagos en efectivo: que exista, que esté abierta y que pertenezca al usuario/sucursal.
+		// Sin esto, un cliente podía asociar un pago no-efectivo a una sesión ya cerrada o ajena
+		// sin ninguna verificación.
+		if cashSessionID != nil && *cashSessionID > 0 {
+			if _, err := s.ValidateCashSessionForUser(*cashSessionID, userID, branchID); err != nil {
+				return nil, err
+			}
+		}
 		return cashSessionID, nil
 	}
 	var sid uint
