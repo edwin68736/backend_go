@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"tukifac/config"
 	"tukifac/pkg/database"
 	"tukifac/pkg/database/tenantbackfills"
@@ -131,6 +133,18 @@ func runBackfillFleetForVersion(opts BackfillOptions, bf tenantbackfills.TenantB
 	return summary
 }
 
+// shouldSkipBackfill decide si runBackfillOne debe saltarse la corrida real: para un backfill
+// normal (run-once), true si tenant_migration_history ya tiene un éxito registrado para esa
+// versión (ver IsBackfillApplied). Un backfill que se declaró tenantbackfills.Repeatable nunca se
+// salta por esta vía — su propio Run() ya se encarga de no repetir trabajo (ver comentario de la
+// interfaz Repeatable sobre por qué el candado run-once genérico es inseguro para ese caso).
+func shouldSkipBackfill(db *gorm.DB, version int, bf tenantbackfills.TenantBackfill) (bool, error) {
+	if tenantbackfills.IsRepeatable(bf) {
+		return false, nil
+	}
+	return IsBackfillApplied(db, version)
+}
+
 func runBackfillOne(slug, dbName string, version int, bf tenantbackfills.TenantBackfill) error {
 	db, err := database.OpenTenantDBForMigration(dbName)
 	if err != nil {
@@ -138,11 +152,11 @@ func runBackfillOne(slug, dbName string, version int, bf tenantbackfills.TenantB
 	}
 	defer database.CloseTenantDB(db)
 
-	applied, err := IsBackfillApplied(db, version)
+	skip, err := shouldSkipBackfill(db, version, bf)
 	if err != nil {
 		return err
 	}
-	if applied {
+	if skip {
 		logger.L.Info("tenant_backfill_skip",
 			slog.String("tenant", slug),
 			slog.Int("version", version),

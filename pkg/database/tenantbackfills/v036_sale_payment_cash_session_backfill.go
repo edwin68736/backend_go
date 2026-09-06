@@ -92,6 +92,17 @@ func (V036SalePaymentCashSessionBackfill) Name() string {
 	return "sale_payment_cash_session_backfill"
 }
 
+// Repeatable: ver tenantbackfills.Repeatable — este backfill depende de que otras tablas/columnas
+// (V123, tenant_cash_movements, tenant_bank_movements) ya existan para ese tenant, y esas se
+// despliegan de forma incremental/asíncrona por el cron de migración de schema. Si se le aplicara
+// el candado run-once genérico, una corrida que "tiene éxito" (sin error) mientras ese schema
+// todavía está a medio desplegar quedaría bloqueada para siempre con un resultado parcial, sin
+// reintento posible — justo el bug encontrado en producción el 2026-09-06 (~8300 pagos
+// resolubles en ~190 tenants nunca se llegaron a escribir). Su propio WHERE cash_session_id IS
+// NULL (ver v036Analyze) ya lo hace seguro de re-ejecutar sin costo ni riesgo cuando no hay nada
+// pendiente.
+func (V036SalePaymentCashSessionBackfill) Repeatable() bool { return true }
+
 func (V036SalePaymentCashSessionBackfill) Description() string {
 	return "Completa tenant_sale_payments.cash_session_id en pagos históricos anteriores a la " +
 		"columna (V123), únicamente cuando se puede relacionar de forma inequívoca con el " +
