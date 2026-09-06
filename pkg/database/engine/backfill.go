@@ -45,24 +45,24 @@ func RunBackfillFleet(opts BackfillOptions) database.MigrateSummary {
 	return runBackfillFleetForVersion(opts, bf)
 }
 
+// runAllRegisteredBackfills corre CADA backfill registrado con su propio presupuesto opts.Limit
+// independiente — NO compartido entre backfills.
+//
+// Antes, un único "budget := opts.Limit" se repartía entre todos los backfills del registry en
+// orden: como ListTenantsForMigration devuelve TODOS los tenants activos (sin filtrar por
+// pendientes) y runBackfillFleetForVersion trunca esa lista a opts.Limit, el PRIMER backfill del
+// registry (V031) siempre consumía el presupuesto completo con su propio pase (aunque fuera puro
+// "skip" porque ya estaba aplicado en todos lados) — dejando 0 para V032, V033, ... V036, que
+// nunca llegaban a correr vía el cron automático. Encontrado en producción investigando por qué
+// V036 (backfill de Caja) nunca corría solo; confirmado con test.
 func runAllRegisteredBackfills(opts BackfillOptions) database.MigrateSummary {
 	merged := database.MigrateSummary{}
-	budget := opts.Limit
 	for _, reg := range tenantbackfills.TenantBackfills {
-		if opts.Limit > 0 && budget <= 0 {
-			break
-		}
 		sub := opts
 		sub.Version = reg.Version()
-		if opts.Limit > 0 {
-			sub.Limit = budget
-		}
 		part := runBackfillFleetForVersion(sub, reg)
 		merged.Success = append(merged.Success, part.Success...)
 		merged.Failed = append(merged.Failed, part.Failed...)
-		if opts.Limit > 0 {
-			budget -= len(part.Success) + len(part.Failed)
-		}
 	}
 	return merged
 }
