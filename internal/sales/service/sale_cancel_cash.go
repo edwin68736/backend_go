@@ -84,7 +84,7 @@ func reverseSaleCashTx(
 		return err
 	}
 	for _, bm := range bankCredits {
-		if err := cashSvc.CreateBankReversal(tx, bm, "Reversión por anulación de venta", ref, userID); err != nil {
+		if err := cashSvc.CreateBankReversal(tx, bm, "Reversión por anulación de venta", ref, "", "", userID); err != nil {
 			return err
 		}
 	}

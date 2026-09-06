@@ -51,7 +51,7 @@ func TestCreateBankReversal_CompensatesDebit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de compra", "ANUL/1", 2); err != nil {
+	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de compra", "ANUL/1", "", "", 2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,7 +72,7 @@ func TestCreateBankReversal_CompensatesDebit(t *testing.T) {
 	}
 
 	// Idempotente: segunda reversión no duplica.
-	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de compra", "ANUL/1", 2); err != nil {
+	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de compra", "ANUL/1", "", "", 2); err != nil {
 		t.Fatal(err)
 	}
 	var cnt int64
@@ -109,7 +109,7 @@ func TestCreateBankReversal_PreservesCashSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de venta", "ANUL/F001-1", 2); err != nil {
+	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de venta", "ANUL/F001-1", "", "", 2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -125,7 +125,7 @@ func TestCreateBankReversal_PreservesCashSessionID(t *testing.T) {
 	}
 
 	// Sigue protegido contra doble reversión con la sesión ya poblada.
-	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de venta", "ANUL/F001-1", 2); err != nil {
+	if err := svc.CreateBankReversal(db, orig, "Reversión por anulación de venta", "ANUL/F001-1", "", "", 2); err != nil {
 		t.Fatal(err)
 	}
 	var cnt int64

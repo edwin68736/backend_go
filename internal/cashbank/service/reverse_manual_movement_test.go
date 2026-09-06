@@ -41,7 +41,7 @@ func TestReverseManualMovement_cashIncome(t *testing.T) {
 	var original database.TenantCashMovement
 	db.Where("cash_session_id = ?", session.ID).First(&original)
 
-	if err := svc.ReverseManualMovement(db, original.ID, 1, "Error de digitación"); err != nil {
+	if err := svc.ReverseManualMovement(db, "cash", original.ID, 1, "Error de digitación"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,9 +69,11 @@ func TestReverseManualMovement_cashIncome(t *testing.T) {
 	}
 }
 
-// Ingreso Yape +100 → Reversión Yape -100, y el saldo de la cuenta Yape vuelve a su valor
-// original (AddMovement también había creado un TenantBankMovement paralelo).
-func TestReverseManualMovement_yapeIncomeAlsoReversesBankMovement(t *testing.T) {
+// Ingreso Yape +100: desde el fix de la duplicación en AddMovement, un manual por un método con
+// cuenta asociada vive EXCLUSIVAMENTE en tenant_bank_movements (nunca también en
+// tenant_cash_movements) — se revierte con kind="bank", y el saldo de la cuenta Yape vuelve a su
+// valor original.
+func TestReverseManualMovement_yapeIncomeReversesBankMovement(t *testing.T) {
 	db := setupReverseManualMovementTestDB(t)
 	svc := NewCashBankService(db)
 	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open"}
@@ -79,7 +81,7 @@ func TestReverseManualMovement_yapeIncomeAlsoReversesBankMovement(t *testing.T) 
 	acc := &database.TenantBankAccount{Name: "Yape", Type: "wallet", Balance: 500, PaymentMethod: "yape", Active: true}
 	db.Create(acc)
 
-	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "REF-YAPE", "yape", 100, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "REF-YAPE", "yape", 100, "nota de prueba"); err != nil {
 		t.Fatal(err)
 	}
 	var accAfterCreate database.TenantBankAccount
@@ -88,19 +90,21 @@ func TestReverseManualMovement_yapeIncomeAlsoReversesBankMovement(t *testing.T) 
 		t.Fatalf("balance tras crear: got %v want 600", accAfterCreate.Balance)
 	}
 
-	var original database.TenantCashMovement
-	db.Where("cash_session_id = ? AND payment_method = ?", session.ID, "yape").First(&original)
-
-	if err := svc.ReverseManualMovement(db, original.ID, 1, ""); err != nil {
-		t.Fatal(err)
+	// No debe existir ningún TenantCashMovement — el manual Yape vive solo en bank_movements.
+	var cashCount int64
+	db.Model(&database.TenantCashMovement{}).Where("cash_session_id = ?", session.ID).Count(&cashCount)
+	if cashCount != 0 {
+		t.Fatalf("no debía crearse ningún tenant_cash_movement para un manual Yape: got %d", cashCount)
 	}
 
-	var rev database.TenantCashMovement
-	if err := db.Where("reversal_of_id = ?", original.ID).First(&rev).Error; err != nil {
-		t.Fatal(err)
+	var original database.TenantBankMovement
+	db.Where("bank_account_id = ?", acc.ID).First(&original)
+	if original.Category != "Aporte" || original.Notes != "nota de prueba" {
+		t.Fatalf("category/notes no se guardaron en el movimiento bancario: %+v", original)
 	}
-	if rev.Type != "expense" || rev.PaymentMethod != "yape" {
-		t.Fatalf("reversión de caja inesperada: %+v", rev)
+
+	if err := svc.ReverseManualMovement(db, "bank", original.ID, 1, ""); err != nil {
+		t.Fatal(err)
 	}
 
 	var bankMovs []database.TenantBankMovement
@@ -110,6 +114,9 @@ func TestReverseManualMovement_yapeIncomeAlsoReversesBankMovement(t *testing.T) 
 	}
 	if bankMovs[1].ReversalOfID == nil || *bankMovs[1].ReversalOfID != bankMovs[0].ID {
 		t.Fatalf("la reversión bancaria no referencia al original: %+v", bankMovs[1])
+	}
+	if bankMovs[1].Type != "debit" {
+		t.Fatalf("la reversión de un ingreso debe ser debit: %+v", bankMovs[1])
 	}
 
 	var accAfterReverse database.TenantBankAccount
@@ -137,8 +144,26 @@ func TestReverseManualMovement_rejectsSaleLinkedMovement(t *testing.T) {
 	mov := &database.TenantCashMovement{CashSessionID: session.ID, Type: "income", Amount: 50, PaymentMethod: "efectivo", Category: "Venta", SaleID: &saleID, UserID: 1}
 	db.Create(mov)
 
-	if err := svc.ReverseManualMovement(db, mov.ID, 1, ""); err == nil {
+	if err := svc.ReverseManualMovement(db, "cash", mov.ID, 1, ""); err == nil {
 		t.Fatal("esperaba error: no se debe poder revertir un movimiento de venta por este endpoint")
+	}
+}
+
+// Mismo rechazo que TestReverseManualMovement_rejectsSaleLinkedMovement, para un movimiento
+// bancario ligado a una compra (kind="bank").
+func TestReverseManualMovement_rejectsPurchaseLinkedBankMovement(t *testing.T) {
+	db := setupReverseManualMovementTestDB(t)
+	svc := NewCashBankService(db)
+	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open"}
+	db.Create(session)
+	acc := &database.TenantBankAccount{Name: "Transferencias", Type: "bank", Balance: 500, PaymentMethod: "transferencia", Active: true}
+	db.Create(acc)
+	purchaseID := uint(7)
+	mov := &database.TenantBankMovement{BankAccountID: acc.ID, Type: "debit", Amount: 50, PurchaseID: &purchaseID, CashSessionID: &session.ID, UserID: 1}
+	db.Create(mov)
+
+	if err := svc.ReverseManualMovement(db, "bank", mov.ID, 1, ""); err == nil {
+		t.Fatal("esperaba error: no se debe poder revertir un movimiento de compra por este endpoint")
 	}
 }
 
@@ -155,10 +180,10 @@ func TestReverseManualMovement_rejectsDoubleReversal(t *testing.T) {
 	var original database.TenantCashMovement
 	db.Where("cash_session_id = ?", session.ID).First(&original)
 
-	if err := svc.ReverseManualMovement(db, original.ID, 1, ""); err != nil {
+	if err := svc.ReverseManualMovement(db, "cash", original.ID, 1, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.ReverseManualMovement(db, original.ID, 1, ""); err == nil {
+	if err := svc.ReverseManualMovement(db, "cash", original.ID, 1, ""); err == nil {
 		t.Fatal("esperaba error: el movimiento ya fue revertido")
 	}
 }
@@ -178,7 +203,28 @@ func TestReverseManualMovement_rejectsClosedSession(t *testing.T) {
 
 	db.Model(&database.TenantCashSession{}).Where("id = ?", session.ID).Update("status", "closed")
 
-	if err := svc.ReverseManualMovement(db, original.ID, 1, ""); err == nil {
+	if err := svc.ReverseManualMovement(db, "cash", original.ID, 1, ""); err == nil {
 		t.Fatal("esperaba error: sesión ya cerrada")
+	}
+}
+
+// kind inválido (ni "cash" ni "bank") se rechaza en vez de adivinar.
+func TestReverseManualMovement_rejectsInvalidKind(t *testing.T) {
+	db := setupReverseManualMovementTestDB(t)
+	svc := NewCashBankService(db)
+	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open"}
+	db.Create(session)
+
+	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "", "efectivo", 20, ""); err != nil {
+		t.Fatal(err)
+	}
+	var original database.TenantCashMovement
+	db.Where("cash_session_id = ?", session.ID).First(&original)
+
+	if err := svc.ReverseManualMovement(db, "", original.ID, 1, ""); err == nil {
+		t.Fatal("esperaba error: kind vacío no debe asumirse como cash")
+	}
+	if err := svc.ReverseManualMovement(db, "otro", original.ID, 1, ""); err == nil {
+		t.Fatal("esperaba error: kind desconocido")
 	}
 }

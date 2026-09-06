@@ -201,22 +201,50 @@ func (h *CashBankHandler) ReverseMovementAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	svc := service.NewCashBankService(db(c))
-	var mov database.TenantCashMovement
-	if err := db(c).First(&mov, uint(id)).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Movimiento no encontrado"})
+	var body struct {
+		Notes string `json:"notes"`
+		// Kind: "cash" (tenant_cash_movements) o "bank" (tenant_bank_movements) — GetMovements ya
+		// devuelve este dato por fila (CashMovementView.Kind); el frontend lo reenvía tal cual, sin
+		// adivinar, porque ambas tablas tienen su propia secuencia de IDs (un mismo número puede
+		// existir en las dos). Vacío = "cash", por compatibilidad con un frontend aún no
+		// actualizado — hasta ahora el único tipo que existía.
+		Kind string `json:"kind"`
 	}
-	sess, err := svc.GetSessionByID(mov.CashSessionID)
+	_ = c.Bind().Body(&body)
+	kind := body.Kind
+	if kind == "" {
+		kind = "cash"
+	}
+
+	var sessionID uint
+	switch kind {
+	case "cash":
+		var mov database.TenantCashMovement
+		if err := db(c).First(&mov, uint(id)).Error; err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Movimiento no encontrado"})
+		}
+		sessionID = mov.CashSessionID
+	case "bank":
+		var mov database.TenantBankMovement
+		if err := db(c).First(&mov, uint(id)).Error; err != nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Movimiento no encontrado"})
+		}
+		if mov.CashSessionID == nil {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sesión de caja no encontrada"})
+		}
+		sessionID = *mov.CashSessionID
+	default:
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Tipo de movimiento inválido"})
+	}
+
+	sess, err := svc.GetSessionByID(sessionID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sesión de caja no encontrada"})
 	}
 	if !canAccessCashSession(c, sess) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede revertir movimientos de esta sesión"})
 	}
-	var body struct {
-		Notes string `json:"notes"`
-	}
-	_ = c.Bind().Body(&body)
-	if err := svc.ReverseManualMovement(db(c), uint(id), userID(c), body.Notes); err != nil {
+	if err := svc.ReverseManualMovement(db(c), kind, uint(id), userID(c), body.Notes); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

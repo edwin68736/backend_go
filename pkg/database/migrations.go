@@ -1979,8 +1979,16 @@ type TenantBankMovement struct {
 	// tiene TenantSale.CashSessionID, para que un pago no efectivo (Yape/Plin/transferencia/
 	// tarjeta) de una venta o compra sea trazable directamente a su sesión sin depender de un
 	// join indirecto por sale_id/purchase_id. Nulo en movimientos anteriores a esta columna.
-	CashSessionID *uint     `gorm:"index" json:"cash_session_id,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	CashSessionID *uint `gorm:"index" json:"cash_session_id,omitempty"`
+	// Category/Notes: solo pobladas en movimientos MANUALES (AddMovement, sin sale_id/
+	// purchase_id) por un método con cuenta asociada — un ingreso/egreso de venta/compra sigue
+	// sin usarlas, igual que antes. Simétrico con TenantCashMovement.Category/Notes: un
+	// movimiento manual ahora vive en EXACTAMENTE una de las dos tablas según su método (nunca
+	// en ambas), así que necesita los mismos campos que un manual en efectivo para no perder
+	// esos datos.
+	Category  string    `gorm:"size:100" json:"category,omitempty"`
+	Notes     string    `gorm:"type:text" json:"notes,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type TenantExternalModule struct {

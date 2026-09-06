@@ -529,6 +529,49 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		}
 	}
 
+	// Ingresos/egresos MANUALES no efectivo (Yape/Plin/transferencia/tarjeta): AddMovement ya no
+	// duplica un TenantCashMovement para estos — viven exclusivamente en tenant_bank_movements
+	// (sale_id/purchase_id nulos), así que sin este paso quedaban invisibles en IncomeDetail/
+	// ExpenseDetail/TotalsByMethod.Movements pese a existir el movimiento bancario real. Nunca
+	// suman a TotalIncome/TotalExpense/CashPhysical.PhysicalBalance: por ser no efectivo, el
+	// mismo criterio (IsCashPaymentMethod) que ya excluye a los demás medios no-efectivo de esos
+	// totales los excluye aquí también — solo aparecen en el detalle y en Movements.
+	var manualBankMovs []database.TenantBankMovement
+	s.db.Where("cash_session_id = ? AND sale_id IS NULL AND purchase_id IS NULL", sessionID).Find(&manualBankMovs)
+	if len(manualBankMovs) > 0 {
+		methodByAccount := s.paymentMethodCodesByBankAccount(manualBankMovs)
+		for _, m := range manualBankMovs {
+			code := methodByAccount[m.BankAccountID]
+			if code == "" {
+				// Cuenta sin método de pago vinculado (ni por FK ni por texto legado): mismo
+				// criterio que paymentMethodCodesByBankAccount en GetSessionBalanceSummary — no
+				// se cuela como "efectivo" (normalizeReportMethod trata "" así, pensado para
+				// tenant_cash_movements sin dato, no para este caso).
+				code = "otros"
+			}
+			method := normalizeReportMethod(code)
+			if m.Type == "credit" {
+				row := IncomeDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference}
+				if m.Category == "ingreso_manual" || m.Category == "Ingreso manual" {
+					row.Type = "ingreso_manual"
+				} else {
+					row.Type = "otro"
+				}
+				manualIncomeByMethod[method] += m.Amount
+				report.IncomeDetail = append(report.IncomeDetail, row)
+			} else {
+				row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference}
+				if m.Category == "gasto" || m.Category == "Gasto" {
+					row.Type = "gasto"
+				} else {
+					row.Type = "egreso_manual"
+				}
+				manualExpenseByMethod[method] += m.Amount
+				report.ExpenseDetail = append(report.ExpenseDetail, row)
+			}
+		}
+	}
+
 	// Compras NO-EFECTIVO pagadas al contado: nunca pasan por tenant_cash_movements (arriba), así
 	// que sin este paso quedaban invisibles en ExpenseDetail/TotalsByMethod.Purchases pese a
 	// existir en tenant_purchases. Se leen directo de tenant_purchases (mismo dato que ya usa el

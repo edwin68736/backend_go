@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -349,7 +350,55 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 	if err := s.assertSessionOwnedBy(&session, userID, false); err != nil {
 		return err
 	}
-	if err := s.db.Create(&database.TenantCashMovement{
+
+	desc := "Caja: " + category
+	if reference != "" {
+		desc += " " + reference
+	}
+
+	// Un ingreso/egreso manual va a EXACTAMENTE un destino, nunca a los dos: TenantBankMovement
+	// si el método tiene una cuenta bancaria asociada (Yape/Plin/Tarjeta/Transferencia/lo que
+	// esté configurado), o TenantCashMovement en cualquier otro caso (efectivo, o un método sin
+	// cuenta configurada). Antes se creaban SIEMPRE ambos — el TenantCashMovement de abajo,
+	// incondicional, más esta misma llamada a RecordPaymentToAccount — así que un ingreso/egreso
+	// manual por un método con cuenta bancaria quedaba duplicado: una vez como movimiento de
+	// caja (con ese payment_method "impostado", contaminando tenant_cash_movements) y otra vez,
+	// correctamente, como movimiento bancario. resolveAccountForPaymentMethod es la misma
+	// resolución que usa RecordPaymentToAccount internamente, así que esta decisión nunca puede
+	// divergir de lo que esa función haría.
+	//
+	// No se delega en RecordPaymentToAccount (que no conoce category/notes: los usa solo
+	// GetMovements/GetSessionReport/ReverseManualMovement para mostrar y revertir un manual no
+	// efectivo con los mismos datos que uno en efectivo) — se crea aquí mismo para no forzar esos
+	// dos campos, ajenos a un pago de venta/compra, en la firma compartida por esos otros casos.
+	if acc, err := s.resolveAccountForPaymentMethod(paymentMethod); err == nil && acc != nil {
+		movType2 := "debit"
+		delta := -amount
+		if movType == "income" {
+			movType2 = "credit"
+			delta = amount
+		}
+		now := time.Now()
+		if err := s.db.Create(&database.TenantBankMovement{
+			BankAccountID: acc.ID,
+			Type:          movType2,
+			Amount:        amount,
+			Description:   desc,
+			Reference:     reference,
+			Category:      category,
+			Notes:         notes,
+			Date:          now,
+			UserID:        userID,
+			CashSessionID: &sessionID,
+			CreatedAt:     now,
+		}).Error; err != nil {
+			return err
+		}
+		return s.db.Model(&database.TenantBankAccount{}).
+			Where("id = ?", acc.ID).
+			Update("balance", gorm.Expr("balance + ?", delta)).Error
+	}
+	return s.db.Create(&database.TenantCashMovement{
 		CashSessionID: sessionID,
 		Type:          movType,
 		Amount:        amount,
@@ -359,23 +408,71 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 		Notes:         notes,
 		UserID:        userID,
 		CreatedAt:     time.Now(),
-	}).Error; err != nil {
-		return err
-	}
-	// Actualizar saldo de la cuenta financiera asociada al método de pago. Se pasa la propia
-	// sesión: un ingreso/egreso manual por Yape/transferencia/tarjeta también debe quedar
-	// trazable a la sesión en la que se registró, igual que el TenantCashMovement de arriba.
-	desc := "Caja: " + category
-	if reference != "" {
-		desc += " " + reference
-	}
-	return s.RecordPaymentToAccount(nil, paymentMethod, amount, movType == "income", reference, desc, userID, nil, nil, &sessionID)
+	}).Error
 }
 
-func (s *CashBankService) GetMovements(sessionID uint) ([]database.TenantCashMovement, error) {
-	var movements []database.TenantCashMovement
-	err := s.db.Where("cash_session_id = ?", sessionID).Order("created_at DESC").Find(&movements).Error
-	return movements, err
+// CashMovementView una fila de la lista de movimientos MANUALES de una sesión (pantalla de
+// Caja): unifica tenant_cash_movements (efectivo) y tenant_bank_movements manuales (no efectivo,
+// sale_id/purchase_id nulos) — desde el fix de la duplicación en AddMovement, un manual vive en
+// EXACTAMENTE una de las dos tablas según su método de pago, así que antes de esto GetMovements
+// (que solo consultaba tenant_cash_movements) dejaba invisibles todos los manuales no efectivo
+// (Yape/Plin/transferencia/tarjeta) — sin poder verlos ni revertirlos desde esta pantalla.
+//
+// Kind distingue el origen porque ambas tablas tienen su propia secuencia de IDs (un mismo
+// número puede repetirse entre ellas) — ReverseManualMovement lo exige tal cual, sin adivinar.
+type CashMovementView struct {
+	ID            uint      `json:"id"`
+	Kind          string    `json:"kind"` // "cash" | "bank"
+	CashSessionID uint      `json:"cash_session_id"`
+	Type          string    `json:"type"` // income, expense
+	Amount        float64   `json:"amount"`
+	PaymentMethod string    `json:"payment_method"`
+	Category      string    `json:"category"`
+	Reference     string    `json:"reference"`
+	Notes         string    `json:"notes"`
+	SaleID        *uint     `json:"sale_id,omitempty"`
+	PurchaseID    *uint     `json:"purchase_id,omitempty"`
+	ReversalOfID  *uint     `json:"reversal_of_id,omitempty"`
+	UserID        uint      `json:"user_id"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func (s *CashBankService) GetMovements(sessionID uint) ([]CashMovementView, error) {
+	var cashMovs []database.TenantCashMovement
+	if err := s.db.Where("cash_session_id = ?", sessionID).Find(&cashMovs).Error; err != nil {
+		return nil, err
+	}
+	views := make([]CashMovementView, 0, len(cashMovs))
+	for _, m := range cashMovs {
+		views = append(views, CashMovementView{
+			ID: m.ID, Kind: "cash", CashSessionID: m.CashSessionID, Type: m.Type, Amount: m.Amount,
+			PaymentMethod: m.PaymentMethod, Category: m.Category, Reference: m.Reference, Notes: m.Notes,
+			SaleID: m.SaleID, PurchaseID: m.PurchaseID, ReversalOfID: m.ReversalOfID, UserID: m.UserID,
+			CreatedAt: m.CreatedAt,
+		})
+	}
+
+	var bankMovs []database.TenantBankMovement
+	if err := s.db.Where("cash_session_id = ? AND sale_id IS NULL AND purchase_id IS NULL", sessionID).Find(&bankMovs).Error; err != nil {
+		return nil, err
+	}
+	if len(bankMovs) > 0 {
+		methodByAccount := s.paymentMethodCodesByBankAccount(bankMovs)
+		for _, m := range bankMovs {
+			movType := "income"
+			if m.Type == "debit" {
+				movType = "expense"
+			}
+			views = append(views, CashMovementView{
+				ID: m.ID, Kind: "bank", CashSessionID: sessionID, Type: movType, Amount: m.Amount,
+				PaymentMethod: methodByAccount[m.BankAccountID], Category: m.Category, Reference: m.Reference,
+				Notes: m.Notes, ReversalOfID: m.ReversalOfID, UserID: m.UserID, CreatedAt: m.CreatedAt,
+			})
+		}
+	}
+
+	sort.Slice(views, func(i, j int) bool { return views[i].CreatedAt.After(views[j].CreatedAt) })
+	return views, nil
 }
 
 func (s *CashBankService) ListSessions(branchID uint) ([]database.TenantCashSession, error) {

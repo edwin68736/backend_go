@@ -72,14 +72,15 @@ func (s *CashBankService) GetSessionBalanceSummary(sessionID uint) (*SessionBala
 		}
 	}
 
-	// Solo movimientos bancarios que SON el único registro del evento (venta o compra con
-	// destino cuenta bancaria/billetera): sale_id/purchase_id no nulos. Un ingreso/egreso
-	// MANUAL por método no efectivo genera dos filas (AddMovement: TenantCashMovement +
-	// TenantBankMovement, este último solo para reflejar el saldo de la cuenta) — sumar ambas
-	// contaría el mismo movimiento dos veces. Para esos, tenant_cash_movements ya es la fuente
-	// primaria y basta.
+	// TODOS los movimientos bancarios de la sesión: los ligados a venta/compra (sale_id/
+	// purchase_id no nulos) y los MANUALES (AddMovement, ambos nulos). Antes un manual por
+	// método no efectivo generaba DOS filas (TenantCashMovement + TenantBankMovement) y aquí se
+	// excluía a propósito el bancario para no contarlo dos veces junto con cashMovs de arriba.
+	// AddMovement ya no duplica: un manual vive en EXACTAMENTE una de las dos tablas según su
+	// método, así que ambas consultas (cashMovs arriba, bankMovs aquí) son necesariamente
+	// disjuntas por construcción y no hay riesgo de doble conteo.
 	var bankMovs []database.TenantBankMovement
-	s.db.Where("cash_session_id = ? AND (sale_id IS NOT NULL OR purchase_id IS NOT NULL)", sessionID).Find(&bankMovs)
+	s.db.Where("cash_session_id = ?", sessionID).Find(&bankMovs)
 	if len(bankMovs) > 0 {
 		methodByAccount := s.paymentMethodCodesByBankAccount(bankMovs)
 		for _, m := range bankMovs {
