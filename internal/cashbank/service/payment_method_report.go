@@ -78,6 +78,10 @@ func purchasePaymentMovementID(paymentID uint) uint {
 	return 3_000_000_000 + paymentID
 }
 
+func manualBankMovementID(bankMovementID uint) uint {
+	return 4_000_000_000 + bankMovementID
+}
+
 // IsDetractionPaymentMethod indica método interno SPOT (sin impacto en caja/banco).
 func IsDetractionPaymentMethod(method string) bool {
 	return taxpayment.IsDetractionCode(method)

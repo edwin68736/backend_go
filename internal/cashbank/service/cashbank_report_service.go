@@ -746,10 +746,15 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 	if err != nil {
 		return MovementsReportSplit{}, err
 	}
+	manualBankRows, err := s.buildManualBankMovementRows(f)
+	if err != nil {
+		return MovementsReportSplit{}, err
+	}
 
 	all := append(saleRows, cashRows...)
 	all = append(all, cancelledElectronicRows...)
 	all = append(all, purchaseRows...)
+	all = append(all, manualBankRows...)
 	sortMovementRowsDesc(all)
 
 	var cashChannel, electronicChannel, detractionChannel []MovementReportRow
@@ -1386,6 +1391,123 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 			row.ContactName = m.Notes
 		}
 		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// buildManualBankMovementRows movimientos MANUALES no efectivo (ingreso/egreso de Caja vía
+// AddMovement, sin sale_id/purchase_id) para ListMovementsReport — el reporte multisesión.
+// Desde el fix de la duplicación en AddMovement, estos viven EXCLUSIVAMENTE en
+// tenant_bank_movements (antes generaban además un TenantCashMovement, que sí cubría
+// buildCashMovementReportRows). Sin esto, un ingreso/egreso manual por Yape/Plin/tarjeta/
+// transferencia desaparecía por completo de este reporte — mismo gap ya corregido en
+// GetSessionReport (el reporte de UNA sesión), aquí extendido al reporte de VARIAS.
+func (s *CashBankService) buildManualBankMovementRows(f MovementReportFilters) ([]MovementReportRow, error) {
+	q := s.db.Model(&database.TenantBankMovement{}).
+		Joins("JOIN tenant_cash_sessions ON tenant_cash_sessions.id = tenant_bank_movements.cash_session_id").
+		Where("tenant_bank_movements.sale_id IS NULL AND tenant_bank_movements.purchase_id IS NULL").
+		Where("tenant_bank_movements.cash_session_id IS NOT NULL")
+	if f.SessionID > 0 {
+		q = q.Where("tenant_bank_movements.cash_session_id = ?", f.SessionID)
+	}
+	if f.BranchID > 0 {
+		q = q.Where("tenant_cash_sessions.branch_id = ?", f.BranchID)
+	}
+	if f.UserID > 0 {
+		q = q.Where("tenant_bank_movements.user_id = ?", f.UserID)
+	}
+	if f.DateFrom != nil {
+		q = q.Where("tenant_bank_movements.created_at >= ?", f.DateFrom)
+	}
+	if f.DateTo != nil {
+		q = q.Where("tenant_bank_movements.created_at <= ?", f.DateTo)
+	}
+	// income/expense (el vocabulario del filtro) → credit/debit (el de tenant_bank_movements).
+	if f.MovementType == "income" {
+		q = q.Where("tenant_bank_movements.type = ?", "credit")
+	} else if f.MovementType == "expense" {
+		q = q.Where("tenant_bank_movements.type = ?", "debit")
+	}
+
+	var movements []database.TenantBankMovement
+	if err := q.Order("tenant_bank_movements.created_at DESC").Find(&movements).Error; err != nil {
+		return nil, fmt.Errorf("movimientos manuales no efectivo: %w", err)
+	}
+	if len(movements) == 0 {
+		return nil, nil
+	}
+
+	// El método de pago no es una columna de tenant_bank_movements — se resuelve por cuenta,
+	// igual que en GetMovements/GetSessionBalanceSummary, así que el filtro por método se aplica
+	// después de traer las filas (no hay forma de empujarlo a SQL sin ese dato).
+	methodByAccount := s.paymentMethodCodesByBankAccount(movements)
+	wantMethod := ""
+	if f.PaymentMethod != "" {
+		wantMethod = normalizeReportMethod(f.PaymentMethod)
+	}
+
+	sessionIDs := make(map[uint]struct{})
+	userIDs := make(map[uint]struct{})
+	for _, m := range movements {
+		if m.CashSessionID != nil {
+			sessionIDs[*m.CashSessionID] = struct{}{}
+		}
+		userIDs[m.UserID] = struct{}{}
+	}
+	sessions := make(map[uint]database.TenantCashSession)
+	if len(sessionIDs) > 0 {
+		var list []database.TenantCashSession
+		s.db.Where("id IN ?", keysUint(sessionIDs)).Find(&list)
+		for _, se := range list {
+			sessions[se.ID] = se
+		}
+	}
+	branchIDs := make(map[uint]struct{})
+	for _, ses := range sessions {
+		branchIDs[ses.BranchID] = struct{}{}
+	}
+	branches := loadBranchNamesMap(s.db, branchIDs)
+	users := loadUserNamesMap(s.db, userIDs)
+
+	rows := make([]MovementReportRow, 0, len(movements))
+	for _, m := range movements {
+		code := methodByAccount[m.BankAccountID]
+		if code == "" {
+			code = "otros"
+		}
+		method := normalizeReportMethod(code)
+		if wantMethod != "" && method != wantMethod {
+			continue
+		}
+		amount := m.Amount
+		typ := "ingreso"
+		if m.Type == "debit" {
+			amount = -amount
+			typ = "egreso"
+		}
+		var sessionID uint
+		var branchName string
+		if m.CashSessionID != nil {
+			sessionID = *m.CashSessionID
+			if ses, ok := sessions[sessionID]; ok {
+				branchName = branches[ses.BranchID]
+			}
+		}
+		rows = append(rows, MovementReportRow{
+			Date:          m.CreatedAt,
+			Type:          typ,
+			DocNumber:     m.Reference,
+			ContactName:   m.Notes,
+			UserName:      users[m.UserID],
+			BranchName:    branchName,
+			PaymentMethod: method,
+			Amount:        amount,
+			MovementID:    manualBankMovementID(m.ID),
+			CashSessionID: sessionID,
+			Category:      m.Category,
+			CashReference: m.Reference,
+			NotesDetail:   m.Notes,
+		})
 	}
 	return rows, nil
 }
