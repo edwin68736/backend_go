@@ -329,3 +329,27 @@ func TestPay_compraAnulada_rechaza(t *testing.T) {
 		t.Fatal("se esperaba error: no se puede pagar una compra anulada")
 	}
 }
+
+// Hallazgo #2 (revisión con MySQL real): List() armaba purchase_number con
+// `p.series || '-' || p.number` — concatenación válida en SQLite (por eso este mismo test, antes
+// de la corrección, ya pasaba aquí) pero `||` es el operador lógico OR en MySQL, así que en
+// producción el campo mostraba "1" en vez de "F001-00000001". La corrección selecciona series y
+// number por separado y concatena en Go — esta prueba fija el formato esperado para que una
+// regresión futura (volver a concatenar en SQL) se detecte incluso en SQLite.
+func TestList_purchaseNumber_seriesGuionNumero(t *testing.T) {
+	db := setupPayableServiceTestDB(t)
+	openPayableSession(t, db, 20, 1, 1)
+	seedCreditPurchase(t, db, 1, 20, 118)
+	svc := NewPayableService(db)
+
+	rows, total, err := svc.List(ListFilter{BranchID: 1, Status: "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("List() = %d filas (total=%d), want 1", len(rows), total)
+	}
+	if rows[0].PurchaseNumber != "F001-00000001" {
+		t.Errorf("PurchaseNumber = %q, want %q", rows[0].PurchaseNumber, "F001-00000001")
+	}
+}

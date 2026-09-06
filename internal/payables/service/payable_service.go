@@ -121,6 +121,7 @@ func (s *PayableService) List(f ListFilter) ([]PayableRow, int64, error) {
 
 	type row struct {
 		PurchaseID       uint
+		PurchaseSeries   string
 		PurchaseNumber   string
 		DocType          string
 		IssueDate        time.Time
@@ -133,8 +134,11 @@ func (s *PayableService) List(f ListFilter) ([]PayableRow, int64, error) {
 		Status           string
 	}
 	var rows []row
+	// series/number se traen por separado y se concatenan en Go (no con `||`, que en MySQL es el
+	// operador lógico OR, no concatenación — con SQLite en los tests sí concatenaba, por eso el
+	// bug pasó inadvertido: el "comprobante" mostraba "1" en vez de "F999-4" en MySQL real).
 	err := s.listQuery(f).
-		Select(`p.id AS purchase_id, (p.series || '-' || p.number) AS purchase_number, p.doc_type,
+		Select(`p.id AS purchase_id, p.series AS purchase_series, p.number AS purchase_number, p.doc_type,
 			p.issue_date, p.due_date, p.contact_id,
 			COALESCE(c.trade_name, c.business_name, '') AS contact_name,
 			COALESCE(c.doc_number, '') AS contact_doc_number,
@@ -155,7 +159,7 @@ func (s *PayableService) List(f ListFilter) ([]PayableRow, int64, error) {
 			due = 0
 		}
 		out = append(out, PayableRow{
-			PurchaseID: r.PurchaseID, PurchaseNumber: r.PurchaseNumber, DocType: r.DocType,
+			PurchaseID: r.PurchaseID, PurchaseNumber: r.PurchaseSeries + "-" + r.PurchaseNumber, DocType: r.DocType,
 			IssueDate: r.IssueDate, DueDate: r.DueDate, ContactID: r.ContactID,
 			ContactName: r.ContactName, ContactDocNumber: r.ContactDocNumber,
 			OriginalAmount: r.OriginalAmount, PaidAmount: r.PaidAmount, Due: due,

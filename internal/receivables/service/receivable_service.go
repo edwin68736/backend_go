@@ -90,6 +90,11 @@ type StatementLine struct {
 	Credit      float64   `json:"credit"`
 	Balance     float64   `json:"balance"`
 	SaleID      uint      `json:"sale_id,omitempty"`
+	// CashSessionID: Caja donde OCURRIÓ el cobro (TenantSalePayment.CashSessionID) — solo en
+	// líneas type="payment"; nil en "invoice" (esa línea es el registro del documento, cuya
+	// propia Caja es TenantSale.CashSessionID, un dato distinto que este estado de cuenta no
+	// muestra). Puramente informativo: no cambia ningún cálculo de saldo.
+	CashSessionID *uint `json:"cash_session_id,omitempty"`
 }
 
 type StatementResult struct {
@@ -428,13 +433,14 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 			}
 			running -= p.Amount
 			res.Lines = append(res.Lines, StatementLine{
-				Date:        p.CreatedAt,
-				Type:        "payment",
-				Reference:   p.Reference,
-				Description: "Cobro " + sale.Number + " (" + p.Method + ")",
-				Credit:      p.Amount,
-				Balance:     money.RoundDisplay(running),
-				SaleID:      sale.ID,
+				Date:          p.CreatedAt,
+				Type:          "payment",
+				Reference:     p.Reference,
+				Description:   "Cobro " + sale.Number + " (" + p.Method + ")",
+				Credit:        p.Amount,
+				Balance:       money.RoundDisplay(running),
+				SaleID:        sale.ID,
+				CashSessionID: p.CashSessionID,
 			})
 		}
 		if due > 0 {

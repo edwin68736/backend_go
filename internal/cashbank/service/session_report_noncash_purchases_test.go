@@ -110,7 +110,10 @@ func createSaleWithMethod(t *testing.T, db *gorm.DB, svc *CashBankService, saleI
 	if err := db.Create(sale).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&database.TenantSalePayment{SaleID: saleID, Method: method, Amount: amount, CreatedAt: time.Now()}).Error; err != nil {
+	// CashSessionID: sale_service.Create() SIEMPRE la pobla en cada TenantSalePayment (P0) — sin
+	// esto, el fixture no reproduce el comportamiento real y GetSessionReport (que ahora filtra
+	// "dinero recibido" por TenantSalePayment.CashSessionID) no vería el pago.
+	if err := db.Create(&database.TenantSalePayment{SaleID: saleID, Method: method, Amount: amount, CashSessionID: &sessionID, CreatedAt: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.RecordPayment(db, method, amount, &sessionID, sale.Number, "Venta "+sale.Number, &saleID, userID); err != nil {

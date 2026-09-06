@@ -56,7 +56,7 @@ func createSaleForSession(t *testing.T, db *gorm.DB, svc *CashBankService, saleI
 	if err := db.Create(sale).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&database.TenantSalePayment{SaleID: saleID, Method: method, Amount: amount, CreatedAt: time.Now()}).Error; err != nil {
+	if err := db.Create(&database.TenantSalePayment{SaleID: saleID, Method: method, Amount: amount, CashSessionID: &sessionID, CreatedAt: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.RecordPayment(db, method, amount, &sessionID, sale.Number, "Venta "+sale.Number, &saleID, 1); err != nil {

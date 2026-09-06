@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -97,6 +98,10 @@ type IncomeDetailRow struct {
 	Reference     string    `json:"reference"`
 	Amount        float64   `json:"amount"`
 	PaymentMethod string    `json:"payment_method"`
+	// SaleCashSessionID: Caja donde se REGISTRÓ la venta — presente únicamente en filas
+	// Type="cobro_cxc" (un cobro que ocurrió en esta sesión de una venta registrada en OTRA),
+	// para trazabilidad hacia el documento original. nil en "venta" (contado, misma Caja).
+	SaleCashSessionID *uint `json:"sale_cash_session_id,omitempty"`
 }
 
 type ExpenseDetailRow struct {
@@ -290,6 +295,16 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		saleIDs = append(saleIDs, sale.ID)
 	}
 	displayDocNumbers := nvdisplay.LoadDisplayNumbersBySaleID(s.db, saleIDs)
+	// (1) SOLO para "crédito generado" y detracción SPOT: TODOS los pagos de las ventas
+	// REGISTRADAS en esta sesión, sin importar en qué Caja ocurrió cada pago. Esto es
+	// deliberado — el saldo de crédito pendiente de una venta es "total - pagado en CUALQUIER
+	// Caja", no "pagado en esta Caja" — pero, a partir de esta corrección, este lazo YA NO
+	// alimenta IncomeDetail/TotalSales/TotalsByMethod.Sales/Electronic: eso mezclaba "actividad
+	// comercial del documento" (dónde se registró la venta) con "dinero recibido" (dónde ocurrió
+	// cada pago) — confirmado con datos reales de MySQL: un cobro posterior en otra Caja se
+	// contaba como ingreso de la Caja de REGISTRO, y un cobro electrónico en la Caja que sí lo
+	// recibió no aparecía en ningún lado de su propio reporte. Ese dinero ahora se calcula en el
+	// bloque (2), más abajo, filtrando por TenantSalePayment.CashSessionID.
 	if len(saleIDs) > 0 {
 		var payments []database.TenantSalePayment
 		s.db.Where("sale_id IN ?", saleIDs).Order("created_at ASC").Find(&payments)
@@ -298,8 +313,10 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		for _, p := range payments {
 			meth := normalizeReportMethod(p.Method)
 			sale := salesMap[p.SaleID]
-			reportAmt := paymentReportAmount(p.Amount, p.ID, reportAmounts)
 			if IsDetractionPaymentMethod(meth) || IsDetractionPaymentMethod(p.Method) {
+				// La detracción SPOT no tiene un concepto de "Caja del pago" propio — el cliente
+				// deposita directo a SUNAT, no hay cajero de por medio — así que se mantiene
+				// atada a la Caja de registro de la venta, sin cambios.
 				report.Totals.TotalDetractionSpot += p.Amount
 				report.Totals.TotalSalesCommercial += p.Amount
 				report.Detraction.TotalSPOT += p.Amount
@@ -314,53 +331,53 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				continue
 			}
 			if paymentcondition.IsCreditCode(meth) || paymentcondition.IsCreditCode(p.Method) {
-				// Crédito generado, no cobrado — no es dinero recibido; se registra aparte para
-				// no inflar TotalSales/Electronic con un pago que nunca ocurrió. paidBySale
-				// deliberadamente NO se incrementa aquí, así el saldo a crédito real se ve
-				// reflejado en el CxC de internal/receivables, no duplicado en este reporte.
-				report.CreditGenerated.Total += p.Amount
-				report.CreditGenerated.Sales = append(report.CreditGenerated.Sales, IncomeDetailRow{
-					Date:          p.CreatedAt,
-					Type:          "credito_generado",
-					DocNumber:     displayDocNumbers[sale.ID],
-					Reference:     p.Reference,
-					Amount:        p.Amount,
-					PaymentMethod: meth,
-				})
+				// Marcador "credito" — no es dinero recibido, se ignora aquí a propósito (ver
+				// bloque de "crédito generado" más abajo).
 				continue
 			}
-			salesByMethod[meth] += reportAmt
-			report.Totals.TotalSales += reportAmt
-			report.Totals.TotalSalesDirect += reportAmt
-			report.Totals.TotalSalesCommercial += reportAmt
-			paidBySale[p.SaleID] += reportAmt
-			report.IncomeDetail = append(report.IncomeDetail, IncomeDetailRow{
-				Date:          p.CreatedAt,
-				Type:          "venta",
+			paidBySale[p.SaleID] += paymentReportAmount(p.Amount, p.ID, reportAmounts)
+		}
+
+		// Crédito generado: una sola pasada por cada venta a crédito de esta sesión (con o sin
+		// marcador "credito", con o sin adelanto parcial ya cobrado) — siempre
+		// sale.Total - paidBySale[sale.ID] (pagado en CUALQUIER Caja), nunca el monto crudo de
+		// una fila individual de tenant_sale_payments. isCreditSale revisa tanto
+		// PaymentConditionCode (confiable incluso con adelanto, donde PaymentMethod ya no es
+		// "credito" sino el método real del adelanto) como PaymentMethod (compatibilidad con
+		// datos históricos sin PaymentConditionCode).
+		for _, sale := range sessionSales {
+			isCreditSale := paymentcondition.IsCreditCode(sale.PaymentConditionCode) ||
+				paymentcondition.IsCreditCode(sale.PaymentMethod)
+			if !isCreditSale {
+				continue
+			}
+			pending := money.RoundDisplay(sale.Total - paidBySale[sale.ID])
+			if pending <= money.PaymentTolerance {
+				continue
+			}
+			report.CreditGenerated.Total += pending
+			report.CreditGenerated.Sales = append(report.CreditGenerated.Sales, IncomeDetailRow{
+				Date:          sale.CreatedAt,
+				Type:          "credito_generado",
 				DocNumber:     displayDocNumbers[sale.ID],
-				Reference:     p.Reference,
-				Amount:        reportAmt,
-				PaymentMethod: meth,
+				Amount:        pending,
+				PaymentMethod: "credito",
 			})
 		}
+
+		// Ventas legacy SIN ninguna fila en tenant_sale_payments (no hay ningún pago del cual
+		// leer una Caja propia — es la única fuente disponible en ese caso): sigue atribuyendo
+		// sale.Total al método de la propia venta, en la Caja de registro. No aplica a ventas a
+		// crédito (ya resueltas arriba).
 		for _, sale := range sessionSales {
+			isCreditSale := paymentcondition.IsCreditCode(sale.PaymentConditionCode) ||
+				paymentcondition.IsCreditCode(sale.PaymentMethod)
+			if isCreditSale {
+				continue
+			}
 			if paidBySale[sale.ID] == 0 && sale.Total != 0 {
 				meth := normalizeReportMethod(sale.PaymentMethod)
 				if IsDetractionPaymentMethod(meth) {
-					continue
-				}
-				if paymentcondition.IsCreditCode(meth) || paymentcondition.IsCreditCode(sale.PaymentMethod) {
-					// Venta a crédito sin ningún TenantSalePayment (sin adelanto): el fallback de
-					// abajo normalmente atribuye sale.Total al método de la venta, pero aquí ese
-					// método es "credito" — no hubo ningún cobro real. Mismo criterio que arriba.
-					report.CreditGenerated.Total += sale.Total
-					report.CreditGenerated.Sales = append(report.CreditGenerated.Sales, IncomeDetailRow{
-						Date:          sale.CreatedAt,
-						Type:          "credito_generado",
-						DocNumber:     displayDocNumbers[sale.ID],
-						Amount:        sale.Total,
-						PaymentMethod: meth,
-					})
 					continue
 				}
 				salesByMethod[meth] += sale.Total
@@ -375,6 +392,76 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 					PaymentMethod: meth,
 				})
 			}
+		}
+	}
+
+	// (2) Dinero REAL recibido EN ESTA SESIÓN: TenantSalePayment.CashSessionID = sessionID, sin
+	// importar en qué Caja se registró la venta a la que pertenece cada pago. Esto alimenta
+	// IncomeDetail/TotalSales/TotalsByMethod.Sales/Electronic — la única fuente para "dinero
+	// recibido", separada de "ventas registradas" (bloque de arriba). Cubre por igual venta
+	// contado, adelanto de venta crédito y cobro posterior de CxC — los tres son, para este
+	// bloque, simplemente "un TenantSalePayment cuya Caja es esta sesión".
+	var paymentsReceivedHere []database.TenantSalePayment
+	if err := s.db.Where("cash_session_id = ?", sessionID).Order("created_at ASC").Find(&paymentsReceivedHere).Error; err != nil {
+		return nil, err
+	}
+	if len(paymentsReceivedHere) > 0 {
+		missing := make([]uint, 0)
+		seenNeeded := make(map[uint]struct{}, len(paymentsReceivedHere))
+		for _, p := range paymentsReceivedHere {
+			if _, ok := seenNeeded[p.SaleID]; ok {
+				continue
+			}
+			seenNeeded[p.SaleID] = struct{}{}
+			if _, known := salesMap[p.SaleID]; !known {
+				missing = append(missing, p.SaleID)
+			}
+		}
+		if len(missing) > 0 {
+			// Pagos de ventas registradas en OTRA Caja (cobro posterior de CxC) — sus ventas no
+			// están en sessionSales (esa lista es "registradas AQUÍ"), hay que resolverlas aparte
+			// para poder mostrar el documento y detectar que son un cobro, no una venta directa.
+			var extraSales []database.TenantSale
+			s.db.Where("id IN ?", missing).Find(&extraSales)
+			for _, es := range extraSales {
+				salesMap[es.ID] = es
+			}
+			for id, num := range nvdisplay.LoadDisplayNumbersBySaleID(s.db, missing) {
+				displayDocNumbers[id] = num
+			}
+		}
+		receivedReportAmounts := buildSalePaymentReportAmountsFromPayments(salesMap, paymentsReceivedHere)
+		for _, p := range paymentsReceivedHere {
+			meth := normalizeReportMethod(p.Method)
+			if IsDetractionPaymentMethod(meth) || IsDetractionPaymentMethod(p.Method) {
+				continue // la detracción se reporta en (1), atada a la Caja de registro
+			}
+			if paymentcondition.IsCreditCode(meth) || paymentcondition.IsCreditCode(p.Method) {
+				continue // el marcador "credito" no debería tener Caja propia, pero por si acaso
+			}
+			sale, saleKnown := salesMap[p.SaleID]
+			reportAmt := paymentReportAmount(p.Amount, p.ID, receivedReportAmounts)
+			salesByMethod[meth] += reportAmt
+			report.Totals.TotalSales += reportAmt
+			report.Totals.TotalSalesDirect += reportAmt
+			report.Totals.TotalSalesCommercial += reportAmt
+			row := IncomeDetailRow{
+				Date:          p.CreatedAt,
+				Type:          "venta",
+				DocNumber:     displayDocNumbers[p.SaleID],
+				Reference:     p.Reference,
+				Amount:        reportAmt,
+				PaymentMethod: meth,
+			}
+			if saleKnown && sale.CashSessionID != nil && *sale.CashSessionID != sessionID {
+				// Cobro posterior de CxC: la venta se registró en OTRA Caja. Se distingue del
+				// contado normal (mismo tratamiento que "pago_proveedor" vs "compra" en CxP) y
+				// se deja trazabilidad hacia la Caja de registro original.
+				row.Type = "cobro_cxc"
+				origin := *sale.CashSessionID
+				row.SaleCashSessionID = &origin
+			}
+			report.IncomeDetail = append(report.IncomeDetail, row)
 		}
 	}
 
@@ -412,13 +499,21 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			}
 			row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: paymentMethod}
 			if m.PurchaseID != nil {
-				row.Type = "compra"
 				report.Totals.TotalPurchases += m.Amount
 				purchasesByMethod[paymentMethod] += m.Amount
 				seenPurchaseIDs[*m.PurchaseID] = struct{}{}
+				// compra (pago inmediato al registrar) vs pago_proveedor (CxP — Fase 2): Decisión A
+				// prohíbe la compra mixta (purchase_service.Create: o paga todo de una vez o crea
+				// el payable completo, nunca ambos), así que basta con el PaymentMethod de la
+				// propia compra para clasificar sin ambigüedad cualquier movimiento con su
+				// PurchaseID — no hace falta un campo nuevo.
+				row.Type = "pago_proveedor"
 				var pur database.TenantPurchase
 				if s.db.First(&pur, *m.PurchaseID).Error == nil {
 					row.DocNumber = pur.Series + "-" + pur.Number
+					if strings.TrimSpace(pur.PaymentMethod) != "" {
+						row.Type = "compra"
+					}
 				}
 				report.ExpenseDetail = append(report.ExpenseDetail, row)
 			} else {
@@ -546,7 +641,7 @@ func populateSessionReportSections(r *SessionReport) {
 
 	for _, row := range r.IncomeDetail {
 		switch row.Type {
-		case "venta":
+		case "venta", "cobro_cxc":
 			if IsDetractionPaymentMethod(row.PaymentMethod) {
 				continue
 			}
@@ -604,9 +699,14 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 	if err != nil {
 		return MovementsReportSplit{}, err
 	}
+	purchaseRows, err := s.buildPurchasePaymentMovementRows(f)
+	if err != nil {
+		return MovementsReportSplit{}, err
+	}
 
 	all := append(saleRows, cashRows...)
 	all = append(all, cancelledElectronicRows...)
+	all = append(all, purchaseRows...)
 	sortMovementRowsDesc(all)
 
 	var cashChannel, electronicChannel, detractionChannel []MovementReportRow
@@ -935,10 +1035,17 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		return nil, nil
 	}
 	q := s.db.Table("tenant_sale_payments").
+		// cash_session_id viene del PAGO (TenantSalePayment.CashSessionID), nunca de la venta: un
+		// cobro posterior en otra Caja debe aparecer en la Caja donde realmente se recibió, no en
+		// la Caja donde se registró el documento (P0). COALESCE a 0 para pagos históricos sin
+		// backfill (el 0 es el mismo centinela "sin sesión" que ya usa el resto del código, p.ej.
+		// "tenant_sales.cash_session_id > 0" un poco más abajo) — el frontend ya lo muestra como
+		// "—". El JOIN a tenant_cash_sessions sigue siendo el de la venta: solo resuelve la
+		// sucursal para el filtro f.BranchID, no el cash_session_id de salida.
 		Select(`tenant_sale_payments.id AS payment_id, tenant_sale_payments.sale_id, tenant_sale_payments.method,
 			tenant_sale_payments.amount, tenant_sale_payments.reference, tenant_sale_payments.notes, tenant_sale_payments.created_at,
 			tenant_sales.number AS sale_number, tenant_sales.user_id AS sale_user_id, tenant_sales.contact_id,
-			tenant_sales.cash_session_id, tenant_sales.payment_method AS sale_payment_method, tenant_sales.created_at AS sale_created_at,
+			COALESCE(tenant_sale_payments.cash_session_id, 0) AS cash_session_id, tenant_sales.payment_method AS sale_payment_method, tenant_sales.created_at AS sale_created_at,
 			tenant_cash_sessions.branch_id`).
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_payments.sale_id").
 		Joins("JOIN tenant_cash_sessions ON tenant_cash_sessions.id = tenant_sales.cash_session_id").
@@ -946,7 +1053,11 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		Where("tenant_sales.status NOT IN ?", []string{"cancelled", "draft"})
 
 	if f.SessionID > 0 {
-		q = q.Where("tenant_sales.cash_session_id = ?", f.SessionID)
+		// Filtra por la Caja donde ocurrió el PAGO, no donde se registró la venta — así un cobro
+		// posterior de una venta registrada en otra Caja aparece al pedir el reporte de la Caja
+		// donde realmente se cobró (antes: "tenant_sales.cash_session_id = f.SessionID" excluía
+		// por completo cualquier cobro de una venta registrada en otra sesión).
+		q = q.Where("tenant_sale_payments.cash_session_id = ?", f.SessionID)
 	}
 	if f.BranchID > 0 {
 		q = q.Where("tenant_cash_sessions.branch_id = ?", f.BranchID)
@@ -955,10 +1066,10 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		q = q.Where("tenant_sales.user_id = ?", f.UserID)
 	}
 	if f.DateFrom != nil {
-		q = q.Where("tenant_sales.created_at >= ?", f.DateFrom)
+		q = q.Where("tenant_sale_payments.created_at >= ?", f.DateFrom)
 	}
 	if f.DateTo != nil {
-		q = q.Where("tenant_sales.created_at <= ?", f.DateTo)
+		q = q.Where("tenant_sale_payments.created_at <= ?", f.DateTo)
 	}
 	if f.PaymentMethod != "" {
 		q = applyPaymentMethodFilter(q, "tenant_sale_payments.method", f.PaymentMethod)
@@ -1047,6 +1158,13 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 	displayDocNumbers := nvdisplay.LoadDisplayNumbersBySaleID(s.db, saleIDsForDisplay)
 
 	for _, p := range payRows {
+		if paymentcondition.IsCreditCode(p.Method) {
+			// Marcador "credito" (venta 100% a crédito sin adelanto, ver sale_service.Create) —
+			// no es dinero recibido. Sin este filtro terminaba contado como venta electrónica
+			// real en el canal "electronic" de este reporte multisesión (movementRowChannel solo
+			// mira el método, no el tipo de fila).
+			continue
+		}
 		meth := normalizeReportMethod(p.Method)
 		contactName := ""
 		if p.ContactID != nil {
@@ -1076,6 +1194,11 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 	// Ventas legacy sin líneas en tenant_sale_payments
 	for _, sale := range legacySales {
 		if sale.CashSessionID == nil {
+			continue
+		}
+		if paymentcondition.IsCreditCode(sale.PaymentConditionCode) || paymentcondition.IsCreditCode(sale.PaymentMethod) {
+			// Venta a crédito sin ninguna fila en tenant_sale_payments (ni siquiera el marcador
+			// "credito") — no hubo ningún cobro real que listar aquí. Mismo criterio que arriba.
 			continue
 		}
 		meth := normalizeReportMethod(sale.PaymentMethod)
@@ -1199,10 +1322,16 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 				row.DocNumber = sale.Number
 			}
 		} else if m.PurchaseID != nil {
-			row.Type = "compra"
+			// compra (pago inmediato) vs pago_proveedor (CxP): mismo criterio que GetSessionReport
+			// — Decisión A prohíbe la compra mixta, así que el PaymentMethod de la propia compra
+			// alcanza para clasificar sin ambigüedad.
+			row.Type = "pago_proveedor"
 			if pur, ok := purchases[*m.PurchaseID]; ok {
 				row.DocNumber = pur.Series + "-" + pur.Number
 				row.ContactName = contactsByPurchase[*m.PurchaseID]
+				if strings.TrimSpace(pur.PaymentMethod) != "" {
+					row.Type = "compra"
+				}
 			}
 		} else if m.Type == "income" {
 			row.Type = "ingreso"
@@ -1215,6 +1344,184 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 		}
 		rows = append(rows, row)
 	}
+	return rows, nil
+}
+
+// buildPurchasePaymentMovementRows movimientos NO-EFECTIVO de compras (contado o pago a
+// proveedor/CxP) para ListMovementsReport — el reporte de movimientos multi-sesión, hasta ahora,
+// solo traía compras EFECTIVO (vía buildCashMovementReportRows/tenant_cash_movements); un pago
+// por Yape/Plin/tarjeta/transferencia de una compra o de un pago a proveedor nunca aparecía.
+//
+// Dos fuentes, sin unión con tenant_bank_movements (evita depender de que ese movimiento exista
+// o de resolver su método vía BankAccountID — ver nota en la sesión-report de por qué esa cuenta
+// no es un dato confiable para esto):
+//  1. TenantPurchase con PaymentMethod != "" — el pago inmediato al registrar (mismo dato que ya
+//     usa listNonCashPurchasesForSession para el reporte de una sesión).
+//  2. TenantPurchasePayment — cualquier pago de CxP (Fase 2); PayableService.Pay es la ÚNICA
+//     función que crea filas ahí, así que su sola existencia ya identifica un pago a proveedor.
+//
+// El efectivo de ambas categorías sigue viniendo de tenant_cash_movements (arriba): esta función
+// filtra explícitamente !IsCashPaymentMethod en las dos fuentes para no duplicarlo.
+func (s *CashBankService) buildPurchasePaymentMovementRows(f MovementReportFilters) ([]MovementReportRow, error) {
+	if f.MovementType == "income" {
+		return nil, nil // compras y pagos a proveedor siempre son egreso
+	}
+
+	rows := make([]MovementReportRow, 0, 16)
+
+	// 1) Compra al contado, medio NO efectivo.
+	pq := s.db.Model(&database.TenantPurchase{}).
+		Joins("JOIN tenant_cash_sessions ON tenant_cash_sessions.id = tenant_purchases.cash_session_id").
+		Where("tenant_purchases.payment_method IS NOT NULL AND tenant_purchases.payment_method != ''").
+		Where("tenant_purchases.status != ?", "cancelled").
+		Where("tenant_purchases.cash_session_id > 0")
+	if f.SessionID > 0 {
+		pq = pq.Where("tenant_purchases.cash_session_id = ?", f.SessionID)
+	}
+	if f.BranchID > 0 {
+		pq = pq.Where("tenant_cash_sessions.branch_id = ?", f.BranchID)
+	}
+	if f.UserID > 0 {
+		pq = pq.Where("tenant_purchases.user_id = ?", f.UserID)
+	}
+	if f.DateFrom != nil {
+		pq = pq.Where("tenant_purchases.created_at >= ?", f.DateFrom)
+	}
+	if f.DateTo != nil {
+		pq = pq.Where("tenant_purchases.created_at <= ?", f.DateTo)
+	}
+	if f.PaymentMethod != "" {
+		pq = applyPaymentMethodFilter(pq, "tenant_purchases.payment_method", f.PaymentMethod)
+	}
+	var purchases []database.TenantPurchase
+	if err := pq.Order("tenant_purchases.created_at DESC").Find(&purchases).Error; err != nil {
+		return nil, fmt.Errorf("compras no-efectivo: %w", err)
+	}
+
+	contactIDs := make(map[uint]struct{})
+	userIDs := make(map[uint]struct{})
+	branchIDsByPurchaseSession := make(map[uint]uint) // cash_session_id -> branch_id, para no repetir el join
+	for _, p := range purchases {
+		if p.ContactID != nil {
+			contactIDs[*p.ContactID] = struct{}{}
+		}
+		userIDs[p.UserID] = struct{}{}
+	}
+
+	for _, p := range purchases {
+		method := normalizeReportMethod(p.PaymentMethod)
+		if IsCashPaymentMethod(method) {
+			continue // ya cubierto por tenant_cash_movements — evita duplicar
+		}
+		contactName := ""
+		if p.ContactID != nil {
+			var c database.TenantContact
+			if s.db.First(&c, *p.ContactID).Error == nil {
+				contactName = contactDisplayName(c)
+			}
+		}
+		userName := ""
+		var u database.TenantUser
+		if s.db.First(&u, p.UserID).Error == nil {
+			userName = u.Name
+		}
+		branchName := ""
+		if bID, ok := branchIDsByPurchaseSession[*p.CashSessionID]; ok {
+			branchName = loadBranchNamesMap(s.db, map[uint]struct{}{bID: {}})[bID]
+		} else {
+			var ses database.TenantCashSession
+			if s.db.First(&ses, *p.CashSessionID).Error == nil {
+				branchIDsByPurchaseSession[*p.CashSessionID] = ses.BranchID
+				var b database.TenantBranch
+				if s.db.First(&b, ses.BranchID).Error == nil {
+					branchName = b.Name
+				}
+			}
+		}
+		rows = append(rows, MovementReportRow{
+			Date:          p.CreatedAt,
+			Type:          "compra",
+			DocNumber:     p.Series + "-" + p.Number,
+			ContactName:   contactName,
+			UserName:      userName,
+			BranchName:    branchName,
+			PaymentMethod: method,
+			Amount:        -p.Total,
+			MovementID:    purchaseMovementID(p.ID),
+			CashSessionID: *p.CashSessionID,
+			Category:      "Compra",
+		})
+	}
+
+	// 2) Pago a proveedor (CxP), medio NO efectivo.
+	ppq := s.db.Model(&database.TenantPurchasePayment{}).
+		Joins("JOIN tenant_cash_sessions ON tenant_cash_sessions.id = tenant_purchase_payments.cash_session_id").
+		Where("tenant_purchase_payments.cash_session_id > 0")
+	if f.SessionID > 0 {
+		ppq = ppq.Where("tenant_purchase_payments.cash_session_id = ?", f.SessionID)
+	}
+	if f.BranchID > 0 {
+		ppq = ppq.Where("tenant_cash_sessions.branch_id = ?", f.BranchID)
+	}
+	if f.DateFrom != nil {
+		ppq = ppq.Where("tenant_purchase_payments.created_at >= ?", f.DateFrom)
+	}
+	if f.DateTo != nil {
+		ppq = ppq.Where("tenant_purchase_payments.created_at <= ?", f.DateTo)
+	}
+	if f.PaymentMethod != "" {
+		ppq = applyPaymentMethodFilter(ppq, "tenant_purchase_payments.method", f.PaymentMethod)
+	}
+	// f.UserID: TenantPurchasePayment no guarda quién hizo el pago (solo su Caja) — no se puede
+	// filtrar por usuario en esta fuente. Limitación conocida, documentada en el informe.
+	var payments []database.TenantPurchasePayment
+	if err := ppq.Order("tenant_purchase_payments.created_at DESC").Find(&payments).Error; err != nil {
+		return nil, fmt.Errorf("pagos CxP no-efectivo: %w", err)
+	}
+
+	for _, pp := range payments {
+		method := normalizeReportMethod(pp.Method)
+		if IsCashPaymentMethod(method) {
+			continue // ya cubierto por tenant_cash_movements — evita duplicar
+		}
+		docNumber, contactName := "", ""
+		var pur database.TenantPurchase
+		if s.db.First(&pur, pp.PurchaseID).Error == nil {
+			docNumber = pur.Series + "-" + pur.Number
+			if pur.ContactID != nil {
+				var c database.TenantContact
+				if s.db.First(&c, *pur.ContactID).Error == nil {
+					contactName = contactDisplayName(c)
+				}
+			}
+		}
+		branchName := ""
+		if bID, ok := branchIDsByPurchaseSession[*pp.CashSessionID]; ok {
+			branchName = loadBranchNamesMap(s.db, map[uint]struct{}{bID: {}})[bID]
+		} else {
+			var ses database.TenantCashSession
+			if s.db.First(&ses, *pp.CashSessionID).Error == nil {
+				branchIDsByPurchaseSession[*pp.CashSessionID] = ses.BranchID
+				var b database.TenantBranch
+				if s.db.First(&b, ses.BranchID).Error == nil {
+					branchName = b.Name
+				}
+			}
+		}
+		rows = append(rows, MovementReportRow{
+			Date:          pp.CreatedAt,
+			Type:          "pago_proveedor",
+			DocNumber:     docNumber,
+			ContactName:   contactName,
+			PaymentMethod: method,
+			Amount:        -pp.Amount,
+			MovementID:    purchasePaymentMovementID(pp.ID),
+			CashSessionID: *pp.CashSessionID,
+			Category:      "Pago proveedor",
+			BranchName:    branchName,
+		})
+	}
+
 	return rows, nil
 }
 
@@ -1305,9 +1612,18 @@ func buildSalePaymentReportAmountsFromPayments(
 			}
 			continue
 		}
-		lines := make([]money.SalePaymentLine, len(pList))
-		for i, p := range pList {
-			lines[i] = money.SalePaymentLine{ID: p.ID, Amount: p.Amount}
+		// El marcador "credito" no es dinero recibido — queda fuera de la base del prorrateo.
+		// Incluirlo inflaba `sum` (líneas reales + marcador) muy por encima de sale.Total,
+		// disparando la rama de "vuelto" de AllocateSalePaymentReportAmounts y repartiendo el
+		// importe de la venta entre TODAS las líneas (incluido el marcador), en vez de asignarle
+		// a cada pago real su propio monto tal cual — eso era lo que producía montos "a mitad"
+		// en el reporte cuando una venta a crédito sin adelanto luego se cobraba en otra sesión.
+		lines := make([]money.SalePaymentLine, 0, len(pList))
+		for _, p := range pList {
+			if paymentcondition.IsCreditCode(p.Method) {
+				continue
+			}
+			lines = append(lines, money.SalePaymentLine{ID: p.ID, Amount: p.Amount})
 		}
 		for id, amt := range money.AllocateSalePaymentReportAmounts(sale.Total, lines) {
 			out[id] = amt

@@ -81,8 +81,9 @@ func createReportSale(t *testing.T, db *gorm.DB, svc *CashBankService, saleID ui
 		t.Fatal(err)
 	}
 	for method, amt := range lines {
+		// CashSessionID: sale_service.Create() SIEMPRE la pobla en cada TenantSalePayment (P0).
 		if err := db.Create(&database.TenantSalePayment{
-			SaleID: saleID, Method: method, Amount: amt, CreatedAt: time.Now(),
+			SaleID: saleID, Method: method, Amount: amt, CashSessionID: &sessionID, CreatedAt: time.Now(),
 		}).Error; err != nil {
 			t.Fatal(err)
 		}
