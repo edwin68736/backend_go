@@ -80,7 +80,7 @@ func (h *CashBankHandler) CashIndexPage(c fiber.Ctx) error {
 	tdb := db(c)
 	svc := service.NewCashBankService(tdb)
 
-	sessions, _ := svc.ListSessions(0)
+	sessions, _, _ := svc.ListSessions(service.SessionListParams{})
 
 	// Buscar sesión abierta (cualquier sucursal)
 	var openRaw database.TenantCashSession

@@ -475,14 +475,53 @@ func (s *CashBankService) GetMovements(sessionID uint) ([]CashMovementView, erro
 	return views, nil
 }
 
-func (s *CashBankService) ListSessions(branchID uint) ([]database.TenantCashSession, error) {
-	var sessions []database.TenantCashSession
+// SessionListParams filtros/paginación para el historial de sesiones de Caja — mismo patrón que
+// BankMovementListParams/ListBankMovementsPaged.
+type SessionListParams struct {
+	BranchID uint
+	// OpenedBy: 0 = sin filtrar (quien administra cualquier caja ve todas); > 0 = solo las
+	// sesiones abiertas por ese usuario. Se filtra en la propia consulta SQL (antes se traían
+	// TODAS y se filtraban después, en el handler, con filterSessionsForCaller) — necesario para
+	// que el total y el offset de la paginación sean correctos también para quien no administra
+	// cualquier caja, no solo para calcular menos filas de más.
+	OpenedBy uint
+	Page     int
+	PerPage  int
+}
+
+// ListSessions: Page/PerPage <= 0 → comportamiento histórico (hasta 50 más recientes, total=0,
+// nadie lo necesitaba). Page/PerPage > 0 → esa página + el total real de filas que ve el
+// llamador, para armar la paginación en pantalla.
+func (s *CashBankService) ListSessions(params SessionListParams) ([]database.TenantCashSession, int64, error) {
 	q := s.db.Model(&database.TenantCashSession{})
-	if branchID > 0 {
-		q = q.Where("branch_id = ?", branchID)
+	if params.BranchID > 0 {
+		q = q.Where("branch_id = ?", params.BranchID)
 	}
-	err := q.Order("opened_at DESC").Limit(50).Find(&sessions).Error
-	return sessions, err
+	if params.OpenedBy > 0 {
+		q = q.Where("opened_by = ?", params.OpenedBy)
+	}
+
+	if params.PerPage <= 0 {
+		var sessions []database.TenantCashSession
+		err := q.Order("opened_at DESC").Limit(50).Find(&sessions).Error
+		return sessions, 0, err
+	}
+
+	var total int64
+	if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	page := params.Page
+	if page < 1 {
+		page = 1
+	}
+	perPage := params.PerPage
+	if perPage > 200 {
+		perPage = 200
+	}
+	var sessions []database.TenantCashSession
+	err := q.Order("opened_at DESC").Limit(perPage).Offset((page - 1) * perPage).Find(&sessions).Error
+	return sessions, total, err
 }
 
 // CashSessionListItem sesión enriquecida para historial operativo.
@@ -492,15 +531,21 @@ type CashSessionListItem struct {
 	ClosedByName string  `json:"closed_by_name,omitempty"`
 	TotalIncome  float64 `json:"total_income"`
 	TotalExpense float64 `json:"total_expense"`
+	// Total: saldo de la sesión con TODOS los métodos de pago (efectivo + Yape/Plin/
+	// transferencia/tarjeta) — mismo número que SessionBalanceSummary.Total (la tarjeta de
+	// "Total de la sesión" en pantalla). TotalIncome/TotalExpense de arriba son solo efectivo
+	// (cashOnlyMovementTotals, pensados para comparar contra el arqueo) — no alcanzan para dar
+	// una idea del saldo real de una sesión con ventas Yape/tarjeta, por eso este campo aparte.
+	Total float64 `json:"total"`
 	// Empty caja sin movimientos ni ventas: se puede eliminar sin perder nada.
 	// No basta con que los totales den cero (un ingreso y un egreso iguales se anulan).
 	Empty bool `json:"empty"`
 }
 
-func (s *CashBankService) ListSessionsEnriched(branchID uint) ([]CashSessionListItem, error) {
-	sessions, err := s.ListSessions(branchID)
+func (s *CashBankService) ListSessionsEnriched(params SessionListParams) ([]CashSessionListItem, int64, error) {
+	sessions, total, err := s.ListSessions(params)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]CashSessionListItem, 0, len(sessions))
 	for _, st := range sessions {
@@ -508,6 +553,9 @@ func (s *CashBankService) ListSessionsEnriched(branchID uint) ([]CashSessionList
 		income, expense := s.sessionMovementTotals(st.ID)
 		item.TotalIncome = income
 		item.TotalExpense = expense
+		if summary, err := s.GetSessionBalanceSummary(st.ID); err == nil {
+			item.Total = summary.Total
+		}
 		if usage, err := s.SessionUsageOf(st.ID); err == nil {
 			item.Empty = usage.Empty()
 		}
@@ -523,7 +571,7 @@ func (s *CashBankService) ListSessionsEnriched(branchID uint) ([]CashSessionList
 		}
 		out = append(out, item)
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // =================== BANCOS ===================

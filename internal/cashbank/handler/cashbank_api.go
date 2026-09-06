@@ -15,15 +15,22 @@ import (
 // CAJA — Sesiones
 // ══════════════════════════════════════════════
 
-// GET /api/cashbank/sessions?branch_id=
+// GET /api/cashbank/sessions?branch_id=&page=&per_page=
 func (h *CashBankHandler) ListSessionsAPI(c fiber.Ctx) error {
 	req, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
 	branchID := branch.ResolveReadBranchFilter(c, uint(req))
-	sessions, err := service.NewCashBankService(db(c)).ListSessionsEnriched(branchID)
+	page, _ := strconv.Atoi(c.Query("page"))
+	perPage, _ := strconv.Atoi(c.Query("per_page"))
+	// callerUserIDOrZero: 0 si administra cualquier caja (ve todas), su propio user_id si no —
+	// mismo criterio que antes aplicaba filterSessionsForCaller después de traer la página
+	// completa, ahora filtrado en la propia consulta SQL (ver SessionListParams.OpenedBy), para
+	// que el total y el offset de la paginación sean correctos también para quien no administra.
+	params := service.SessionListParams{BranchID: branchID, OpenedBy: callerUserIDOrZero(c), Page: page, PerPage: perPage}
+	sessions, total, err := service.NewCashBankService(db(c)).ListSessionsEnriched(params)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"data": filterSessionsForCaller(c, sessions)})
+	return c.JSON(fiber.Map{"data": sessions, "total": total})
 }
 
 // GET /api/cashbank/sessions/open/list?branch_id= — cajas abiertas en sucursal (solo lectura).
