@@ -95,7 +95,12 @@ func TestRevertApprovedPayment_noCycle_deletesCreatedCycleAndRestoresSubscriptio
 	tenant := database.Tenant{Name: "DORICONTA", Slug: "doriconta", DBName: "doriconta", Status: database.TenantStatusActive}
 	db.Create(&tenant)
 
-	prevEnd := CalendarDateLima(time.Date(2026, 8, 24, 23, 59, 59, 0, lima()))
+	// Anclado a hoy, no a una fecha fija: la escena es una renovación ANTICIPADA, así que la
+	// suscripción tiene que estar vigente cuando corre el test. Con el 24/08/2026 escrito a mano
+	// el test fue verde solo hasta que el calendario alcanzó esa fecha; a partir de ahí la
+	// suscripción quedaba vencida y renewInPlaceTx arrancaba el tramo nuevo hoy —"no se regalan
+	// días pasados", que es el comportamiento correcto—, así que fallaba la precondición.
+	prevEnd := CalendarDateLima(NowLima()).AddDate(0, 0, 17)
 	sub := database.SaasSubscription{
 		TenantID: tenant.ID, PlanID: plan.ID, BillingCycle: database.SaasCycleMonthly,
 		StartDate: prevEnd.AddDate(0, -1, 0), EndDate: EndOfDayLima(prevEnd), Status: database.SaasSubActive,
