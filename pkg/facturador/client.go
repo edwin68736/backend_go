@@ -371,6 +371,21 @@ type InvoiceDetail struct {
 	MtoPrecioUnitario float64 `json:"mtoPrecioUnitario"`
 	MtoValorGratuito  float64 `json:"mtoValorGratuito,omitempty"`
 	Descuentos      []InvoiceCharge `json:"descuentos,omitempty"`
+	// Atributos → cac:Item/cac:AdditionalItemProperty (Catálogo N° 55 SUNAT). Único uso hoy:
+	// detracción por transporte de carga (1004), ver internal/detraccion.ApplyToInvoicePayload.
+	Atributos []DetailAttribute `json:"atributos,omitempty"`
+}
+
+// DetailAttribute → Greenter\Model\Sale\DetailAttribute (cac:AdditionalItemProperty). Value es
+// texto simple (cbc:Value); FecInicio/FecFin/Duracion son para los códigos de catálogo 55 que se
+// declaran como fecha/duración en vez de valor (no usados por 1004, que siempre va por Value).
+type DetailAttribute struct {
+	Code       string     `json:"code"`
+	Name       string     `json:"name"`
+	Value      string     `json:"value,omitempty"`
+	FecInicio  *time.Time `json:"fecInicio,omitempty"`
+	FecFin     *time.Time `json:"fecFin,omitempty"`
+	Duracion   int        `json:"duracion,omitempty"`
 }
 
 type InvoiceLegend struct {

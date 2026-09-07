@@ -97,6 +97,7 @@ var TenantMigrations = []TenantMigration{
 	V123SalePaymentSessionTraceability{},
 	V124PurchasePayables{},
 	V125BankMovementManualMetadata{},
+	V126SaleDetraccionTransporte{},
 }
 
 // ByVersion mapa versión → migración.

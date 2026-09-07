@@ -165,6 +165,14 @@ type PrintFiscalContext struct {
 	// pkg/facturador/legend.go, pero el PDF local no lo mostraba (bug reportado: la
 	// factura no muestra la misma "Información Adicional" que el PDF del facturador).
 	DetraccionLegendText       string                     `json:"detraccion_legend_text,omitempty"`
+	// Campos exclusivos de 1004 (transporte de carga), vacíos en 1001.
+	DetraccionValorReferencial float64 `json:"detraccion_valor_referencial,omitempty"`
+	DetraccionMtcRegistro      string  `json:"detraccion_mtc_registro,omitempty"`
+	DetraccionConfigVehicular  string  `json:"detraccion_config_vehicular,omitempty"`
+	DetraccionPuntoOrigen      string  `json:"detraccion_punto_origen,omitempty"`
+	DetraccionPuntoDestino     string  `json:"detraccion_punto_destino,omitempty"`
+	DetraccionCargaEfectivaTm  float64 `json:"detraccion_carga_efectiva_tm,omitempty"`
+	DetraccionCargaUtilTm      float64 `json:"detraccion_carga_util_tm,omitempty"`
 	HasPrepaymentEmit          bool                       `json:"has_prepayment_emit,omitempty"`
 	PrepaymentLabel            string                     `json:"prepayment_label,omitempty"`
 	PrepaymentAffectationGroup string                     `json:"prepayment_affectation_group,omitempty"`
@@ -822,9 +830,26 @@ func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *Prin
 		fc.DetraccionAmount = money.RoundSunat(det.DetractionAmountPen)
 		fc.DetraccionBankAccount = det.BankAccount
 		fc.DetraccionPaymentMethodLabel = paymentMethodLabel
-		fc.DetraccionLegendText = detraccionpkg.Legend2006Text
 		fc.DetraccionPaymentMethodCode = det.PaymentMethodCode
 		fc.DetraccionNetPayable = money.RoundSunat(det.NetPayablePen)
+		if strings.TrimSpace(det.OperationTypeCode) == detraccionpkg.OpDetraccionTransporte {
+			fc.DetraccionLegendText = detraccionpkg.Legend2006TextTransporte
+			if det.ValorReferencialPen != nil {
+				fc.DetraccionValorReferencial = money.RoundSunat(*det.ValorReferencialPen)
+			}
+			fc.DetraccionMtcRegistro = det.MtcRegistro
+			fc.DetraccionConfigVehicular = det.ConfiguracionVehicular
+			fc.DetraccionPuntoOrigen = det.PuntoOrigen
+			fc.DetraccionPuntoDestino = det.PuntoDestino
+			if det.CargaEfectivaTm != nil {
+				fc.DetraccionCargaEfectivaTm = *det.CargaEfectivaTm
+			}
+			if det.CargaUtilTm != nil {
+				fc.DetraccionCargaUtilTm = *det.CargaUtilTm
+			}
+		} else {
+			fc.DetraccionLegendText = detraccionpkg.Legend2006Text
+		}
 	}
 
 	if voucher, err := prepaymentsvc.NewService(db).LoadBySaleID(saleID); err == nil && prepaymentsvc.IsEmitVoucher(voucher) {

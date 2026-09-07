@@ -1458,9 +1458,12 @@ type TenantSaleFiscalObligation struct {
 
 func (TenantSaleFiscalObligation) TableName() string { return "tenant_sale_fiscal_obligations" }
 
-// TenantSaleDetraccion datos de detracción SUNAT (1:1 con venta factura 1001).
+// TenantSaleDetraccion datos de detracción SUNAT (1:1 con venta factura 1001 o 1004).
 type TenantSaleDetraccion struct {
-	SaleID                  uint       `gorm:"primaryKey" json:"sale_id"`
+	SaleID            uint   `gorm:"primaryKey" json:"sale_id"`
+	// OperationTypeCode: 1001 (general) o 1004 (transporte de carga). Default '1001' porque las
+	// filas creadas antes de esta columna son todas de la única operación que existía entonces.
+	OperationTypeCode      string     `gorm:"size:10;not null;default:'1001'" json:"operation_type_code"`
 	GoodCode                string     `gorm:"size:10;not null" json:"good_code"`
 	PaymentMethodCode       string     `gorm:"size:10;not null" json:"payment_method_code"`
 	BankAccount             string     `gorm:"size:30;not null" json:"bank_account"`
@@ -1472,6 +1475,17 @@ type TenantSaleDetraccion struct {
 	BnConfirmationStatus    string     `gorm:"size:20;default:'pending'" json:"bn_confirmation_status"`
 	BnConfirmedAt           *time.Time `json:"bn_confirmed_at,omitempty"`
 	BnConfirmationReference string     `gorm:"size:100" json:"bn_confirmation_reference,omitempty"`
+	// Campos exclusivos de 1004 (transporte de carga), vacíos/NULL en 1001. Van al comprobante
+	// como cac:InvoiceLine/cac:Item/cac:AdditionalItemProperty (Catálogo N° 55 SUNAT) — no existe
+	// un nodo de cabecera para esto; SUNAT lo exige a nivel de ítem. Captura manual: ni este
+	// sistema ni el de referencia calculan las tablas de tarifas MTC (D.S. 020-2021-MTC).
+	ValorReferencialPen    *float64 `gorm:"type:decimal(15,2)" json:"valor_referencial_pen,omitempty"`
+	MtcRegistro            string   `gorm:"size:30" json:"mtc_registro,omitempty"`
+	ConfiguracionVehicular string   `gorm:"size:10" json:"configuracion_vehicular,omitempty"`
+	PuntoOrigen            string   `gorm:"size:200" json:"punto_origen,omitempty"`
+	PuntoDestino           string   `gorm:"size:200" json:"punto_destino,omitempty"`
+	CargaEfectivaTm        *float64 `gorm:"type:decimal(10,2)" json:"carga_efectiva_tm,omitempty"`
+	CargaUtilTm            *float64 `gorm:"type:decimal(10,2)" json:"carga_util_tm,omitempty"`
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
 }

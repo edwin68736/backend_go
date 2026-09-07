@@ -265,9 +265,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	if opCode == salecurrency.OpVentasNoDomiciliados && sunatCode != "01" {
 		return nil, errors.New("la operación ventas no domiciliados (0401) solo aplica a facturas (01)")
 	}
-	if opCode == salecurrency.OpDetraccion {
+	if salecurrency.IsDetraccion(opCode) {
 		if sunatCode != "01" {
-			return nil, errors.New("la operación sujeta a detracción (1001) solo aplica a facturas (01)")
+			return nil, fmt.Errorf("la operación sujeta a detracción (%s) solo aplica a facturas (01)", opCode)
 		}
 		if currency != salecurrency.CurrencyPEN {
 			return nil, errors.New("la detracción requiere moneda PEN en la factura")
@@ -279,8 +279,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			return nil, errors.New("no se puede combinar detracción con retención IGV en la misma factura")
 		}
 	}
-	if opCode != salecurrency.OpDetraccion && input.Detraccion != nil {
-		return nil, errors.New("datos de detracción solo aplican con tipo de operación 1001")
+	if !salecurrency.IsDetraccion(opCode) && input.Detraccion != nil {
+		return nil, fmt.Errorf("datos de detracción solo aplican con tipo de operación %s o %s", salecurrency.OpDetraccion, salecurrency.OpDetraccionTransporte)
 	}
 	if input.Prepayment != nil && input.Prepayment.Emit {
 		if sunatCode != "01" && sunatCode != "03" {
@@ -312,7 +312,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			contact = &c
 		}
 	}
-	if opCode == salecurrency.OpDetraccion && contact != nil && contact.EsAgenteDePercepcion {
+	if salecurrency.IsDetraccion(opCode) && contact != nil && contact.EsAgenteDePercepcion {
 		return nil, errors.New("no se permite detracción con cliente agente de percepción")
 	}
 	if sunatCode == "01" {
@@ -420,7 +420,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			payments = alignPaymentsToSaleTotal(payments, total)
 		}
 	}
-	if opCode == salecurrency.OpDetraccion && total > 0 {
+	if salecurrency.IsDetraccion(opCode) && total > 0 {
 		eval, err := s.evaluateDetractionForCreate(input, &series, total, saleItems, contact)
 		if err != nil {
 			return nil, err
@@ -470,7 +470,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 
 	salePayable := total
-	if opCode == salecurrency.OpDetraccion && total > 0 {
+	if salecurrency.IsDetraccion(opCode) && total > 0 {
 		if eval, derr := s.evaluateDetractionForCreate(input, &series, total, saleItems, contact); derr == nil && eval.Applicable {
 			salePayable = eval.NetPayablePEN
 		}
@@ -822,7 +822,7 @@ func (s *SaleService) persistDetraccionTx(
 	series database.TenantDocumentSeries,
 	saleItems []database.TenantSaleItem,
 ) error {
-	if strings.TrimSpace(input.OperationTypeCode) != salecurrency.OpDetraccion {
+	if !salecurrency.IsDetraccion(strings.TrimSpace(input.OperationTypeCode)) {
 		return nil
 	}
 	var companyCfg database.TenantCompanyConfig
