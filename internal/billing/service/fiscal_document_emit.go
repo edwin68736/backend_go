@@ -275,6 +275,7 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 		MtoOperGravadas:   sunatTotals.MtoOperGravadas,
 		MtoOperExoneradas: sunatTotals.MtoOperExoneradas,
 		MtoOperInafectas:  sunatTotals.MtoOperInafectas,
+		MtoOperExportacion: sunatTotals.MtoOperExportacion,
 		MtoOperGratuitas:  sunatTotals.MtoOperGratuitas,
 		MtoIGVGratuitas:   sunatTotals.MtoIGVGratuitas,
 		MtoIGV:            sunatTotals.MtoIGV,

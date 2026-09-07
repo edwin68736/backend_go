@@ -314,6 +314,7 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		MtoOperGravadas:    sunatTotals.MtoOperGravadas,
 		MtoOperExoneradas:  sunatTotals.MtoOperExoneradas,
 		MtoOperInafectas:   sunatTotals.MtoOperInafectas,
+		MtoOperExportacion: sunatTotals.MtoOperExportacion,
 		MtoOperGratuitas:   sunatTotals.MtoOperGratuitas,
 		MtoIGVGratuitas:    sunatTotals.MtoIGVGratuitas,
 		MtoIGV:             sunatTotals.MtoIGV,

@@ -268,6 +268,7 @@ type InvoicePayload struct {
 	MtoOperGravadas float64            `json:"mtoOperGravadas"`
 	MtoOperExoneradas float64         `json:"mtoOperExoneradas,omitempty"` // Total operaciones exoneradas (Cat.07 = 20). Obligatorio si hay líneas exoneradas.
 	MtoOperInafectas float64           `json:"mtoOperInafectas,omitempty"`  // Total operaciones inafectas (Cat.07 = 30). Obligatorio si hay líneas inafectas.
+	MtoOperExportacion float64        `json:"mtoOperExportacion,omitempty"` // Total operaciones de exportación (Cat.07 = 40). Sin IGV; Greenter emite TaxSubtotal tributo 9995/EXP.
 	MtoOperGratuitas float64           `json:"mtoOperGratuitas,omitempty"`  // Operaciones gratuitas (bonificación 15, etc.).
 	MtoIGVGratuitas  float64           `json:"mtoIGVGratuitas,omitempty"`
 	MtoIGV          float64            `json:"mtoIGV"`
@@ -405,6 +406,7 @@ type NotePayload struct {
 	MtoOperGravadas float64            `json:"mtoOperGravadas"`
 	MtoOperExoneradas float64          `json:"mtoOperExoneradas,omitempty"`
 	MtoOperInafectas float64           `json:"mtoOperInafectas,omitempty"`
+	MtoOperExportacion float64        `json:"mtoOperExportacion,omitempty"`
 	MtoOperGratuitas float64           `json:"mtoOperGratuitas,omitempty"`
 	MtoIGVGratuitas  float64           `json:"mtoIGVGratuitas,omitempty"`
 	MtoIGV          float64            `json:"mtoIGV"`
