@@ -454,23 +454,35 @@ func realignCurrentBillingCycle(tx *gorm.DB, subID uint, oldEnd, newEnd time.Tim
 		return err
 	}
 
-	// El ciclo del período vigente es el que terminaba justo en el vencimiento anterior. Si las
-	// fechas ya venían desalineadas, se usa el impago más próximo a vencer. No hay que
-	// contemplar pending_review acá: AdjustValidity ya bloqueó antes de llegar a esta función si
-	// la suscripción tiene algún ciclo en revisión (ver el check al inicio de AdjustValidity).
+	// El ciclo del período vigente es el que terminaba justo en el vencimiento anterior, y el
+	// índice único (subscription_id, period_end) garantiza que sea uno solo. Se realinea aunque
+	// esté PAGADO: EnsureBillingCycle decide si falta cobro comparando period_end == end_date
+	// por igualdad exacta, así que dejar atrás el ciclo pagado hacía que el siguiente tick del
+	// cron lo diera por inexistente y emitiera un cobro nuevo por un período ya cobrado —mover
+	// la vigencia un día bastaba para facturar dos veces.
+	//
+	// Si las fechas ya venían desalineadas (ningún ciclo cierra en oldEnd) se cae al impago más
+	// próximo a vencer, como antes. No hay que contemplar pending_review acá: AdjustValidity ya
+	// bloqueó antes de llegar a esta función si la suscripción tiene algún ciclo en revisión
+	// (ver el check al inicio de AdjustValidity).
 	var target *database.SaasBillingCycle
+	var fallback *database.SaasBillingCycle
 	for i := range cycles {
 		c := &cycles[i]
-		if c.Status != database.SaasInvoicePending && c.Status != database.SaasInvoiceOverdue {
+		// Los rechazados son cancelaciones administrativas: no cubren período alguno.
+		if c.Status == database.SaasInvoiceRejected {
 			continue
 		}
 		if c.PeriodEnd.Equal(oldEnd) {
 			target = c
 			break
 		}
-		if target == nil {
-			target = c
+		if fallback == nil && (c.Status == database.SaasInvoicePending || c.Status == database.SaasInvoiceOverdue) {
+			fallback = c
 		}
+	}
+	if target == nil {
+		target = fallback
 	}
 	if target == nil || target.PeriodEnd.Equal(newEnd) {
 		return nil
@@ -487,8 +499,14 @@ func realignCurrentBillingCycle(tx *gorm.DB, subID uint, oldEnd, newEnd time.Tim
 		}
 	}
 
+	// En un ciclo ya pagado el due_date es historia —cuándo venció la deuda que el tenant saldó—,
+	// así que solo se corrige el cierre del período. En los impagos ambos se mueven, como antes.
+	fields := map[string]interface{}{"period_end": newEnd}
+	if target.Status != database.SaasInvoicePaid {
+		fields["due_date"] = newEnd
+	}
 	return tx.Model(&database.SaasBillingCycle{}).Where("id = ?", target.ID).
-		Updates(map[string]interface{}{"period_end": newEnd, "due_date": newEnd}).Error
+		Updates(fields).Error
 }
 
 func parseEndDateLima(raw string) (time.Time, error) {

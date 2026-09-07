@@ -182,6 +182,42 @@ func TestAdjustValidityConUnSoloCiclo(t *testing.T) {
 	}
 }
 
+// Caso DAMAFRED: el tenant paga, se le emite el ciclo del período nuevo (pagado) y recién
+// después el admin corrige la vigencia un día. El realineo ignoraba los ciclos pagados, así que
+// el pagado quedaba cerrando en la fecha vieja; EnsureBillingCycle busca el ciclo vigente por
+// period_end == end_date exacto, no lo encontraba y emitía un cobro nuevo por un período ya
+// cobrado. Corregir la fecha no debe generar deuda.
+func TestAdjustValidityRealineaCicloPagado(t *testing.T) {
+	db := setupAdjustValidityDB(t)
+	oldEnd := lima(2026, 10, 7)
+	sub := seedSubscriptionWithCycles(t, db, oldEnd, oldEnd)
+	db.Model(&database.SaasBillingCycle{}).Where("subscription_id = ?", sub.ID).
+		Update("status", database.SaasInvoicePaid)
+
+	newEnd := lima(2026, 10, 6)
+	if _, err := NewSubscriptionService().AdjustValidity(sub.ID, 1, "127.0.0.1", AdjustValidityInput{
+		EndDate: "2026-10-06", Reason: "MIGRACION Y FECHA CORRECTA ES 06",
+	}); err != nil {
+		t.Fatalf("AdjustValidity devolvió error: %v", err)
+	}
+
+	var cycles []database.SaasBillingCycle
+	db.Where("subscription_id = ?", sub.ID).Find(&cycles)
+	if len(cycles) != 1 {
+		t.Fatalf("se esperaba 1 ciclo, hay %d (se emitió un cobro duplicado)", len(cycles))
+	}
+	if !cycles[0].PeriodEnd.Equal(newEnd) {
+		t.Errorf("el ciclo pagado no se realineó: period_end=%v, se esperaba %v", cycles[0].PeriodEnd, newEnd)
+	}
+	// El due_date de un ciclo pagado es historia: no se toca.
+	if !cycles[0].DueDate.Equal(oldEnd) {
+		t.Errorf("due_date del ciclo pagado cambió: %v, debía seguir en %v", cycles[0].DueDate, oldEnd)
+	}
+	if cycles[0].Status != database.SaasInvoicePaid {
+		t.Errorf("el ciclo dejó de estar pagado: %s", cycles[0].Status)
+	}
+}
+
 // Un tenant que renueva varias veces acumula suscripciones, pero solo la última gobierna.
 // La lista del panel recalculaba el estado efectivo de todas y pintaba «Activa» cualquiera
 // cuyo end_date siguiera en el futuro, así que DEMO aparecía con cuatro activas a la vez.
