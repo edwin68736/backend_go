@@ -31,17 +31,21 @@ func NewSubscriptionHandler() *SubscriptionHandler {
 	return &SubscriptionHandler{svc: service.NewSubscriptionService()}
 }
 
-// GET /api/superadmin/subscriptions?status=&q=&page=&per_page=
+// GET /api/superadmin/subscriptions?status=&billed_months=&q=&end_date_from=&end_date_to=&page=&per_page=
 func (h *SubscriptionHandler) ListAPI(c fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	perPage, _ := strconv.Atoi(c.Query("per_page", "25"))
 	page, perPage = pagination.Normalize(page, perPage)
+	billedMonths, _ := strconv.Atoi(c.Query("billed_months"))
 
 	subs, total, err := h.svc.List(service.SubscriptionListParams{
-		Status:  c.Query("status"),
-		Query:   c.Query("q"),
-		Page:    page,
-		PerPage: perPage,
+		Status:       c.Query("status"),
+		BilledMonths: billedMonths,
+		Query:        c.Query("q"),
+		EndDateFrom:  c.Query("end_date_from"),
+		EndDateTo:    c.Query("end_date_to"),
+		Page:         page,
+		PerPage:      perPage,
 	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})

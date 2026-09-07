@@ -33,10 +33,23 @@ type SubscriptionDetail struct {
 }
 
 type SubscriptionListParams struct {
-	Status  string
-	Query   string
-	Page    int
-	PerPage int
+	Status string
+	// BilledMonths: filtro por ciclo (1 mensual, 3 trimestral, 6 semestral, 12 anual...).
+	// Se filtra por billed_months, NO por billing_cycle: ese último solo copia el
+	// billing_cycle ESTÁTICO del plan (casi siempre "monthly" en el catálogo actual) y no
+	// cambia según cuántos meses se contrataron en esta suscripción/renovación puntual —
+	// billed_months sí, es el campo que el propio modelo documenta como "meses VENDIDOS en
+	// esta suscripción, que es lo que se cobra" (ver database.SaasSubscription.BilledMonths).
+	BilledMonths int
+	Query        string
+	// EndDateFrom/EndDateTo: filtro por vencimiento (YYYY-MM-DD, inclusive en ambos extremos)
+	// sobre saas_subscriptions.end_date. Cubre los tres casos de uso del panel: "por vencer"
+	// (EndDateTo = hoy + N días), "vence en tal mes" (primer/último día del mes) y "ya
+	// vencieron" (EndDateTo = ayer, o combinado con Status=expired).
+	EndDateFrom string
+	EndDateTo   string
+	Page        int
+	PerPage     int
 }
 
 func (s *SubscriptionService) List(params SubscriptionListParams) ([]SubscriptionDetail, int64, error) {
@@ -44,6 +57,15 @@ func (s *SubscriptionService) List(params SubscriptionListParams) ([]Subscriptio
 	q := database.CentralDB.Model(&database.SaasSubscription{})
 	if params.Status != "" {
 		q = q.Where("saas_subscriptions.status = ?", params.Status)
+	}
+	if params.BilledMonths > 0 {
+		q = q.Where("saas_subscriptions.billed_months = ?", params.BilledMonths)
+	}
+	if from, err := time.Parse("2006-01-02", params.EndDateFrom); err == nil {
+		q = q.Where("saas_subscriptions.end_date >= ?", from)
+	}
+	if to, err := time.Parse("2006-01-02", params.EndDateTo); err == nil {
+		q = q.Where("saas_subscriptions.end_date < ?", to.AddDate(0, 0, 1))
 	}
 	if strings.TrimSpace(params.Query) != "" {
 		like := "%" + strings.TrimSpace(params.Query) + "%"
