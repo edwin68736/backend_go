@@ -672,7 +672,60 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 	}
 
 	populateSessionReportSections(report)
+	ensureSessionReportLists(report)
 	return report, nil
+}
+
+// ensureSessionReportLists deja en [] toda lista que haya quedado nil.
+//
+// Un slice nil se serializa como null, no como [], así que una sesión sin movimientos devolvía
+// "income_detail": null y el front reventaba con «Cannot read properties of null (reading
+// 'filter')» al entrar al detalle. Pasó con la sesión 5 de tukifac, abierta y sin un solo
+// movimiento. Varios consumidores ya se defendían con `?? []` uno por uno; el arreglo de fondo es
+// que el contrato no mienta: si el campo es una lista, siempre llega una lista.
+func ensureSessionReportLists(r *SessionReport) {
+	if r.IncomeDetail == nil {
+		r.IncomeDetail = []IncomeDetailRow{}
+	}
+	if r.ExpenseDetail == nil {
+		r.ExpenseDetail = []ExpenseDetailRow{}
+	}
+	if r.CancelledSalesDetail == nil {
+		r.CancelledSalesDetail = []CancelledSaleRow{}
+	}
+	if r.TotalsByMethod.Sales == nil {
+		r.TotalsByMethod.Sales = []MethodTotal{}
+	}
+	if r.TotalsByMethod.Purchases == nil {
+		r.TotalsByMethod.Purchases = []MethodTotal{}
+	}
+	if r.TotalsByMethod.Movements == nil {
+		r.TotalsByMethod.Movements = []MethodTotal{}
+	}
+	if r.CashPhysical.CashSales == nil {
+		r.CashPhysical.CashSales = []IncomeDetailRow{}
+	}
+	if r.CashPhysical.ManualIncome == nil {
+		r.CashPhysical.ManualIncome = []IncomeDetailRow{}
+	}
+	if r.CashPhysical.Expenses == nil {
+		r.CashPhysical.Expenses = []ExpenseDetailRow{}
+	}
+	if r.Electronic.SalesByMethod == nil {
+		r.Electronic.SalesByMethod = []MethodTotal{}
+	}
+	if r.Electronic.Sales == nil {
+		r.Electronic.Sales = []IncomeDetailRow{}
+	}
+	if r.Detraction.Sales == nil {
+		r.Detraction.Sales = []IncomeDetailRow{}
+	}
+	if r.CreditGenerated.Sales == nil {
+		r.CreditGenerated.Sales = []IncomeDetailRow{}
+	}
+	if r.PayableGenerated.Purchases == nil {
+		r.PayableGenerated.Purchases = []ExpenseDetailRow{}
+	}
 }
 
 func populateSessionReportSections(r *SessionReport) {
