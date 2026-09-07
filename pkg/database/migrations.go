@@ -196,6 +196,30 @@ type AuditLog struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// BeforeCreate normaliza la IP para que la fila entre siempre en ip_address (varchar 45).
+//
+// La app corre con ProxyHeader = X-Forwarded-For, así que c.IP() devuelve la CADENA entera del
+// header, no una IP: detrás de Cloudflare llega "<cliente>, <edge>". Con un cliente IPv6 eso
+// pasa de 45 caracteres, MySQL en modo estricto rechaza el INSERT con error 1406 y —como los
+// ~32 sitios que auditan descartan el error con `_ =`— la acción se perdía en silencio. Así se
+// habían perdido 109 de 196 ajustes de vigencia, todos los hechos desde IPv6.
+//
+// Se guarda el primer tramo, que es el cliente real; el resto son saltos del proxy y no aportan
+// a la auditoría. Una IPv6 completa mide 45 como máximo, así que ya no hace falta ensanchar la
+// columna. El truncado final es solo un cinturón por si llegara algo que no sea una IP.
+func (a *AuditLog) BeforeCreate(*gorm.DB) error {
+	ip := a.IPAddress
+	if i := strings.IndexByte(ip, ','); i >= 0 {
+		ip = ip[:i]
+	}
+	ip = strings.TrimSpace(ip)
+	if len(ip) > 45 {
+		ip = ip[:45]
+	}
+	a.IPAddress = ip
+	return nil
+}
+
 // SaasPlan — planes de suscripción disponibles
 type SaasPlan struct {
 	ID           uint    `gorm:"primaryKey" json:"id"`
