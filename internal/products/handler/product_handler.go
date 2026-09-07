@@ -489,15 +489,27 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
+	branchIDForStock, branchErr := branch.ResolveWriteBranchID(c, 0)
 	if body.IsRestaurant || existing.IsRestaurant {
-		branchID, berr := branch.ResolveWriteBranchID(c, 0)
-		if berr != nil {
-			return c.Status(403).JSON(fiber.Map{"error": berr.Error(), "code": branch.CodeBranchForbidden})
+		if branchErr != nil {
+			return c.Status(403).JSON(fiber.Map{"error": branchErr.Error(), "code": branch.CodeBranchForbidden})
 		}
-		if branchID > 0 {
-			if err := invsvc.NewInventoryService(db(c)).EnsureProductBranchLink(uint(id), branchID); err != nil {
+		if branchIDForStock > 0 {
+			if err := invsvc.NewInventoryService(db(c)).EnsureProductBranchLink(uint(id), branchIDForStock); err != nil {
 				return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 			}
+		}
+	} else if body.ManageStock && branchErr == nil && branchIDForStock > 0 {
+		// Comercio general (no restaurante): al activar control de stock en un producto YA
+		// EXISTENTE, sin esto nunca se crea su fila en tenant_product_stocks — a diferencia
+		// del alta (CreateAPI ya tiene este mismo fallback más abajo), que si el stock inicial
+		// es 0 igual llama EnsureProductBranchLink. La query de listado filtrado por sucursal
+		// exige "manage_stock = false OR EXISTS fila de stock para esa sucursal (u otra vía
+		// presentaciones)" (ver applyProductListFilters) — sin la fila, el producto queda
+		// invisible en cualquier listado por sucursal aunque siga activo y sin borrar. Bug real:
+		// tenant industrialrafaz (RUC 20614234165), 07-sep-2026, 6 productos afectados.
+		if err := invsvc.NewInventoryService(db(c)).EnsureProductBranchLink(uint(id), branchIDForStock); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
 	// Stock inicial para presentaciones nuevas agregadas en esta edición (ej. se agrega un color
