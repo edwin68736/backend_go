@@ -34,7 +34,7 @@ func NewTenantHandler() *TenantHandler {
 	return &TenantHandler{svc: service.NewTenantService()}
 }
 
-// GET /api/superadmin/tenants?q=&status=&region_id=&provincia_id=&page=&per_page=
+// GET /api/superadmin/tenants?q=&status=&region_id=&provincia_id=&created_from=&created_to=&page=&per_page=
 func (h *TenantHandler) ListAPI(c fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	perPage, _ := strconv.Atoi(c.Query("per_page", "25"))
@@ -45,6 +45,9 @@ func (h *TenantHandler) ListAPI(c fiber.Ctx) error {
 		Status:      c.Query("status"),
 		RegionID:    c.Query("region_id"),
 		ProvinciaID: c.Query("provincia_id"),
+		// Fecha de activación (= created_at, ver TenantListParams).
+		CreatedFrom: c.Query("created_from"),
+		CreatedTo:   c.Query("created_to"),
 		Page:        page,
 		PerPage:     perPage,
 	})

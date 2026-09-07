@@ -237,11 +237,17 @@ type TenantListParams struct {
 	Status      string
 	RegionID    string
 	ProvinciaID string
+	// CreatedFrom/CreatedTo: filtro por fecha de activación (YYYY-MM-DD, inclusive en ambos
+	// extremos). Es created_at del tenant — al registrarse, la empresa se suscribe a un plan
+	// obligatoriamente el mismo día, así que created_at hace de "fecha de activación" sin
+	// necesidad de mirar la suscripción.
+	CreatedFrom string
+	CreatedTo   string
 	Page        int
 	PerPage     int
 }
 
-func (s *TenantService) applyTenantFilters(q *gorm.DB, query, status, regionID, provinciaID string) *gorm.DB {
+func (s *TenantService) applyTenantFilters(q *gorm.DB, query, status, regionID, provinciaID, createdFrom, createdTo string) *gorm.DB {
 	if query != "" {
 		q = q.Where("name LIKE ? OR slug LIKE ? OR ruc LIKE ? OR address LIKE ? OR email LIKE ?",
 			"%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%")
@@ -260,13 +266,23 @@ func (s *TenantService) applyTenantFilters(q *gorm.DB, query, status, regionID, 
 		prefix := provinciaID[:4]
 		q = q.Where("ubigeo LIKE ?", prefix+"%")
 	}
+	if from, err := time.Parse("2006-01-02", createdFrom); err == nil {
+		q = q.Where("created_at >= ?", from)
+	}
+	if to, err := time.Parse("2006-01-02", createdTo); err == nil {
+		q = q.Where("created_at < ?", to.AddDate(0, 0, 1))
+	}
 	return q
 }
 
 // List devuelve tenants paginados (LIMIT/OFFSET en BD).
 func (s *TenantService) List(params TenantListParams) ([]database.Tenant, int64, error) {
 	page, perPage := pagination.Normalize(params.Page, params.PerPage)
-	q := s.applyTenantFilters(s.db.Model(&database.Tenant{}), params.Query, params.Status, params.RegionID, params.ProvinciaID)
+	q := s.applyTenantFilters(
+		s.db.Model(&database.Tenant{}),
+		params.Query, params.Status, params.RegionID, params.ProvinciaID,
+		params.CreatedFrom, params.CreatedTo,
+	)
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
