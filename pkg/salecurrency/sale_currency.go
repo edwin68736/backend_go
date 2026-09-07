@@ -12,6 +12,11 @@ const (
 	CurrencyUSD    = "USD"
 	OpVentaInterna = "0101"
 	OpDetraccion   = "1001"
+	// OpVentasNoDomiciliados: cliente sin RUC peruano (extranjero, no domiciliado) que no
+	// califica como exportación. Solo cambia qué tipo de documento de identidad se acepta en
+	// factura (01) — sin campos ni cálculos propios. Ver sale_service.go: la factura exige RUC
+	// salvo con esta operación.
+	OpVentasNoDomiciliados = "0401"
 )
 
 // NormalizeCurrency valida PEN/USD.
@@ -26,21 +31,22 @@ func NormalizeCurrency(raw string) (string, error) {
 	return c, nil
 }
 
-// NormalizeOperationType permite venta interna (0101), emisión de anticipos (configurable) y detracción (1001).
+// NormalizeOperationType permite venta interna (0101), emisión de anticipos (configurable),
+// detracción (1001) y ventas no domiciliados (0401).
 func NormalizeOperationType(raw string) (string, error) {
 	code := strings.TrimSpace(raw)
 	if code == "" {
 		return OpVentaInterna, nil
 	}
 	switch code {
-	case OpVentaInterna, OpDetraccion:
+	case OpVentaInterna, OpDetraccion, OpVentasNoDomiciliados:
 		return code, nil
 	default:
 		if sunatpre.IsAllowedEmitOperationType(code) {
 			return code, nil
 		}
-		return "", fmt.Errorf("tipo de operación %s no está habilitado; use %s, %s o %s",
-			code, OpVentaInterna, sunatpre.EmitOperationTypeCode(), OpDetraccion)
+		return "", fmt.Errorf("tipo de operación %s no está habilitado; use %s, %s, %s o %s",
+			code, OpVentaInterna, sunatpre.EmitOperationTypeCode(), OpDetraccion, OpVentasNoDomiciliados)
 	}
 }
 

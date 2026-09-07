@@ -262,6 +262,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 
 	sunatCode := strings.TrimSpace(series.SunatCode)
+	if opCode == salecurrency.OpVentasNoDomiciliados && sunatCode != "01" {
+		return nil, errors.New("la operación ventas no domiciliados (0401) solo aplica a facturas (01)")
+	}
 	if opCode == salecurrency.OpDetraccion {
 		if sunatCode != "01" {
 			return nil, errors.New("la operación sujeta a detracción (1001) solo aplica a facturas (01)")
@@ -314,18 +317,23 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	if sunatCode == "01" {
 		if contact == nil {
-			return nil, errors.New("la factura electrónica (01) requiere un cliente con RUC de 11 dígitos")
+			return nil, errors.New("la factura electrónica (01) requiere un cliente")
 		}
-		if contact.DocType != "6" {
-			return nil, errors.New("la factura solo puede emitirse a clientes con RUC (tipo de documento 6). El cliente seleccionado no tiene RUC")
-		}
-		docNum := strings.TrimSpace(contact.DocNumber)
-		if len(docNum) != SunatRucLength {
-			return nil, fmt.Errorf("el RUC del cliente debe tener exactamente %d dígitos", SunatRucLength)
-		}
-		for _, r := range docNum {
-			if r < '0' || r > '9' {
-				return nil, errors.New("el RUC del cliente debe contener solo dígitos")
+		// 0401 (ventas no domiciliados): el cliente no tiene RUC peruano —extranjero sin RUC,
+		// pasaporte, carné de extranjería—, así que no se exige RUC. Cualquier otro tipo de
+		// operación en factura sigue exigiéndolo (mismo comportamiento de siempre).
+		if opCode != salecurrency.OpVentasNoDomiciliados {
+			if contact.DocType != "6" {
+				return nil, errors.New("la factura solo puede emitirse a clientes con RUC (tipo de documento 6). El cliente seleccionado no tiene RUC")
+			}
+			docNum := strings.TrimSpace(contact.DocNumber)
+			if len(docNum) != SunatRucLength {
+				return nil, fmt.Errorf("el RUC del cliente debe tener exactamente %d dígitos", SunatRucLength)
+			}
+			for _, r := range docNum {
+				if r < '0' || r > '9' {
+					return nil, errors.New("el RUC del cliente debe contener solo dígitos")
+				}
 			}
 		}
 	}
