@@ -70,6 +70,22 @@ func NewBillingService(db *gorm.DB) *BillingService {
 // round2 redondea a 2 decimales para montos SUNAT (evita discrepancias 4310/4312).
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
+// round10 redondea a 10 decimales — para el PRECIO UNITARIO (cac:Price/cbc:PriceAmount), que
+// SUNAT declara como n(12,10) y Greenter formatea con n_format_limit(10) (ver
+// invoice2.1.xml.twig:577,447,442). No es el mismo caso que los montos de línea (round2): SUNAT
+// recalcula internamente cantidad × precioUnitario y lo compara contra LineExtensionAmount/
+// MtoBaseIgv; si el unitario se redondea a solo 2 decimales, ese recálculo puede desviarse del
+// monto real más de lo que tolera (error 3271, "el valor de venta por ítem difiere de los
+// importes consignados"). Con cantidades grandes el error se amplifica: una venta real de 400
+// unidades a S/1.15 (con IGV) dio unitario 389.83/400=0.9746→round2=0.97, y 400×0.97=388.00
+// frente a un LineExtensionAmount de 389.83 — descuadre de S/1.83, muy por encima de cualquier
+// tolerancia de redondeo. Con round10 el unitario conserva la precisión suficiente para que el
+// recálculo cuadre.
+func round10(v float64) float64 {
+	const f = 1e10
+	return math.Round(v*f) / f
+}
+
 // resolveUbigeoToAddress obtiene los nombres de departamento, provincia y distrito desde las tablas de ubigeo.
 // SUNAT no acepta "-" en estos campos; se debe enviar el nombre real.
 func (s *BillingService) resolveUbigeoToAddress(ubigeo string) (dep, prov, dist string, err error) {
