@@ -144,7 +144,7 @@ func (h *TenantHandler) DestroyCompleteAPI(c fiber.Ctx) error {
 
 	// Auditoría de la operación más destructiva del sistema — nunca se registra operations_key.
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID: res.TenantID,
 		UserID:   saUserID,
 		Action:   "tenant_destroy_complete",
@@ -231,7 +231,7 @@ func (h *TenantHandler) ToggleStatusAPI(c fiber.Ctx) error {
 	if previous != nil {
 		oldStatus = previous.Status
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  uint(id),
 		UserID:    saUserID,
 		Action:    "tenant_status_changed",
@@ -1307,7 +1307,7 @@ func (h *TenantHandler) RunBackfillAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  uint(id),
 		UserID:    saUserID,
 		Action:    "migration.backfill",

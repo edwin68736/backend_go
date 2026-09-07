@@ -835,7 +835,7 @@ func (s *TenantService) MasterAccess(tenantID, saUserID uint, saEmail, clientIP 
 		"owner_user_id":    user.ID,
 		"owner_email":      user.Email,
 	})
-	_ = s.db.Create(&database.AuditLog{
+	database.WriteAuditLogTx(s.db, &database.AuditLog{
 		TenantID:  tenant.ID,
 		UserID:    saUserID,
 		Action:    "master_access",
@@ -843,7 +843,7 @@ func (s *TenantService) MasterAccess(tenantID, saUserID uint, saEmail, clientIP 
 		EntityID:  user.ID,
 		Payload:   string(payload),
 		IPAddress: clientIP,
-	}).Error
+	})
 
 	rootDomain := ""
 	if config.AppConfig != nil {

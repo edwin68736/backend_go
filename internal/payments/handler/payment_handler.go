@@ -121,7 +121,7 @@ func (h *PaymentHandler) CreateAPI(c fiber.Ctx) error {
 	// Auditoría: Create aplica la aprobación en el mismo paso (ver comentario en routes.go), así
 	// que se audita igual que un approve. Nunca se registra el comprobante ni datos del método de
 	// pago más allá de su tipo.
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID: payment.TenantID,
 		UserID:   saUserID,
 		Action:   "payment_created_and_approved",
@@ -170,7 +170,7 @@ func (h *PaymentHandler) ApproveAPI(c fiber.Ctx) error {
 	if previous != nil {
 		oldStatus = previous.Status
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  paymentTenantID(previous),
 		UserID:    reviewerID,
 		Action:    "payment_approved",
@@ -213,7 +213,7 @@ func (h *PaymentHandler) RejectAPI(c fiber.Ctx) error {
 	if previous != nil {
 		oldStatus = previous.Status
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  paymentTenantID(previous),
 		UserID:    reviewerID,
 		Action:    "payment_rejected",
@@ -252,7 +252,7 @@ func (h *PaymentHandler) RevertAPI(c fiber.Ctx) error {
 	if previous != nil {
 		oldStatus = previous.Status
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  paymentTenantID(previous),
 		UserID:    actorID,
 		Action:    "payment_reverted",

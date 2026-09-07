@@ -90,7 +90,7 @@ func logSARoleAudit(c fiber.Ctx, action string, entityID uint, payload fiber.Map
 		return
 	}
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    action,
 		Entity:    "sa_role",

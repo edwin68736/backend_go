@@ -41,7 +41,7 @@ func (h *SettingsHandler) SetOperationsKeyAPI(c fiber.Ctx) error {
 	// Auditoría: nunca se registra el valor de la clave (ni la nueva ni la anterior), solo que se
 	// rotó y quién lo hizo.
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "operations_key_rotated",
 		Entity:    "saas_platform_settings",
@@ -94,7 +94,7 @@ func (h *SettingsHandler) UnblockTenantAPI(c fiber.Ctx) error {
 	}
 	// saas.UnblockTenant ya registra un SaasSubscriptionEvent; se agrega también en AuditLog por
 	// consistencia con el resto de cambios de estado de empresa (Fase 5 etapa 3).
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  uint(id),
 		UserID:    adminID,
 		Action:    "tenant_unblocked",

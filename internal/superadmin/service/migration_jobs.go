@@ -76,14 +76,14 @@ func logMigrationBulkAudit(action string, saUserID uint, ip, scope string, tenan
 	if database.CentralDB == nil {
 		return
 	}
-	_ = database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    action,
 		Entity:    "migration_batch_job",
 		EntityID:  jobID,
 		Payload:   fmt.Sprintf(`{"scope":%q,"tenant_count":%d,"job_id":%d}`, scope, tenantCount, jobID),
 		IPAddress: ip,
-	}).Error
+	})
 }
 
 // StartDriftScanJob escanea drift en lote (background).

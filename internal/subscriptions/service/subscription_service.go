@@ -427,7 +427,7 @@ func (s *SubscriptionService) AdjustValidity(id, saUserID uint, clientIP string,
 		"reason":            reason,
 		"effective_status":  effective,
 	})
-	_ = database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  sub.TenantID,
 		UserID:    saUserID,
 		Action:    "subscription_validity_adjusted",
@@ -435,7 +435,7 @@ func (s *SubscriptionService) AdjustValidity(id, saUserID uint, clientIP string,
 		EntityID:  sub.ID,
 		Payload:   string(payload),
 		IPAddress: clientIP,
-	}).Error
+	})
 
 	return &sub, nil
 }

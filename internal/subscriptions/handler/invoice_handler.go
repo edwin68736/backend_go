@@ -80,7 +80,7 @@ func (h *SubscriptionHandler) CreateInvoiceAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  cycle.TenantID,
 		UserID:    saUserID,
 		Action:    "billing_cycle_created",
@@ -136,7 +136,7 @@ func (h *SubscriptionHandler) CancelInvoiceAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  previous.TenantID,
 		UserID:    saUserID,
 		Action:    "billing_cycle_cancelled",

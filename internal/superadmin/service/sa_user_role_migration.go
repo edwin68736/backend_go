@@ -344,7 +344,7 @@ func logUserRoleMigrationAudit(db *gorm.DB, actor string, result *MigrationRunRe
 	if db == nil {
 		return
 	}
-	db.Create(&database.AuditLog{
+	database.WriteAuditLogTx(db, &database.AuditLog{
 		Action: "user_role_migration",
 		Entity: "sa_user_role_migration_run",
 		Payload: fmt.Sprintf(
@@ -449,7 +449,7 @@ func logUserRoleMigrationRollbackAudit(db *gorm.DB, actor string, result *Rollba
 	if db == nil {
 		return
 	}
-	db.Create(&database.AuditLog{
+	database.WriteAuditLogTx(db, &database.AuditLog{
 		Action: "user_role_migration_rollback",
 		Entity: "sa_user_role_migration_run",
 		Payload: fmt.Sprintf(`{"run_id":%q,"actor":%q,"success":%v,"aborted":%v,"reason":%q,"restored":%v}`,

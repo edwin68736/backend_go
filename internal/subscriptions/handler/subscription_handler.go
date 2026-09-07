@@ -80,7 +80,7 @@ func (h *SubscriptionHandler) CreateAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  sub.TenantID,
 		UserID:    saUserID,
 		Action:    "subscription_created",
@@ -116,7 +116,7 @@ func (h *SubscriptionHandler) SuspendAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  tenantID,
 		UserID:    saUserID,
 		Action:    "subscription_suspended",
@@ -151,7 +151,7 @@ func (h *SubscriptionHandler) CancelAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  tenantID,
 		UserID:    saUserID,
 		Action:    "subscription_cancelled",
@@ -181,7 +181,7 @@ func (h *SubscriptionHandler) ReactivateAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		TenantID:  tenantID,
 		UserID:    saUserID,
 		Action:    "subscription_reactivated",

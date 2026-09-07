@@ -88,7 +88,7 @@ func logFiscalActionAudit(c fiber.Ctx, action, uuid string, resultOK bool) {
 		return
 	}
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "fiscal_document_" + action,
 		Entity:    "fiscal_document",
@@ -109,7 +109,7 @@ func logFiscalBulkActionAudit(c fiber.Ctx, action string, count int, byFilter bo
 	if byFilter {
 		scope = "filters"
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "fiscal_bulk_" + action,
 		Entity:    "fiscal_document",

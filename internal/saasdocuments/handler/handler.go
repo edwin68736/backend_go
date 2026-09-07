@@ -41,7 +41,7 @@ func (h *Handler) UpsertCatalogAPI(c fiber.Ctx) error {
 	if creating {
 		action = "document_package_catalog_created"
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    action,
 		Entity:    "saas_document_package",
@@ -63,7 +63,7 @@ func (h *Handler) DeleteCatalogAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "document_package_catalog_deactivated",
 		Entity:    "saas_document_package",
@@ -117,7 +117,7 @@ func (h *Handler) ApproveAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "document_package_purchase_approved",
 		Entity:    "saas_tenant_document_package",
@@ -145,7 +145,7 @@ func (h *Handler) RejectAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "document_package_purchase_rejected",
 		Entity:    "saas_tenant_document_package",

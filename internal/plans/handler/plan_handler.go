@@ -52,7 +52,7 @@ func (h *PlanHandler) CreateAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "plan_created",
 		Entity:    "saas_plan",
@@ -79,7 +79,7 @@ func (h *PlanHandler) UpdateAPI(c fiber.Ctx) error {
 	}
 
 	saUserID, _ := c.Locals("sa_user_id").(uint)
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "plan_updated",
 		Entity:    "saas_plan",
@@ -108,7 +108,7 @@ func (h *PlanHandler) ToggleAPI(c fiber.Ctx) error {
 		oldActive = previous.Active
 		newActive = !previous.Active
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "plan_status_changed",
 		Entity:    "saas_plan",
@@ -138,7 +138,7 @@ func (h *PlanHandler) DeleteAPI(c fiber.Ctx) error {
 	if previous != nil {
 		name = previous.Name
 	}
-	database.CentralDB.Create(&database.AuditLog{
+	database.WriteAuditLog(&database.AuditLog{
 		UserID:    saUserID,
 		Action:    "plan_deleted",
 		Entity:    "saas_plan",
