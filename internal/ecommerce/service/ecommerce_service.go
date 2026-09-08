@@ -272,14 +272,19 @@ func (s *EcommerceService) PublicProducts(query string, categoryID uint, minPric
 		params.Offset = (page - 1) * perPage
 	}
 	items, total, err := psvc.ListReport(params)
-	if err != nil || showStock {
+	if err != nil {
 		return items, total, err
 	}
 	for i := range items {
-		items[i].StockTotal = 0
-		items[i].StockByBranch = nil
-		items[i].Serials = nil
-		items[i].SerialCount = 0
+		// PurchasePrice (costo/precio de compra) es dato interno del tenant: nunca debe viajar en
+		// esta respuesta pública sin autenticación, sin importar la config de "Mostrar stock".
+		items[i].PurchasePrice = 0
+		if !showStock {
+			items[i].StockTotal = 0
+			items[i].StockByBranch = nil
+			items[i].Serials = nil
+			items[i].SerialCount = 0
+		}
 	}
 	return items, total, nil
 }
