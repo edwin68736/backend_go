@@ -560,6 +560,10 @@ type ProductInput struct {
 	Description          string
 	Type                 string
 	Unit                 string
+	// UnitID: si viene, manda sobre Unit (el catálogo por ID es la fuente de verdad para altas/
+	// ediciones desde la UI). Si viene nil, se resuelve/crea a partir de Unit (compatibilidad con
+	// importación masiva y clientes de API que todavía mandan solo texto) — ver resolveUnitReference.
+	UnitID               *uint
 	SalePrice            float64
 	PurchasePrice        float64
 	TaxRate              float64
@@ -608,6 +612,28 @@ type PresentationSyncResult struct {
 	Presentation database.TenantProductPresentation
 	IsNew        bool
 	InitialStock float64
+}
+
+// resolveUnitReference determina el código SUNAT y el ID de catálogo (tenant_units) para un
+// producto. Si unitID viene informado, el catálogo manda: se usa su Code tal cual (permite que el
+// tenant use unidades propias fuera del catálogo 03 estándar, sin que NormalizeUnit las pise).
+// Si no viene, se resuelve a partir del texto libre (alta antigua / importación masiva) pasando
+// por sunat.NormalizeUnit como siempre, y se materializa (o reutiliza) la fila de catálogo
+// correspondiente — así ningún producto queda con unit_id nulo.
+func (s *ProductService) resolveUnitReference(rawUnit, itemType string, unitID *uint) (code string, id uint, err error) {
+	if unitID != nil && *unitID > 0 {
+		var u database.TenantUnit
+		if err := s.db.First(&u, *unitID).Error; err != nil {
+			return "", 0, errors.New("unidad de medida no encontrada")
+		}
+		return u.Code, u.ID, nil
+	}
+	code = sunat.NormalizeUnit(rawUnit, itemType)
+	id, err = database.EnsureUnitByCode(s.db, code)
+	if err != nil {
+		return "", 0, err
+	}
+	return code, id, nil
 }
 
 func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []PresentationSyncResult, error) {
@@ -692,7 +718,12 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 	if err := s.resolvePreparationAreaFields(p); err != nil {
 		return nil, nil, err
 	}
-	p.Unit = sunat.NormalizeUnit(p.Unit, p.Type)
+	unitCode, unitID, err := s.resolveUnitReference(p.Unit, p.Type, input.UnitID)
+	if err != nil {
+		return nil, nil, err
+	}
+	p.Unit = unitCode
+	p.UnitID = &unitID
 	if strings.EqualFold(strings.TrimSpace(p.Type), "product") && strings.EqualFold(strings.TrimSpace(p.Unit), "ZZ") {
 		return nil, nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
@@ -860,11 +891,14 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 		effType = "product"
 	}
 
-	unit := strings.TrimSpace(input.Unit)
-	if unit == "" {
-		unit = existing.Unit
+	rawUnit := strings.TrimSpace(input.Unit)
+	if rawUnit == "" && input.UnitID == nil {
+		rawUnit = existing.Unit
 	}
-	unit = sunat.NormalizeUnit(unit, effType)
+	unit, unitID, err := s.resolveUnitReference(rawUnit, effType, input.UnitID)
+	if err != nil {
+		return nil, err
+	}
 	if !strings.EqualFold(effType, "service") && strings.EqualFold(unit, "ZZ") {
 		return nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
@@ -892,8 +926,13 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 	if err := s.resolvePreparationAreaFields(draft); err != nil {
 		return nil, err
 	}
-	if strings.EqualFold(draft.Type, "service") {
+	if strings.EqualFold(draft.Type, "service") && !strings.EqualFold(unit, draft.Unit) {
+		// normalizeProductServiceFields fuerza Unit="ZZ" para servicios — si el catálogo había
+		// resuelto otra cosa (p. ej. el tenant no marcó unit_id de servicio), re-resolver contra ZZ.
 		unit = draft.Unit
+		if zid, zerr := database.EnsureUnitByCode(s.db, "ZZ"); zerr == nil {
+			unitID = zid
+		}
 	}
 
 	upd := map[string]interface{}{
@@ -904,6 +943,7 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 		"description":             input.Description,
 		"type":                    draft.Type,
 		"unit":                    unit,
+		"unit_id":                 unitID,
 		"sale_price":              input.SalePrice,
 		"purchase_price":          input.PurchasePrice,
 		"tax_rate":                taxRate,
@@ -929,7 +969,7 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 	if input.ActiveSet {
 		upd["active"] = input.Active
 	}
-	err := s.db.Model(&database.TenantProduct{}).Where("id = ?", id).Updates(upd).Error
+	err = s.db.Model(&database.TenantProduct{}).Where("id = ?", id).Updates(upd).Error
 	if err != nil {
 		return nil, err
 	}
@@ -1361,6 +1401,114 @@ func (s *ProductService) DeleteBrand(id uint) error {
 		return fmt.Errorf("no se puede eliminar: hay %d producto(s) vinculados", linked)
 	}
 	return s.db.Delete(&b).Error
+}
+
+// ── Unidades de medida (catálogo SUNAT N°03, gestionable desde Tukifac) ─────────────────────────
+
+func (s *ProductService) ListUnits() ([]database.TenantUnit, error) {
+	var units []database.TenantUnit
+	err := s.db.Where("active = ?", true).Order("sort_order ASC, name ASC").Find(&units).Error
+	return units, err
+}
+
+// ListAllUnits incluye inactivas — usado por la pantalla de gestión en Tukifac.
+func (s *ProductService) ListAllUnits() ([]database.TenantUnit, error) {
+	var units []database.TenantUnit
+	err := s.db.Order("sort_order ASC, name ASC").Find(&units).Error
+	return units, err
+}
+
+func (s *ProductService) GetUnit(id uint) (*database.TenantUnit, error) {
+	var u database.TenantUnit
+	if err := s.db.First(&u, id).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// CreateUnit agrega una unidad propia del tenant — libre, no restringida al catálogo SUNAT 03
+// (si el código no es válido para SUNAT, NormalizeUnit la reconducirá a NIU solo al facturar,
+// nunca al guardar el producto: la unidad elegida siempre se ve tal cual en el ERP).
+func (s *ProductService) CreateUnit(code, name, symbol string) (*database.TenantUnit, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	name = strings.TrimSpace(name)
+	if code == "" || name == "" {
+		return nil, errors.New("código y nombre de la unidad son requeridos")
+	}
+	var existing database.TenantUnit
+	err := s.db.Where("code = ?", code).First(&existing).Error
+	if err == nil {
+		return nil, fmt.Errorf("ya existe una unidad con código '%s'", code)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	next, err := s.nextUnitSortOrder()
+	if err != nil {
+		return nil, err
+	}
+	u := &database.TenantUnit{Code: code, Name: name, Symbol: strings.TrimSpace(symbol), SortOrder: next, Active: true}
+	return u, s.db.Create(u).Error
+}
+
+// UpdateUnit no permite cambiar el código de una fila del catálogo del sistema (IsSystem=true) —
+// mismo candado que TenantPaymentMethod, para no desincronizar lo que ya factura como ese código.
+func (s *ProductService) UpdateUnit(id uint, code, name, symbol string, active bool) (*database.TenantUnit, error) {
+	var u database.TenantUnit
+	if err := s.db.First(&u, id).Error; err != nil {
+		return nil, errors.New("unidad no encontrada")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("nombre de la unidad requerido")
+	}
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code != "" && code != u.Code {
+		if u.IsSystem {
+			return nil, errors.New("no se puede cambiar el código de una unidad del sistema")
+		}
+		var dup database.TenantUnit
+		if err := s.db.Where("code = ? AND id <> ?", code, id).First(&dup).Error; err == nil {
+			return nil, fmt.Errorf("ya existe una unidad con código '%s'", code)
+		}
+		u.Code = code
+	}
+	u.Name = name
+	u.Symbol = strings.TrimSpace(symbol)
+	u.Active = active
+	if err := s.db.Save(&u).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// DeleteUnit solo permite borrar unidades propias del tenant (no del sistema) sin productos
+// vinculados — igual criterio que categorías/marcas. Una del sistema en desuso se desactiva, no se
+// elimina (evita romper ventas/facturas históricas que aún la referencian por código).
+func (s *ProductService) DeleteUnit(id uint) error {
+	var u database.TenantUnit
+	if err := s.db.First(&u, id).Error; err != nil {
+		return errors.New("unidad no encontrada")
+	}
+	if u.IsSystem {
+		return errors.New("las unidades del sistema no se eliminan; desactívala en su lugar")
+	}
+	var linked int64
+	if err := s.db.Model(&database.TenantProduct{}).Where("unit_id = ?", id).Count(&linked).Error; err != nil {
+		return err
+	}
+	if linked > 0 {
+		return fmt.Errorf("no se puede eliminar: hay %d producto(s) vinculados", linked)
+	}
+	return s.db.Delete(&u).Error
+}
+
+func (s *ProductService) nextUnitSortOrder() (int, error) {
+	var max int
+	if err := s.db.Model(&database.TenantUnit{}).Select("COALESCE(MAX(sort_order), 0)").Scan(&max).Error; err != nil {
+		return 0, err
+	}
+	return max + 1, nil
 }
 
 func (s *ProductService) resolvePreparationAreaFields(p *database.TenantProduct) error {

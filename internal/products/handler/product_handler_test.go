@@ -27,6 +27,7 @@ func setupProductHandlerTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&database.TenantProduct{},
+		&database.TenantUnit{},
 		&database.TenantBranch{},
 		&database.TenantProductStock{},
 		&database.TenantCompanyConfig{},

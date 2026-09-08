@@ -178,6 +178,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		Description          string  `json:"description"`
 		Type                 string  `json:"type"`
 		Unit                 string  `json:"unit"`
+		UnitID               *uint   `json:"unit_id"`
 		SalePrice            float64 `json:"sale_price"`
 		PurchasePrice        float64 `json:"purchase_price"`
 		IgvAffectationType   string  `json:"igv_affectation_type"`
@@ -237,6 +238,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		Description:          body.Description,
 		Type:                 body.Type,
 		Unit:                 body.Unit,
+		UnitID:               body.UnitID,
 		SalePrice:            body.SalePrice,
 		PurchasePrice:        body.PurchasePrice,
 		TaxRate:              taxCfg.EffectiveRate(igvType),
@@ -369,6 +371,7 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		Description          string  `json:"description"`
 		Type                 string  `json:"type"`
 		Unit                 string  `json:"unit"`
+		UnitID               *uint   `json:"unit_id"`
 		SalePrice            float64 `json:"sale_price"`
 		PurchasePrice        float64 `json:"purchase_price"`
 		IgvAffectationType   string  `json:"igv_affectation_type"`
@@ -427,6 +430,7 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		Description:          body.Description,
 		Type:                 body.Type,
 		Unit:                 body.Unit,
+		UnitID:               body.UnitID,
 		SalePrice:            body.SalePrice,
 		PurchasePrice:        body.PurchasePrice,
 		TaxRate:              taxCfg.EffectiveRate(igvType),
@@ -900,6 +904,75 @@ func (h *ProductHandler) BrandDeleteAPI(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	if err := service.NewProductService(db(c)).DeleteBrand(uint(id)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// UnitListAPI devuelve unidades de medida (activas por defecto; ?all=1 trae también inactivas,
+// para la pantalla de gestión en Tukifac). Usado por Tukifac y Tukichef en el select del producto.
+func (h *ProductHandler) UnitListAPI(c fiber.Ctx) error {
+	svc := service.NewProductService(db(c))
+	if c.Query("all") == "true" || c.Query("all") == "1" {
+		units, err := svc.ListAllUnits()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"data": units})
+	}
+	units, err := svc.ListUnits()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": units})
+}
+
+// UnitCreateAPI agrega una unidad propia del tenant.
+func (h *ProductHandler) UnitCreateAPI(c fiber.Ctx) error {
+	var body struct {
+		Code   string `json:"code"`
+		Name   string `json:"name"`
+		Symbol string `json:"symbol"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	u, err := service.NewProductService(db(c)).CreateUnit(body.Code, body.Name, body.Symbol)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(fiber.Map{"data": u})
+}
+
+// UnitUpdateAPI actualiza nombre/símbolo/activo (código bloqueado si es una unidad del sistema).
+func (h *ProductHandler) UnitUpdateAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Code   string `json:"code"`
+		Name   string `json:"name"`
+		Symbol string `json:"symbol"`
+		Active bool   `json:"active"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	u, err := service.NewProductService(db(c)).UpdateUnit(uint(id), body.Code, body.Name, body.Symbol, body.Active)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": u})
+}
+
+// UnitDeleteAPI elimina una unidad propia del tenant sin productos vinculados.
+func (h *ProductHandler) UnitDeleteAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := service.NewProductService(db(c)).DeleteUnit(uint(id)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

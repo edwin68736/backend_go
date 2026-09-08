@@ -947,6 +947,28 @@ type TenantBrand struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// TenantUnit catálogo de unidades de medida del tenant (Catálogo SUNAT N°03), gestionable desde
+// Tukifac y visible en Tukifac/Tukichef. Los productos (TenantProduct.UnitID) referencian su
+// unidad por ID en vez de texto libre — IsSystem marca las filas sembradas por defecto al
+// aprovisionar el tenant (código bloqueado en edición, igual que TenantPaymentMethod); el tenant
+// puede agregar sus propias filas adicionales (IsSystem=false) libremente.
+type TenantUnit struct {
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	Code      string         `gorm:"size:10;not null;uniqueIndex" json:"code"`
+	Name      string         `gorm:"size:100;not null" json:"name"`
+	Symbol    string         `gorm:"size:20" json:"symbol"`
+	IsSystem  bool           `gorm:"default:false" json:"is_system"`
+	SortOrder int            `gorm:"default:0" json:"sort_order"`
+	// Active: sin default de columna a propósito — el seed siembra una mezcla de true/false
+	// (solo 8 activas por defecto) y un `gorm:"default:true"` aquí hace que GORM OMITA el false
+	// (zero-value) del INSERT, dejando que la BD aplique su default true y active TODAS las filas
+	// sin importar lo que pida el código. Cada creación (seed, CreateUnit) ya fija Active a mano.
+	Active    bool           `json:"active"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
 // TenantPreparationArea área de preparación configurable (cocina, bar, etc.) para productos restaurante.
 type TenantPreparationArea struct {
 	ID        uint           `gorm:"primaryKey" json:"id"`
@@ -967,7 +989,12 @@ type TenantProduct struct {
 	Name               string  `gorm:"size:255;not null" json:"name"`
 	Description        string  `gorm:"type:text" json:"description"`
 	Type               string  `gorm:"size:20;default:'product'" json:"type"` // product, service
-	Unit               string  `gorm:"size:50;default:'NIU'" json:"unit"`
+	// Unit: código SUNAT catálogo N°03 denormalizado desde UnitID.TenantUnit.Code — no se edita
+	// directo, se sincroniza al guardar (ver ProductService.resolveUnitReference). Se conserva como
+	// string porque ventas/cotizaciones/compras/facturación/impresión ya lo leen así en decenas de
+	// lugares; UnitID es la fuente de verdad para la UI (selects por ID, no texto libre).
+	Unit   string `gorm:"size:50;default:'NIU'" json:"unit"`
+	UnitID *uint  `gorm:"index" json:"unit_id"`
 	SalePrice          float64 `gorm:"type:decimal(15,2);not null" json:"sale_price"`
 	PurchasePrice      float64 `gorm:"type:decimal(15,2)" json:"purchase_price"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"`

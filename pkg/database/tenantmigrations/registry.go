@@ -99,6 +99,7 @@ var TenantMigrations = []TenantMigration{
 	V125BankMovementManualMetadata{},
 	V126SaleDetraccionTransporte{},
 	V127EcommerceShowStock{},
+	V128UnitsCatalog{},
 }
 
 // ByVersion mapa versión → migración.
