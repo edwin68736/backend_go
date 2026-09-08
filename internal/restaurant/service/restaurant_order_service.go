@@ -53,16 +53,24 @@ type OpenSessionInput struct {
 }
 
 // UpdateSessionInput actualiza metadatos del pedido sin tocar ítems.
+//
+// IMPORTANTE: el handler (UpdateSession) hace c.Bind().JSON(&body) directo sobre este struct — a
+// diferencia de OpenSession, que bindea a un struct local con tags y recién ahí arma
+// OpenSessionInput a mano. Sin json tags acá, encoding/json no mapea el "customer_name" (snake_case)
+// del frontend a CustomerName y el campo queda en "" — UpdateSession() abajo lo escribe tal cual
+// con un Updates() incondicional, así que CADA PATCH borraba nombre/teléfono/notas/dirección aunque
+// el request sí trajera el dato correcto (bug real: se perdían al enviar a cocina, guardar
+// borrador, etc. — cualquier PATCH a una sesión ya creada).
 type UpdateSessionInput struct {
-	ContactID         *uint
-	CustomerName      string
-	CustomerPhone     string
-	DeliveryDriverID  *uint
-	DeliveryAddress   string
-	DeliveryReference string
-	EstimatedMinutes  int
-	Notes             string
-	OrderStatus       string
+	ContactID         *uint  `json:"contact_id"`
+	CustomerName      string `json:"customer_name"`
+	CustomerPhone     string `json:"customer_phone"`
+	DeliveryDriverID  *uint  `json:"delivery_driver_id"`
+	DeliveryAddress   string `json:"delivery_address"`
+	DeliveryReference string `json:"delivery_reference"`
+	EstimatedMinutes  int    `json:"estimated_minutes"`
+	Notes             string `json:"notes"`
+	OrderStatus       string `json:"order_status"`
 }
 
 // OrderSummary vista agrupada para comandas / POS.
