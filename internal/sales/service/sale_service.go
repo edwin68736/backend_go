@@ -423,7 +423,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		for _, p := range payments {
 			sumPayments += p.Amount
 		}
-		if money.RoundDisplay(sumPayments) != money.RoundDisplay(total) {
+		// Solo realinear cuando el pago original NO alcanza el total recalculado (redondeo SUNAT
+		// al emitir boleta/factura desde la NV). Si sumPayments >= total, puede ser un pago exacto
+		// o uno de más (vuelto real, en efectivo o cualquier otro medio) — en ese caso se conserva
+		// tal cual para que print_data.ChangeAmount lo calcule (ver comentario "Vuelto" más abajo);
+		// antes esto se realineaba siempre, borrando el vuelto de cualquier método al convertir.
+		if money.RoundDisplay(sumPayments) < money.RoundDisplay(total) {
 			payments = alignPaymentsToSaleTotal(payments, total)
 		}
 	}
