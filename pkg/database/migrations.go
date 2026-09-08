@@ -1016,9 +1016,12 @@ type TenantEcommerceSettings struct {
 	CardStyle      string  `gorm:"size:30;default:'rounded'" json:"card_style"`
 	// CategoryStyle: 'circles' (íconos redondos) | 'pills' (botones de texto). Define cómo se
 	// navega por categorías en la tienda pública.
-	CategoryStyle string    `gorm:"size:20;default:'circles'" json:"category_style"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	CategoryStyle string `gorm:"size:20;default:'circles'" json:"category_style"`
+	// Muestra "Agotado" en la tienda pública cuando manage_stock y stock_total<=0. Si es false, el
+	// stock (incluido stock_by_branch) no se envía en la respuesta pública de productos.
+	ShowStock bool      `gorm:"column:show_stock;default:true" json:"show_stock"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // TenantEcommerceSlider imagen del carrusel principal de la tienda pública.
