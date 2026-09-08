@@ -3,7 +3,9 @@ package service
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +37,11 @@ const SunatMaxMontoClienteSinRUC = 700
 
 // RUC Perú: 11 dígitos.
 const SunatRucLength = 11
+
+// Detecta una búsqueda tipo "B001-358": serie + correlativo tal como lo escribe el usuario, sin
+// los ceros a la izquierda con los que se guarda tenant_sales.number (p. ej. "B001-00000358").
+// El LIKE por substring de List() no matchea ese caso porque no hay match literal.
+var saleSeriesCorrelativeQueryRe = regexp.MustCompile(`^([A-Za-z0-9]+)-(\d{1,8})$`)
 
 type SaleService struct {
 	db *gorm.DB
@@ -1101,12 +1108,26 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 		q = q.Where("(SELECT COUNT(1) FROM tenant_sale_payments tsp WHERE tsp.sale_id = tenant_sales.id) <= 1")
 	}
 	if params.Query != "" {
-		query := "%" + strings.TrimSpace(params.Query) + "%"
+		trimmed := strings.TrimSpace(params.Query)
+		like := "%" + trimmed + "%"
+		conds := []string{
+			"tenant_sales.number LIKE ?",
+			"tenant_sales.series LIKE ?",
+			"CONCAT(tenant_sales.series, '-', tenant_sales.number) LIKE ?",
+			"tc_filter.business_name LIKE ?",
+			"tc_filter.doc_number LIKE ?",
+		}
+		args := []interface{}{like, like, like, like, like}
+		// "B001-358" debe encontrar "B001-00000358": comparar serie + correlativo numérico
+		// aparte del LIKE, que solo matchea substring literal y no ignora los ceros a la izquierda.
+		if m := saleSeriesCorrelativeQueryRe.FindStringSubmatch(trimmed); m != nil {
+			if correlative, err := strconv.ParseUint(m[2], 10, 64); err == nil {
+				conds = append(conds, "(tenant_sales.series LIKE ? AND tenant_sales.correlative = ?)")
+				args = append(args, "%"+m[1]+"%", correlative)
+			}
+		}
 		q = q.Joins("LEFT JOIN tenant_contacts tc_filter ON tc_filter.id = tenant_sales.contact_id").
-			Where(
-				"tenant_sales.number LIKE ? OR tenant_sales.series LIKE ? OR CONCAT(tenant_sales.series, '-', tenant_sales.number) LIKE ? OR tc_filter.business_name LIKE ? OR tc_filter.doc_number LIKE ?",
-				query, query, query, query, query,
-			)
+			Where(strings.Join(conds, " OR "), args...)
 	}
 	if params.DateFrom != nil {
 		q = q.Where("tenant_sales.issue_date >= ?", params.DateFrom)
