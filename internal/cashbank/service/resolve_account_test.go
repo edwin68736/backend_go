@@ -103,7 +103,7 @@ func TestAddMovement_usesFKAccountOverLegacyText(t *testing.T) {
 	db.Create(fkAcc)
 	db.Create(&database.TenantPaymentMethod{Code: "plin", Name: "Plin", BankAccountID: &fkAcc.ID, Active: true, DestinationType: "bank_account"})
 
-	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "", "plin", 300, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "", "plin", 300, "", nil); err != nil {
 		t.Fatal(err)
 	}
 

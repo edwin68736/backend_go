@@ -264,12 +264,15 @@ func (h *CashBankHandler) AddMovementAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	var body struct {
-		Type           string  `json:"type"`      // income | expense
-		Category       string  `json:"category"`
-		Reference      string  `json:"reference"`
-		PaymentMethod  string  `json:"payment_method"`
-		Amount         float64 `json:"amount"`
-		Notes          string  `json:"notes"`
+		Type          string  `json:"type"` // income | expense
+		Category      string  `json:"category"`
+		Reference     string  `json:"reference"`
+		PaymentMethod string  `json:"payment_method"`
+		Amount        float64 `json:"amount"`
+		Notes         string  `json:"notes"`
+		// ContactID: proveedor/cliente vinculado (opcional) — típico en un egreso a proveedor sin
+		// compra registrada todavía (frontend: CashMovementTypeView.tsx, vista de Egresos).
+		ContactID *uint `json:"contact_id"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -279,7 +282,7 @@ func (h *CashBankHandler) AddMovementAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	}
 	if err := svc.AddMovement(
-		uint(id), userID(c), body.Type, body.Category, body.Reference, body.PaymentMethod, body.Amount, body.Notes,
+		uint(id), userID(c), body.Type, body.Category, body.Reference, body.PaymentMethod, body.Amount, body.Notes, body.ContactID,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -629,7 +632,7 @@ func (h *CashBankHandler) AddBankMovementAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	var body struct {
-		Type        string  `json:"type"`        // credit | debit
+		Type        string  `json:"type"` // credit | debit
 		Description string  `json:"description"`
 		Reference   string  `json:"reference"`
 		Amount      float64 `json:"amount"`

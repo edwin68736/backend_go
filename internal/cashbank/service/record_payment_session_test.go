@@ -81,7 +81,7 @@ func TestAddMovement_bankAccountMovementCarriesCashSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.AddMovement(session.ID, 5, "income", "Aporte", "", "transferencia", 250, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 5, "income", "Aporte", "", "transferencia", 250, "", nil); err != nil {
 		t.Fatal(err)
 	}
 

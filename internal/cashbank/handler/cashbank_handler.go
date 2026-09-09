@@ -258,6 +258,11 @@ func (h *CashBankHandler) MovementPage(c fiber.Ctx) error {
 func (h *CashBankHandler) AddMovementForm(c fiber.Ctx) error {
 	sessionID, _ := strconv.ParseUint(c.Params("id"), 10, 32)
 	amount, _ := strconv.ParseFloat(c.FormValue("amount"), 64)
+	var contactID *uint
+	if v, err := strconv.ParseUint(c.FormValue("contact_id"), 10, 32); err == nil && v > 0 {
+		cid := uint(v)
+		contactID = &cid
+	}
 
 	svc := service.NewCashBankService(db(c))
 	if err := svc.AddMovement(
@@ -269,6 +274,7 @@ func (h *CashBankHandler) AddMovementForm(c fiber.Ctx) error {
 		c.FormValue("payment_method"),
 		amount,
 		c.FormValue("notes"),
+		contactID,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(err.Error())
 	}
