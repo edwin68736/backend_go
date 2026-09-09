@@ -159,6 +159,11 @@ type MovementReportRow struct {
 	Category      string    `json:"category"`
 	CashReference string    `json:"cash_reference"` // referencia del registro en caja (antes de derivar documento)
 	NotesDetail   string    `json:"notes_detail"`   // notas del movimiento en caja
+	// SaleID/PurchaseID: documento de origen cuando el movimiento viene de una venta o compra —
+	// el frontend los usa para imprimir el comprobante REAL de ese documento (ticket fiscal para
+	// ventas) en vez del recibo interno genérico de caja. nil cuando el movimiento es manual.
+	SaleID     *uint `json:"sale_id,omitempty"`
+	PurchaseID *uint `json:"purchase_id,omitempty"`
 }
 
 // MovementChannelSummary totales de un canal (efectivo o electrónico).
@@ -1275,6 +1280,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		if docNum == "" {
 			docNum = p.SaleNumber
 		}
+		saleID := p.SaleID
 		rows = append(rows, MovementReportRow{
 			Date:          p.CreatedAt,
 			Type:          "venta",
@@ -1289,6 +1295,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 			Category:      "Venta",
 			CashReference: p.Reference,
 			NotesDetail:   p.Notes,
+			SaleID:        &saleID,
 		})
 	}
 
@@ -1323,6 +1330,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		if s.db.First(&u, sale.UserID).Error == nil {
 			userName = u.Name
 		}
+		saleID := sale.ID
 		rows = append(rows, MovementReportRow{
 			Date:          sale.CreatedAt,
 			Type:          "venta",
@@ -1335,6 +1343,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 			MovementID:    salePaymentMovementID(sale.ID),
 			CashSessionID: *sale.CashSessionID,
 			Category:      "Venta",
+			SaleID:        &saleID,
 		})
 	}
 	return rows, nil
@@ -1418,6 +1427,7 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 
 		if m.SaleID != nil && m.Type == "expense" {
 			row.Type = "anulacion_venta"
+			row.SaleID = m.SaleID
 			var sale database.TenantSale
 			if s.db.First(&sale, *m.SaleID).Error == nil {
 				row.DocNumber = sale.Number
@@ -1427,6 +1437,7 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 			// — Decisión A prohíbe la compra mixta, así que el PaymentMethod de la propia compra
 			// alcanza para clasificar sin ambigüedad.
 			row.Type = "pago_proveedor"
+			row.PurchaseID = m.PurchaseID
 			if pur, ok := purchases[*m.PurchaseID]; ok {
 				row.DocNumber = pur.Series + "-" + pur.Number
 				row.ContactName = contactsByPurchase[*m.PurchaseID]
@@ -1656,6 +1667,7 @@ func (s *CashBankService) buildPurchasePaymentMovementRows(f MovementReportFilte
 				}
 			}
 		}
+		purchaseID := p.ID
 		rows = append(rows, MovementReportRow{
 			Date:          p.CreatedAt,
 			Type:          "compra",
@@ -1668,6 +1680,7 @@ func (s *CashBankService) buildPurchasePaymentMovementRows(f MovementReportFilte
 			MovementID:    purchaseMovementID(p.ID),
 			CashSessionID: *p.CashSessionID,
 			Category:      "Compra",
+			PurchaseID:    &purchaseID,
 		})
 	}
 
@@ -1726,6 +1739,7 @@ func (s *CashBankService) buildPurchasePaymentMovementRows(f MovementReportFilte
 				}
 			}
 		}
+		purchaseID := pp.PurchaseID
 		rows = append(rows, MovementReportRow{
 			Date:          pp.CreatedAt,
 			Type:          "pago_proveedor",
@@ -1737,6 +1751,7 @@ func (s *CashBankService) buildPurchasePaymentMovementRows(f MovementReportFilte
 			CashSessionID: *pp.CashSessionID,
 			Category:      "Pago proveedor",
 			BranchName:    branchName,
+			PurchaseID:    &purchaseID,
 		})
 	}
 
