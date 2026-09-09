@@ -176,7 +176,7 @@ func TestGetSessionReport_cashPlusTransferExpense_physicalBalanceExcludesTransfe
 		t.Fatal(err)
 	}
 	createReportSale(t, db, svc, 1, session.ID, map[string]float64{"cash": 300})
-	if err := svc.AddMovement(session.ID, 1, "expense", "Pago proveedor", "REF-1", "transferencia", 200, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "expense", "Pago proveedor", "REF-1", "transferencia", 200, "", nil); err != nil {
 		t.Fatal(err)
 	}
 

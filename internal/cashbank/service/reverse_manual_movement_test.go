@@ -35,7 +35,7 @@ func TestReverseManualMovement_cashIncome(t *testing.T) {
 	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open"}
 	db.Create(session)
 
-	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "REF-1", "efectivo", 100, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "REF-1", "efectivo", 100, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	var original database.TenantCashMovement
@@ -81,7 +81,7 @@ func TestReverseManualMovement_yapeIncomeReversesBankMovement(t *testing.T) {
 	acc := &database.TenantBankAccount{Name: "Yape", Type: "wallet", Balance: 500, PaymentMethod: "yape", Active: true}
 	db.Create(acc)
 
-	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "REF-YAPE", "yape", 100, "nota de prueba"); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "REF-YAPE", "yape", 100, "nota de prueba", nil); err != nil {
 		t.Fatal(err)
 	}
 	var accAfterCreate database.TenantBankAccount
@@ -174,7 +174,7 @@ func TestReverseManualMovement_rejectsDoubleReversal(t *testing.T) {
 	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open"}
 	db.Create(session)
 
-	if err := svc.AddMovement(session.ID, 1, "expense", "Retiro", "", "efectivo", 40, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "expense", "Retiro", "", "efectivo", 40, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	var original database.TenantCashMovement
@@ -195,7 +195,7 @@ func TestReverseManualMovement_rejectsClosedSession(t *testing.T) {
 	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open"}
 	db.Create(session)
 
-	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "", "efectivo", 20, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "", "efectivo", 20, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	var original database.TenantCashMovement
@@ -215,7 +215,7 @@ func TestReverseManualMovement_rejectsInvalidKind(t *testing.T) {
 	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open"}
 	db.Create(session)
 
-	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "", "efectivo", 20, ""); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "Aporte", "", "efectivo", 20, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	var original database.TenantCashMovement
