@@ -330,9 +330,7 @@ func (s *CashBankService) sessionMovementTotals(sessionID uint) (income, expense
 }
 
 // AddMovement registra un movimiento manual de caja. Verifica que la sesión exista y esté abierta.
-// contactID: proveedor/cliente vinculado (opcional, típico en un egreso a proveedor sin compra
-// registrada todavía) — nil cuando el movimiento no se vincula a ningún contacto.
-func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category, reference, paymentMethod string, amount float64, notes string, contactID *uint) error {
+func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category, reference, paymentMethod string, amount float64, notes string) error {
 	if amount <= 0 {
 		return errors.New("el monto debe ser mayor a cero")
 	}
@@ -351,14 +349,6 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 	}
 	if err := s.assertSessionOwnedBy(&session, userID, false); err != nil {
 		return err
-	}
-	if contactID != nil && *contactID > 0 {
-		var contact database.TenantContact
-		if err := s.db.First(&contact, *contactID).Error; err != nil {
-			return errors.New("contacto no encontrado")
-		}
-	} else {
-		contactID = nil
 	}
 
 	desc := "Caja: " + category
@@ -400,7 +390,6 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 			Date:          now,
 			UserID:        userID,
 			CashSessionID: &sessionID,
-			ContactID:     contactID,
 			CreatedAt:     now,
 		}).Error; err != nil {
 			return err
@@ -418,7 +407,6 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 		Reference:     reference,
 		Notes:         notes,
 		UserID:        userID,
-		ContactID:     contactID,
 		CreatedAt:     time.Now(),
 	}).Error
 }
@@ -1244,7 +1232,7 @@ type BankMovementListParams struct {
 	DateFrom *time.Time
 	DateTo   *time.Time
 	// Type: "" = todos | "credit" | "debit". Cualquier otro valor se ignora (se trata como "").
-	Type    string
+	Type string
 	Page    int
 	PerPage int
 }

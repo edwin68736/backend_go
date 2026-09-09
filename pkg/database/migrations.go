@@ -953,12 +953,12 @@ type TenantBrand struct {
 // aprovisionar el tenant (código bloqueado en edición, igual que TenantPaymentMethod); el tenant
 // puede agregar sus propias filas adicionales (IsSystem=false) libremente.
 type TenantUnit struct {
-	ID        uint   `gorm:"primaryKey" json:"id"`
-	Code      string `gorm:"size:10;not null;uniqueIndex" json:"code"`
-	Name      string `gorm:"size:100;not null" json:"name"`
-	Symbol    string `gorm:"size:20" json:"symbol"`
-	IsSystem  bool   `gorm:"default:false" json:"is_system"`
-	SortOrder int    `gorm:"default:0" json:"sort_order"`
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	Code      string         `gorm:"size:10;not null;uniqueIndex" json:"code"`
+	Name      string         `gorm:"size:100;not null" json:"name"`
+	Symbol    string         `gorm:"size:20" json:"symbol"`
+	IsSystem  bool           `gorm:"default:false" json:"is_system"`
+	SortOrder int            `gorm:"default:0" json:"sort_order"`
 	// Active: sin default de columna a propósito — el seed siembra una mezcla de true/false
 	// (solo 8 activas por defecto) y un `gorm:"default:true"` aquí hace que GORM OMITA el false
 	// (zero-value) del INSERT, dejando que la BD aplique su default true y active TODAS las filas
@@ -982,19 +982,19 @@ type TenantPreparationArea struct {
 }
 
 type TenantProduct struct {
-	ID          uint   `gorm:"primaryKey" json:"id"`
-	CategoryID  *uint  `gorm:"index" json:"category_id"`
-	BrandID     *uint  `gorm:"index" json:"brand_id"`
-	Code        string `gorm:"size:100;not null;index" json:"code"`
-	Name        string `gorm:"size:255;not null" json:"name"`
-	Description string `gorm:"type:text" json:"description"`
-	Type        string `gorm:"size:20;default:'product'" json:"type"` // product, service
+	ID                 uint    `gorm:"primaryKey" json:"id"`
+	CategoryID         *uint   `gorm:"index" json:"category_id"`
+	BrandID            *uint   `gorm:"index" json:"brand_id"`
+	Code               string  `gorm:"size:100;not null;index" json:"code"`
+	Name               string  `gorm:"size:255;not null" json:"name"`
+	Description        string  `gorm:"type:text" json:"description"`
+	Type               string  `gorm:"size:20;default:'product'" json:"type"` // product, service
 	// Unit: código SUNAT catálogo N°03 denormalizado desde UnitID.TenantUnit.Code — no se edita
 	// directo, se sincroniza al guardar (ver ProductService.resolveUnitReference). Se conserva como
 	// string porque ventas/cotizaciones/compras/facturación/impresión ya lo leen así en decenas de
 	// lugares; UnitID es la fuente de verdad para la UI (selects por ID, no texto libre).
-	Unit               string  `gorm:"size:50;default:'NIU'" json:"unit"`
-	UnitID             *uint   `gorm:"index" json:"unit_id"`
+	Unit   string `gorm:"size:50;default:'NIU'" json:"unit"`
+	UnitID *uint  `gorm:"index" json:"unit_id"`
 	SalePrice          float64 `gorm:"type:decimal(15,2);not null" json:"sale_price"`
 	PurchasePrice      float64 `gorm:"type:decimal(15,2)" json:"purchase_price"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"`
@@ -1490,10 +1490,10 @@ func (TenantSaleFiscalObligation) TableName() string { return "tenant_sale_fisca
 
 // TenantSaleDetraccion datos de detracción SUNAT (1:1 con venta factura 1001 o 1004).
 type TenantSaleDetraccion struct {
-	SaleID uint `gorm:"primaryKey" json:"sale_id"`
+	SaleID            uint   `gorm:"primaryKey" json:"sale_id"`
 	// OperationTypeCode: 1001 (general) o 1004 (transporte de carga). Default '1001' porque las
 	// filas creadas antes de esta columna son todas de la única operación que existía entonces.
-	OperationTypeCode       string     `gorm:"size:10;not null;default:'1001'" json:"operation_type_code"`
+	OperationTypeCode      string     `gorm:"size:10;not null;default:'1001'" json:"operation_type_code"`
 	GoodCode                string     `gorm:"size:10;not null" json:"good_code"`
 	PaymentMethodCode       string     `gorm:"size:10;not null" json:"payment_method_code"`
 	BankAccount             string     `gorm:"size:30;not null" json:"bank_account"`
@@ -1509,15 +1509,15 @@ type TenantSaleDetraccion struct {
 	// como cac:InvoiceLine/cac:Item/cac:AdditionalItemProperty (Catálogo N° 55 SUNAT) — no existe
 	// un nodo de cabecera para esto; SUNAT lo exige a nivel de ítem. Captura manual: ni este
 	// sistema ni el de referencia calculan las tablas de tarifas MTC (D.S. 020-2021-MTC).
-	ValorReferencialPen    *float64  `gorm:"type:decimal(15,2)" json:"valor_referencial_pen,omitempty"`
-	MtcRegistro            string    `gorm:"size:30" json:"mtc_registro,omitempty"`
-	ConfiguracionVehicular string    `gorm:"size:10" json:"configuracion_vehicular,omitempty"`
-	PuntoOrigen            string    `gorm:"size:200" json:"punto_origen,omitempty"`
-	PuntoDestino           string    `gorm:"size:200" json:"punto_destino,omitempty"`
-	CargaEfectivaTm        *float64  `gorm:"type:decimal(10,2)" json:"carga_efectiva_tm,omitempty"`
-	CargaUtilTm            *float64  `gorm:"type:decimal(10,2)" json:"carga_util_tm,omitempty"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	ValorReferencialPen    *float64 `gorm:"type:decimal(15,2)" json:"valor_referencial_pen,omitempty"`
+	MtcRegistro            string   `gorm:"size:30" json:"mtc_registro,omitempty"`
+	ConfiguracionVehicular string   `gorm:"size:10" json:"configuracion_vehicular,omitempty"`
+	PuntoOrigen            string   `gorm:"size:200" json:"punto_origen,omitempty"`
+	PuntoDestino           string   `gorm:"size:200" json:"punto_destino,omitempty"`
+	CargaEfectivaTm        *float64 `gorm:"type:decimal(10,2)" json:"carga_efectiva_tm,omitempty"`
+	CargaUtilTm            *float64 `gorm:"type:decimal(10,2)" json:"carga_util_tm,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 func (TenantSaleDetraccion) TableName() string { return "tenant_sale_detraccion" }
@@ -1924,23 +1924,19 @@ type TenantCashSession struct {
 }
 
 type TenantCashMovement struct {
-	ID            uint    `gorm:"primaryKey" json:"id"`
-	CashSessionID uint    `gorm:"not null;index" json:"cash_session_id"`
-	Type          string  `gorm:"size:20;not null" json:"type"` // income, expense
-	Amount        float64 `gorm:"type:decimal(15,2);not null" json:"amount"`
-	PaymentMethod string  `gorm:"size:50" json:"payment_method"` // para movimientos manuales: efectivo, yape, plin, tarjeta, transferencia
-	Category      string  `gorm:"size:100" json:"category"`
-	Reference     string  `gorm:"size:100" json:"reference"`
-	SaleID        *uint   `gorm:"index" json:"sale_id"`
-	PurchaseID    *uint   `gorm:"index" json:"purchase_id"`
-	ReversalOfID  *uint   `gorm:"index" json:"reversal_of_id,omitempty"`
-	Notes         string  `gorm:"type:text" json:"notes"`
-	UserID        uint    `gorm:"not null" json:"user_id"`
-	// ContactID: proveedor/cliente vinculado a un movimiento MANUAL (AddMovement) — típicamente un
-	// egreso a un proveedor sin compra registrada todavía. Nulo en movimientos de venta/compra
-	// (esos ya se vinculan por SaleID/PurchaseID → tenant_sales.contact_id / tenant_purchases.contact_id).
-	ContactID *uint     `gorm:"index" json:"contact_id,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	CashSessionID uint      `gorm:"not null;index" json:"cash_session_id"`
+	Type          string    `gorm:"size:20;not null" json:"type"` // income, expense
+	Amount        float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
+	PaymentMethod string    `gorm:"size:50" json:"payment_method"` // para movimientos manuales: efectivo, yape, plin, tarjeta, transferencia
+	Category      string    `gorm:"size:100" json:"category"`
+	Reference     string    `gorm:"size:100" json:"reference"`
+	SaleID        *uint     `gorm:"index" json:"sale_id"`
+	PurchaseID    *uint     `gorm:"index" json:"purchase_id"`
+	ReversalOfID  *uint     `gorm:"index" json:"reversal_of_id,omitempty"`
+	Notes         string    `gorm:"type:text" json:"notes"`
+	UserID        uint      `gorm:"not null" json:"user_id"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // TenantPaymentMethod medios reales de cobro (efectivo, Yape, Plin, etc.).
@@ -2036,12 +2032,8 @@ type TenantBankMovement struct {
 	// movimiento manual ahora vive en EXACTAMENTE una de las dos tablas según su método (nunca
 	// en ambas), así que necesita los mismos campos que un manual en efectivo para no perder
 	// esos datos.
-	Category string `gorm:"size:100" json:"category,omitempty"`
-	Notes    string `gorm:"type:text" json:"notes,omitempty"`
-	// ContactID: proveedor/cliente vinculado a un movimiento MANUAL (AddMovement) — mismo
-	// criterio que TenantCashMovement.ContactID (nulo en movimientos de venta/compra, que ya se
-	// vinculan por SaleID/PurchaseID).
-	ContactID *uint     `gorm:"index" json:"contact_id,omitempty"`
+	Category  string    `gorm:"size:100" json:"category,omitempty"`
+	Notes     string    `gorm:"type:text" json:"notes,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -2271,12 +2263,12 @@ type TenantUserRestaurantRole struct {
 
 // TenantSalePayment registra pagos individuales (pagos mixtos) asociados a una venta.
 type TenantSalePayment struct {
-	ID        uint    `gorm:"primaryKey" json:"id"`
-	SaleID    uint    `gorm:"not null;index" json:"sale_id"`
-	Method    string  `gorm:"size:50;not null" json:"method"` // efectivo, tarjeta, transferencia, yape, plin, credito
-	Amount    float64 `gorm:"type:decimal(15,2);not null" json:"amount"`
-	Reference string  `gorm:"size:100" json:"reference"` // nro. de operación, voucher, etc.
-	Notes     string  `gorm:"size:255" json:"notes"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	SaleID    uint      `gorm:"not null;index" json:"sale_id"`
+	Method    string    `gorm:"size:50;not null" json:"method"` // efectivo, tarjeta, transferencia, yape, plin, credito
+	Amount    float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
+	Reference string    `gorm:"size:100" json:"reference"` // nro. de operación, voucher, etc.
+	Notes     string    `gorm:"size:255" json:"notes"`
 	// CashSessionID: sesión de Caja donde OCURRIÓ este pago — no necesariamente la misma que
 	// tenant_sales.cash_session_id (que representa dónde se REGISTRÓ el documento y nunca debe
 	// modificarse). Una venta a crédito puede registrarse en la Caja 25 y cobrarse después en la

@@ -148,7 +148,7 @@ func TestGetSessionBalanceSummary_manualTransferExpenseDoesNotTouchCashExpected(
 	acc := &database.TenantBankAccount{Name: "Cta transferencias", Type: "bank", PaymentMethod: "transferencia", Active: true}
 	db.Create(acc)
 
-	if err := svc.AddMovement(session.ID, 1, "expense", "Pago proveedor", "", "transferencia", 700, "", nil); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "expense", "Pago proveedor", "", "transferencia", 700, ""); err != nil {
 		t.Fatal(err)
 	}
 

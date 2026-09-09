@@ -1364,15 +1364,11 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 	sessionIDs := make(map[uint]struct{})
 	userIDs := make(map[uint]struct{})
 	purchaseIDs := make(map[uint]struct{})
-	contactIDs := make(map[uint]struct{})
 	for _, m := range movements {
 		sessionIDs[m.CashSessionID] = struct{}{}
 		userIDs[m.UserID] = struct{}{}
 		if m.PurchaseID != nil {
 			purchaseIDs[*m.PurchaseID] = struct{}{}
-		}
-		if m.ContactID != nil {
-			contactIDs[*m.ContactID] = struct{}{}
 		}
 	}
 
@@ -1390,7 +1386,6 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 	}
 	branches := loadBranchNamesMap(s.db, branchIDs)
 	users := loadUserNamesMap(s.db, userIDs)
-	contactNames := loadContactNamesMap(s.db, contactIDs)
 
 	purchases := make(map[uint]database.TenantPurchase)
 	if len(purchaseIDs) > 0 {
@@ -1457,17 +1452,7 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 		} else {
 			row.Type = "egreso"
 			row.DocNumber = m.Reference
-			// Proveedor vinculado a mano (AddMovement, vista de Egresos) tiene prioridad sobre el
-			// viejo criterio de usar las notas como "quién" — un egreso manual sin proveedor sigue
-			// mostrando las notas, igual que siempre.
-			if m.ContactID != nil {
-				if name := contactNames[*m.ContactID]; name != "" {
-					row.ContactName = name
-				}
-			}
-			if row.ContactName == "" {
-				row.ContactName = m.Notes
-			}
+			row.ContactName = m.Notes
 		}
 		rows = append(rows, row)
 	}
@@ -1547,13 +1532,6 @@ func (s *CashBankService) buildManualBankMovementRows(f MovementReportFilters) (
 	}
 	branches := loadBranchNamesMap(s.db, branchIDs)
 	users := loadUserNamesMap(s.db, userIDs)
-	contactIDs := make(map[uint]struct{})
-	for _, m := range movements {
-		if m.ContactID != nil {
-			contactIDs[*m.ContactID] = struct{}{}
-		}
-	}
-	contactNames := loadContactNamesMap(s.db, contactIDs)
 
 	rows := make([]MovementReportRow, 0, len(movements))
 	for _, m := range movements {
@@ -1579,19 +1557,11 @@ func (s *CashBankService) buildManualBankMovementRows(f MovementReportFilters) (
 				branchName = branches[ses.BranchID]
 			}
 		}
-		// Proveedor vinculado a mano (AddMovement, vista de Egresos) tiene prioridad sobre el
-		// viejo criterio de usar las notas como "quién" — mismo criterio que buildCashMovementReportRows.
-		contactName := m.Notes
-		if m.ContactID != nil {
-			if name := contactNames[*m.ContactID]; name != "" {
-				contactName = name
-			}
-		}
 		rows = append(rows, MovementReportRow{
 			Date:          m.CreatedAt,
 			Type:          typ,
 			DocNumber:     m.Reference,
-			ContactName:   contactName,
+			ContactName:   m.Notes,
 			UserName:      users[m.UserID],
 			BranchName:    branchName,
 			PaymentMethod: method,

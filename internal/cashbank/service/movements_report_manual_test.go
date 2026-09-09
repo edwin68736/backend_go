@@ -56,7 +56,7 @@ func TestListMovementsReport_ingresoManualYape_apareceEnElectronic(t *testing.T)
 	if err := db.Create(acc).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddMovement(session.ID, 1, "income", "ingreso_manual", "ref-yape", "yape", 150, "nota", nil); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "ingreso_manual", "ref-yape", "yape", 150, "nota"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,7 +101,7 @@ func TestListMovementsReport_egresoManualTransferencia_apareceEnElectronic(t *te
 	if err := db.Create(acc).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddMovement(session.ID, 1, "expense", "pago_proveedor", "ref-transf", "transferencia", 200, "", nil); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "expense", "pago_proveedor", "ref-transf", "transferencia", 200, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -132,7 +132,7 @@ func TestListMovementsReport_manualEfectivo_noSeDuplica(t *testing.T) {
 	if err := db.Create(session).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddMovement(session.ID, 1, "income", "ingreso_manual", "ref-efectivo", "efectivo", 40, "", nil); err != nil {
+	if err := svc.AddMovement(session.ID, 1, "income", "ingreso_manual", "ref-efectivo", "efectivo", 40, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -168,7 +168,7 @@ func TestListMovementsReport_manualNoEfectivo_filtraPorSesion(t *testing.T) {
 	if err := db.Create(acc).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AddMovement(sessionA.ID, 1, "income", "ingreso_manual", "ref", "yape", 60, "", nil); err != nil {
+	if err := svc.AddMovement(sessionA.ID, 1, "income", "ingreso_manual", "ref", "yape", 60, ""); err != nil {
 		t.Fatal(err)
 	}
 
