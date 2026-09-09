@@ -170,20 +170,29 @@ func (s *BillingService) applyDespatchPrefillFromSale(input *CreateDespatchInput
 	if input.BranchID == 0 {
 		input.BranchID = src.BranchID
 	}
-	if strings.TrimSpace(input.Destinatario.NumDoc) == "" && src.ContactID != nil {
+	// Antes, Address/Ubigeo solo se rellenaban desde el contacto cuando NumDoc también venía
+	// vacío (el `if` exterior estaba condicionado únicamente a NumDoc): el frontend arma el
+	// destinatario "desde factura/boleta" con NumDoc ya resuelto (buildDespatchPrefillFromSaleDetail
+	// en DespatchFormModal.tsx), así que ese bloque nunca corría y el ubigeo quedaba vacío aunque
+	// el contacto lo tuviera bien guardado — el error "ubigeo del destinatario es obligatorio"
+	// salía sin que el usuario pudiera entender por qué, si su cliente sí tenía ubigeo configurado.
+	// Ahora cada campo se rellena por separado, solo si vino vacío, sin depender de NumDoc.
+	if src.ContactID != nil {
 		var contact database.TenantContact
 		if err := s.db.First(&contact, *src.ContactID).Error; err == nil {
-			tipoDoc, numDoc, rzn, _, err := s.resolveInvoiceClient(&contact)
-			if err == nil {
-				input.Destinatario.TipoDoc = tipoDoc
-				input.Destinatario.NumDoc = numDoc
-				input.Destinatario.RznSocial = rzn
-				if strings.TrimSpace(input.Destinatario.Address) == "" {
-					input.Destinatario.Address = strings.TrimSpace(contact.Address)
+			if strings.TrimSpace(input.Destinatario.NumDoc) == "" {
+				tipoDoc, numDoc, rzn, _, err := s.resolveInvoiceClient(&contact)
+				if err == nil {
+					input.Destinatario.TipoDoc = tipoDoc
+					input.Destinatario.NumDoc = numDoc
+					input.Destinatario.RznSocial = rzn
 				}
-				if strings.TrimSpace(input.Destinatario.Ubigeo) == "" {
-					input.Destinatario.Ubigeo = strings.TrimSpace(contact.Ubigeo)
-				}
+			}
+			if strings.TrimSpace(input.Destinatario.Address) == "" {
+				input.Destinatario.Address = strings.TrimSpace(contact.Address)
+			}
+			if strings.TrimSpace(input.Destinatario.Ubigeo) == "" {
+				input.Destinatario.Ubigeo = strings.TrimSpace(contact.Ubigeo)
 			}
 		}
 	}

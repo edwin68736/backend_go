@@ -490,6 +490,11 @@ func (h *SaleHandler) GetAPI(c fiber.Ctx) error {
 				"business_name": contact.BusinessName,
 				"trade_name":    contact.TradeName,
 				"phone":         strings.TrimSpace(contact.Phone),
+				// address/ubigeo: los necesita DespatchFormModal.tsx al armar la guía de remisión
+				// "desde esta venta" (buildDespatchPrefillFromSaleDetail) — sin esto, el destinatario
+				// siempre quedaba con ubigeo vacío aunque el contacto lo tuviera bien guardado.
+				"address": strings.TrimSpace(contact.Address),
+				"ubigeo":  strings.TrimSpace(contact.Ubigeo),
 			}
 		}
 	}
