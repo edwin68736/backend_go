@@ -83,7 +83,12 @@ func TestV131BackfillModulesEcommerceFleetPermissions(t *testing.T) {
 	}
 }
 
-func TestV131BackfillModulesEcommerceFleetPermissions_EmptyCatalogIsNoop(t *testing.T) {
+// Caso real encontrado probando en local: un tenant que ya tenía su catálogo de permisos sembrado
+// (RoleService.SeedPermissions solo inserta si la tabla está vacía, así que nunca vuelve a correr
+// para tenants existentes) no tenía las filas modules/ecommerce/fleet en tenant_permissions — un
+// primer intento de esta migración que solo buscaba el permiso y lo saltaba si no existía no
+// concedía nada en ningún tenant existente. Debe CREAR la fila de catálogo si falta, no saltarla.
+func TestV131BackfillModulesEcommerceFleetPermissions_CreatesMissingCatalogEntries(t *testing.T) {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -96,6 +101,11 @@ func TestV131BackfillModulesEcommerceFleetPermissions_EmptyCatalogIsNoop(t *test
 	); err != nil {
 		t.Fatal(err)
 	}
+	// Catálogo "ya sembrado" pero SIN modules/ecommerce/fleet (como cualquier tenant real
+	// provisionado antes de que existieran estos permisos).
+	if err := db.Create(&database.TenantPermission{Module: "sales", Action: "view", Label: "Ver ventas"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	role := database.TenantRole{Name: "Administrador"}
 	if err := db.Create(&role).Error; err != nil {
 		t.Fatal(err)
@@ -105,9 +115,17 @@ func TestV131BackfillModulesEcommerceFleetPermissions_EmptyCatalogIsNoop(t *test
 		t.Fatalf("Up: %v", err)
 	}
 
-	var count int64
-	db.Model(&database.TenantRolePermission{}).Count(&count)
-	if count != 0 {
-		t.Fatalf("got %d filas, want 0", count)
+	var catalogCount int64
+	db.Model(&database.TenantPermission{}).
+		Where("module IN ?", []string{"modules", "ecommerce", "fleet"}).
+		Count(&catalogCount)
+	if catalogCount != int64(len(v131ModuleActions)) {
+		t.Fatalf("catálogo: got %d filas nuevas, want %d (no las creó)", catalogCount, len(v131ModuleActions))
+	}
+
+	var grantCount int64
+	db.Model(&database.TenantRolePermission{}).Where("role_id = ?", role.ID).Count(&grantCount)
+	if grantCount != int64(len(v131ModuleActions)) {
+		t.Fatalf("administrador: got %d permisos concedidos, want %d", grantCount, len(v131ModuleActions))
 	}
 }

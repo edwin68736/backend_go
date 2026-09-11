@@ -1,8 +1,6 @@
 package tenantmigrations
 
 import (
-	"errors"
-
 	"tukifac/pkg/database"
 
 	"gorm.io/gorm"
@@ -17,6 +15,15 @@ import (
 // Mismo criterio que V130: sin este backfill, el deploy le quitaría acceso a cualquier rol que hoy
 // usa esas pantallas con normalidad — nunca se validó el permiso, así que casi ningún rol lo tenía
 // marcado aunque lo necesitara.
+//
+// IMPORTANTE (bug encontrado probando esta migración en local, 2026-09-11): estos 3 módulos son
+// entradas NUEVAS del catálogo (RoleService.SeedPermissions), pero esa función solo inserta el
+// catálogo completo si la tabla tenant_permissions está totalmente vacía (`if count > 0 { return
+// nil }`) — o sea, nunca se ejecuta de nuevo para un tenant que ya tenía permisos (prácticamente
+// toda la flota). Un primer intento de esta migración que solo buscaba el permiso y, si no
+// existía, lo saltaba ("ya lo completará SeedPermissions") no concedía nada en ningún tenant
+// existente porque SeedPermissions nunca vuelve a correr para ellos. Por eso este migration
+// crea la fila de catálogo si falta (FirstOrCreate) en vez de solo buscarla.
 type V131BackfillModulesEcommerceFleetPermissions struct{}
 
 func (V131BackfillModulesEcommerceFleetPermissions) Version() int { return 131 }
@@ -24,7 +31,17 @@ func (V131BackfillModulesEcommerceFleetPermissions) Name() string {
 	return "backfill_modules_ecommerce_fleet_permissions"
 }
 
-// v131ModuleActions permisos recién exigidos que se retro-conceden a todos los roles existentes.
+// v131PermissionCatalog permisos recién exigidos que se crean (si faltan) y se retro-conceden a
+// todos los roles existentes. Mismos module/action/label que RoleService.SeedPermissions.
+var v131PermissionCatalog = []database.TenantPermission{
+	{Module: "modules", Action: "manage", Label: "Activar/desactivar módulos"},
+	{Module: "ecommerce", Action: "view", Label: "Ver tienda virtual y pedidos web"},
+	{Module: "ecommerce", Action: "manage", Label: "Configurar tienda virtual"},
+	{Module: "fleet", Action: "view", Label: "Ver transportistas, conductores y vehículos"},
+	{Module: "fleet", Action: "manage", Label: "Gestionar transportistas, conductores y vehículos"},
+}
+
+// v131ModuleActions solo module/action, para los tests que verifican conteos.
 var v131ModuleActions = [][2]string{
 	{"modules", "manage"},
 	{"ecommerce", "view"}, {"ecommerce", "manage"},
@@ -36,22 +53,18 @@ func (V131BackfillModulesEcommerceFleetPermissions) Up(db *gorm.DB) error {
 		return nil
 	}
 
-	var permIDs []uint
-	for _, ma := range v131ModuleActions {
+	permIDs := make([]uint, 0, len(v131PermissionCatalog))
+	for _, want := range v131PermissionCatalog {
 		var perm database.TenantPermission
-		err := db.Where("module = ? AND action = ?", ma[0], ma[1]).First(&perm).Error
+		// Where(struct) — no Where(sql, args...) — para que FirstOrCreate copie Module/Action al
+		// crear el registro cuando no existe (con la condición en SQL crudo los deja en blanco).
+		err := db.Where(database.TenantPermission{Module: want.Module, Action: want.Action}).
+			Attrs(database.TenantPermission{Label: want.Label}).
+			FirstOrCreate(&perm).Error
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				// Catálogo aún no sembrado en este tenant (p. ej. provisioning en curso): nada
-				// que retro-conceder todavía, RoleService.SeedPermissions lo completará.
-				continue
-			}
 			return err
 		}
 		permIDs = append(permIDs, perm.ID)
-	}
-	if len(permIDs) == 0 {
-		return nil
 	}
 
 	var roles []database.TenantRole
