@@ -7,46 +7,55 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+// RegisterRoutes registra las rutas de facturación electrónica. Antes solo exigían el módulo del
+// plan ("billing"), nunca el rol del usuario: cualquier usuario autenticado del tenant podía
+// enviar a SUNAT, anular con nota de crédito, emitir notas/guías/retenciones/percepciones, sin
+// que el permiso "billing.send" (el único que existe hoy en el catálogo para este módulo,
+// ver internal/users/service/role_service.go) tuviera ningún efecto. Se agrega RequirePermission
+// a todas las rutas salvo /reissue, que sigue reservada a soporte (RequireMasterAccess).
 func RegisterRoutes(api fiber.Router) {
 	h := handler.NewBillingHandler()
-	api.Post("/billing/send/:saleId", middleware.RequireModule("billing"), h.SendToSUNAT)
-	api.Get("/billing/status/:saleId", middleware.RequireModule("billing"), h.GetBillingStatus)
-	api.Get("/billing/events", middleware.RequireModule("billing"), handler.SSEAccessTokenMiddleware, h.BillingEventsSSE)
-	api.Get("/billing/job/:saleId", middleware.RequireModule("billing"), h.GetBillingJobStatus)
-	api.Post("/billing/resend/:saleId", middleware.RequireModule("billing"), h.ResendToSUNAT)
+	mod := middleware.RequireModule("billing")
+	perm := middleware.RequirePermission("billing.send")
+
+	api.Post("/billing/send/:saleId", mod, perm, h.SendToSUNAT)
+	api.Get("/billing/status/:saleId", mod, perm, h.GetBillingStatus)
+	api.Get("/billing/events", mod, perm, handler.SSEAccessTokenMiddleware, h.BillingEventsSSE)
+	api.Get("/billing/job/:saleId", mod, perm, h.GetBillingJobStatus)
+	api.Post("/billing/resend/:saleId", mod, perm, h.ResendToSUNAT)
 	// Corrección fiscal: reenvía con otra fecha de emisión aunque el comprobante
 	// ya tenga aceptación. Reservada a soporte por acceso maestro (auditable).
 	api.Post("/billing/reissue/:saleId",
-		middleware.RequireModule("billing"),
+		mod,
 		middleware.RequireMasterAccess(),
 		h.ReissueToSUNAT,
 	)
-	api.Post("/billing/void-with-credit-note/:saleId", middleware.RequireModule("billing"), h.VoidWithCreditNoteAPI)
-	api.Post("/billing/debit-notes/:saleId", middleware.RequireModule("billing"), h.CreateDebitNoteAPI)
+	api.Post("/billing/void-with-credit-note/:saleId", mod, perm, h.VoidWithCreditNoteAPI)
+	api.Post("/billing/debit-notes/:saleId", mod, perm, h.CreateDebitNoteAPI)
 	// Nota de crédito/débito independiente (Fase 3): sin venta local, documento afectado a mano.
-	api.Post("/billing/notes/independent", middleware.RequireModule("billing"), h.CreateIndependentNoteAPI)
-	api.Get("/billing/invoice/:saleId", middleware.RequireModule("billing"), h.GetInvoiceAPI)
-	api.Get("/billing/invoice/:saleId/document/:kind", middleware.RequireModule("billing"), h.GetInvoiceDocumentAPI)
+	api.Post("/billing/notes/independent", mod, perm, h.CreateIndependentNoteAPI)
+	api.Get("/billing/invoice/:saleId", mod, perm, h.GetInvoiceAPI)
+	api.Get("/billing/invoice/:saleId/document/:kind", mod, perm, h.GetInvoiceDocumentAPI)
 	// Resúmenes diarios y comunicaciones de baja
-	api.Get("/billing/summaries", middleware.RequireModule("billing"), h.ListSummariesAPI)
-	api.Post("/billing/summaries", middleware.RequireModule("billing"), h.CreateSummaryAPI)
-	api.Get("/billing/summaries/:id/status", middleware.RequireModule("billing"), h.GetSummaryStatusAPI)
-	api.Get("/billing/voided", middleware.RequireModule("billing"), h.ListVoidedAPI)
-	api.Post("/billing/voided", middleware.RequireModule("billing"), h.CreateVoidedAPI)
-	api.Get("/billing/voided/:id/status", middleware.RequireModule("billing"), h.GetVoidedStatusAPI)
-	api.Get("/billing/notification-counts", middleware.RequireModule("billing"), h.NotificationCountsAPI)
-	api.Get("/billing/invoice-status", middleware.RequireModule("billing"), h.ConsultInvoiceStatusAPI)
+	api.Get("/billing/summaries", mod, perm, h.ListSummariesAPI)
+	api.Post("/billing/summaries", mod, perm, h.CreateSummaryAPI)
+	api.Get("/billing/summaries/:id/status", mod, perm, h.GetSummaryStatusAPI)
+	api.Get("/billing/voided", mod, perm, h.ListVoidedAPI)
+	api.Post("/billing/voided", mod, perm, h.CreateVoidedAPI)
+	api.Get("/billing/voided/:id/status", mod, perm, h.GetVoidedStatusAPI)
+	api.Get("/billing/notification-counts", mod, perm, h.NotificationCountsAPI)
+	api.Get("/billing/invoice-status", mod, perm, h.ConsultInvoiceStatusAPI)
 	// Guías de remisión, retención, percepción, reversión
-	api.Get("/billing/despatches", middleware.RequireModule("billing"), h.ListDespatchesAPI)
-	api.Post("/billing/despatches", middleware.RequireModule("billing"), h.CreateDespatchAPI)
-	api.Get("/billing/despatches/:id/status", middleware.RequireModule("billing"), h.GetDespatchStatusAPI)
-	api.Get("/billing/retentions", middleware.RequireModule("billing"), h.ListRetentionsAPI)
-	api.Post("/billing/retentions", middleware.RequireModule("billing"), h.CreateRetentionAPI)
-	api.Get("/billing/retentions/:id/status", middleware.RequireModule("billing"), h.GetRetentionStatusAPI)
-	api.Get("/billing/perceptions", middleware.RequireModule("billing"), h.ListPerceptionsAPI)
-	api.Post("/billing/perceptions", middleware.RequireModule("billing"), h.CreatePerceptionAPI)
-	api.Get("/billing/perceptions/:id/status", middleware.RequireModule("billing"), h.GetPerceptionStatusAPI)
-	api.Get("/billing/reversions", middleware.RequireModule("billing"), h.ListReversionsAPI)
-	api.Post("/billing/reversions", middleware.RequireModule("billing"), h.CreateReversionAPI)
-	api.Get("/billing/reversions/:id/status", middleware.RequireModule("billing"), h.GetReversionStatusAPI)
+	api.Get("/billing/despatches", mod, perm, h.ListDespatchesAPI)
+	api.Post("/billing/despatches", mod, perm, h.CreateDespatchAPI)
+	api.Get("/billing/despatches/:id/status", mod, perm, h.GetDespatchStatusAPI)
+	api.Get("/billing/retentions", mod, perm, h.ListRetentionsAPI)
+	api.Post("/billing/retentions", mod, perm, h.CreateRetentionAPI)
+	api.Get("/billing/retentions/:id/status", mod, perm, h.GetRetentionStatusAPI)
+	api.Get("/billing/perceptions", mod, perm, h.ListPerceptionsAPI)
+	api.Post("/billing/perceptions", mod, perm, h.CreatePerceptionAPI)
+	api.Get("/billing/perceptions/:id/status", mod, perm, h.GetPerceptionStatusAPI)
+	api.Get("/billing/reversions", mod, perm, h.ListReversionsAPI)
+	api.Post("/billing/reversions", mod, perm, h.CreateReversionAPI)
+	api.Get("/billing/reversions/:id/status", mod, perm, h.GetReversionStatusAPI)
 }

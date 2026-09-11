@@ -7,24 +7,33 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+// RegisterRoutes registra las rutas de inventario. Antes solo exigían el módulo del plan
+// ("inventory"), nunca el rol del usuario — el catálogo ya define inventory.{view,manage} pero no
+// se validaba en ningún endpoint. Se agrega RequirePermission: lectura con inventory.view,
+// operaciones que mueven stock con inventory.manage (que ya implica inventory.view, ver
+// pkg/middleware/tenant_permissions.go).
 func RegisterRoutes(api fiber.Router) {
 	h := handler.NewInventoryHandler()
-	api.Get("/inventory/operation-types", middleware.RequireModule("inventory"), h.OperationTypesAPI)
-	api.Get("/inventory/documents", middleware.RequireModule("inventory"), h.DocumentsListAPI)
-	api.Get("/inventory/documents/:id", middleware.RequireModule("inventory"), h.DocumentGetAPI)
-	api.Post("/inventory/documents", middleware.RequireModule("inventory"), h.DocumentCreateAPI)
-	api.Put("/inventory/documents/:id", middleware.RequireModule("inventory"), h.DocumentUpdateAPI)
-	api.Post("/inventory/documents/:id/confirm", middleware.RequireModule("inventory"), h.DocumentConfirmAPI)
-	api.Post("/inventory/documents/:id/void", middleware.RequireModule("inventory"), h.DocumentVoidAPI)
-	api.Get("/inventory/stock-summary", middleware.RequireModule("inventory"), h.StockSummaryAPI)
-	api.Get("/inventory/stock/:productId", middleware.RequireModule("inventory"), h.StockAPI)
-	api.Get("/inventory/movements", middleware.RequireModule("inventory"), h.MovementsAPI)
-	api.Get("/inventory/transfers", middleware.RequireModule("inventory"), h.TransfersListAPI)
-	api.Post("/inventory/transfer", middleware.RequireModule("inventory"), h.TransferAPI)
-	api.Post("/inventory/adjustment", middleware.RequireModule("inventory"), h.AdjustmentAPI)
-	api.Post("/inventory/import-adjustment/preview", middleware.RequireModule("inventory"), h.ImportAdjustmentPreviewAPI)
-	api.Post("/inventory/import-adjustment/confirm", middleware.RequireModule("inventory"), h.ImportAdjustmentConfirmAPI)
-	api.Post("/inventory/transfers/:id/reverse", middleware.RequireModule("inventory"), h.TransferReverseAPI)
-	api.Post("/inventory/transfers/:id/confirm", middleware.RequireModule("inventory"), h.TransferConfirmAPI)
-	api.Post("/inventory/transfers/:id/cancel", middleware.RequireModule("inventory"), h.TransferCancelAPI)
+	mod := middleware.RequireModule("inventory")
+	view := middleware.RequirePermission("inventory.view")
+	manage := middleware.RequirePermission("inventory.manage")
+
+	api.Get("/inventory/operation-types", mod, view, h.OperationTypesAPI)
+	api.Get("/inventory/documents", mod, view, h.DocumentsListAPI)
+	api.Get("/inventory/documents/:id", mod, view, h.DocumentGetAPI)
+	api.Post("/inventory/documents", mod, manage, h.DocumentCreateAPI)
+	api.Put("/inventory/documents/:id", mod, manage, h.DocumentUpdateAPI)
+	api.Post("/inventory/documents/:id/confirm", mod, manage, h.DocumentConfirmAPI)
+	api.Post("/inventory/documents/:id/void", mod, manage, h.DocumentVoidAPI)
+	api.Get("/inventory/stock-summary", mod, view, h.StockSummaryAPI)
+	api.Get("/inventory/stock/:productId", mod, view, h.StockAPI)
+	api.Get("/inventory/movements", mod, view, h.MovementsAPI)
+	api.Get("/inventory/transfers", mod, view, h.TransfersListAPI)
+	api.Post("/inventory/transfer", mod, manage, h.TransferAPI)
+	api.Post("/inventory/adjustment", mod, manage, h.AdjustmentAPI)
+	api.Post("/inventory/import-adjustment/preview", mod, manage, h.ImportAdjustmentPreviewAPI)
+	api.Post("/inventory/import-adjustment/confirm", mod, manage, h.ImportAdjustmentConfirmAPI)
+	api.Post("/inventory/transfers/:id/reverse", mod, manage, h.TransferReverseAPI)
+	api.Post("/inventory/transfers/:id/confirm", mod, manage, h.TransferConfirmAPI)
+	api.Post("/inventory/transfers/:id/cancel", mod, manage, h.TransferCancelAPI)
 }

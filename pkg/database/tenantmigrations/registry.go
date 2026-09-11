@@ -101,6 +101,7 @@ var TenantMigrations = []TenantMigration{
 	V127EcommerceShowStock{},
 	V128UnitsCatalog{},
 	V129CashBankMovementContactID{},
+	V130BackfillCoreModulePermissions{},
 }
 
 // ByVersion mapa versión → migración.
