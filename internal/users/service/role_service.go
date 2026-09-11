@@ -166,6 +166,11 @@ func (s *RoleService) SeedPermissions() error {
 		{Module: "memberships", Action: "edit", Label: "Editar membresías"},
 		{Module: "memberships", Action: "delete", Label: "Eliminar membresías"},
 		{Module: "memberships", Action: "generate_sale", Label: "Generar venta desde membresía"},
+		{Module: "modules", Action: "manage", Label: "Activar/desactivar módulos"},
+		{Module: "ecommerce", Action: "view", Label: "Ver tienda virtual y pedidos web"},
+		{Module: "ecommerce", Action: "manage", Label: "Configurar tienda virtual"},
+		{Module: "fleet", Action: "view", Label: "Ver transportistas, conductores y vehículos"},
+		{Module: "fleet", Action: "manage", Label: "Gestionar transportistas, conductores y vehículos"},
 	}
 
 	return s.db.Create(&perms).Error
