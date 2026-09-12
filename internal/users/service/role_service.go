@@ -116,14 +116,27 @@ func (s *RoleService) GetRolePermissionKeys(roleID uint) ([]string, error) {
 	return keys, nil
 }
 
-// SeedPermissions inserta los permisos base si no existen.
+// SeedPermissions asegura que exista cada permiso del catálogo vigente — idempotente, seguro de
+// llamar cualquier cantidad de veces y en cualquier momento.
+//
+// ANTES: la función entera se saltaba con un único "if count > 0 { return nil }" — pensada para
+// solo sembrar el catálogo completo la PRIMERA vez que se llama, en un tenant recién creado con
+// tenant_permissions totalmente vacía. Eso se rompía en cuanto CUALQUIER otra cosa insertaba una
+// fila en tenant_permissions antes de esta llamada: migraciones de schema como
+// V131BackfillModulesEcommerceFleetPermissions y V132PermissionCatalogRedesign corren para todo
+// tenant (incluido uno recién creado) DURANTE RunTenantSchemaMigrations — es decir, antes de que
+// ProvisionTenantSeed cree los roles y antes de esta misma llamada en TenantService.CreateTenant
+// — y ambas usan FirstOrCreate para adelantar sus propias filas de catálogo nuevas
+// incondicionalmente. Para un tenant nuevo, eso dejaba tenant_permissions con esas pocas filas
+// "nuevas" (32 de 69) ANTES de que esta función corriera — su guarda veía count=32 (no 0) y
+// abortaba sin sembrar los 37 permisos "base" (dashboard, users, roles, company, contacts,
+// products, sales, purchases, cashbank básico, billing.send, memberships) — el Administrador de
+// ese tenant quedaba con solo esos 32, sin poder hacer casi nada. Encontrado en producción
+// 2026-09-12 (RUC 20615266010, tenant "inversioneshermanas", y "castillo" con el mismo síntoma).
+//
+// AHORA: se recorre el catálogo completo y se asegura cada fila con FirstOrCreate (mismo patrón
+// ya usado en V131/V132/V130) — sin importar qué tan poblada esté la tabla al momento de llamar.
 func (s *RoleService) SeedPermissions() error {
-	var count int64
-	s.db.Model(&database.TenantPermission{}).Count(&count)
-	if count > 0 {
-		return nil
-	}
-
 	perms := []database.TenantPermission{
 		{Module: "dashboard", Action: "view", Label: "Ver dashboard"},
 		{Module: "users", Action: "view", Label: "Ver usuarios"},
@@ -196,5 +209,16 @@ func (s *RoleService) SeedPermissions() error {
 		{Module: "subscription", Action: "manage", Label: "Registrar pagos y comprar paquetes de documentos"},
 	}
 
-	return s.db.Create(&perms).Error
+	for _, want := range perms {
+		var perm database.TenantPermission
+		// Where(struct) — no Where(sql, args...) — para que FirstOrCreate copie Module/Action al
+		// crear el registro cuando no existe (con la condición en SQL crudo los deja en blanco;
+		// mismo cuidado que V131/V132).
+		if err := s.db.Where(database.TenantPermission{Module: want.Module, Action: want.Action}).
+			Attrs(database.TenantPermission{Label: want.Label}).
+			FirstOrCreate(&perm).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
