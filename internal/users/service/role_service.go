@@ -222,3 +222,123 @@ func (s *RoleService) SeedPermissions() error {
 	}
 	return nil
 }
+
+// defaultRolePermissions punto de partida razonable por rol del sistema — el tenant los puede
+// ajustar después desde Roles. Administrador no aparece aquí: siempre recibe el catálogo
+// completo (ver TenantService.CreateTenant), nunca un subconjunto.
+//
+// Antes de esto, seedTenantRoles (pkg/database/tenant_provision_seed.go) creaba estos 5 roles
+// SIN ningún permiso — ninguna otra parte del código se los asignaba nunca, así que un tenant
+// nuevo que fuera a usar, por ejemplo, el rol "Cajero" tal cual se lo encontraba sin poder hacer
+// nada hasta que alguien entrara a Roles a marcarle casillas a mano.
+var defaultRolePermissions = map[string][][2]string{
+	"Supervisor": {
+		{"dashboard", "view"},
+		{"roles", "view"},
+		{"company", "view"},
+		{"contacts", "view"},
+		{"products", "view"},
+		{"inventory", "view"},
+		{"sales", "view"},
+		{"quotations", "view"},
+		{"receivables", "view"},
+		{"purchases", "view"},
+		{"payables", "view"},
+		{"cashbank", "view"}, {"cashbank", "arqueo"},
+		{"memberships", "view"},
+		{"subscription", "view"},
+	},
+	"Cajero": {
+		{"dashboard", "view"},
+		{"contacts", "view"},
+		{"products", "view"},
+		{"sales", "view"}, {"sales", "create"}, {"sales", "pos"},
+		{"quotations", "view"}, {"quotations", "convert"},
+		{"receivables", "view"}, {"receivables", "collect"},
+		{"cashbank", "view"}, {"cashbank", "open"}, {"cashbank", "close"},
+		{"cashbank", "movements"}, {"cashbank", "arqueo"},
+	},
+	"Vendedor": {
+		{"dashboard", "view"},
+		{"contacts", "view"}, {"contacts", "create"}, {"contacts", "edit"},
+		{"products", "view"},
+		{"sales", "view"}, {"sales", "create"}, {"sales", "pos"},
+		{"quotations", "view"}, {"quotations", "create"}, {"quotations", "edit"}, {"quotations", "convert"},
+		{"receivables", "view"}, {"receivables", "collect"},
+		{"memberships", "view"}, {"memberships", "create"}, {"memberships", "generate_sale"},
+		{"cashbank", "view"},
+	},
+	"Almacenero": {
+		{"dashboard", "view"},
+		{"contacts", "view"},
+		{"products", "view"}, {"products", "create"}, {"products", "edit"},
+		{"inventory", "view"}, {"inventory", "manage"},
+		{"inventory", "create_document"}, {"inventory", "confirm_document"}, {"inventory", "void_document"},
+		{"inventory", "transfer"}, {"inventory", "confirm_transfer"}, {"inventory", "cancel_transfer"},
+		{"inventory", "adjust"}, {"inventory", "import_adjustment"},
+		{"purchases", "view"}, {"purchases", "create"},
+	},
+	"Contador": {
+		{"dashboard", "view"},
+		{"company", "view"}, {"company", "edit"},
+		{"contacts", "view"},
+		{"sales", "view"},
+		{"purchases", "view"},
+		{"receivables", "view"}, {"receivables", "collect"}, {"receivables", "confirm_bn"},
+		{"payables", "view"}, {"payables", "pay"},
+		{"cashbank", "view"},
+		{"billing", "manage"}, {"billing", "send"}, {"billing", "credit_note"}, {"billing", "debit_note"},
+		{"billing", "despatch"}, {"billing", "advanced_docs"},
+		{"subscription", "view"}, {"subscription", "manage"},
+	},
+}
+
+// SeedDefaultRolePermissions asigna el set por defecto de defaultRolePermissions a cada rol del
+// sistema que todavía no tenga NINGÚN permiso asignado — pensada para llamarse una única vez,
+// al crear un tenant nuevo, justo después de SeedPermissions (para que los permisos referenciados
+// ya existan) y de asignarle el catálogo completo a Administrador.
+//
+// Deliberadamente nunca toca un rol que YA tenga algo asignado: no es una función de "reparación"
+// para tenants existentes (que pueden haber vaciado un rol a propósito, o ya haberlo configurado
+// distinto) — solo completa el estado inicial de un tenant recién creado.
+func (s *RoleService) SeedDefaultRolePermissions() error {
+	var roles []database.TenantRole
+	if err := s.db.Where("is_system = ?", true).Find(&roles).Error; err != nil {
+		return err
+	}
+	perms, err := s.AllPermissions()
+	if err != nil {
+		return err
+	}
+	idByKey := make(map[string]uint, len(perms))
+	for _, p := range perms {
+		idByKey[p.Module+"."+p.Action] = p.ID
+	}
+
+	for _, role := range roles {
+		want, ok := defaultRolePermissions[role.Name]
+		if !ok {
+			continue // Administrador (recibe todo aparte) o un rol sin default definido
+		}
+		existing, err := s.RolePermissions(role.ID)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			continue
+		}
+		var ids []uint
+		for _, ma := range want {
+			if id, ok := idByKey[ma[0]+"."+ma[1]]; ok {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if err := s.SetRolePermissions(role.ID, ids); err != nil {
+			return err
+		}
+	}
+	return nil
+}

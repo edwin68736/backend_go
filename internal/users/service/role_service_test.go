@@ -131,3 +131,126 @@ func TestSeedPermissions_Idempotent(t *testing.T) {
 		t.Fatalf("correrlo 2 veces no debe cambiar el tamaño del catálogo: first=%d second=%d", first, second)
 	}
 }
+
+// seedSystemRoles crea los 6 roles del sistema tal como lo hace
+// pkg/database/tenant_provision_seed.go:seedTenantRoles (sin ningún permiso).
+func seedSystemRoles(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	roles := []database.TenantRole{
+		{Name: "Administrador", IsSystem: true},
+		{Name: "Supervisor", IsSystem: true},
+		{Name: "Cajero", IsSystem: true},
+		{Name: "Vendedor", IsSystem: true},
+		{Name: "Almacenero", IsSystem: true},
+		{Name: "Contador", IsSystem: true},
+	}
+	if err := db.Create(&roles).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func roleByName(t *testing.T, db *gorm.DB, name string) database.TenantRole {
+	t.Helper()
+	var r database.TenantRole
+	if err := db.Where("name = ?", name).First(&r).Error; err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// TestSeedDefaultRolePermissions_AssignsNonEmptyDefaultsToEachSecondaryRole: el bug reportado
+// por el usuario — Supervisor/Cajero/Vendedor/Almacenero/Contador se creaban siempre sin ningún
+// permiso, y nada en el código se los asignaba nunca.
+func TestSeedDefaultRolePermissions_AssignsNonEmptyDefaultsToEachSecondaryRole(t *testing.T) {
+	db := setupRoleServiceTestDB(t)
+	svc := NewRoleService(db)
+	if err := svc.SeedPermissions(); err != nil {
+		t.Fatalf("SeedPermissions: %v", err)
+	}
+	seedSystemRoles(t, db)
+
+	if err := svc.SeedDefaultRolePermissions(); err != nil {
+		t.Fatalf("SeedDefaultRolePermissions: %v", err)
+	}
+
+	for _, name := range []string{"Supervisor", "Cajero", "Vendedor", "Almacenero", "Contador"} {
+		role := roleByName(t, db, name)
+		ids, err := svc.RolePermissions(role.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) == 0 {
+			t.Fatalf("%s debe recibir un set de permisos por defecto no vacío", name)
+		}
+	}
+}
+
+// TestSeedDefaultRolePermissions_NeverTouchesAdministrador: Administrador recibe el catálogo
+// COMPLETO por otra vía (TenantService.CreateTenant) — esta función no debe tocarlo ni
+// recortarlo a un subconjunto.
+func TestSeedDefaultRolePermissions_NeverTouchesAdministrador(t *testing.T) {
+	db := setupRoleServiceTestDB(t)
+	svc := NewRoleService(db)
+	if err := svc.SeedPermissions(); err != nil {
+		t.Fatalf("SeedPermissions: %v", err)
+	}
+	seedSystemRoles(t, db)
+
+	admin := roleByName(t, db, "Administrador")
+	all, err := svc.AllPermissions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	allIDs := make([]uint, len(all))
+	for i, p := range all {
+		allIDs[i] = p.ID
+	}
+	if err := svc.SetRolePermissions(admin.ID, allIDs); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.SeedDefaultRolePermissions(); err != nil {
+		t.Fatalf("SeedDefaultRolePermissions: %v", err)
+	}
+
+	after, err := svc.RolePermissions(admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(allIDs) {
+		t.Fatalf("Administrador debe seguir con el catálogo completo (%d), quedó con %d",
+			len(allIDs), len(after))
+	}
+}
+
+// TestSeedDefaultRolePermissions_NeverOverwritesAlreadyConfiguredRole: si un rol ya tiene algo
+// asignado (el tenant ya lo configuró, o se llama dos veces), no se pisa con el default.
+func TestSeedDefaultRolePermissions_NeverOverwritesAlreadyConfiguredRole(t *testing.T) {
+	db := setupRoleServiceTestDB(t)
+	svc := NewRoleService(db)
+	if err := svc.SeedPermissions(); err != nil {
+		t.Fatalf("SeedPermissions: %v", err)
+	}
+	seedSystemRoles(t, db)
+
+	cajero := roleByName(t, db, "Cajero")
+	var onePerm database.TenantPermission
+	if err := db.Where("module = ? AND action = ?", "dashboard", "view").First(&onePerm).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetRolePermissions(cajero.ID, []uint{onePerm.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.SeedDefaultRolePermissions(); err != nil {
+		t.Fatalf("SeedDefaultRolePermissions: %v", err)
+	}
+
+	got, err := svc.RolePermissions(cajero.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Cajero ya configurado manualmente (1 permiso) no debe pisarse con el default, got %d", len(got))
+	}
+}

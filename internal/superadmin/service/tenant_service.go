@@ -191,6 +191,9 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	if err = roleSvc.SetRolePermissions(adminRole.ID, permIDs); err != nil {
 		return nil, fmt.Errorf("asignando permisos al Administrador: %w", err)
 	}
+	if err = roleSvc.SeedDefaultRolePermissions(); err != nil {
+		return nil, fmt.Errorf("asignando permisos por defecto a los roles del sistema: %w", err)
+	}
 
 	// 5–6. Suscripción + billing cycle (módulos según plan vía syncTenantModulesFromPlanTx).
 	// El descuento lo calcula ProvisionInitialSubscription según el plan y los meses elegidos
