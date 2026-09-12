@@ -54,6 +54,8 @@ func Execute(args []string) int {
 		return RunAuditMigrationHistoryErrors(args[1:])
 	case "reset-migration-history":
 		return RunResetMigrationHistory(args[1:])
+	case "diagnose-tenant-permissions":
+		return RunDiagnoseTenantPermissions(args[1:])
 	case "payment":
 		return RunPayment(args[1:])
 	case "validate-prepayment-phase0":
@@ -88,6 +90,7 @@ func printUsage() {
   backfill-sale-payment-cash-session  cash_session_id histórico en tenant_sale_payments [--tenant=slug] [--dry-run] [--active-only]
   audit-migration-history-errors  Detecta fallos de migración/backfill mal registrados como éxito [--active-only]
   reset-migration-history   Reparación puntual: borra historial de un tenant/versión para reintentar [--tenant=slug] [--version=n] [--type=schema|backfill] [--dry-run]
+  diagnose-tenant-permissions  Compara catálogo/asignación de permisos de un tenant contra el código vigente [--ruc=n | --slug=s] [--role=nombre]
   payment audit|repair|verify [--slug=tenant]  Dominio financiero (métodos/condiciones/tributario)
   validate-prepayment-phase0 [--slug=demo]   E2E Fase 0: boleta+factura anticipo SUNAT Beta
 
