@@ -160,11 +160,14 @@ type PrintFiscalContext struct {
 	DetraccionPaymentMethodCode  string         `json:"detraccion_payment_method_code,omitempty"`
 	DetraccionPaymentMethodLabel string         `json:"detraccion_payment_method_label,omitempty"`
 	DetraccionNetPayable         float64        `json:"detraccion_net_payable,omitempty"`
+	// N° de constancia de pago (opcional, 1001 y 1004) — solo referencia impresa, no viaja a SUNAT.
+	// Ver database.TenantSaleDetraccion.PayConstancyNumber.
+	DetraccionPayConstancyNumber string `json:"detraccion_pay_constancy_number,omitempty"`
 	// DetraccionLegendText es la leyenda SUNAT (catálogo 2006) que debe figurar en todo
 	// comprobante sujeto a detracción — mismo texto que se envía en el XML vía
 	// pkg/facturador/legend.go, pero el PDF local no lo mostraba (bug reportado: la
 	// factura no muestra la misma "Información Adicional" que el PDF del facturador).
-	DetraccionLegendText       string                     `json:"detraccion_legend_text,omitempty"`
+	DetraccionLegendText string `json:"detraccion_legend_text,omitempty"`
 	// Campos exclusivos de 1004 (transporte de carga), vacíos en 1001.
 	DetraccionValorReferencial float64 `json:"detraccion_valor_referencial,omitempty"`
 	DetraccionMtcRegistro      string  `json:"detraccion_mtc_registro,omitempty"`
@@ -173,6 +176,9 @@ type PrintFiscalContext struct {
 	DetraccionPuntoDestino     string  `json:"detraccion_punto_destino,omitempty"`
 	DetraccionCargaEfectivaTm  float64 `json:"detraccion_carga_efectiva_tm,omitempty"`
 	DetraccionCargaUtilTm      float64 `json:"detraccion_carga_util_tm,omitempty"`
+	// Detalle del viaje (obligatorio en 1004) — solo referencia impresa, no viaja a SUNAT. Ver
+	// database.TenantSaleDetraccion.TripDetail.
+	DetraccionTripDetail       string                     `json:"detraccion_trip_detail,omitempty"`
 	HasPrepaymentEmit          bool                       `json:"has_prepayment_emit,omitempty"`
 	PrepaymentLabel            string                     `json:"prepayment_label,omitempty"`
 	PrepaymentAffectationGroup string                     `json:"prepayment_affectation_group,omitempty"`
@@ -832,6 +838,7 @@ func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *Prin
 		fc.DetraccionPaymentMethodLabel = paymentMethodLabel
 		fc.DetraccionPaymentMethodCode = det.PaymentMethodCode
 		fc.DetraccionNetPayable = money.RoundSunat(det.NetPayablePen)
+		fc.DetraccionPayConstancyNumber = det.PayConstancyNumber
 		if strings.TrimSpace(det.OperationTypeCode) == detraccionpkg.OpDetraccionTransporte {
 			fc.DetraccionLegendText = detraccionpkg.Legend2006TextTransporte
 			if det.ValorReferencialPen != nil {
@@ -847,6 +854,7 @@ func enrichFiscalPrintData(db *gorm.DB, saleID uint, saleTotal float64, pd *Prin
 			if det.CargaUtilTm != nil {
 				fc.DetraccionCargaUtilTm = *det.CargaUtilTm
 			}
+			fc.DetraccionTripDetail = det.TripDetail
 		} else {
 			fc.DetraccionLegendText = detraccionpkg.Legend2006Text
 		}

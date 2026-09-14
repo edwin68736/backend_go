@@ -36,6 +36,7 @@ func transporteSaleInput() *SaleInput {
 		PuntoDestino:           "JR. BUENAVISTA 234 - ANCASH - CASMA - CASMA",
 		CargaEfectivaTm:        12,
 		CargaUtilTm:            15,
+		TripDetail:             "Transporte de cemento en bolsas, viaje directo sin trasbordo",
 	}
 }
 
@@ -70,6 +71,9 @@ func TestPersist1004_GuardaCamposDeTransporte(t *testing.T) {
 	if row.CargaEfectivaTm == nil || *row.CargaEfectivaTm != 12 {
 		t.Errorf("carga_efectiva_tm = %v, want 12", row.CargaEfectivaTm)
 	}
+	if row.TripDetail != transporteSaleInput().TripDetail {
+		t.Errorf("trip_detail no persistido: %q", row.TripDetail)
+	}
 
 	// Releer de la BD, no solo el valor en memoria devuelto por Persist.
 	var reloaded database.TenantSaleDetraccion
@@ -81,8 +85,9 @@ func TestPersist1004_GuardaCamposDeTransporte(t *testing.T) {
 	}
 }
 
-// Los 7 campos son obligatorios (formulario oficial de SUNAT los marca con asterisco). Verifica
-// cada uno por separado para no depender de qué validación corre primero.
+// Origen, destino, carga efectiva, carga útil y valor referencial son obligatorios (igual que en
+// facturador-tukifac, el sistema anterior). Verifica cada uno por separado para no depender de
+// qué validación corre primero.
 func TestPersist1004_RechazaSinCamposObligatorios(t *testing.T) {
 	db := setupDetraccionTestDB(t)
 	svc := NewService(db)
@@ -98,13 +103,12 @@ func TestPersist1004_RechazaSinCamposObligatorios(t *testing.T) {
 		name   string
 		mutate func(*SaleInput)
 	}{
-		{"sin registro MTC", func(s *SaleInput) { s.MtcRegistro = "" }},
-		{"sin configuración vehicular", func(s *SaleInput) { s.ConfiguracionVehicular = "" }},
 		{"sin punto origen", func(s *SaleInput) { s.PuntoOrigen = "" }},
 		{"sin punto destino", func(s *SaleInput) { s.PuntoDestino = "" }},
 		{"sin carga efectiva", func(s *SaleInput) { s.CargaEfectivaTm = 0 }},
 		{"sin carga útil", func(s *SaleInput) { s.CargaUtilTm = 0 }},
 		{"sin valor referencial", func(s *SaleInput) { s.ValorReferencialPen = 0 }},
+		{"sin detalle de viaje", func(s *SaleInput) { s.TripDetail = "" }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -116,6 +120,41 @@ func TestPersist1004_RechazaSinCamposObligatorios(t *testing.T) {
 				t.Fatalf("%s: esperaba error", c.name)
 			}
 		})
+	}
+}
+
+// Registro MTC y configuración vehicular son opcionales (a diferencia de los otros 5 campos de
+// arriba): el sistema anterior nunca los pidió ni los envió a SUNAT y jamás tuvo problemas de
+// validación por eso. Persist debe aceptar la venta sin ellos, y el comprobante no debe llevar
+// AdditionalItemProperty vacíos para esos dos códigos (3006/3007).
+func TestPersist1004_MtcYConfiguracionVehicularSonOpcionales(t *testing.T) {
+	db := setupDetraccionTestDB(t)
+	svc := NewService(db)
+
+	in := transporteSaleInput()
+	in.MtcRegistro = ""
+	in.ConfiguracionVehicular = ""
+
+	row, err := svc.Persist(PersistInput{
+		SaleID: 1, OperationTypeCode: sunatdet.OpDetraccionTransporte, SunatDocCode: "01",
+		Currency: "PEN", SaleTotal: 2000, BankAccount: "0004-123",
+		Detraccion: in,
+	})
+	if err != nil {
+		t.Fatalf("Persist no debía rechazar la venta sin MTC/configuración vehicular: %v", err)
+	}
+
+	payload := &facturador.InvoicePayload{
+		Details: []facturador.InvoiceDetail{{Descripcion: "Servicio de transporte de carga"}},
+	}
+	ApplyToInvoicePayload(payload, row)
+	for _, a := range payload.Details[0].Atributos {
+		if a.Code == "3006" || a.Code == "3007" {
+			t.Errorf("no debía enviarse AdditionalItemProperty %s vacío, got %+v", a.Code, a)
+		}
+	}
+	if len(payload.Details[0].Atributos) != 5 {
+		t.Errorf("esperaba 5 AdditionalItemProperty (sin 3006/3007), got %d", len(payload.Details[0].Atributos))
 	}
 }
 
@@ -197,6 +236,14 @@ func TestApplyToInvoicePayload_1004(t *testing.T) {
 	for code, val := range want {
 		if codes[code] != val {
 			t.Errorf("AdditionalItemProperty %s = %q, want %q", code, codes[code], val)
+		}
+	}
+	// Detalle del viaje es solo referencia interna (impresión) — no existe un nodo UBL equivalente
+	// en el payload de factura de este sistema (ver TripDetail en migrations.go), así que no debe
+	// aparecer entre los AdditionalItemProperty enviados a SUNAT.
+	for _, a := range payload.Details[0].Atributos {
+		if strings.Contains(a.Value, "Transporte de cemento") {
+			t.Errorf("el detalle del viaje no debe enviarse como AdditionalItemProperty: %+v", a)
 		}
 	}
 }

@@ -1505,19 +1505,31 @@ type TenantSaleDetraccion struct {
 	BnConfirmationStatus    string     `gorm:"size:20;default:'pending'" json:"bn_confirmation_status"`
 	BnConfirmedAt           *time.Time `json:"bn_confirmed_at,omitempty"`
 	BnConfirmationReference string     `gorm:"size:100" json:"bn_confirmation_reference,omitempty"`
+	// N° de constancia de pago de la detracción (opcional, aplica a 1001 y 1004). Solo referencia
+	// administrativa capturada por el usuario al momento de la venta — no viaja al XML SUNAT, igual
+	// que en el sistema anterior (facturador-tukifac: campo "N° Constancia de pago - detracción",
+	// se imprime en el comprobante pero no forma parte del UBL). No confundir con
+	// BnConfirmationReference, que se llena DESPUÉS al confirmar la acreditación BN en Cobranzas.
+	PayConstancyNumber string `gorm:"size:50" json:"pay_constancy_number,omitempty"`
 	// Campos exclusivos de 1004 (transporte de carga), vacíos/NULL en 1001. Van al comprobante
 	// como cac:InvoiceLine/cac:Item/cac:AdditionalItemProperty (Catálogo N° 55 SUNAT) — no existe
 	// un nodo de cabecera para esto; SUNAT lo exige a nivel de ítem. Captura manual: ni este
 	// sistema ni el de referencia calculan las tablas de tarifas MTC (D.S. 020-2021-MTC).
-	ValorReferencialPen    *float64  `gorm:"type:decimal(15,2)" json:"valor_referencial_pen,omitempty"`
-	MtcRegistro            string    `gorm:"size:30" json:"mtc_registro,omitempty"`
-	ConfiguracionVehicular string    `gorm:"size:10" json:"configuracion_vehicular,omitempty"`
-	PuntoOrigen            string    `gorm:"size:200" json:"punto_origen,omitempty"`
-	PuntoDestino           string    `gorm:"size:200" json:"punto_destino,omitempty"`
-	CargaEfectivaTm        *float64  `gorm:"type:decimal(10,2)" json:"carga_efectiva_tm,omitempty"`
-	CargaUtilTm            *float64  `gorm:"type:decimal(10,2)" json:"carga_util_tm,omitempty"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	ValorReferencialPen    *float64 `gorm:"type:decimal(15,2)" json:"valor_referencial_pen,omitempty"`
+	MtcRegistro            string   `gorm:"size:30" json:"mtc_registro,omitempty"`
+	ConfiguracionVehicular string   `gorm:"size:10" json:"configuracion_vehicular,omitempty"`
+	PuntoOrigen            string   `gorm:"size:200" json:"punto_origen,omitempty"`
+	PuntoDestino           string   `gorm:"size:200" json:"punto_destino,omitempty"`
+	CargaEfectivaTm        *float64 `gorm:"type:decimal(10,2)" json:"carga_efectiva_tm,omitempty"`
+	CargaUtilTm            *float64 `gorm:"type:decimal(10,2)" json:"carga_util_tm,omitempty"`
+	// Detalle del viaje (obligatorio en 1004, igual que en el sistema anterior). Ahí, viaja al XML
+	// como cac:Despatch/cbc:Instructions (estructura UBL distinta que este sistema no implementa
+	// para la factura); aquí queda como referencia interna — se imprime en el comprobante, pero NO
+	// se envía a SUNAT (el payload del facturador no tiene un nodo equivalente para factura/boleta,
+	// solo para guía de remisión, un documento distinto). Ver internal/detraccion/service.go.
+	TripDetail string    `gorm:"size:500" json:"trip_detail,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 func (TenantSaleDetraccion) TableName() string { return "tenant_sale_detraccion" }

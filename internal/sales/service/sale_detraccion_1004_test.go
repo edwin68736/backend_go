@@ -45,6 +45,7 @@ func transporte1004Input(contactID, seriesID uint) CreateSaleInput {
 			GoodCode: "027", ValorReferencialPen: 1232.28, MtcRegistro: "15X123CNG",
 			ConfiguracionVehicular: "C3", PuntoOrigen: "AV. INDUSTRIAL 578 - LIMA",
 			PuntoDestino: "JR. BUENAVISTA 234 - CASMA", CargaEfectivaTm: 12, CargaUtilTm: 15,
+			TripDetail: "Transporte de mercadería general, viaje directo",
 		},
 	}
 }

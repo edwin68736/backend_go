@@ -28,9 +28,14 @@ func NewService(db *gorm.DB) *Service {
 type SaleInput struct {
 	GoodCode          string `json:"good_code"`
 	PaymentMethodCode string `json:"payment_method_code,omitempty"`
-	// Campos exclusivos de 1004 (transporte de carga por vía terrestre). Todos obligatorios
-	// cuando OperationTypeCode=1004 (ver evaluate) — SUNAT los exige como
-	// cac:InvoiceLine/cac:Item/cac:AdditionalItemProperty (Catálogo N° 55), captura manual.
+	// N° de constancia de pago (opcional, 1001 y 1004) — ver comentario en
+	// database.TenantSaleDetraccion.PayConstancyNumber. Solo referencia, no viaja a SUNAT.
+	PayConstancyNumber string `json:"pay_constancy_number,omitempty"`
+	// Campos exclusivos de 1004 (transporte de carga por vía terrestre), enviados al comprobante
+	// como cac:InvoiceLine/cac:Item/cac:AdditionalItemProperty (Catálogo N° 55). Obligatorios
+	// cuando OperationTypeCode=1004 (ver validateTransporteFields): valor referencial, origen,
+	// destino, carga efectiva, carga útil y detalle del viaje. MtcRegistro/ConfiguracionVehicular
+	// son opcionales.
 	ValorReferencialPen    float64 `json:"valor_referencial_pen,omitempty"`
 	MtcRegistro            string  `json:"mtc_registro,omitempty"`
 	ConfiguracionVehicular string  `json:"configuracion_vehicular,omitempty"`
@@ -38,20 +43,23 @@ type SaleInput struct {
 	PuntoDestino           string  `json:"punto_destino,omitempty"`
 	CargaEfectivaTm        float64 `json:"carga_efectiva_tm,omitempty"`
 	CargaUtilTm            float64 `json:"carga_util_tm,omitempty"`
+	// Detalle del viaje (obligatorio en 1004) — ver comentario en
+	// database.TenantSaleDetraccion.TripDetail. Solo referencia interna, no viaja a SUNAT.
+	TripDetail string `json:"trip_detail,omitempty"`
 }
 
 // PersistInput datos completos para guardar detracción.
 type PersistInput struct {
-	SaleID            uint
-	OperationTypeCode string
-	SunatDocCode      string
-	Currency          string
-	ExchangeRate      *float64
-	SaleTotal         float64
-	GravadoTotal      float64
-	BankAccount       string
-	PaymentMethodCode string
-	Detraccion        *SaleInput
+	SaleID              uint
+	OperationTypeCode   string
+	SunatDocCode        string
+	Currency            string
+	ExchangeRate        *float64
+	SaleTotal           float64
+	GravadoTotal        float64
+	BankAccount         string
+	PaymentMethodCode   string
+	Detraccion          *SaleInput
 	ContactEsPercepcion bool
 }
 
@@ -92,17 +100,17 @@ func (s *Service) evaluate(in PersistInput) (sunatdet.CalcResult, error) {
 	})
 }
 
-// validateTransporteFields exige los datos que el formulario oficial de SUNAT (caso práctico
-// cpe.sunat.gob.pe) marca con asterisco para 1004: registro MTC, configuración vehicular,
-// origen, destino, carga efectiva, carga útil y valor referencial. Todos van al comprobante como
-// AdditionalItemProperty (ver ApplyToInvoicePayload); sin ellos el XML quedaría incompleto.
+// validateTransporteFields exige los datos que el sistema anterior (facturador-tukifac) también
+// pedía para 1004: origen, destino, carga efectiva, carga útil, valor referencial y detalle del
+// viaje — esos sí viajan al comprobante en el sistema anterior (cac:Delivery/Despatch/
+// DeliveryTerms/Instructions), y aquí como AdditionalItemProperty (ver ApplyToInvoicePayload),
+// salvo el detalle del viaje: ver comentario de TripDetail más arriba, es referencia interna.
+// Registro MTC y configuración vehicular quedan OPCIONALES a propósito: son datos que el catálogo
+// 55 de SUNAT contempla para este caso, pero el sistema anterior nunca los pidió ni los envió (los
+// tenía comentados en su catálogo) y jamás tuvo problemas para que SUNAT acepte el comprobante sin
+// ellos — exigirlos aquí solo le agregaba fricción al usuario sin ganancia real de cumplimiento.
+// Se siguen aceptando y enviando si el usuario los completa (ver transporteAttributes).
 func validateTransporteFields(in *SaleInput) error {
-	if strings.TrimSpace(in.MtcRegistro) == "" {
-		return errors.New("el registro MTC del transportista es obligatorio para detracción por transporte de carga")
-	}
-	if strings.TrimSpace(in.ConfiguracionVehicular) == "" {
-		return errors.New("la configuración vehicular es obligatoria para detracción por transporte de carga")
-	}
 	if strings.TrimSpace(in.PuntoOrigen) == "" {
 		return errors.New("el punto de origen es obligatorio para detracción por transporte de carga")
 	}
@@ -117,6 +125,9 @@ func validateTransporteFields(in *SaleInput) error {
 	}
 	if in.ValorReferencialPen <= 0 {
 		return errors.New("el valor referencial del servicio de transporte es obligatorio para detracción por transporte de carga")
+	}
+	if strings.TrimSpace(in.TripDetail) == "" {
+		return errors.New("el detalle del viaje es obligatorio para detracción por transporte de carga")
 	}
 	return nil
 }
@@ -150,6 +161,9 @@ func (s *Service) Persist(in PersistInput) (*database.TenantSaleDetraccion, erro
 		CreatedAt:            time.Now(),
 		UpdatedAt:            time.Now(),
 	}
+	if in.Detraccion != nil {
+		row.PayConstancyNumber = strings.TrimSpace(in.Detraccion.PayConstancyNumber)
+	}
 	if op == sunatdet.OpDetraccionTransporte && in.Detraccion != nil {
 		vr := in.Detraccion.ValorReferencialPen
 		ce := in.Detraccion.CargaEfectivaTm
@@ -161,6 +175,7 @@ func (s *Service) Persist(in PersistInput) (*database.TenantSaleDetraccion, erro
 		row.PuntoDestino = strings.TrimSpace(in.Detraccion.PuntoDestino)
 		row.CargaEfectivaTm = &ce
 		row.CargaUtilTm = &cu
+		row.TripDetail = strings.TrimSpace(in.Detraccion.TripDetail)
 	}
 	if err := s.db.Save(&row).Error; err != nil {
 		return nil, err
@@ -223,7 +238,10 @@ func transporteAttributes(row *database.TenantSaleDetraccion) []facturador.Detai
 		}
 		return strconv.FormatFloat(*v, 'f', 2, 64)
 	}
-	return []facturador.DetailAttribute{
+	// Registro MTC (3006) y configuración vehicular (3007) son opcionales (ver
+	// validateTransporteFields) — se omiten del comprobante si el usuario no los completó, en vez
+	// de mandar un AdditionalItemProperty con Value vacío.
+	all := []facturador.DetailAttribute{
 		{Code: "3006", Name: "Detracciones: Transporte Bienes vía terrestre – Numero Registro MTC", Value: row.MtcRegistro},
 		{Code: "3007", Name: "Detracciones: Transporte Bienes vía terrestre – Configuración Vehicular", Value: row.ConfiguracionVehicular},
 		{Code: "3008", Name: "Detracciones: Transporte Bienes vía terrestre – Punto de Origen", Value: row.PuntoOrigen},
@@ -232,4 +250,12 @@ func transporteAttributes(row *database.TenantSaleDetraccion) []facturador.Detai
 		{Code: "3013", Name: "Detracciones: Transporte Bienes – Carga Efectiva en TM por Vehículo", Value: f2(row.CargaEfectivaTm)},
 		{Code: "3014", Name: "Detracciones: Transporte Bienes – Carga Útil en TM del Vehículo en Viaje", Value: f2(row.CargaUtilTm)},
 	}
+	attrs := make([]facturador.DetailAttribute, 0, len(all))
+	for _, a := range all {
+		if strings.TrimSpace(a.Value) == "" {
+			continue
+		}
+		attrs = append(attrs, a)
+	}
+	return attrs
 }
