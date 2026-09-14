@@ -34,6 +34,7 @@ type BulkImportItem struct {
 	PurchasePrice      *float64 `json:"purchase_price"` // opcional; nil = no enviar / no sobrescribir en update
 	Unit               string   `json:"unit"`
 	CategoryName       string   `json:"category_name"`
+	BrandName          string   `json:"brand_name"` // opcional; find-or-create por nombre, igual que CategoryName
 	IgvAffectationType string   `json:"igv_affectation_type"`
 	PriceIncludesIgv   bool     `json:"price_includes_igv"`
 	ManageStock        bool     `json:"manage_stock"`
@@ -115,6 +116,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 	taxCfg := tax.LoadFromDB(s.db)
 	result := &BulkImportResult{Failed: make([]BulkImportFail, 0)}
 	catCache := make(map[string]uint)
+	brandCache := make(map[string]uint)
 	codesProcessedInBatch := make(map[string]struct{})
 
 	for i := 0; i < len(items); i++ {
@@ -207,6 +209,23 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			catID = existing.CategoryID
 		}
 
+		var brandID *uint
+		brandProvided := strings.TrimSpace(item.BrandName) != ""
+		if brandProvided {
+			id, err := s.resolveBrandIDByName(item.BrandName, brandCache)
+			if err != nil {
+				result.Failed = append(result.Failed, BulkImportFail{
+					Row: item.RowNumber, Name: item.Name, Error: err.Error(),
+				})
+				continue
+			}
+			if id > 0 {
+				brandID = &id
+			}
+		} else if hasExisting {
+			brandID = existing.BrandID
+		}
+
 		catalogType := strings.TrimSpace(strings.ToLower(item.CatalogType))
 		if catalogType == "" {
 			if hasExisting && strings.TrimSpace(existing.Type) != "" {
@@ -222,6 +241,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 
 		input := ProductInput{
 			CategoryID:         catID,
+			BrandID:            brandID,
 			Code:               code,
 			Name:               strings.TrimSpace(item.Name),
 			Description:        strings.TrimSpace(item.Description),
@@ -387,6 +407,33 @@ func (s *ProductService) resolveCategoryIDByName(name string, cache map[string]u
 	created, err := s.CreateCategory(strings.TrimSpace(name), "", nil)
 	if err != nil {
 		return 0, fmt.Errorf("crear categoría %q: %w", name, err)
+	}
+	cache[key] = created.ID
+	return created.ID, nil
+}
+
+// resolveBrandIDByName busca la marca por nombre (case-insensitive) y la crea si no existe —
+// misma lógica que resolveCategoryIDByName, columna "marca" opcional en la plantilla de Excel.
+func (s *ProductService) resolveBrandIDByName(name string, cache map[string]uint) (uint, error) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return 0, nil
+	}
+	if id, ok := cache[key]; ok {
+		return id, nil
+	}
+	var brand database.TenantBrand
+	err := s.db.Where("LOWER(name) = ?", key).First(&brand).Error
+	if err == nil {
+		cache[key] = brand.ID
+		return brand.ID, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, err
+	}
+	created, err := s.CreateBrand(strings.TrimSpace(name), "", nil)
+	if err != nil {
+		return 0, fmt.Errorf("crear marca %q: %w", name, err)
 	}
 	cache[key] = created.ID
 	return created.ID, nil
