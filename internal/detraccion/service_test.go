@@ -85,9 +85,37 @@ func TestPersist1004_GuardaCamposDeTransporte(t *testing.T) {
 	}
 }
 
-// Origen, destino, carga efectiva, carga útil y valor referencial son obligatorios (igual que en
-// facturador-tukifac, el sistema anterior). Verifica cada uno por separado para no depender de
-// qué validación corre primero.
+// Decisión de negocio (ver evaluate): el valor referencial es una captura manual sin tabla oficial
+// que la respalde en este sistema, y NUNCA debe usarse para calcular la detracción — ni siquiera
+// cuando el usuario lo ingresa y es mayor al importe de la venta. Solo es informativo/impreso. Esto
+// difiere a propósito de calculator.go (que sí implementa la comparación "el mayor" de la R.S.
+// 073-2006-SUNAT Art. 4 como primitiva reutilizable, ver TestEvaluateDetraccion1004_ValorReferencialMayor)
+// — a nivel de servicio, deliberadamente no se invoca esa comparación.
+func TestPersist1004_ValorReferencialNuncaAumentaLaDetraccion(t *testing.T) {
+	db := setupDetraccionTestDB(t)
+	svc := NewService(db)
+
+	in := transporteSaleInput()
+	in.ValorReferencialPen = 999999 // muy por encima del importe de la venta (2000)
+
+	row, err := svc.Persist(PersistInput{
+		SaleID: 1, OperationTypeCode: sunatdet.OpDetraccionTransporte, SunatDocCode: "01",
+		Currency: "PEN", SaleTotal: 2000, BankAccount: "0004-123",
+		Detraccion: in,
+	})
+	if err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	if row.DetractionAmountPen != 80 {
+		t.Errorf("un valor referencial alto no debe aumentar la detracción: detraction_amount_pen = %v, want 80 (4%% de la venta real)", row.DetractionAmountPen)
+	}
+	if row.ValorReferencialPen == nil || *row.ValorReferencialPen != 999999 {
+		t.Errorf("el valor referencial sí debe persistirse para mostrarse en el PDF, aunque no afecte el cálculo: %v", row.ValorReferencialPen)
+	}
+}
+
+// Origen y destino son los únicos campos obligatorios de 1004: lo mínimo para identificar el
+// servicio. Verifica cada uno por separado para no depender de qué validación corre primero.
 func TestPersist1004_RechazaSinCamposObligatorios(t *testing.T) {
 	db := setupDetraccionTestDB(t)
 	svc := NewService(db)
@@ -105,10 +133,6 @@ func TestPersist1004_RechazaSinCamposObligatorios(t *testing.T) {
 	}{
 		{"sin punto origen", func(s *SaleInput) { s.PuntoOrigen = "" }},
 		{"sin punto destino", func(s *SaleInput) { s.PuntoDestino = "" }},
-		{"sin carga efectiva", func(s *SaleInput) { s.CargaEfectivaTm = 0 }},
-		{"sin carga útil", func(s *SaleInput) { s.CargaUtilTm = 0 }},
-		{"sin valor referencial", func(s *SaleInput) { s.ValorReferencialPen = 0 }},
-		{"sin detalle de viaje", func(s *SaleInput) { s.TripDetail = "" }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -123,17 +147,25 @@ func TestPersist1004_RechazaSinCamposObligatorios(t *testing.T) {
 	}
 }
 
-// Registro MTC y configuración vehicular son opcionales (a diferencia de los otros 5 campos de
-// arriba): el sistema anterior nunca los pidió ni los envió a SUNAT y jamás tuvo problemas de
-// validación por eso. Persist debe aceptar la venta sin ellos, y el comprobante no debe llevar
-// AdditionalItemProperty vacíos para esos dos códigos (3006/3007).
-func TestPersist1004_MtcYConfiguracionVehicularSonOpcionales(t *testing.T) {
+// Registro MTC, configuración vehicular, carga efectiva, carga útil, detalle del viaje y valor
+// referencial son opcionales: ninguno es obligatorio en el esquema UBL 2.1 de SUNAT
+// (cac:AdditionalItemProperty tiene cardinalidad 0..n), y calcular el valor referencial real
+// exige la tabla oficial del MTC (D.S. 020-2021-MTC) que este sistema no tiene integrada — la
+// propia norma permite usar solo el importe de la operación cuando no hay valor referencial
+// determinable (ver validateTransporteFields). Persist debe aceptar la venta sin ellos, calcular
+// la detracción sobre el importe de la venta, y el comprobante no debe llevar AdditionalItemProperty
+// vacíos ni en "0.00" para los códigos correspondientes.
+func TestPersist1004_CamposDescriptivosSonOpcionales(t *testing.T) {
 	db := setupDetraccionTestDB(t)
 	svc := NewService(db)
 
 	in := transporteSaleInput()
 	in.MtcRegistro = ""
 	in.ConfiguracionVehicular = ""
+	in.CargaEfectivaTm = 0
+	in.CargaUtilTm = 0
+	in.TripDetail = ""
+	in.ValorReferencialPen = 0
 
 	row, err := svc.Persist(PersistInput{
 		SaleID: 1, OperationTypeCode: sunatdet.OpDetraccionTransporte, SunatDocCode: "01",
@@ -141,7 +173,13 @@ func TestPersist1004_MtcYConfiguracionVehicularSonOpcionales(t *testing.T) {
 		Detraccion: in,
 	})
 	if err != nil {
-		t.Fatalf("Persist no debía rechazar la venta sin MTC/configuración vehicular: %v", err)
+		t.Fatalf("Persist no debía rechazar la venta sin los campos descriptivos opcionales: %v", err)
+	}
+	if row.CargaEfectivaTm != nil || row.CargaUtilTm != nil || row.ValorReferencialPen != nil {
+		t.Errorf("valor referencial/carga efectiva/útil sin completar deben quedar nil, got vr=%v ce=%v cu=%v", row.ValorReferencialPen, row.CargaEfectivaTm, row.CargaUtilTm)
+	}
+	if row.DetractionAmountPen != 80 {
+		t.Errorf("sin valor referencial, la detracción debe calcularse sobre el importe de la venta: detraction_amount_pen = %v, want 80 (4%% de 2000)", row.DetractionAmountPen)
 	}
 
 	payload := &facturador.InvoicePayload{
@@ -149,12 +187,12 @@ func TestPersist1004_MtcYConfiguracionVehicularSonOpcionales(t *testing.T) {
 	}
 	ApplyToInvoicePayload(payload, row)
 	for _, a := range payload.Details[0].Atributos {
-		if a.Code == "3006" || a.Code == "3007" {
+		if a.Code == "3006" || a.Code == "3007" || a.Code == "3010" || a.Code == "3013" || a.Code == "3014" {
 			t.Errorf("no debía enviarse AdditionalItemProperty %s vacío, got %+v", a.Code, a)
 		}
 	}
-	if len(payload.Details[0].Atributos) != 5 {
-		t.Errorf("esperaba 5 AdditionalItemProperty (sin 3006/3007), got %d", len(payload.Details[0].Atributos))
+	if len(payload.Details[0].Atributos) != 2 {
+		t.Errorf("esperaba 2 AdditionalItemProperty (origen, destino), got %d", len(payload.Details[0].Atributos))
 	}
 }
 

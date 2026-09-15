@@ -33,9 +33,10 @@ type SaleInput struct {
 	PayConstancyNumber string `json:"pay_constancy_number,omitempty"`
 	// Campos exclusivos de 1004 (transporte de carga por vía terrestre), enviados al comprobante
 	// como cac:InvoiceLine/cac:Item/cac:AdditionalItemProperty (Catálogo N° 55). Obligatorios
-	// cuando OperationTypeCode=1004 (ver validateTransporteFields): valor referencial, origen,
-	// destino, carga efectiva, carga útil y detalle del viaje. MtcRegistro/ConfiguracionVehicular
-	// son opcionales.
+	// cuando OperationTypeCode=1004 (ver validateTransporteFields): solo origen y destino.
+	// ValorReferencialPen, CargaEfectivaTm, CargaUtilTm, MtcRegistro, ConfiguracionVehicular y
+	// TripDetail son opcionales. ValorReferencialPen además NUNCA participa en el cálculo de la
+	// detracción (decisión de negocio, ver evaluate) — es puramente informativo/impreso.
 	ValorReferencialPen    float64 `json:"valor_referencial_pen,omitempty"`
 	MtcRegistro            string  `json:"mtc_registro,omitempty"`
 	ConfiguracionVehicular string  `json:"configuracion_vehicular,omitempty"`
@@ -96,38 +97,39 @@ func (s *Service) evaluate(in PersistInput) (sunatdet.CalcResult, error) {
 		BankAccount:         in.BankAccount,
 		PaymentMethodCode:   paymentCode,
 		ContactEsPercepcion: in.ContactEsPercepcion,
-		ValorReferencialPEN: in.Detraccion.ValorReferencialPen,
+		// ValorReferencialPEN deliberadamente NO se envía: a pedido del negocio, el valor
+		// referencial es una captura manual sin tabla oficial que la respalde en este sistema, y no
+		// debe poder inflar la detracción por encima de lo que realmente se vendió. La detracción de
+		// 1004 se calcula siempre sobre el importe real de la venta; el campo queda solo para
+		// mostrarse impreso en el comprobante (ver PrintFiscalContext.detraccion_valor_referencial).
 	})
 }
 
-// validateTransporteFields exige los datos que el sistema anterior (facturador-tukifac) también
-// pedía para 1004: origen, destino, carga efectiva, carga útil, valor referencial y detalle del
-// viaje — esos sí viajan al comprobante en el sistema anterior (cac:Delivery/Despatch/
-// DeliveryTerms/Instructions), y aquí como AdditionalItemProperty (ver ApplyToInvoicePayload),
-// salvo el detalle del viaje: ver comentario de TripDetail más arriba, es referencia interna.
-// Registro MTC y configuración vehicular quedan OPCIONALES a propósito: son datos que el catálogo
-// 55 de SUNAT contempla para este caso, pero el sistema anterior nunca los pidió ni los envió (los
-// tenía comentados en su catálogo) y jamás tuvo problemas para que SUNAT acepte el comprobante sin
-// ellos — exigirlos aquí solo le agregaba fricción al usuario sin ganancia real de cumplimiento.
-// Se siguen aceptando y enviando si el usuario los completa (ver transporteAttributes).
+// validateTransporteFields exige, para 1004, solo origen y destino: lo mínimo para identificar el
+// servicio. Todo lo demás queda OPCIONAL a propósito:
+//   - Carga efectiva, carga útil, detalle del viaje, registro MTC y configuración vehicular: el
+//     manual técnico oficial de SUNAT (Guía de Elaboración de Documentos XML Factura Electrónica
+//     UBL 2.1) marca cac:AdditionalItemProperty — el nodo que aloja estos datos (Catálogo N° 55)
+//     — con cardinalidad "0..n" (ninguno es obligatorio a nivel de esquema), y el propio caso
+//     práctico oficial de SUNAT tampoco exige "Detalle del viaje" (que además nunca viaja al
+//     comprobante, ver TripDetail).
+//   - Valor referencial: el Art. 4 de la R.S. 073-2006-SUNAT exige detraer sobre el mayor entre el
+//     importe de la operación y el valor referencial, pero calcularlo requiere la tabla oficial
+//     del MTC (tarifa por TM según ruta, D.S. 020-2021-MTC), que este sistema no tiene integrada.
+//     La propia norma contempla el caso: "cuando no existan valores referenciales [determinables],
+//     el depósito se aplica solo sobre el importe de la operación" (ver
+//     orientacion.sunat.gob.pe/detracciones-en-el-transporte-de-bienes-por-via-terrestre). Por
+//     decisión de negocio, ese es el único comportamiento: aunque el usuario ingrese un valor
+//     referencial, NO se usa para calcular la detracción (ver evaluate, que deliberadamente no lo
+//     envía a sunatdet.Evaluate) — es una captura manual sin tabla que la respalde, y no debe poder
+//     inflar la detracción por encima de lo realmente vendido. Solo queda como dato informativo
+//     para imprimir en el comprobante.
 func validateTransporteFields(in *SaleInput) error {
 	if strings.TrimSpace(in.PuntoOrigen) == "" {
 		return errors.New("el punto de origen es obligatorio para detracción por transporte de carga")
 	}
 	if strings.TrimSpace(in.PuntoDestino) == "" {
 		return errors.New("el punto de destino es obligatorio para detracción por transporte de carga")
-	}
-	if in.CargaEfectivaTm <= 0 {
-		return errors.New("la carga efectiva (TM) es obligatoria para detracción por transporte de carga")
-	}
-	if in.CargaUtilTm <= 0 {
-		return errors.New("la carga útil del vehículo (TM) es obligatoria para detracción por transporte de carga")
-	}
-	if in.ValorReferencialPen <= 0 {
-		return errors.New("el valor referencial del servicio de transporte es obligatorio para detracción por transporte de carga")
-	}
-	if strings.TrimSpace(in.TripDetail) == "" {
-		return errors.New("el detalle del viaje es obligatorio para detracción por transporte de carga")
 	}
 	return nil
 }
@@ -165,16 +167,26 @@ func (s *Service) Persist(in PersistInput) (*database.TenantSaleDetraccion, erro
 		row.PayConstancyNumber = strings.TrimSpace(in.Detraccion.PayConstancyNumber)
 	}
 	if op == sunatdet.OpDetraccionTransporte && in.Detraccion != nil {
-		vr := in.Detraccion.ValorReferencialPen
-		ce := in.Detraccion.CargaEfectivaTm
-		cu := in.Detraccion.CargaUtilTm
-		row.ValorReferencialPen = &vr
 		row.MtcRegistro = strings.TrimSpace(in.Detraccion.MtcRegistro)
 		row.ConfiguracionVehicular = strings.TrimSpace(in.Detraccion.ConfiguracionVehicular)
 		row.PuntoOrigen = strings.TrimSpace(in.Detraccion.PuntoOrigen)
 		row.PuntoDestino = strings.TrimSpace(in.Detraccion.PuntoDestino)
-		row.CargaEfectivaTm = &ce
-		row.CargaUtilTm = &cu
+		// Valor referencial, carga efectiva y carga útil ahora son opcionales (ver
+		// validateTransporteFields): si el usuario no las completó llegan en 0, y un puntero a 0.0
+		// formatearía "0.00" en transporteAttributes en vez de omitirse — solo se guarda el
+		// puntero cuando hay un valor real.
+		if in.Detraccion.ValorReferencialPen > 0 {
+			vr := in.Detraccion.ValorReferencialPen
+			row.ValorReferencialPen = &vr
+		}
+		if in.Detraccion.CargaEfectivaTm > 0 {
+			ce := in.Detraccion.CargaEfectivaTm
+			row.CargaEfectivaTm = &ce
+		}
+		if in.Detraccion.CargaUtilTm > 0 {
+			cu := in.Detraccion.CargaUtilTm
+			row.CargaUtilTm = &cu
+		}
 		row.TripDetail = strings.TrimSpace(in.Detraccion.TripDetail)
 	}
 	if err := s.db.Save(&row).Error; err != nil {
