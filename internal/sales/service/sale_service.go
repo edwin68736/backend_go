@@ -1030,6 +1030,9 @@ type SaleListSummary struct {
 	SumNetPayable   float64 `json:"sum_net_payable"`
 	CountDetraccion int64   `json:"count_detraccion"`
 	SpotTotal       float64 `json:"spot_total"`
+	// Vuelto total entregado en las ventas del filtro (ver enrichSalesWithChangeAmount): suma de
+	// pagos directos por encima del importe cobrable de cada venta, nunca negativo por venta.
+	SumChangeAmount float64 `json:"sum_change_amount"`
 	PaymentTotals   []struct {
 		Method string  `json:"method"`
 		Total  float64 `json:"total"`
@@ -1242,6 +1245,7 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 		}
 	}
 	s.enrichSalesWithDetraccion(sales)
+	s.enrichSalesWithChangeAmount(sales)
 	nvdisplay.EnrichSales(s.db, sales)
 	// Notas de crédito/débito: documento afectado y tipo de nota para el listado.
 	enrichNotesAffectedDoc(s.db, sales)
@@ -1421,6 +1425,45 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		for id, amt := range money.AllocateSalePaymentReportAmounts(saleTotal, lines) {
 			addToMethod(methodByPaymentID[id], amt)
 		}
+	}
+
+	// Vuelto total del filtro: compara la suma de pagos directos de cada venta contra su importe
+	// cobrable (net_payable si tiene detracción, si no el total) — mismo criterio que
+	// print_data.ChangeAmount/enrichSalesWithChangeAmount, agregado sobre todo el filtro en vez de
+	// por venta individual.
+	type netPayableRow struct {
+		SaleID     uint    `gorm:"column:sale_id"`
+		NetPayable float64 `gorm:"column:net_payable_pen"`
+	}
+	var netPayableRows []netPayableRow
+	if err := s.db.Table("tenant_sale_detraccion d").
+		Select("d.sale_id AS sale_id, d.net_payable_pen AS net_payable_pen").
+		Joins("JOIN tenant_sales ts ON ts.id = d.sale_id").
+		Scopes(salescope.ScopeCommercial("ts")).
+		Where("ts.id IN (?)", idSub).
+		Where("ts.status != ?", "cancelled").
+		Scan(&netPayableRows).Error; err != nil {
+		return out, err
+	}
+	payableOverrideBySale := make(map[uint]float64, len(netPayableRows))
+	for _, r := range netPayableRows {
+		if r.NetPayable > 0 {
+			payableOverrideBySale[r.SaleID] = r.NetPayable
+		}
+	}
+	for saleID, rows := range paymentsBySale {
+		var directSum float64
+		for _, r := range rows {
+			if taxpayment.IsDetractionCode(r.Method) || paymentcondition.IsCreditCode(r.Method) {
+				continue
+			}
+			directSum += r.Amount
+		}
+		payable, ok := payableOverrideBySale[saleID]
+		if !ok {
+			payable = saleTotalByID[saleID]
+		}
+		out.SumChangeAmount += money.CalcPaymentChange(directSum, payable)
 	}
 
 	var fromHeader []payRow

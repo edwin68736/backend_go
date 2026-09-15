@@ -222,4 +222,58 @@ func TestSaleService_List_Summary_PaymentTotals_CapsChangeGivenBack(t *testing.T
 	if summary.SumActive != 9.50 {
 		t.Errorf("sum_active = %.2f, se esperaba 9.50", summary.SumActive)
 	}
+	// El vuelto (S/20 - S/9.50 = S/10.50) debe reportarse aparte, no perderse.
+	if summary.SumChangeAmount != 10.50 {
+		t.Errorf("sum_change_amount = %.2f, se esperaba 10.50", summary.SumChangeAmount)
+	}
+}
+
+// List() debe exponer el vuelto por venta (para la columna del reporte), no solo el agregado.
+func TestSaleService_List_ChangeAmount_PerSale(t *testing.T) {
+	db := setupSaleListSummaryDB(t)
+	now := time.Now()
+
+	sale := database.TenantSale{
+		Number: "NV002-1", DocType: "NOTA_VENTA", BranchID: 1, UserID: 1,
+		IssueDate: now, Subtotal: 8.05, TaxAmount: 1.45, Total: 9.50,
+		Status: "paid", PaymentMethod: "efectivo",
+	}
+	if err := db.Create(&sale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantSalePayment{
+		SaleID: sale.ID, Method: "efectivo", Amount: 20.00,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Venta sin vuelto, para confirmar que no queda contaminada.
+	exact := database.TenantSale{
+		Number: "NV002-2", DocType: "NOTA_VENTA", BranchID: 1, UserID: 1,
+		IssueDate: now, Subtotal: 5, TaxAmount: 0.90, Total: 5.90,
+		Status: "paid", PaymentMethod: "efectivo",
+	}
+	if err := db.Create(&exact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantSalePayment{
+		SaleID: exact.ID, Method: "efectivo", Amount: 5.90,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewSaleService(db)
+	list, _, _, err := svc.List(SaleListParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	byID := make(map[uint]database.TenantSale, len(list))
+	for _, s := range list {
+		byID[s.ID] = s
+	}
+	if byID[sale.ID].ChangeAmount != 10.50 {
+		t.Errorf("change_amount de la venta con vuelto = %.2f, se esperaba 10.50", byID[sale.ID].ChangeAmount)
+	}
+	if byID[exact.ID].ChangeAmount != 0 {
+		t.Errorf("change_amount de la venta exacta = %.2f, se esperaba 0", byID[exact.ID].ChangeAmount)
+	}
 }

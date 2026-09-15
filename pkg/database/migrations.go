@@ -1402,6 +1402,9 @@ type TenantSale struct {
 	DetraccionAmount      float64 `gorm:"-" json:"detraccion_amount,omitempty"`
 	NetPayable            float64 `gorm:"-" json:"net_payable,omitempty"`
 	DetraccionRatePercent float64 `gorm:"-" json:"detraccion_rate_percent,omitempty"`
+	// Vuelto entregado en la venta (suma de pagos directos - importe cobrable, si es positivo);
+	// se calcula igual que print_data.ChangeAmount, no es columna en BD (ver enrichSalesWithChangeAmount).
+	ChangeAmount float64 `gorm:"-" json:"change_amount,omitempty"`
 }
 
 type TenantSaleItem struct {
