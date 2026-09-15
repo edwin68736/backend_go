@@ -173,3 +173,53 @@ func TestSaleService_List_Summary_PaymentTotals_CreditNoteExcluded(t *testing.T)
 		t.Errorf("payment_totals[cash] = %.2f, se esperaba 59 (la NC no debe sumar ni restar, solo excluirse)", cashTotal)
 	}
 }
+
+// Reproduce el reporte del usuario (2026-09-15, SEDE KEIKO): "Efectivo" mostraba S/139.20 sobre
+// un "Total no anuladas" de S/122.00 del mismo filtro. Causa: tenant_sale_payments.amount guarda
+// el monto ENTREGADO por el cliente, no el neto (el vuelto se calcula después en
+// print_data.change_amount) — si alguien paga con un billete mayor al total, sumar tsp.amount tal
+// cual infla "Efectivo" por encima de lo realmente vendido. El total por método debe acotarse al
+// total de la venta (AllocateSalePaymentReportAmounts), igual que ya hace el reporte de caja.
+func TestSaleService_List_Summary_PaymentTotals_CapsChangeGivenBack(t *testing.T) {
+	db := setupSaleListSummaryDB(t)
+	now := time.Now()
+
+	sale := database.TenantSale{
+		Number: "NV002-1", DocType: "NOTA_VENTA", BranchID: 1, UserID: 1,
+		IssueDate: now, Subtotal: 8.05, TaxAmount: 1.45, Total: 9.50,
+		Status: "paid", PaymentMethod: "efectivo",
+	}
+	if err := db.Create(&sale).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Cliente paga con un billete de S/20 (vuelto S/10.50, calculado en la impresión, no acá) — el
+	// pago se guarda con el monto entregado completo, tal como lo hace el flujo real de venta.
+	if err := db.Create(&database.TenantSalePayment{
+		SaleID: sale.ID, Method: "efectivo", Amount: 20.00,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewSaleService(db)
+	_, _, summary, err := svc.List(SaleListParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var cashTotal float64
+	found := false
+	for _, pt := range summary.PaymentTotals {
+		if pt.Method == "efectivo" {
+			cashTotal = pt.Total
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no se encontró el total del método 'efectivo' en payment_totals: %+v", summary.PaymentTotals)
+	}
+	if cashTotal != 9.50 {
+		t.Errorf("payment_totals[efectivo] = %.2f, se esperaba 9.50 (acotado al total de la venta, sin el vuelto)", cashTotal)
+	}
+	if summary.SumActive != 9.50 {
+		t.Errorf("sum_active = %.2f, se esperaba 9.50", summary.SumActive)
+	}
+}

@@ -1342,28 +1342,85 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	byMethod := make(map[string]float64)
 	var spotTotal float64
 
-	var fromPayments []payRow
-	err = s.db.Table("tenant_sale_payments tsp").
-		Select("LOWER(TRIM(tsp.method)) AS method, COALESCE(SUM(tsp.amount), 0) AS total").
+	// Los montos por línea se acotan al total de la venta con AllocateSalePaymentReportAmounts —
+	// igual que ya hace el reporte de caja (buildSalePaymentReportAmountsFromPayments) — en vez de
+	// sumar tsp.amount tal cual. Un pago en efectivo guarda el monto ENTREGADO por el cliente, no
+	// el neto (el vuelto se calcula después, en print_data.change_amount): sumar esos montos brutos
+	// inflaba el total de "Efectivo" del reporte por encima de lo realmente vendido cada vez que
+	// alguien pagaba con un billete mayor al total (incidente reportado 2026-09-15, SEDE KEIKO:
+	// "Efectivo" S/139.20 vs. "Total no anuladas" S/122.00 del mismo filtro).
+	type saleTotalRow struct {
+		ID    uint    `gorm:"column:id"`
+		Total float64 `gorm:"column:total"`
+	}
+	var saleTotals []saleTotalRow
+	if err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+		Select(`tenant_sales.id AS id, ` + netTotal + ` AS total`).
+		Where("tenant_sales.id IN (?)", idSub).
+		Where("tenant_sales.status != ?", "cancelled").
+		Scan(&saleTotals).Error; err != nil {
+		return out, err
+	}
+	saleTotalByID := make(map[uint]float64, len(saleTotals))
+	for _, st := range saleTotals {
+		saleTotalByID[st.ID] = st.Total
+	}
+
+	type paymentLineRow struct {
+		ID     uint    `gorm:"column:id"`
+		SaleID uint    `gorm:"column:sale_id"`
+		Method string  `gorm:"column:method"`
+		Amount float64 `gorm:"column:amount"`
+	}
+	var paymentRows []paymentLineRow
+	if err := s.db.Table("tenant_sale_payments tsp").
+		Select("tsp.id AS id, tsp.sale_id AS sale_id, LOWER(TRIM(tsp.method)) AS method, tsp.amount AS amount").
 		Joins("JOIN tenant_sales ts ON ts.id = tsp.sale_id").
 		Scopes(salescope.ScopeCommercial("ts")).
 		Where("ts.id IN (?)", idSub).
 		Where("ts.status != ?", "cancelled").
-		Group("LOWER(TRIM(tsp.method))").
-		Scan(&fromPayments).Error
-	if err != nil {
+		Scan(&paymentRows).Error; err != nil {
 		return out, err
 	}
-	for _, p := range fromPayments {
-		if taxpayment.IsDetractionCode(p.Method) {
-			spotTotal += p.Total
-			continue
+	paymentsBySale := make(map[uint][]paymentLineRow, len(paymentRows))
+	methodByPaymentID := make(map[uint]string, len(paymentRows))
+	for _, p := range paymentRows {
+		paymentsBySale[p.SaleID] = append(paymentsBySale[p.SaleID], p)
+		methodByPaymentID[p.ID] = p.Method
+	}
+	addToMethod := func(method string, amount float64) {
+		if taxpayment.IsDetractionCode(method) {
+			spotTotal += amount
+			return
 		}
-		m := strings.TrimSpace(p.Method)
+		m := strings.TrimSpace(method)
 		if m == "" {
 			m = "sin_definir"
 		}
-		byMethod[m] += p.Total
+		byMethod[m] += amount
+	}
+	for saleID, rows := range paymentsBySale {
+		saleTotal, ok := saleTotalByID[saleID]
+		if !ok {
+			// No debería pasar (idSub ya excluye cancelled/otras sucursales), pero si ocurre no
+			// hay total contra el cual acotar: se conserva el monto tal cual, como antes.
+			for _, r := range rows {
+				addToMethod(r.Method, r.Amount)
+			}
+			continue
+		}
+		lines := make([]money.SalePaymentLine, 0, len(rows))
+		for _, r := range rows {
+			// El marcador "credito" no es dinero recibido — fuera de la base del prorrateo, mismo
+			// criterio que en el reporte de caja.
+			if paymentcondition.IsCreditCode(r.Method) {
+				continue
+			}
+			lines = append(lines, money.SalePaymentLine{ID: r.ID, Amount: r.Amount})
+		}
+		for id, amt := range money.AllocateSalePaymentReportAmounts(saleTotal, lines) {
+			addToMethod(methodByPaymentID[id], amt)
+		}
 	}
 
 	var fromHeader []payRow
