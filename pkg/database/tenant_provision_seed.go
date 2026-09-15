@@ -115,7 +115,10 @@ func seedDefaultWalkInContact(tx *gorm.DB, in TenantSeedInput) (uint, error) {
 	err := tx.Where("doc_type = ? AND doc_number = ?", "0", "99999999").First(&c).Error
 	if err == nil {
 		if !c.IsDefaultWalkIn {
-			_ = tx.Model(&c).Update("is_default_walkin", true).Error
+			// Nombre real de columna: "is_default_walk_in" (naming por defecto de GORM a partir
+			// del campo Go IsDefaultWalkIn) — no "is_default_walkin" (ver incidente en
+			// v035_merge_duplicate_contacts.go).
+			_ = tx.Model(&c).Update("is_default_walk_in", true).Error
 		}
 		return c.ID, nil
 	}
