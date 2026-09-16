@@ -19,7 +19,9 @@ func setupProductServiceTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&database.TenantProduct{}, &database.TenantCategory{}, &database.TenantBrand{}, &database.TenantPreparationArea{},
-		&database.TenantProductPresentation{}, &database.TenantUnit{},
+		&database.TenantProductPresentation{}, &database.TenantUnit{}, &database.TenantProductSaleUnit{},
+		&database.TenantBranch{}, &database.TenantProductSaleUnitBranchPrice{}, &database.TenantProductAttribute{},
+		&database.TenantProductStock{}, &database.TenantStockMovement{},
 	); err != nil {
 		t.Fatal(err)
 	}

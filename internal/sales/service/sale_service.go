@@ -71,6 +71,32 @@ func validateSaleItemPrices(items []SaleItemInput) error {
 	return nil
 }
 
+// validateSaleItemQuantities exige quantity > 0 en toda línea. Antes de este chequeo, una
+// cantidad <= 0 solo se rechazaba dentro de RecordMovementTx, y solo cuando el producto tenía
+// ManageStock=true — para servicios, productos catálogo o líneas manuales, una cantidad negativa
+// o cero pasaba sin control y llegaba a construir totales con tax.CalcItem.
+func validateSaleItemQuantities(items []SaleItemInput) error {
+	for _, it := range items {
+		if it.Quantity > 0 {
+			continue
+		}
+		return fmt.Errorf("'%s' tiene una cantidad inválida (%.3f); debe ser mayor a cero", saleItemLabel(it), it.Quantity)
+	}
+	return nil
+}
+
+// saleItemLabel arma una etiqueta legible para mensajes de error, igual que validateSaleItemPrices.
+func saleItemLabel(it SaleItemInput) string {
+	label := strings.TrimSpace(it.Description)
+	if label == "" {
+		label = strings.TrimSpace(it.Code)
+	}
+	if label == "" {
+		label = "un ítem de la venta"
+	}
+	return label
+}
+
 // productIsCatalogService: servicios no consumen inventario aunque un registro legacy tenga manage_stock en true.
 func productIsCatalogService(p *database.TenantProduct) bool {
 	if p == nil {
@@ -84,7 +110,13 @@ type SaleItemInput struct {
 	// PresentationID: variante/presentación elegida (ej. color) cuando el producto vende por
 	// presentación con stock propio (product.HasVariants). nil = producto sin variantes o venta
 	// que no distingue cuál se descuenta (comportamiento previo).
-	PresentationID     *uint   `json:"presentation_id"`
+	PresentationID *uint `json:"presentation_id"`
+	// SaleUnitID: unidad de venta con conversión elegida (ej. "Saco 100 KG"), cuando el producto
+	// vende en una unidad distinta de la base. Quantity sigue siendo la cantidad COMERCIAL (1.5),
+	// nunca la convertida — el backend calcula la cantidad base a partir de esto, siempre server-
+	// side (ver sale_unit_resolver.go). nil = línea legacy sin conversión (comportamiento previo,
+	// intacto). Mutuamente excluyente con PresentationID.
+	SaleUnitID         *uint   `json:"sale_unit_id"`
 	Code               string  `json:"code"`
 	Description        string  `json:"description"`
 	Unit               string  `json:"unit"`
@@ -103,6 +135,12 @@ type SaleItemInput struct {
 	// valida la selección y descuenta el stock de los componentes.
 	ComboJSON string   `json:"combo_json"`
 	Serials   []string `json:"serials"` // números de serie elegidos (productos con ManageSeries)
+	// PriceAuthorized: el UnitPrice de esta línea ya fue resuelto/autorizado por código de
+	// confianza antes de llegar aquí (combo, POS de Tukichef con "precio acordado en caja/mesa",
+	// reemisión de una nota de venta ya validada). Sin json tag a propósito: el body JSON del
+	// endpoint de ventas jamás puede poblarlo, así que ningún cliente puede autoexcluirse de
+	// validateAuthorizedPrices. Ver sale_price_authorization.go.
+	PriceAuthorized bool `json:"-"`
 }
 
 // ExtraStockMovement salida de kardex de un producto que no es línea de la venta
@@ -184,6 +222,23 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// bloquea bonificaciones legítimas, solo precios en 0 por error de catálogo/carrito. Es la
 	// última barrera si alguien llama a la API directo sin pasar por el frontend.
 	if err := validateSaleItemPrices(input.Items); err != nil {
+		return nil, err
+	}
+	// Cantidad estrictamente positiva en toda línea, sin excepción por ManageStock ni por
+	// tratarse de una línea manual — no depende de si más adelante se registra kardex.
+	if err := validateSaleItemQuantities(input.Items); err != nil {
+		return nil, err
+	}
+	// Unidad de venta: valida pertenencia al producto, que esté activa, el factor y AllowFraction
+	// ANTES de calcular ningún precio/stock con ella. Ver sale_unit_resolver.go.
+	if err := validateSaleUnits(s.db, input.Items); err != nil {
+		return nil, err
+	}
+	// Precio autorizado: el unit_price de cada línea con producto real debe coincidir con el
+	// catálogo (o su presentación + extras, o el Price1 de su unidad de venta). Las líneas ya
+	// vetadas por código de confianza (PriceAuthorized=true) no se reevalúan. Ver
+	// sale_price_authorization.go.
+	if err := validateAuthorizedPrices(s.db, input.BranchID, input.Items); err != nil {
 		return nil, err
 	}
 
@@ -367,13 +422,28 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 			if product.ManageStock && !productIsCatalogService(&product) {
-				if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
+				switch {
+				case product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0:
 					var pstock database.TenantProductPresentationStock
 					s.db.Where("presentation_id = ? AND branch_id = ?", *item.PresentationID, input.BranchID).First(&pstock)
 					if pstock.Quantity < item.Quantity {
 						return nil, fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f", item.Description, item.Quantity, pstock.Quantity)
 					}
-				} else {
+				case item.SaleUnitID != nil && *item.SaleUnitID > 0:
+					// validateSaleUnits ya corrió antes y garantiza que esto no falle salvo carrera
+					// real entre esa validación y este chequeo (misma tolerancia que el resto del
+					// método: el guard definitivo contra sobreventa vive en RecordMovementTx).
+					res, err := resolveSaleUnitForLine(s.db, *item.ProductID, item.SaleUnitID, item.Quantity)
+					if err != nil {
+						return nil, err
+					}
+					var stock database.TenantProductStock
+					s.db.Where("product_id = ? AND branch_id = ?", *item.ProductID, input.BranchID).First(&stock)
+					if stock.Quantity < res.BaseQuantity {
+						return nil, fmt.Errorf("stock insuficiente para %s: requiere %.3f (equivalente a %.3f en unidad base), hay %.3f",
+							item.Description, item.Quantity, res.BaseQuantity, stock.Quantity)
+					}
+				default:
 					var stock database.TenantProductStock
 					s.db.Where("product_id = ? AND branch_id = ?", *item.ProductID, input.BranchID).First(&stock)
 					if stock.Quantity < item.Quantity {
@@ -690,20 +760,39 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			}
 
 			var itemPresentationID *uint
-			if product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0 {
+			movementQuantity := item.Quantity
+			var movementSaleUnitID *uint
+			var movementSaleUnitQuantity *float64
+			var movementConversionFactor *float64
+			switch {
+			case product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0:
 				itemPresentationID = item.PresentationID
+			case item.SaleUnitID != nil && *item.SaleUnitID > 0:
+				res, err := resolveSaleUnitForLine(tx, product.ID, item.SaleUnitID, item.Quantity)
+				if err != nil {
+					return err
+				}
+				movementQuantity = res.BaseQuantity
+				movementSaleUnitID = item.SaleUnitID
+				commercialQty := item.Quantity
+				movementSaleUnitQuantity = &commercialQty
+				factor := res.ConversionFactor
+				movementConversionFactor = &factor
 			}
 			currentSaleItemID := saleItems[i].ID
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:      *item.ProductID,
-				PresentationID: itemPresentationID,
-				BranchID:       input.BranchID,
-				Type:           "out",
-				Quantity:       item.Quantity,
-				Reference:      "VENTA/" + sale.Number,
-				UserID:         input.UserID,
-				OperationCode:  "SALE",
-				SaleItemID:     &currentSaleItemID,
+				ProductID:        *item.ProductID,
+				PresentationID:   itemPresentationID,
+				BranchID:         input.BranchID,
+				Type:             "out",
+				Quantity:         movementQuantity,
+				Reference:        "VENTA/" + sale.Number,
+				UserID:           input.UserID,
+				OperationCode:    "SALE",
+				SaleItemID:       &currentSaleItemID,
+				SaleUnitID:       movementSaleUnitID,
+				SaleUnitQuantity: movementSaleUnitQuantity,
+				ConversionFactor: movementConversionFactor,
 			}); err != nil {
 				return err
 			}
@@ -1921,6 +2010,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 	for _, it := range items {
 		inputs = append(inputs, SaleItemInput{
 			ProductID:          it.ProductID,
+			SaleUnitID:         it.SaleUnitID,
 			Code:               it.Code,
 			Description:        it.Description,
 			Unit:               it.Unit,
@@ -1931,6 +2021,10 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 			PriceIncludesIgv:   inferPriceIncludesIgvFromSaleItem(s.db, it, taxCfg),
 			ModifiersJSON:      it.ModifiersJSON,
 			ItemNote:           it.ItemNote,
+			// Precio ya vetado cuando se creó la nota de venta original (pasó por
+			// validateAuthorizedPrices en ese momento); esto es un snapshot de datos ya
+			// persistidos, no un precio nuevo enviado por el cliente en esta llamada.
+			PriceAuthorized: true,
 		})
 	}
 	paymentsDB, err := s.GetPayments(nota.ID)

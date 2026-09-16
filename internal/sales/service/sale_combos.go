@@ -64,6 +64,10 @@ func resolveComboItems(
 		}
 
 		item.UnitPrice = res.UnitPrice
+		// El precio del combo (fijo + sobreprecios de opciones) ya lo resolvió combos.Resolve
+		// contra el catálogo — no es ni product.SalePrice ni presentation.SalePrice, así que
+		// validateAuthorizedPrices no podría (ni debe) reevaluarlo.
+		item.PriceAuthorized = true
 		if strings.TrimSpace(item.Description) == "" {
 			item.Description = res.Name
 		}

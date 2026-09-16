@@ -72,6 +72,25 @@ func RegisterRoutes(api fiber.Router) {
 	api.Patch("/products/:id/toggle", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.ToggleAPI)
 	api.Delete("/products/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.DeleteAPI)
 	api.Post("/products/:id/image", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.UploadImageAPI)
+	// Unidades de venta (TenantProductSaleUnit): exclusivas de Tukifac, mismo permiso que el resto
+	// de la escritura de catálogo — sin puente restaurantperm (Tukichef no las administra).
+	api.Get("/products/:id/sale-units", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.SaleUnitListAPI)
+	api.Get("/products/:id/sale-units/:suid", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.SaleUnitGetAPI)
+	api.Post("/products/:id/sale-units", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.SaleUnitCreateAPI)
+	api.Put("/products/:id/sale-units/:suid", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.SaleUnitUpdateAPI)
+	api.Delete("/products/:id/sale-units/:suid", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.SaleUnitDeleteAPI)
+	// Precios por sucursal de unidades de venta (Fase 4): mismo permiso/patrón que sale-units.
+	api.Get("/products/:id/sale-units/:suid/branch-prices", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.SaleUnitBranchPriceListAPI)
+	api.Get("/products/:id/sale-units/:suid/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.SaleUnitBranchPriceGetAPI)
+	api.Post("/products/:id/sale-units/:suid/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.SaleUnitBranchPriceCreateAPI)
+	api.Put("/products/:id/sale-units/:suid/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.SaleUnitBranchPriceUpdateAPI)
+	api.Delete("/products/:id/sale-units/:suid/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.SaleUnitBranchPriceDeleteAPI)
+	// Atributos descriptivos de producto (Fase 5): mismo permiso/patrón que sale-units.
+	api.Get("/products/:id/attributes", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.ProductAttributeListAPI)
+	api.Get("/products/:id/attributes/:attrId", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.ProductAttributeGetAPI)
+	api.Post("/products/:id/attributes", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.ProductAttributeCreateAPI)
+	api.Put("/products/:id/attributes/:attrId", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.ProductAttributeUpdateAPI)
+	api.Delete("/products/:id/attributes/:attrId", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.ProductAttributeDeleteAPI)
 	api.Get("/categories",
 		middleware.RequireModule("products"),
 		middleware.LoadRestaurantPermissions(),

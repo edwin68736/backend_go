@@ -93,6 +93,11 @@ func (s *RestaurantPOSCheckoutService) resolveDirectSaleItems(
 			// El combo lo resuelve SaleService (precio, validación y stock de componentes):
 			// un solo punto de resolución, el mismo que usa el ERP.
 			ComboJSON: strings.TrimSpace(item.ComboJSON),
+			// El precio ya se resolvió arriba en resolveRestaurantOrderItem (catálogo, variante,
+			// extras, o el precio acordado en caja/mesa si el cliente mandó uno > 0) — es la
+			// autoridad de precio de este módulo, SaleService.Create no debe reevaluarlo con las
+			// reglas genéricas de venta directa (que no conocen ese acuerdo de mostrador).
+			PriceAuthorized: item.ProductID != nil && *item.ProductID > 0,
 		})
 	}
 

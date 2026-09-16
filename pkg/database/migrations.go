@@ -995,8 +995,12 @@ type TenantProduct struct {
 	// lugares; UnitID es la fuente de verdad para la UI (selects por ID, no texto libre).
 	Unit               string  `gorm:"size:50;default:'NIU'" json:"unit"`
 	UnitID             *uint   `gorm:"index" json:"unit_id"`
-	SalePrice          float64 `gorm:"type:decimal(15,2);not null" json:"sale_price"`
-	PurchasePrice      float64 `gorm:"type:decimal(15,2)" json:"purchase_price"`
+	SalePrice float64 `gorm:"type:decimal(15,2);not null" json:"sale_price"`
+	// PurchasePrice: costo BASE (por unidad base del producto), no comercial. Ampliado a
+	// decimal(15,6) en v136 por el mismo motivo que TenantStockMovement.UnitCost (ver ahí):
+	// cuando la compra usa una SaleUnit, este valor es commercial_unit_cost/ConversionFactor, que
+	// puede necesitar más de 2 decimales exactos (ej. S/100 ÷ 24 = S/4.1666...).
+	PurchasePrice float64 `gorm:"type:decimal(15,6)" json:"purchase_price"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"` // Catálogo SUNAT N°7
 	PriceIncludesIgv   bool    `gorm:"default:true" json:"price_includes_igv"`
@@ -1110,6 +1114,103 @@ type TenantProductPresentation struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// TenantProductSaleUnit: unidad comercial de venta de un producto, relativa a la unidad base del
+// producto (TenantProduct.UnitID) — ej. "Saco 100 KG" con ConversionFactor=100 sobre un producto
+// cuya unidad base es KG. No se guarda de nuevo la unidad base aquí: se interpreta contra
+// TenantProduct.UnitID/Unit del producto dueño.
+//
+// A propósito NO tiene stock propio ni tabla de stock asociada: es solo una "lente" de
+// precio+factor sobre TenantProductStock, que sigue siendo la única fuente de verdad del stock
+// del producto. Esto la distingue de TenantProductPresentation (arriba), que SÍ es una variante
+// tipo SKU con stock independiente — son dos conceptos deliberadamente separados, no se fusionan
+// ni se migran datos de uno a otro.
+//
+// Esta fase solo crea y administra la entidad: todavía no está conectada a ventas, compras,
+// Kardex ni precios por sucursal (fases posteriores).
+type TenantProductSaleUnit struct {
+	ID               uint    `gorm:"primaryKey" json:"id"`
+	ProductID        uint    `gorm:"not null;index:idx_sale_unit_product_active" json:"product_id"`
+	Name             string  `gorm:"size:120;not null" json:"name"`
+	ConversionFactor float64 `gorm:"type:decimal(15,6);not null;default:1" json:"conversion_factor"`
+	// IsBase: unidad que representa 1:1 la unidad base del producto (ConversionFactor siempre 1).
+	// A lo sumo una por producto — se aplica en ProductService.CreateSaleUnit/UpdateSaleUnit
+	// (clearOtherBaseSaleUnitsTx), no con un índice único: MySQL no soporta índices únicos
+	// parciales sin columnas generadas (mismo criterio que TenantDocumentSeries.IsDefault, ver
+	// arriba en este archivo).
+	IsBase bool `gorm:"default:false" json:"is_base"`
+	// AllowFraction: sin gorm:"default:..." a propósito — GORM omite del INSERT los campos con
+	// tag `default` cuando el valor Go es el zero value, así que un caller que mande
+	// AllowFraction:false explícito terminaría persistiendo el default (true) en vez de false.
+	// El servicio siempre setea este campo explícitamente al crear/actualizar.
+	AllowFraction bool           `json:"allow_fraction"`
+	Price1        float64        `gorm:"type:decimal(15,2);not null" json:"price1"`
+	Price2        *float64       `gorm:"type:decimal(15,2)" json:"price2"`
+	Price3        *float64       `gorm:"type:decimal(15,2)" json:"price3"`
+	SortOrder     int            `gorm:"default:0" json:"sort_order"`
+	Active        bool           `gorm:"default:true;index:idx_sale_unit_product_active" json:"active"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// TenantProductSaleUnitBranchPrice: override de precio de una TenantProductSaleUnit para UNA
+// sucursal puntual (Fase 4). La SaleUnit sigue siendo global al tenant/producto — esto NO le
+// agrega branch_id a TenantProductSaleUnit, es una tabla aparte que la referencia. Cuando no
+// existe fila para (sale_unit_id, branch_id), o existe pero Active=false, se usa el precio global
+// de la SaleUnit (ver pkg/saleunit.ResolvePrice) — el precio de sucursal es un override, nunca
+// una unidad de venta distinta ni afecta factor/stock/Kardex/costo.
+//
+// A propósito SIN gorm.DeletedAt: a diferencia de TenantProductPresentation/TenantProductSaleUnit
+// (entidades independientes donde el soft-delete preserva referencias históricas), esta fila es
+// puramente "la configuración de precio de esta sucursal para esta SaleUnit" — desactivarla es
+// Active=false (ver abajo), y "eliminarla" es un DELETE físico real que libera el par
+// (sale_unit_id, branch_id) para poder configurarse de nuevo más adelante. Esto permite un índice
+// único real a nivel de MySQL (uniqueIndex, sin necesidad de columnas generadas): un
+// gorm.DeletedAt aquí haría que MySQL no pueda distinguir "hay una fila activa duplicada" de "hay
+// una fila borrada más una activa", porque NULL en una columna de un índice único no colisiona
+// consigo mismo.
+type TenantProductSaleUnitBranchPrice struct {
+	ID         uint    `gorm:"primaryKey" json:"id"`
+	SaleUnitID uint    `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price" json:"sale_unit_id"`
+	BranchID   uint    `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price;index" json:"branch_id"`
+	Price1     float64  `gorm:"type:decimal(15,2);not null" json:"price1"`
+	Price2     *float64 `gorm:"type:decimal(15,2)" json:"price2"`
+	Price3     *float64 `gorm:"type:decimal(15,2)" json:"price3"`
+	// Active: sin gorm:"default:..." a propósito — mismo motivo que TenantProductSaleUnit.
+	// AllowFraction (ver ahí): GORM omite del INSERT los campos con tag `default` cuando el valor
+	// Go es su zero value, así que Active:false explícito terminaría persistiendo el default
+	// (true). El servicio siempre setea este campo explícitamente al crear/actualizar.
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TenantProductAttribute: característica descriptiva del producto (ej. "Color: Rojo",
+// "RAM: 16 GB") — Fase 5. Puramente informativo: no tiene stock propio, no genera Kardex, no
+// afecta precios, no genera TenantProductSaleUnit ni interactúa con TenantProductPresentation.
+// Deliberadamente NO se combina con otros atributos para formar variantes — son tres conceptos
+// separados: SaleUnit (unidad comercial + factor + precio), Presentation (SKU/variante con stock
+// propio, existente, sin tocar) y Attribute (texto descriptivo, sin identidad propia).
+//
+// Sin gorm.DeletedAt a propósito (mismo criterio que TenantProductSaleUnitBranchPrice, Fase 4):
+// ninguna otra tabla referencia el ID de un atributo (no vive en TenantSaleItem/TenantPurchaseItem
+// ni en ningún movimiento de Kardex — ver Fase 2/3, deliberadamente no se le agregó ahí), así que
+// no hace falta preservar filas borradas para no romper una referencia histórica. Active=false
+// alcanza para "ocultar sin perder el dato"; DELETE es un borrado físico real.
+type TenantProductAttribute struct {
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	ProductID uint   `gorm:"not null;index:idx_product_attribute_active" json:"product_id"`
+	Name      string `gorm:"size:100;not null" json:"name"`
+	Value     string `gorm:"size:255;not null" json:"value"`
+	SortOrder int    `gorm:"default:0" json:"sort_order"`
+	// Active: sin gorm:"default:..." a propósito — mismo motivo documentado arriba en
+	// TenantProductSaleUnitBranchPrice.Active (GORM omite del INSERT los campos con tag
+	// `default` cuando el valor Go es su zero value).
+	Active    bool      `gorm:"index:idx_product_attribute_active" json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // TenantModifierGroup: extras reutilizables entre productos (suman al precio).
 type TenantModifierGroup struct {
 	ID          uint           `gorm:"primaryKey" json:"id"`
@@ -1208,23 +1309,40 @@ type TenantStockMovement struct {
 	// PresentationID: cuando el producto vende por variante (color/talla/presentación con stock
 	// propio), el movimiento afecta esa presentación en vez del stock agregado del producto.
 	// nil = producto sin variantes (comportamiento de siempre).
-	PresentationID      *uint   `gorm:"index" json:"presentation_id,omitempty"`
-	BranchID            uint    `gorm:"not null;index" json:"branch_id"`
-	Type                string  `gorm:"size:30;not null" json:"type"` // in, out, transfer, adjustment
-	Quantity            float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost            float64 `gorm:"type:decimal(15,2)" json:"unit_cost"`
+	PresentationID *uint  `gorm:"index" json:"presentation_id,omitempty"`
+	BranchID       uint   `gorm:"not null;index" json:"branch_id"`
+	Type           string `gorm:"size:30;not null" json:"type"` // in, out, transfer, adjustment
+	// Quantity/Balance: SIEMPRE en unidad base del producto — esta semántica no cambia con
+	// SaleUnit. Cuando el movimiento nace de una venta con unidad de venta (ej. "1.5 Saco 100 KG"),
+	// Quantity es la cantidad base ya convertida (150), y SaleUnitID/SaleUnitQuantity/
+	// ConversionFactor quedan como snapshot histórico inmutable del cómo se llegó a ese número —
+	// si mañana cambia el factor de la SaleUnit, este movimiento histórico no se reinterpreta.
+	Quantity         float64  `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	SaleUnitID       *uint    `gorm:"index" json:"sale_unit_id,omitempty"`
+	SaleUnitQuantity *float64 `gorm:"type:decimal(15,3)" json:"sale_unit_quantity,omitempty"`
+	ConversionFactor *float64 `gorm:"type:decimal(15,6)" json:"conversion_factor,omitempty"`
+	// UnitCost: en decimal(15,6), no (15,2) — cuando este movimiento nace de una compra con
+	// SaleUnit, UnitCost es el costo BASE ya convertido (ej. S/350/saco ÷ 100 = S/3.50/KG, pero
+	// factores como 24 o 1000 pueden dar más de 2 decimales exactos: S/100/caja÷24=S/4.1666.../u).
+	// Ampliado en v136 (antes decimal(15,2)) siguiendo el mismo criterio ya usado en v047
+	// (SaleAmountsSunatPrecision) para evitar la pérdida de precisión que un costo comercial
+	// dividido entre un factor puede producir. Ver pkg/money.RoundSunat (6 decimales), el
+	// redondeo "de precisión interna" que ya usa el resto del proyecto para este tipo de valor.
+	UnitCost            float64 `gorm:"type:decimal(15,6)" json:"unit_cost"`
 	Balance             float64 `gorm:"type:decimal(15,3)" json:"balance"`
 	Reference           string  `gorm:"size:100" json:"reference"`
 	Notes               string  `gorm:"type:text" json:"notes"`
 	OperationTypeID     *uint   `gorm:"index" json:"operation_type_id,omitempty"`
 	InventoryDocumentID *uint   `gorm:"index" json:"inventory_document_id,omitempty"`
-	// TransferID / SaleItemID: enlace directo al origen del movimiento (transferencia entre
-	// sucursales o línea de venta), para poder mostrar en el Kardex qué números de serie
-	// participaron sin tener que inferirlo por referencia/fecha.
-	TransferID *uint     `gorm:"index" json:"transfer_id,omitempty"`
-	SaleItemID *uint     `gorm:"index" json:"sale_item_id,omitempty"`
-	UserID     uint      `gorm:"index" json:"user_id"`
-	CreatedAt  time.Time `json:"created_at"`
+	// TransferID / SaleItemID / PurchaseItemID: enlace directo al origen del movimiento
+	// (transferencia entre sucursales, línea de venta o línea de compra), para poder mostrar en
+	// el Kardex qué números de serie participaron, y para que una reversión (Void de compra)
+	// pueda releer la cantidad/costo BASE históricos de esta línea en vez de recalcularlos.
+	TransferID     *uint     `gorm:"index" json:"transfer_id,omitempty"`
+	SaleItemID     *uint     `gorm:"index" json:"sale_item_id,omitempty"`
+	PurchaseItemID *uint     `gorm:"index" json:"purchase_item_id,omitempty"`
+	UserID         uint      `gorm:"index" json:"user_id"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // TenantInventoryOperationType catálogo de tipos de operación (Tabla 12 SUNAT). Seed por migración; sin CRUD.
@@ -1412,7 +1530,13 @@ type TenantSaleItem struct {
 	SaleID    uint  `gorm:"not null;index" json:"sale_id"`
 	ProductID *uint `gorm:"index" json:"product_id"`
 	// PresentationID: variante/presentación descontada (ej. color), cuando aplica.
-	PresentationID         *uint   `gorm:"index" json:"presentation_id,omitempty"`
+	PresentationID *uint `gorm:"index" json:"presentation_id,omitempty"`
+	// SaleUnitID: unidad de venta con conversión utilizada en esta línea (ej. "Saco 100 KG"),
+	// cuando aplica. Quantity/UnitPrice de esta fila siguen siendo la cantidad y precio
+	// COMERCIALES (1.5, 450) — la conversión a unidad base solo afecta al Kardex (ver
+	// TenantStockMovement.SaleUnitID/SaleUnitQuantity/ConversionFactor). Mutuamente excluyente con
+	// PresentationID (no se combinan variantes con unidades de venta en esta fase).
+	SaleUnitID             *uint   `gorm:"index" json:"sale_unit_id,omitempty"`
 	Code                   string  `gorm:"size:100" json:"code"`
 	Description            string  `gorm:"size:255;not null" json:"description"`
 	Unit                   string  `gorm:"size:50" json:"unit"`
@@ -1902,12 +2026,18 @@ type TenantPurchasePayment struct {
 type TenantPurchaseItem struct {
 	ID                 uint    `gorm:"primaryKey" json:"id"`
 	PurchaseID         uint    `gorm:"not null;index" json:"purchase_id"`
-	ProductID          *uint   `gorm:"index" json:"product_id"`
-	Code               string  `gorm:"size:100" json:"code"`
-	Description        string  `gorm:"size:255;not null" json:"description"`
-	Unit               string  `gorm:"size:50" json:"unit"`
-	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost           float64 `gorm:"type:decimal(15,2);not null" json:"unit_cost"`
+	ProductID   *uint  `gorm:"index" json:"product_id"`
+	Code        string `gorm:"size:100" json:"code"`
+	Description string `gorm:"size:255;not null" json:"description"`
+	Unit        string `gorm:"size:50" json:"unit"`
+	// Quantity/UnitCost: SIEMPRE comerciales (10 sacos, S/350/saco) — igual que en
+	// TenantSaleItem, la conversión a unidad base vive únicamente en el TenantStockMovement
+	// vinculado (ver SaleUnitID abajo y TenantStockMovement.PurchaseItemID).
+	Quantity float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitCost float64 `gorm:"type:decimal(15,2);not null" json:"unit_cost"`
+	// SaleUnitID: unidad de venta con conversión utilizada en esta línea de compra (ej. "Saco 100
+	// KG"), cuando aplica. nil = línea legacy sin conversión (comportamiento previo, intacto).
+	SaleUnitID         *uint   `gorm:"index" json:"sale_unit_id,omitempty"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
 	PriceIncludesIgv   bool    `gorm:"default:false" json:"price_includes_igv"`

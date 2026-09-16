@@ -40,6 +40,19 @@ type MovementInput struct {
 	// Kardex qué números de serie participaron sin inferirlo por referencia/fecha.
 	TransferID *uint
 	SaleItemID *uint
+	// PurchaseItemID: enlace directo a la línea de compra que originó este movimiento, para que
+	// una reversión (PurchaseService.Void) pueda releer la cantidad/costo BASE históricos de esta
+	// línea específica en vez de recalcularlos desde TenantPurchaseItem (que guarda cantidad/costo
+	// COMERCIALES).
+	PurchaseItemID *uint
+	// SaleUnitID/SaleUnitQuantity/ConversionFactor: snapshot histórico de la conversión cuando el
+	// movimiento nace de una venta con unidad de venta (TenantProductSaleUnit). Quantity de este
+	// mismo MovementInput debe venir YA convertida a unidad base — este método no hace ninguna
+	// conversión, solo persiste el snapshot que el caller ya calculó (ver
+	// internal/sales/service/sale_unit_resolver.go).
+	SaleUnitID       *uint
+	SaleUnitQuantity *float64
+	ConversionFactor *float64
 }
 
 func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *MovementInput) error {
@@ -106,7 +119,8 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 		Quantity: input.Quantity, UnitCost: input.UnitCost, Balance: newBalance,
 		Reference: input.Reference, Notes: input.Notes, UserID: input.UserID,
 		OperationTypeID: input.OperationTypeID, InventoryDocumentID: input.InventoryDocumentID,
-		TransferID: input.TransferID, SaleItemID: input.SaleItemID,
+		TransferID: input.TransferID, SaleItemID: input.SaleItemID, PurchaseItemID: input.PurchaseItemID,
+		SaleUnitID: input.SaleUnitID, SaleUnitQuantity: input.SaleUnitQuantity, ConversionFactor: input.ConversionFactor,
 		CreatedAt: time.Now(),
 	}
 	if err := tx.Create(&movement).Error; err != nil {

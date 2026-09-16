@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -904,6 +905,354 @@ func (h *ProductHandler) BrandDeleteAPI(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	if err := service.NewProductService(db(c)).DeleteBrand(uint(id)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// ── Unidades de venta (TenantProductSaleUnit) ───────────────────────────────────────────────────
+//
+// Fase 1: solo administración de la entidad, todavía no conectada a ventas/compras/Kardex.
+
+type saleUnitRequestBody struct {
+	Name             string   `json:"name"`
+	ConversionFactor float64  `json:"conversion_factor"`
+	IsBase           bool     `json:"is_base"`
+	AllowFraction    bool     `json:"allow_fraction"`
+	Price1           float64  `json:"price1"`
+	Price2           *float64 `json:"price2"`
+	Price3           *float64 `json:"price3"`
+	SortOrder        int      `json:"sort_order"`
+	Active           bool     `json:"active"`
+}
+
+func (b saleUnitRequestBody) toInput() service.SaleUnitInput {
+	return service.SaleUnitInput{
+		Name:             b.Name,
+		ConversionFactor: b.ConversionFactor,
+		IsBase:           b.IsBase,
+		AllowFraction:    b.AllowFraction,
+		Price1:           b.Price1,
+		Price2:           b.Price2,
+		Price3:           b.Price3,
+		SortOrder:        b.SortOrder,
+		Active:           b.Active,
+	}
+}
+
+// SaleUnitListAPI lista las unidades de venta de un producto (activas por defecto; ?all=1 trae
+// también inactivas, para la pantalla de administración).
+func (h *ProductHandler) SaleUnitListAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	svc := service.NewProductService(db(c))
+	if c.Query("all") == "true" || c.Query("all") == "1" {
+		units, err := svc.ListAllSaleUnits(uint(productID))
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"data": units})
+	}
+	units, err := svc.ListSaleUnits(uint(productID))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": units})
+}
+
+// SaleUnitGetAPI obtiene una unidad de venta puntual del producto.
+func (h *ProductHandler) SaleUnitGetAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	suID, err := strconv.ParseUint(c.Params("suid"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	u, err := service.NewProductService(db(c)).GetSaleUnit(uint(productID), uint(suID))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": u})
+}
+
+// SaleUnitCreateAPI crea una unidad de venta para el producto indicado.
+func (h *ProductHandler) SaleUnitCreateAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	var body saleUnitRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	u, err := service.NewProductService(db(c)).CreateSaleUnit(uint(productID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(fiber.Map{"data": u})
+}
+
+// SaleUnitUpdateAPI actualiza una unidad de venta existente del producto.
+func (h *ProductHandler) SaleUnitUpdateAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	suID, err := strconv.ParseUint(c.Params("suid"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body saleUnitRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	u, err := service.NewProductService(db(c)).UpdateSaleUnit(uint(productID), uint(suID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": u})
+}
+
+// SaleUnitDeleteAPI elimina (soft delete) una unidad de venta del producto.
+func (h *ProductHandler) SaleUnitDeleteAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	suID, err := strconv.ParseUint(c.Params("suid"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := service.NewProductService(db(c)).DeleteSaleUnit(uint(productID), uint(suID)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// ── Precios por sucursal de unidades de venta (TenantProductSaleUnitBranchPrice) ────────────────
+//
+// Fase 4: override de precio de una SaleUnit para una sucursal puntual.
+
+type saleUnitBranchPriceRequestBody struct {
+	Price1 float64  `json:"price1"`
+	Price2 *float64 `json:"price2"`
+	Price3 *float64 `json:"price3"`
+	Active bool     `json:"active"`
+}
+
+func (b saleUnitBranchPriceRequestBody) toInput() service.SaleUnitBranchPriceInput {
+	return service.SaleUnitBranchPriceInput{Price1: b.Price1, Price2: b.Price2, Price3: b.Price3, Active: b.Active}
+}
+
+// parseProductAndSaleUnitParams parsea :id (producto) y :suid (unidad de venta) — repetido en
+// todos los handlers de precios por sucursal, que cuelgan de la misma ruta anidada.
+func parseProductAndSaleUnitParams(c fiber.Ctx) (productID, saleUnitID uint, err error) {
+	pid, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return 0, 0, errors.New("producto inválido")
+	}
+	suid, err := strconv.ParseUint(c.Params("suid"), 10, 32)
+	if err != nil {
+		return 0, 0, errors.New("ID de unidad de venta inválido")
+	}
+	return uint(pid), uint(suid), nil
+}
+
+// SaleUnitBranchPriceListAPI lista los overrides de sucursal de una unidad de venta.
+func (h *ProductHandler) SaleUnitBranchPriceListAPI(c fiber.Ctx) error {
+	productID, saleUnitID, err := parseProductAndSaleUnitParams(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	rows, err := service.NewProductService(db(c)).ListSaleUnitBranchPrices(productID, saleUnitID)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// SaleUnitBranchPriceGetAPI obtiene el override de una sucursal puntual.
+func (h *ProductHandler) SaleUnitBranchPriceGetAPI(c fiber.Ctx) error {
+	productID, saleUnitID, err := parseProductAndSaleUnitParams(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	row, err := service.NewProductService(db(c)).GetSaleUnitBranchPrice(productID, saleUnitID, uint(branchID))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": row})
+}
+
+// SaleUnitBranchPriceCreateAPI crea el override de precio de una unidad de venta para una sucursal.
+func (h *ProductHandler) SaleUnitBranchPriceCreateAPI(c fiber.Ctx) error {
+	productID, saleUnitID, err := parseProductAndSaleUnitParams(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	var body saleUnitBranchPriceRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	row, err := service.NewProductService(db(c)).CreateSaleUnitBranchPrice(productID, saleUnitID, uint(branchID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(fiber.Map{"data": row})
+}
+
+// SaleUnitBranchPriceUpdateAPI actualiza el override de precio de una sucursal.
+func (h *ProductHandler) SaleUnitBranchPriceUpdateAPI(c fiber.Ctx) error {
+	productID, saleUnitID, err := parseProductAndSaleUnitParams(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	var body saleUnitBranchPriceRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	row, err := service.NewProductService(db(c)).UpdateSaleUnitBranchPrice(productID, saleUnitID, uint(branchID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": row})
+}
+
+// SaleUnitBranchPriceDeleteAPI elimina el override de precio de una sucursal.
+func (h *ProductHandler) SaleUnitBranchPriceDeleteAPI(c fiber.Ctx) error {
+	productID, saleUnitID, err := parseProductAndSaleUnitParams(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	if err := service.NewProductService(db(c)).DeleteSaleUnitBranchPrice(productID, saleUnitID, uint(branchID)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// ── Atributos descriptivos de producto (TenantProductAttribute) ─────────────────────────────────
+//
+// Fase 5: puramente informativo, sin CRUD propio en Tukichef ni efecto en precio/stock/Kardex.
+
+type productAttributeRequestBody struct {
+	Name      string `json:"name"`
+	Value     string `json:"value"`
+	SortOrder int    `json:"sort_order"`
+	Active    bool   `json:"active"`
+}
+
+func (b productAttributeRequestBody) toInput() service.ProductAttributeInput {
+	return service.ProductAttributeInput{Name: b.Name, Value: b.Value, SortOrder: b.SortOrder, Active: b.Active}
+}
+
+// ProductAttributeListAPI lista los atributos de un producto (activos por defecto; ?all=1 trae
+// también inactivos, para la pantalla de administración).
+func (h *ProductHandler) ProductAttributeListAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	svc := service.NewProductService(db(c))
+	if c.Query("all") == "true" || c.Query("all") == "1" {
+		rows, err := svc.ListAllProductAttributes(uint(productID))
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{"data": rows})
+	}
+	rows, err := svc.ListProductAttributes(uint(productID))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// ProductAttributeGetAPI obtiene un atributo puntual del producto.
+func (h *ProductHandler) ProductAttributeGetAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	attrID, err := strconv.ParseUint(c.Params("attrId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	row, err := service.NewProductService(db(c)).GetProductAttribute(uint(productID), uint(attrID))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": row})
+}
+
+// ProductAttributeCreateAPI crea un atributo descriptivo para el producto indicado.
+func (h *ProductHandler) ProductAttributeCreateAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	var body productAttributeRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	row, err := service.NewProductService(db(c)).CreateProductAttribute(uint(productID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(fiber.Map{"data": row})
+}
+
+// ProductAttributeUpdateAPI actualiza un atributo existente del producto.
+func (h *ProductHandler) ProductAttributeUpdateAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	attrID, err := strconv.ParseUint(c.Params("attrId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body productAttributeRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	row, err := service.NewProductService(db(c)).UpdateProductAttribute(uint(productID), uint(attrID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": row})
+}
+
+// ProductAttributeDeleteAPI elimina (físico) un atributo del producto.
+func (h *ProductHandler) ProductAttributeDeleteAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	attrID, err := strconv.ParseUint(c.Params("attrId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := service.NewProductService(db(c)).DeleteProductAttribute(uint(productID), uint(attrID)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

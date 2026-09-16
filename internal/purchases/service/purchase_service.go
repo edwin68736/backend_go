@@ -10,6 +10,7 @@ import (
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
+	"tukifac/pkg/saleunit"
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
@@ -24,12 +25,19 @@ func NewPurchaseService(db *gorm.DB) *PurchaseService {
 }
 
 type PurchaseItemInput struct {
-	ProductID          *uint    `json:"product_id"`
-	Code               string   `json:"code"`
-	Description        string   `json:"description"`
-	Unit               string   `json:"unit"`
-	Quantity           float64  `json:"quantity"`
-	UnitCost           float64  `json:"unit_cost"`
+	ProductID   *uint  `json:"product_id"`
+	Code        string `json:"code"`
+	Description string `json:"description"`
+	Unit        string `json:"unit"`
+	// Quantity/UnitCost: SIEMPRE comerciales (10, S/350/saco) — igual que en ventas, la conversión
+	// a cantidad/costo base ocurre server-side y solo se refleja en el movimiento de inventario
+	// (ver SaleUnitID abajo). Nunca se recibe ni se confía en una "cantidad base" del cliente.
+	Quantity float64 `json:"quantity"`
+	UnitCost float64 `json:"unit_cost"`
+	// SaleUnitID: unidad de venta con conversión utilizada en esta línea (ej. "Saco 100 KG"),
+	// cuando el producto se compra en una unidad distinta de la base. nil = línea legacy sin
+	// conversión (comportamiento previo, intacto).
+	SaleUnitID         *uint    `json:"sale_unit_id"`
 	TaxRate            float64  `json:"tax_rate"`             // referencial; se recalcula con IgvAffectationType
 	IgvAffectationType string   `json:"igv_affectation_type"` // catálogo SUNAT N°07
 	PriceIncludesIgv   bool     `json:"price_includes_igv"`
@@ -74,8 +82,13 @@ func validatePurchaseItems(items []PurchaseItemInput) error {
 }
 
 // catalogPriceUpdates construye el mapa de actualización de precios de catálogo para un ítem.
-// purchase_price solo se actualiza cuando unit_cost > 0 (bonificaciones o errores no sobrescriben).
-func catalogPriceUpdates(item PurchaseItemInput) (map[string]interface{}, error) {
+// purchase_price solo se actualiza cuando baseUnitCost > 0 (bonificaciones o errores no
+// sobrescriben). baseUnitCost es el costo por unidad BASE del producto — igual a item.UnitCost
+// cuando la línea no usa SaleUnit (comportamiento legacy sin cambio), o
+// item.UnitCost/ConversionFactor cuando sí la usa (ver purchaseBaseUnitCost). TenantProduct.
+// PurchasePrice siempre representa costo base, nunca comercial — igual que antes de esta fase,
+// solo que ahora el caller puede necesitar convertir antes de llegar acá.
+func catalogPriceUpdates(item PurchaseItemInput, baseUnitCost float64) (map[string]interface{}, error) {
 	if item.UpdateSalePrice && item.NewSalePrice <= 0 {
 		label := strings.TrimSpace(item.Description)
 		if label == "" {
@@ -84,8 +97,8 @@ func catalogPriceUpdates(item PurchaseItemInput) (map[string]interface{}, error)
 		return nil, fmt.Errorf("precio de venta debe ser mayor a cero para %s", label)
 	}
 	updates := map[string]interface{}{}
-	if item.UnitCost > 0 {
-		updates["purchase_price"] = money.RoundSunat(item.UnitCost)
+	if baseUnitCost > 0 {
+		updates["purchase_price"] = money.RoundSunat(baseUnitCost)
 	}
 	if item.UpdateSalePrice {
 		updates["sale_price"] = money.RoundSunat(item.NewSalePrice)
@@ -132,7 +145,13 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	if err := validatePurchaseItems(input.Items); err != nil {
 		return nil, err
 	}
+	if err := validatePurchaseItemQuantities(input.Items); err != nil {
+		return nil, err
+	}
 	if err := validatePurchaseProducts(s.db, input.Items); err != nil {
+		return nil, err
+	}
+	if err := validatePurchaseSaleUnits(s.db, input.Items); err != nil {
 		return nil, err
 	}
 
@@ -167,6 +186,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			Unit:               item.Unit,
 			Quantity:           item.Quantity,
 			UnitCost:           item.UnitCost,
+			SaleUnitID:         item.SaleUnitID,
 			TaxRate:            effectiveRate,
 			IgvAffectationType: affType,
 			PriceIncludesIgv:   item.PriceIncludesIgv,
@@ -280,7 +300,30 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 				return err
 			}
 
-			priceUpdates, err := catalogPriceUpdates(item)
+			// Resolver la unidad de venta UNA vez por ítem: de acá salen la cantidad y el costo
+			// BASE que alimentan tanto el precio de catálogo como el movimiento de inventario.
+			// baseQuantity/baseUnitCost == item.Quantity/item.UnitCost cuando no hay SaleUnit
+			// (comportamiento legacy, sin ningún cambio).
+			baseQuantity := item.Quantity
+			baseUnitCost := item.UnitCost
+			var movementSaleUnitID *uint
+			var movementSaleUnitQuantity *float64
+			var movementConversionFactor *float64
+			if item.SaleUnitID != nil && *item.SaleUnitID > 0 {
+				res, err := saleunit.ResolveForLine(tx, product.ID, item.SaleUnitID, item.Quantity)
+				if err != nil {
+					return err
+				}
+				baseQuantity = res.BaseQuantity
+				baseUnitCost = purchaseBaseUnitCost(item.UnitCost, res.ConversionFactor)
+				movementSaleUnitID = item.SaleUnitID
+				commercialQty := item.Quantity
+				movementSaleUnitQuantity = &commercialQty
+				factor := res.ConversionFactor
+				movementConversionFactor = &factor
+			}
+
+			priceUpdates, err := catalogPriceUpdates(item, baseUnitCost)
 			if err != nil {
 				return err
 			}
@@ -294,15 +337,20 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 				continue
 			}
 
+			movementPurchaseItemID := purchaseItems[i].ID
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:     *item.ProductID,
-				BranchID:      input.BranchID,
-				Type:          "in",
-				Quantity:      item.Quantity,
-				UnitCost:      item.UnitCost,
-				Reference:     "COMPRA/" + input.Series + "-" + input.Number,
-				UserID:        input.UserID,
-				OperationCode: "PURCHASE",
+				ProductID:        *item.ProductID,
+				BranchID:         input.BranchID,
+				Type:             "in",
+				Quantity:         baseQuantity,
+				UnitCost:         baseUnitCost,
+				Reference:        "COMPRA/" + input.Series + "-" + input.Number,
+				UserID:           input.UserID,
+				OperationCode:    "PURCHASE",
+				PurchaseItemID:   &movementPurchaseItemID,
+				SaleUnitID:       movementSaleUnitID,
+				SaleUnitQuantity: movementSaleUnitQuantity,
+				ConversionFactor: movementConversionFactor,
 			}); err != nil {
 				return err
 			}
@@ -472,15 +520,41 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 			}
 
 			if product.ManageStock {
+				// Revertir usando la cantidad/costo BASE ya persistidos en el movimiento
+				// histórico de esta línea (tenant_stock_movements.purchase_item_id), no
+				// item.Quantity/item.UnitCost (que son SIEMPRE comerciales, ver
+				// TenantPurchaseItem) — para una línea con SaleUnit son unidades distintas
+				// (10 sacos vs. 1,000 KG) y usar la comercial dejaría el stock corrupto.
+				//
+				// Fallback a item.Quantity/item.UnitCost solo para compras registradas ANTES de
+				// esta fase, cuyo movimiento histórico nunca tuvo purchase_item_id (columna
+				// inexistente en ese momento): ahí cantidad comercial y base siempre coincidían
+				// (no existía SaleUnit todavía), así que el fallback es exacto, no una
+				// aproximación.
+				var original database.TenantStockMovement
+				quantity, unitCost := item.Quantity, item.UnitCost
+				var saleUnitID *uint
+				var saleUnitQuantity, conversionFactor *float64
+				if err := tx.Where("purchase_item_id = ? AND type = ?", item.ID, "in").
+					First(&original).Error; err == nil {
+					quantity = original.Quantity
+					unitCost = original.UnitCost
+					saleUnitID = original.SaleUnitID
+					saleUnitQuantity = original.SaleUnitQuantity
+					conversionFactor = original.ConversionFactor
+				}
 				if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-					ProductID:     *item.ProductID,
-					BranchID:      p.BranchID,
-					Type:          "out",
-					Quantity:      item.Quantity,
-					UnitCost:      item.UnitCost,
-					Reference:     ref,
-					UserID:        userID,
-					OperationCode: "PURCHASE",
+					ProductID:        *item.ProductID,
+					BranchID:         p.BranchID,
+					Type:             "out",
+					Quantity:         quantity,
+					UnitCost:         unitCost,
+					Reference:        ref,
+					UserID:           userID,
+					OperationCode:    "PURCHASE",
+					SaleUnitID:       saleUnitID,
+					SaleUnitQuantity: saleUnitQuantity,
+					ConversionFactor: conversionFactor,
 				}); err != nil {
 					return err
 				}

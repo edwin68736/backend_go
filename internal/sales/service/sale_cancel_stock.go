@@ -53,6 +53,13 @@ func restoreStockFromKardexTx(tx *gorm.DB, sale *database.TenantSale, ref string
 			Reference:      ref,
 			UserID:         uid,
 			OperationCode:  "SALE",
+			// Snapshot de trazabilidad: la reversión ya sabe cuánto devolver (mv.Quantity, en
+			// unidad base, sin cambios). Esto solo conserva CON QUÉ unidad de venta/factor se
+			// vendió originalmente, para que el Kardex de la reversión sea igual de legible que
+			// el de la salida ("+150 KG, equivalente a 1.5 SACO 100KG") en vez de solo "+150 KG".
+			SaleUnitID:       mv.SaleUnitID,
+			SaleUnitQuantity: mv.SaleUnitQuantity,
+			ConversionFactor: mv.ConversionFactor,
 		}); err != nil {
 			return err
 		}
@@ -94,14 +101,21 @@ func RestorePartialStockFromKardexTx(tx *gorm.DB, noteSale *database.TenantSale,
 		if len(outs) == 0 {
 			continue
 		}
-		var totalOut float64
-		for _, mv := range outs {
-			totalOut += mv.Quantity
+		// El ratio se calcula en unidad COMERCIAL: ni.Quantity (lo que devuelve la nota) contra
+		// originalItem.Quantity (lo que se vendió), ambos TenantSaleItem.Quantity — siempre la
+		// misma unidad entre sí, haya o no SaleUnit. NO se calcula contra la suma del kardex
+		// (antes: totalOut): para una línea con SaleUnit, kardex.Quantity está en unidad BASE
+		// (ej. 200 KG) mientras que ni.Quantity está en unidad COMERCIAL (ej. 0.5 sacos) — son
+		// unidades distintas, dividir una entre otra daría un ratio sin sentido. Para líneas sin
+		// SaleUnit esto no cambia nada: ahí unidad comercial y base siempre coinciden.
+		var originalItem database.TenantSaleItem
+		if err := tx.First(&originalItem, *ni.OriginalSaleItemID).Error; err != nil {
+			return err
 		}
-		if totalOut <= 0 {
+		if originalItem.Quantity <= 0 {
 			continue
 		}
-		ratio := ni.Quantity / totalOut
+		ratio := ni.Quantity / originalItem.Quantity
 		if ratio > 1 {
 			ratio = 1
 		}
@@ -111,15 +125,25 @@ func RestorePartialStockFromKardexTx(tx *gorm.DB, noteSale *database.TenantSale,
 			if qty <= 0 {
 				continue
 			}
+			// La cantidad comercial también se prorratea (misma ratio que la cantidad base); el
+			// factor usado en la venta original no cambia por ser una devolución parcial.
+			var saleUnitQty *float64
+			if mv.SaleUnitQuantity != nil {
+				q := *mv.SaleUnitQuantity * ratio
+				saleUnitQty = &q
+			}
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
-				ProductID:      mv.ProductID,
-				PresentationID: mv.PresentationID,
-				BranchID:       mv.BranchID,
-				Type:           "in",
-				Quantity:       qty,
-				Reference:      ref,
-				UserID:         uid,
-				OperationCode:  "SALE",
+				ProductID:        mv.ProductID,
+				PresentationID:   mv.PresentationID,
+				BranchID:         mv.BranchID,
+				Type:             "in",
+				Quantity:         qty,
+				Reference:        ref,
+				UserID:           uid,
+				OperationCode:    "SALE",
+				SaleUnitID:       mv.SaleUnitID,
+				SaleUnitQuantity: saleUnitQty,
+				ConversionFactor: mv.ConversionFactor,
 			}); err != nil {
 				return err
 			}

@@ -10,6 +10,7 @@ import (
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/modifierkind"
 	"tukifac/pkg/money"
+	"tukifac/pkg/saleunit"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
 
@@ -1401,6 +1402,466 @@ func (s *ProductService) DeleteBrand(id uint) error {
 		return fmt.Errorf("no se puede eliminar: hay %d producto(s) vinculados", linked)
 	}
 	return s.db.Delete(&b).Error
+}
+
+// ── Unidades de venta (TenantProductSaleUnit) ───────────────────────────────────────────────────
+//
+// Fase 1: solo administración de la entidad. Todavía no la lee ni la usa ningún flujo de
+// ventas/compras/inventario — ver comentario en pkg/database/migrations.go.
+
+// SaleUnitInput datos de entrada para crear/actualizar una unidad de venta.
+type SaleUnitInput struct {
+	Name             string
+	ConversionFactor float64
+	IsBase           bool
+	AllowFraction    bool
+	Price1           float64
+	Price2           *float64
+	Price3           *float64
+	SortOrder        int
+	Active           bool
+}
+
+// validateSaleUnitInput normaliza y valida los campos comunes a Create/Update. No valida
+// ProductID ni pertenencia al tenant: eso lo resuelve el caller con s.db (ya scopeado al tenant).
+func validateSaleUnitInput(in SaleUnitInput) (string, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return "", errors.New("nombre de la unidad de venta requerido")
+	}
+	if in.ConversionFactor <= 0 {
+		return "", errors.New("el factor de conversión debe ser mayor a cero")
+	}
+	if in.IsBase && in.ConversionFactor != 1 {
+		return "", errors.New("la unidad base debe tener factor de conversión igual a 1")
+	}
+	if in.Price1 <= 0 {
+		return "", errors.New("price1 debe ser mayor a cero")
+	}
+	if in.Price2 != nil && *in.Price2 <= 0 {
+		return "", errors.New("price2 debe ser mayor a cero si se especifica")
+	}
+	if in.Price3 != nil && *in.Price3 <= 0 {
+		return "", errors.New("price3 debe ser mayor a cero si se especifica")
+	}
+	return name, nil
+}
+
+// clearOtherBaseSaleUnitsTx desmarca is_base en las demás unidades de venta del mismo producto,
+// para que a lo sumo una quede marcada. Mismo criterio que clearOtherDefaultSeriesTx en
+// internal/company/service/company_service.go: se aplica en Create/UpdateSaleUnit dentro de la
+// misma transacción, no con un índice único (MySQL no soporta índices únicos parciales sin
+// columnas generadas).
+func clearOtherBaseSaleUnitsTx(tx *gorm.DB, productID uint, excludeID uint) error {
+	q := tx.Model(&database.TenantProductSaleUnit{}).
+		Where("product_id = ? AND is_base = ?", productID, true)
+	if excludeID > 0 {
+		q = q.Where("id != ?", excludeID)
+	}
+	return q.Update("is_base", false).Error
+}
+
+// ListSaleUnits unidades de venta activas de un producto, en orden de exhibición.
+func (s *ProductService) ListSaleUnits(productID uint) ([]database.TenantProductSaleUnit, error) {
+	var units []database.TenantProductSaleUnit
+	err := s.db.Where("product_id = ? AND active = ?", productID, true).
+		Order("sort_order ASC, id ASC").Find(&units).Error
+	return units, err
+}
+
+// ListAllSaleUnits incluye inactivas — para la pantalla de administración.
+func (s *ProductService) ListAllSaleUnits(productID uint) ([]database.TenantProductSaleUnit, error) {
+	var units []database.TenantProductSaleUnit
+	err := s.db.Where("product_id = ?", productID).
+		Order("sort_order ASC, id ASC").Find(&units).Error
+	return units, err
+}
+
+// GetSaleUnit obtiene una unidad de venta verificando que pertenezca al producto indicado (además
+// de la aislación de tenant que ya da s.db, scopeado a la base de datos del tenant que llama).
+func (s *ProductService) GetSaleUnit(productID, id uint) (*database.TenantProductSaleUnit, error) {
+	var u database.TenantProductSaleUnit
+	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&u).Error; err != nil {
+		return nil, errors.New("unidad de venta no encontrada")
+	}
+	return &u, nil
+}
+
+// CreateSaleUnit crea una unidad de venta para un producto existente del tenant.
+func (s *ProductService) CreateSaleUnit(productID uint, in SaleUnitInput) (*database.TenantProductSaleUnit, error) {
+	var product database.TenantProduct
+	if err := s.db.First(&product, productID).Error; err != nil {
+		return nil, errors.New("producto no encontrado")
+	}
+	name, err := validateSaleUnitInput(in)
+	if err != nil {
+		return nil, err
+	}
+	row := &database.TenantProductSaleUnit{
+		ProductID:        productID,
+		Name:             name,
+		ConversionFactor: in.ConversionFactor,
+		IsBase:           in.IsBase,
+		AllowFraction:    in.AllowFraction,
+		Price1:           in.Price1,
+		Price2:           in.Price2,
+		Price3:           in.Price3,
+		SortOrder:        in.SortOrder,
+		Active:           true,
+	}
+	if !in.IsBase {
+		return row, s.db.Create(row).Error
+	}
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := clearOtherBaseSaleUnitsTx(tx, productID, 0); err != nil {
+			return err
+		}
+		return tx.Create(row).Error
+	})
+	return row, err
+}
+
+// UpdateSaleUnit actualiza nombre, factor, fracción, precios y estado activo. Verifica pertenencia
+// al producto indicado antes de modificar.
+func (s *ProductService) UpdateSaleUnit(productID, id uint, in SaleUnitInput) (*database.TenantProductSaleUnit, error) {
+	var row database.TenantProductSaleUnit
+	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&row).Error; err != nil {
+		return nil, errors.New("unidad de venta no encontrada")
+	}
+	name, err := validateSaleUnitInput(in)
+	if err != nil {
+		return nil, err
+	}
+	row.Name = name
+	row.ConversionFactor = in.ConversionFactor
+	row.AllowFraction = in.AllowFraction
+	row.Price1 = in.Price1
+	row.Price2 = in.Price2
+	row.Price3 = in.Price3
+	row.SortOrder = in.SortOrder
+	row.Active = in.Active
+	if !in.IsBase {
+		row.IsBase = false
+		return &row, s.db.Save(&row).Error
+	}
+	row.IsBase = true
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := clearOtherBaseSaleUnitsTx(tx, productID, row.ID); err != nil {
+			return err
+		}
+		return tx.Save(&row).Error
+	})
+	return &row, err
+}
+
+// DeleteSaleUnit borra (soft delete) una unidad de venta. En esta fase nada la referencia todavía
+// desde ventas/compras/Kardex, así que no hace falta un guard de "vinculados" como en categorías/
+// marcas/unidades — se agregará cuando exista esa integración.
+func (s *ProductService) DeleteSaleUnit(productID, id uint) error {
+	var row database.TenantProductSaleUnit
+	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&row).Error; err != nil {
+		return errors.New("unidad de venta no encontrada")
+	}
+	return s.db.Delete(&row).Error
+}
+
+// ── Precios por sucursal de unidades de venta (TenantProductSaleUnitBranchPrice) ────────────────
+//
+// Fase 4: override de precio de una SaleUnit para una sucursal puntual. La SaleUnit sigue siendo
+// global — esto no le agrega branch_id. Ver pkg/saleunit.ResolvePrice para el algoritmo de
+// resolución (override de sucursal activo → precio global de la SaleUnit → Price1).
+
+// SaleUnitBranchPriceInput datos de entrada para crear/actualizar un override de sucursal.
+type SaleUnitBranchPriceInput struct {
+	Price1 float64
+	Price2 *float64
+	Price3 *float64
+	Active bool
+}
+
+// getSaleUnitOwnedByProduct confirma que la SaleUnit existe y pertenece al producto indicado —
+// reutilizado por todo el CRUD de precios por sucursal, mismo criterio que GetSaleUnit.
+func (s *ProductService) getSaleUnitOwnedByProduct(productID, saleUnitID uint) (*database.TenantProductSaleUnit, error) {
+	var su database.TenantProductSaleUnit
+	if err := s.db.Where("id = ? AND product_id = ?", saleUnitID, productID).First(&su).Error; err != nil {
+		return nil, errors.New("unidad de venta no encontrada")
+	}
+	return &su, nil
+}
+
+func (s *ProductService) getTenantBranch(branchID uint) (*database.TenantBranch, error) {
+	var b database.TenantBranch
+	if err := s.db.First(&b, branchID).Error; err != nil {
+		return nil, errors.New("sucursal no encontrada")
+	}
+	return &b, nil
+}
+
+// ListSaleUnitBranchPrices lista los overrides de sucursal configurados para una unidad de venta.
+func (s *ProductService) ListSaleUnitBranchPrices(productID, saleUnitID uint) ([]database.TenantProductSaleUnitBranchPrice, error) {
+	if _, err := s.getSaleUnitOwnedByProduct(productID, saleUnitID); err != nil {
+		return nil, err
+	}
+	var rows []database.TenantProductSaleUnitBranchPrice
+	err := s.db.Where("sale_unit_id = ?", saleUnitID).Order("branch_id ASC").Find(&rows).Error
+	return rows, err
+}
+
+// GetSaleUnitBranchPrice obtiene el override de una sucursal puntual.
+func (s *ProductService) GetSaleUnitBranchPrice(productID, saleUnitID, branchID uint) (*database.TenantProductSaleUnitBranchPrice, error) {
+	if _, err := s.getSaleUnitOwnedByProduct(productID, saleUnitID); err != nil {
+		return nil, err
+	}
+	var row database.TenantProductSaleUnitBranchPrice
+	if err := s.db.Where("sale_unit_id = ? AND branch_id = ?", saleUnitID, branchID).First(&row).Error; err != nil {
+		return nil, errors.New("precio de sucursal no encontrado")
+	}
+	return &row, nil
+}
+
+// CreateSaleUnitBranchPrice crea el override de precio de una SaleUnit para una sucursal. Rechaza
+// si ya existe una fila para ese par — se edita con UpdateSaleUnitBranchPrice en vez de duplicar
+// (ver comentario del modelo sobre por qué esta tabla no usa soft delete y sí un índice único
+// real). El índice único de BD es el resguardo final contra una creación duplicada por carrera
+// entre dos requests concurrentes; este chequeo previo solo da un mensaje legible en el caso común.
+func (s *ProductService) CreateSaleUnitBranchPrice(productID, saleUnitID, branchID uint, in SaleUnitBranchPriceInput) (*database.TenantProductSaleUnitBranchPrice, error) {
+	if _, err := s.getSaleUnitOwnedByProduct(productID, saleUnitID); err != nil {
+		return nil, err
+	}
+	if _, err := s.getTenantBranch(branchID); err != nil {
+		return nil, err
+	}
+	if err := saleunit.ValidateBranchPriceInput(in.Price1, in.Price2, in.Price3); err != nil {
+		return nil, err
+	}
+	var existing database.TenantProductSaleUnitBranchPrice
+	err := s.db.Where("sale_unit_id = ? AND branch_id = ?", saleUnitID, branchID).First(&existing).Error
+	if err == nil {
+		return nil, errors.New("ya existe un precio configurado para esta sucursal; edítelo o elimínelo primero")
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	row := &database.TenantProductSaleUnitBranchPrice{
+		SaleUnitID: saleUnitID, BranchID: branchID,
+		Price1: in.Price1, Price2: in.Price2, Price3: in.Price3, Active: true,
+	}
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateBranchPriceError(err) {
+			// Carrera entre dos requests concurrentes creando el mismo (sale_unit_id, branch_id):
+			// el chequeo previo (líneas arriba) no lo detectó porque ambos leyeron antes de que
+			// cualquiera insertara. El índice único de la tabla (idx_sale_unit_branch_price) sí
+			// lo impide a nivel de BD — acá solo se traduce a un mensaje de negocio legible en
+			// vez del error crudo del driver, mismo criterio que isDuplicateOpenSessionError en
+			// internal/restaurant/service/table_session_sync.go.
+			return nil, errors.New("ya existe un precio configurado para esta sucursal; edítelo o elimínelo primero")
+		}
+		return nil, err
+	}
+	return row, nil
+}
+
+// isDuplicateBranchPriceError detecta la violación del índice único
+// idx_sale_unit_branch_price (MySQL 1062) — mismo patrón que isDuplicateOpenSessionError en
+// internal/restaurant/service/table_session_sync.go, sin introducir infraestructura nueva.
+func isDuplicateBranchPriceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "1062") ||
+		strings.Contains(msg, "unique") ||
+		strings.Contains(msg, "idx_sale_unit_branch_price")
+}
+
+// UpdateSaleUnitBranchPrice actualiza precios y estado activo de un override existente.
+func (s *ProductService) UpdateSaleUnitBranchPrice(productID, saleUnitID, branchID uint, in SaleUnitBranchPriceInput) (*database.TenantProductSaleUnitBranchPrice, error) {
+	if _, err := s.getSaleUnitOwnedByProduct(productID, saleUnitID); err != nil {
+		return nil, err
+	}
+	var row database.TenantProductSaleUnitBranchPrice
+	if err := s.db.Where("sale_unit_id = ? AND branch_id = ?", saleUnitID, branchID).First(&row).Error; err != nil {
+		return nil, errors.New("precio de sucursal no encontrado")
+	}
+	if err := saleunit.ValidateBranchPriceInput(in.Price1, in.Price2, in.Price3); err != nil {
+		return nil, err
+	}
+	row.Price1 = in.Price1
+	row.Price2 = in.Price2
+	row.Price3 = in.Price3
+	row.Active = in.Active
+	if err := s.db.Save(&row).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// DeleteSaleUnitBranchPrice elimina físicamente el override (esta tabla no tiene soft delete —
+// ver comentario del modelo), liberando el par (sale_unit_id, branch_id) para poder configurarse
+// de nuevo más adelante.
+func (s *ProductService) DeleteSaleUnitBranchPrice(productID, saleUnitID, branchID uint) error {
+	if _, err := s.getSaleUnitOwnedByProduct(productID, saleUnitID); err != nil {
+		return err
+	}
+	res := s.db.Where("sale_unit_id = ? AND branch_id = ?", saleUnitID, branchID).
+		Delete(&database.TenantProductSaleUnitBranchPrice{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("precio de sucursal no encontrado")
+	}
+	return nil
+}
+
+// ── Atributos descriptivos de producto (TenantProductAttribute) ─────────────────────────────────
+//
+// Fase 5: puramente descriptivo (ej. "Color: Rojo"). No tiene stock, no genera Kardex, no afecta
+// precios/SaleUnit/Presentation, no crea variantes. Ver comentario del modelo en
+// pkg/database/migrations.go.
+
+const (
+	productAttributeNameMaxLen  = 100
+	productAttributeValueMaxLen = 255
+)
+
+// ProductAttributeInput datos de entrada para crear/actualizar un atributo.
+type ProductAttributeInput struct {
+	Name      string
+	Value     string
+	SortOrder int
+	Active    bool
+}
+
+// validateProductAttributeInput normaliza (trim) y valida nombre/valor. No valida ProductID ni
+// duplicados: eso lo resuelve el caller, que ya tiene el producto cargado.
+func validateProductAttributeInput(in ProductAttributeInput) (name, value string, err error) {
+	name = strings.TrimSpace(in.Name)
+	value = strings.TrimSpace(in.Value)
+	if name == "" {
+		return "", "", errors.New("el nombre del atributo es requerido")
+	}
+	if value == "" {
+		return "", "", errors.New("el valor del atributo es requerido")
+	}
+	if len(name) > productAttributeNameMaxLen {
+		return "", "", fmt.Errorf("el nombre del atributo no puede superar %d caracteres", productAttributeNameMaxLen)
+	}
+	if len(value) > productAttributeValueMaxLen {
+		return "", "", fmt.Errorf("el valor del atributo no puede superar %d caracteres", productAttributeValueMaxLen)
+	}
+	return name, value, nil
+}
+
+// ListProductAttributes atributos activos de un producto, en orden de exhibición.
+func (s *ProductService) ListProductAttributes(productID uint) ([]database.TenantProductAttribute, error) {
+	var rows []database.TenantProductAttribute
+	err := s.db.Where("product_id = ? AND active = ?", productID, true).
+		Order("sort_order ASC, id ASC").Find(&rows).Error
+	return rows, err
+}
+
+// ListAllProductAttributes incluye inactivos — para la pantalla de administración.
+func (s *ProductService) ListAllProductAttributes(productID uint) ([]database.TenantProductAttribute, error) {
+	var rows []database.TenantProductAttribute
+	err := s.db.Where("product_id = ?", productID).
+		Order("sort_order ASC, id ASC").Find(&rows).Error
+	return rows, err
+}
+
+// GetProductAttribute obtiene un atributo verificando que pertenezca al producto indicado.
+func (s *ProductService) GetProductAttribute(productID, id uint) (*database.TenantProductAttribute, error) {
+	var row database.TenantProductAttribute
+	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&row).Error; err != nil {
+		return nil, errors.New("atributo no encontrado")
+	}
+	return &row, nil
+}
+
+// productAttributeDuplicateExists busca un atributo con el mismo nombre+valor (insensible a
+// mayúsculas/espacios) para el mismo producto, excluyendo opcionalmente una fila (para Update).
+func (s *ProductService) productAttributeDuplicateExists(productID uint, name, value string, excludeID uint) (bool, error) {
+	q := s.db.Model(&database.TenantProductAttribute{}).
+		Where("product_id = ? AND LOWER(name) = LOWER(?) AND LOWER(value) = LOWER(?)", productID, name, value)
+	if excludeID > 0 {
+		q = q.Where("id != ?", excludeID)
+	}
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// CreateProductAttribute crea un atributo descriptivo para un producto existente del tenant.
+// Rechaza duplicados exactos (mismo nombre+valor) — "Color=Rojo" dos veces no aporta nada nuevo;
+// "Color=Rojo" y "Color=Azul" sí se permiten (no hay evidencia de negocio para prohibirlo, y esta
+// fase no decide semántica de variantes).
+func (s *ProductService) CreateProductAttribute(productID uint, in ProductAttributeInput) (*database.TenantProductAttribute, error) {
+	var product database.TenantProduct
+	if err := s.db.First(&product, productID).Error; err != nil {
+		return nil, errors.New("producto no encontrado")
+	}
+	name, value, err := validateProductAttributeInput(in)
+	if err != nil {
+		return nil, err
+	}
+	dup, err := s.productAttributeDuplicateExists(productID, name, value, 0)
+	if err != nil {
+		return nil, err
+	}
+	if dup {
+		return nil, fmt.Errorf("'%s = %s' ya existe para este producto", name, value)
+	}
+	row := &database.TenantProductAttribute{
+		ProductID: productID, Name: name, Value: value, SortOrder: in.SortOrder, Active: true,
+	}
+	if err := s.db.Create(row).Error; err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// UpdateProductAttribute actualiza nombre, valor, orden y estado activo de un atributo existente.
+func (s *ProductService) UpdateProductAttribute(productID, id uint, in ProductAttributeInput) (*database.TenantProductAttribute, error) {
+	var row database.TenantProductAttribute
+	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&row).Error; err != nil {
+		return nil, errors.New("atributo no encontrado")
+	}
+	name, value, err := validateProductAttributeInput(in)
+	if err != nil {
+		return nil, err
+	}
+	dup, err := s.productAttributeDuplicateExists(productID, name, value, row.ID)
+	if err != nil {
+		return nil, err
+	}
+	if dup {
+		return nil, fmt.Errorf("'%s = %s' ya existe para este producto", name, value)
+	}
+	row.Name = name
+	row.Value = value
+	row.SortOrder = in.SortOrder
+	row.Active = in.Active
+	if err := s.db.Save(&row).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// DeleteProductAttribute elimina físicamente el atributo (sin soft delete — ver comentario del
+// modelo): nada más en el sistema referencia su ID, así que no hace falta preservarlo.
+func (s *ProductService) DeleteProductAttribute(productID, id uint) error {
+	res := s.db.Where("id = ? AND product_id = ?", id, productID).
+		Delete(&database.TenantProductAttribute{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("atributo no encontrado")
+	}
+	return nil
 }
 
 // ── Unidades de medida (catálogo SUNAT N°03, gestionable desde Tukifac) ─────────────────────────
