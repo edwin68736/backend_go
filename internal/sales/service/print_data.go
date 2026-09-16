@@ -260,6 +260,12 @@ type PrintItem struct {
 	IgvAffectationType     string  `json:"igv_affectation_type,omitempty"`
 	ModifiersJSON          string  `json:"modifiers_json,omitempty"`
 	ItemNote               string  `json:"item_note,omitempty"`
+	// ProductID + SaleUnitID: referencia para que el frontend resuelva y muestre el NOMBRE
+	// comercial de la SaleUnit usada en esta línea (ej. "Caja"), vía productsService.getSaleUnit.
+	// `Unit` arriba sigue siendo el código fiscal SUNAT (ej. "BX") — ambos conceptos no se mezclan.
+	// nil = línea manual sin producto de catálogo, o vendida en la unidad base (Fase 7F).
+	ProductID  *uint `json:"product_id,omitempty"`
+	SaleUnitID *uint `json:"sale_unit_id,omitempty"`
 }
 
 type PrintAffectTotal struct {
@@ -479,6 +485,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			IgvAffectationType:     it.IgvAffectationType,
 			ModifiersJSON:          it.ModifiersJSON,
 			ItemNote:               it.ItemNote,
+			ProductID:              it.ProductID,
+			SaleUnitID:             it.SaleUnitID,
 		}
 	}
 	pd.LineDiscountTotal = money.RoundSunat(lineDiscSum)
