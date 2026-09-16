@@ -1412,6 +1412,11 @@ func (s *ProductService) DeleteBrand(id uint) error {
 // SaleUnitInput datos de entrada para crear/actualizar una unidad de venta.
 type SaleUnitInput struct {
 	Name             string
+	// UnitID: unidad comercial SUNAT (Catálogo N°03) de esta SaleUnit — FK a TenantUnit, mismo
+	// campo/patrón que ProductInput usa para la unidad base del producto. Requerido al crear
+	// (requireUnit=true en validateSaleUnitInput); opcional al actualizar, para no forzar a
+	// completar retroactivamente una SaleUnit existente que nació antes de este campo.
+	UnitID           *uint
 	ConversionFactor float64
 	IsBase           bool
 	AllowFraction    bool
@@ -1422,29 +1427,47 @@ type SaleUnitInput struct {
 	Active           bool
 }
 
-// validateSaleUnitInput normaliza y valida los campos comunes a Create/Update. No valida
-// ProductID ni pertenencia al tenant: eso lo resuelve el caller con s.db (ya scopeado al tenant).
-func validateSaleUnitInput(in SaleUnitInput) (string, error) {
-	name := strings.TrimSpace(in.Name)
+// validateSaleUnitInput normaliza y valida los campos comunes a Create/Update, y resuelve el
+// código SUNAT (unitCode) desde TenantUnit cuando se indica UnitID — nunca se acepta un código de
+// unidad como texto libre del caller, igual que ProductService.resolveUnitReference exige que el
+// catálogo (TenantUnit) sea la fuente de verdad cuando se referencia por ID. No valida ProductID ni
+// pertenencia al tenant: eso lo resuelve el caller con s.db (ya scopeado al tenant).
+//
+// requireUnit=true (CreateSaleUnit): una SaleUnit nueva debe declarar su unidad comercial SUNAT
+// desde que nace. requireUnit=false (UpdateSaleUnit): se permite guardar sin UnitID para no romper
+// SaleUnits creadas antes de que este campo existiera — quedan con unitCode="" (el backend usa la
+// unidad base del producto como resguardo al vender, ver resolveSaleItemUnitCode).
+func validateSaleUnitInput(db *gorm.DB, in SaleUnitInput, requireUnit bool) (name, unitCode string, err error) {
+	name = strings.TrimSpace(in.Name)
 	if name == "" {
-		return "", errors.New("nombre de la unidad de venta requerido")
+		return "", "", errors.New("nombre de la unidad de venta requerido")
 	}
 	if in.ConversionFactor <= 0 {
-		return "", errors.New("el factor de conversión debe ser mayor a cero")
+		return "", "", errors.New("el factor de conversión debe ser mayor a cero")
 	}
 	if in.IsBase && in.ConversionFactor != 1 {
-		return "", errors.New("la unidad base debe tener factor de conversión igual a 1")
+		return "", "", errors.New("la unidad base debe tener factor de conversión igual a 1")
 	}
 	if in.Price1 <= 0 {
-		return "", errors.New("price1 debe ser mayor a cero")
+		return "", "", errors.New("price1 debe ser mayor a cero")
 	}
 	if in.Price2 != nil && *in.Price2 <= 0 {
-		return "", errors.New("price2 debe ser mayor a cero si se especifica")
+		return "", "", errors.New("price2 debe ser mayor a cero si se especifica")
 	}
 	if in.Price3 != nil && *in.Price3 <= 0 {
-		return "", errors.New("price3 debe ser mayor a cero si se especifica")
+		return "", "", errors.New("price3 debe ser mayor a cero si se especifica")
 	}
-	return name, nil
+	if in.UnitID == nil || *in.UnitID == 0 {
+		if requireUnit {
+			return "", "", errors.New("la unidad de venta requiere una unidad de medida (Catálogo SUNAT N°03)")
+		}
+		return name, "", nil
+	}
+	var u database.TenantUnit
+	if err := db.First(&u, *in.UnitID).Error; err != nil {
+		return "", "", errors.New("unidad de medida no encontrada")
+	}
+	return name, u.Code, nil
 }
 
 // clearOtherBaseSaleUnitsTx desmarca is_base en las demás unidades de venta del mismo producto,
@@ -1493,13 +1516,15 @@ func (s *ProductService) CreateSaleUnit(productID uint, in SaleUnitInput) (*data
 	if err := s.db.First(&product, productID).Error; err != nil {
 		return nil, errors.New("producto no encontrado")
 	}
-	name, err := validateSaleUnitInput(in)
+	name, unitCode, err := validateSaleUnitInput(s.db, in, true)
 	if err != nil {
 		return nil, err
 	}
 	row := &database.TenantProductSaleUnit{
 		ProductID:        productID,
 		Name:             name,
+		UnitID:           in.UnitID,
+		Unit:             unitCode,
 		ConversionFactor: in.ConversionFactor,
 		IsBase:           in.IsBase,
 		AllowFraction:    in.AllowFraction,
@@ -1528,11 +1553,13 @@ func (s *ProductService) UpdateSaleUnit(productID, id uint, in SaleUnitInput) (*
 	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&row).Error; err != nil {
 		return nil, errors.New("unidad de venta no encontrada")
 	}
-	name, err := validateSaleUnitInput(in)
+	name, unitCode, err := validateSaleUnitInput(s.db, in, false)
 	if err != nil {
 		return nil, err
 	}
 	row.Name = name
+	row.UnitID = in.UnitID
+	row.Unit = unitCode
 	row.ConversionFactor = in.ConversionFactor
 	row.AllowFraction = in.AllowFraction
 	row.Price1 = in.Price1

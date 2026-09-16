@@ -916,6 +916,7 @@ func (h *ProductHandler) BrandDeleteAPI(c fiber.Ctx) error {
 
 type saleUnitRequestBody struct {
 	Name             string   `json:"name"`
+	UnitID           *uint    `json:"unit_id"`
 	ConversionFactor float64  `json:"conversion_factor"`
 	IsBase           bool     `json:"is_base"`
 	AllowFraction    bool     `json:"allow_fraction"`
@@ -929,6 +930,7 @@ type saleUnitRequestBody struct {
 func (b saleUnitRequestBody) toInput() service.SaleUnitInput {
 	return service.SaleUnitInput{
 		Name:             b.Name,
+		UnitID:           b.UnitID,
 		ConversionFactor: b.ConversionFactor,
 		IsBase:           b.IsBase,
 		AllowFraction:    b.AllowFraction,

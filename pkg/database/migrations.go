@@ -1128,9 +1128,24 @@ type TenantProductPresentation struct {
 // Esta fase solo crea y administra la entidad: todavía no está conectada a ventas, compras,
 // Kardex ni precios por sucursal (fases posteriores).
 type TenantProductSaleUnit struct {
-	ID               uint    `gorm:"primaryKey" json:"id"`
-	ProductID        uint    `gorm:"not null;index:idx_sale_unit_product_active" json:"product_id"`
-	Name             string  `gorm:"size:120;not null" json:"name"`
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	ProductID uint   `gorm:"not null;index:idx_sale_unit_product_active" json:"product_id"`
+	Name      string `gorm:"size:120;not null" json:"name"`
+	// UnitID/Unit: unidad comercial SUNAT (Catálogo N°03) propia de esta SaleUnit — ej. "Caja" →
+	// BX —, mismo patrón de denormalización que TenantProduct.UnitID/Unit (UnitID es la fuente de
+	// verdad — FK a TenantUnit —, Unit es el código ya resuelto que el resto del sistema lee sin
+	// tener que hacer join, ver ProductService.resolveUnitReference). NUNCA se deriva del nombre
+	// de la SaleUnit ("Caja" no implica "BX" automáticamente) ni de conversion_factor — son tres
+	// datos independientes: nombre comercial, código fiscal y factor de conversión de inventario.
+	//
+	// Puede quedar vacío (UnitID nil, Unit "") en SaleUnits creadas antes de esta fase (Fase
+	// "Unidad Comercial Fiscal", posterior a 7E) — el backend usa la unidad base del producto como
+	// resguardo en ese caso (ver resolveSaleItemUnitCode,
+	// internal/sales/service/sale_service_calc.go), nunca inventa un código. Por eso es requerido
+	// en ProductService.CreateSaleUnit (SaleUnits nuevas) pero opcional en UpdateSaleUnit (no se
+	// fuerza a completar retroactivamente una SaleUnit existente solo por editar otro campo).
+	UnitID           *uint   `gorm:"index" json:"unit_id"`
+	Unit             string  `gorm:"size:50" json:"unit"`
 	ConversionFactor float64 `gorm:"type:decimal(15,6);not null;default:1" json:"conversion_factor"`
 	// IsBase: unidad que representa 1:1 la unidad base del producto (ConversionFactor siempre 1).
 	// A lo sumo una por producto — se aplica en ProductService.CreateSaleUnit/UpdateSaleUnit

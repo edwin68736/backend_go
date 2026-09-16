@@ -24,6 +24,18 @@ func newSaleUnitTestProduct(t *testing.T, db *gorm.DB) database.TenantProduct {
 	return p
 }
 
+// newSaleUnitTestUnit crea una fila de catálogo TenantUnit (Catálogo SUNAT N°03) para usar como
+// UnitID de una SaleUnit — desde la corrección "Unidad Comercial Fiscal", CreateSaleUnit exige una
+// unidad de medida válida (ver validateSaleUnitInput, requireUnit=true en Create).
+func newSaleUnitTestUnit(t *testing.T, db *gorm.DB) uint {
+	t.Helper()
+	u := database.TenantUnit{Code: "BX", Name: "Caja", Symbol: "CAJ", Active: true}
+	if err := db.Create(&u).Error; err != nil {
+		t.Fatal(err)
+	}
+	return u.ID
+}
+
 // ---- Modelo / validaciones ----
 
 // Caso 1: crear SaleUnit válida → OK.
@@ -31,9 +43,10 @@ func TestSaleUnit_Create_Valid(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
 	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-		Name: "Saco 100 KG", ConversionFactor: 100, Price1: 430,
+		Name: "Saco 100 KG", UnitID: &unitID, ConversionFactor: 100, Price1: 430,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -79,10 +92,11 @@ func TestSaleUnit_Create_AcceptsValidPrices(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
 	p2, p3 := 420.0, 410.0
 	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-		Name: "Saco 100 KG", ConversionFactor: 100, Price1: 430, Price2: &p2, Price3: &p3,
+		Name: "Saco 100 KG", UnitID: &unitID, ConversionFactor: 100, Price1: 430, Price2: &p2, Price3: &p3,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -108,8 +122,9 @@ func TestSaleUnit_Active_Behavior(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
-	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco", ConversionFactor: 100, Price1: 430})
+	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco", UnitID: &unitID, ConversionFactor: 100, Price1: 430})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,9 +155,10 @@ func TestSaleUnit_Create_BaseUnit_Valid(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
 	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-		Name: "KG", ConversionFactor: 1, IsBase: true, Price1: 4.5,
+		Name: "KG", UnitID: &unitID, ConversionFactor: 1, IsBase: true, Price1: 4.5,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -153,7 +169,7 @@ func TestSaleUnit_Create_BaseUnit_Valid(t *testing.T) {
 
 	// IsBase=true con factor distinto de 1 se rechaza.
 	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-		Name: "Otra base", ConversionFactor: 2, IsBase: true, Price1: 9,
+		Name: "Otra base", UnitID: &unitID, ConversionFactor: 2, IsBase: true, Price1: 9,
 	}); err == nil {
 		t.Error("una unidad base con factor != 1 debería rechazarse")
 	}
@@ -166,12 +182,13 @@ func TestSaleUnit_OnlyOneBasePerProduct(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
-	kg, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "KG", ConversionFactor: 1, IsBase: true, Price1: 4.5})
+	kg, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "KG", UnitID: &unitID, ConversionFactor: 1, IsBase: true, Price1: 4.5})
 	if err != nil {
 		t.Fatal(err)
 	}
-	libra, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Libra", ConversionFactor: 1, IsBase: true, Price1: 2})
+	libra, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Libra", UnitID: &unitID, ConversionFactor: 1, IsBase: true, Price1: 2})
 	if err != nil {
 		t.Fatalf("crear la segunda base no debe fallar: %v", err)
 	}
@@ -207,12 +224,13 @@ func TestSaleUnit_MultipleNonBaseAllowed(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
 	names := []string{"Saco 50 KG", "Saco 100 KG"}
 	factors := []float64{50, 100}
 	for i, name := range names {
 		if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-			Name: name, ConversionFactor: factors[i], Price1: factors[i] * 4,
+			Name: name, UnitID: &unitID, ConversionFactor: factors[i], Price1: factors[i] * 4,
 		}); err != nil {
 			t.Fatalf("crear %q: %v", name, err)
 		}
@@ -231,9 +249,10 @@ func TestSaleUnit_AllowFraction_Persisted(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
 	saco, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-		Name: "Saco 100 KG", ConversionFactor: 100, AllowFraction: true, Price1: 430,
+		Name: "Saco 100 KG", UnitID: &unitID, ConversionFactor: 100, AllowFraction: true, Price1: 430,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +262,7 @@ func TestSaleUnit_AllowFraction_Persisted(t *testing.T) {
 	}
 
 	caja, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-		Name: "Caja x24", ConversionFactor: 24, AllowFraction: false, Price1: 96,
+		Name: "Caja x24", UnitID: &unitID, ConversionFactor: 24, AllowFraction: false, Price1: 96,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +288,7 @@ func newIsolatedTenantDB(t *testing.T, suffix string) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&database.TenantProduct{}, &database.TenantProductSaleUnit{}); err != nil {
+	if err := db.AutoMigrate(&database.TenantProduct{}, &database.TenantProductSaleUnit{}, &database.TenantUnit{}); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -283,7 +302,8 @@ func TestSaleUnit_TenantIsolation_CannotGet(t *testing.T) {
 	svcA, svcB := NewProductService(dbA), NewProductService(dbB)
 
 	pA := newSaleUnitTestProduct(t, dbA)
-	uA, err := svcA.CreateSaleUnit(pA.ID, SaleUnitInput{Name: "Saco", ConversionFactor: 100, Price1: 430})
+	unitID := newSaleUnitTestUnit(t, dbA)
+	uA, err := svcA.CreateSaleUnit(pA.ID, SaleUnitInput{Name: "Saco", UnitID: &unitID, ConversionFactor: 100, Price1: 430})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +320,8 @@ func TestSaleUnit_TenantIsolation_CannotUpdate(t *testing.T) {
 	svcA, svcB := NewProductService(dbA), NewProductService(dbB)
 
 	pA := newSaleUnitTestProduct(t, dbA)
-	uA, err := svcA.CreateSaleUnit(pA.ID, SaleUnitInput{Name: "Saco", ConversionFactor: 100, Price1: 430})
+	unitID := newSaleUnitTestUnit(t, dbA)
+	uA, err := svcA.CreateSaleUnit(pA.ID, SaleUnitInput{Name: "Saco", UnitID: &unitID, ConversionFactor: 100, Price1: 430})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +348,8 @@ func TestSaleUnit_TenantIsolation_CannotDelete(t *testing.T) {
 	svcA, svcB := NewProductService(dbA), NewProductService(dbB)
 
 	pA := newSaleUnitTestProduct(t, dbA)
-	uA, err := svcA.CreateSaleUnit(pA.ID, SaleUnitInput{Name: "Saco", ConversionFactor: 100, Price1: 430})
+	unitID := newSaleUnitTestUnit(t, dbA)
+	uA, err := svcA.CreateSaleUnit(pA.ID, SaleUnitInput{Name: "Saco", UnitID: &unitID, ConversionFactor: 100, Price1: 430})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,8 +369,9 @@ func TestSaleUnit_CRUD_FullCycle(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
-	created, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco 100 KG", ConversionFactor: 100, Price1: 430}) // Create
+	created, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco 100 KG", UnitID: &unitID, ConversionFactor: 100, Price1: 430}) // Create
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -380,8 +403,9 @@ func TestSaleUnit_CRUD_Deactivate(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
-	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco", ConversionFactor: 100, Price1: 430})
+	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco", UnitID: &unitID, ConversionFactor: 100, Price1: 430})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,8 +462,9 @@ func TestSaleUnit_DoesNotTouchProductSalePrice(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 
-	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco 100 KG", ConversionFactor: 100, Price1: 430}); err != nil {
+	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco 100 KG", UnitID: &unitID, ConversionFactor: 100, Price1: 430}); err != nil {
 		t.Fatal(err)
 	}
 	var reloaded database.TenantProduct
@@ -463,12 +488,13 @@ func TestSaleUnit_DoesNotIntegrateWithInventoryYet(t *testing.T) {
 	}
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db)
+	unitID := newSaleUnitTestUnit(t, db)
 	if err := db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 1000}).Error; err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
-		Name: "Saco 100 KG", ConversionFactor: 100, Price1: 430,
+		Name: "Saco 100 KG", UnitID: &unitID, ConversionFactor: 100, Price1: 430,
 	}); err != nil {
 		t.Fatal(err)
 	}

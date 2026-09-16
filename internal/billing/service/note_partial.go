@@ -79,6 +79,7 @@ func buildPartialNoteItems(originalSaleID uint, origItems []database.TenantSaleI
 		items = append(items, database.TenantSaleItem{
 			ProductID:              orig.ProductID,
 			PresentationID:         orig.PresentationID,
+			SaleUnitID:             orig.SaleUnitID,
 			Code:                   orig.Code,
 			Description:            orig.Description,
 			Unit:                   orig.Unit,

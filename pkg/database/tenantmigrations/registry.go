@@ -110,6 +110,7 @@ var TenantMigrations = []TenantMigration{
 	V136PurchaseSaleUnitIntegration{},
 	V137SaleUnitBranchPrice{},
 	V138ProductAttributes{},
+	V139SaleUnitUnitCode{},
 }
 
 // ByVersion mapa versión → migración.

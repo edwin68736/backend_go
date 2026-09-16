@@ -507,6 +507,7 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 			ncItem := database.TenantSaleItem{
 				SaleID:             ncSale.ID,
 				ProductID:          it.ProductID,
+				SaleUnitID:         it.SaleUnitID,
 				Code:               it.Code,
 				Description:        it.Description,
 				Unit:               it.Unit,
@@ -630,6 +631,7 @@ func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint, reason stri
 		ndItem := database.TenantSaleItem{
 			SaleID:             ndSale.ID,
 			ProductID:          it.ProductID,
+			SaleUnitID:         it.SaleUnitID,
 			Code:               it.Code,
 			Description:        it.Description,
 			Unit:               it.Unit,

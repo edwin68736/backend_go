@@ -167,7 +167,8 @@ func TestProductAttribute_DoesNotCreateSaleUnit(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newAttributeTestProduct(t, db)
-	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Unidad", ConversionFactor: 1, Price1: 25}); err != nil {
+	unitID := newSaleUnitTestUnit(t, db)
+	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Unidad", UnitID: &unitID, ConversionFactor: 1, Price1: 25}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,7 +213,8 @@ func TestProductAttribute_DoesNotChangeAnyPrice(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newAttributeTestProduct(t, db)
-	su, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Caja x12", ConversionFactor: 12, Price1: 34, Active: true})
+	unitID := newSaleUnitTestUnit(t, db)
+	su, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Caja x12", UnitID: &unitID, ConversionFactor: 12, Price1: 34, Active: true})
 	if err != nil {
 		t.Fatal(err)
 	}

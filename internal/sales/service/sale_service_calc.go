@@ -61,7 +61,7 @@ func buildSaleLinesFromEngine(input CreateSaleInput, taxCfg tax.Config, db *gorm
 			SaleUnitID:             item.SaleUnitID,
 			Code:                   item.Code,
 			Description:            item.Description,
-			Unit:                   sunat.NormalizeUnit(item.Unit, itemType),
+			Unit:                   resolveSaleItemUnitCode(db, item, itemType),
 			Quantity:               item.Quantity,
 			UnitPrice:              item.UnitPrice,
 			Discount:               lr.StoredDiscount,
@@ -93,6 +93,46 @@ func resolveSaleItemType(db *gorm.DB, item SaleItemInput) string {
 	return itemType
 }
 
+// resolveSaleItemUnitCode resuelve el código SUNAT (Catálogo N°03) de la unidad COMERCIAL de una
+// línea con producto de catálogo — nunca confía en item.Unit (lo que mande el cliente) en ese
+// caso, exactamente igual que ya rige el precio (validateAuthorizedPrices) y la cantidad base
+// (saleunit.ResolveForLine): el cliente no debe poder provocar sale_unit_id=<Caja>, unit=NIU y
+// conseguir que el backend persista NIU.
+//
+//   - sin SaleUnitID → código de la unidad base del producto (Product.Unit).
+//   - con SaleUnitID → código propio de esa SaleUnit (TenantProductSaleUnit.Unit) si está
+//     configurado; si la SaleUnit fue creada antes de que existiera este campo (Unit=""), cae a la
+//     unidad base del producto como resguardo de compatibilidad — nunca se infiere un código a
+//     partir del nombre de la SaleUnit.
+//
+// Líneas manuales (sin producto de catálogo, ProductID nil) no pasan por acá: ahí el cliente sigue
+// siendo la única fuente posible, porque no hay catálogo contra el cual resolver nada.
+func resolveSaleItemUnitCode(db *gorm.DB, item SaleItemInput, itemType string) string {
+	if item.ProductID == nil || *item.ProductID == 0 {
+		return sunat.NormalizeUnit(item.Unit, itemType)
+	}
+	var product database.TenantProduct
+	if err := db.Select("unit").First(&product, *item.ProductID).Error; err != nil {
+		// No debería ocurrir (el producto ya se validó antes en el flujo) — mismo resguardo
+		// defensivo que el comportamiento previo a esta corrección.
+		return sunat.NormalizeUnit(item.Unit, itemType)
+	}
+	baseUnit := sunat.NormalizeUnit(product.Unit, itemType)
+	if item.SaleUnitID == nil || *item.SaleUnitID == 0 {
+		return baseUnit
+	}
+	var su database.TenantProductSaleUnit
+	if err := db.Where("id = ? AND product_id = ?", *item.SaleUnitID, *item.ProductID).First(&su).Error; err != nil {
+		// La SaleUnit no existe/no pertenece al producto: validateSaleUnits ya rechazó la venta
+		// con un error claro antes de llegar acá — este resguardo nunca debería activarse.
+		return baseUnit
+	}
+	if code := strings.TrimSpace(su.Unit); code != "" {
+		return code
+	}
+	return baseUnit
+}
+
 func buildSaleLinesLegacy(input CreateSaleInput, taxCfg tax.Config, db *gorm.DB) (
 	subtotal, taxAmount, total float64,
 	saleItems []database.TenantSaleItem,
@@ -116,13 +156,14 @@ func buildSaleLinesLegacy(input CreateSaleInput, taxCfg tax.Config, db *gorm.DB)
 			taxAmount = money.RoundSunat(taxAmount + itemTax)
 			total = money.RoundSunat(total + chargeableTotal)
 		}
+		itemType := resolveSaleItemType(db, item)
 		saleItems = append(saleItems, database.TenantSaleItem{
 			ProductID:          item.ProductID,
 			PresentationID:     item.PresentationID,
 			SaleUnitID:         item.SaleUnitID,
 			Code:               item.Code,
 			Description:        item.Description,
-			Unit:               sunat.NormalizeUnit(item.Unit, resolveSaleItemType(db, item)),
+			Unit:               resolveSaleItemUnitCode(db, item, itemType),
 			Quantity:           item.Quantity,
 			UnitPrice:          item.UnitPrice,
 			Discount:           item.Discount,
