@@ -98,6 +98,7 @@ func TestPriceHardening_PlainProduct_CatalogPrice_OK(t *testing.T) {
 
 // Caso 2: venta normal con precio manipulado → RECHAZADA.
 func TestPriceHardening_PlainProduct_ManipulatedPrice_Rejected(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): rompía el precio editable legítimo del POS. Reactivar este test junto con el override.")
 	db := setupPriceHardeningDB(t)
 	series := seedNVSeries(t, db)
 	p := database.TenantProduct{
@@ -147,6 +148,7 @@ func TestPriceHardening_Presentation_CorrectPrice_OK(t *testing.T) {
 
 // Caso 4: venta con presentación y precio manipulado → RECHAZADA.
 func TestPriceHardening_Presentation_ManipulatedPrice_Rejected(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): rompía el precio editable legítimo del POS. Reactivar este test junto con el override.")
 	db := setupPriceHardeningDB(t)
 	series := seedNVSeries(t, db)
 	p := database.TenantProduct{
@@ -225,6 +227,7 @@ func TestPriceHardening_PresentationPlusExtra_CorrectPrice_OK(t *testing.T) {
 // modifiers_json (10 en vez de 5) y ajusta unit_price para que "cuadre" con ese valor falso
 // (38). La validación debe ignorar el ExtraPrice del JSON y usar el real de BD (5) → RECHAZADA.
 func TestPriceHardening_PresentationPlusExtra_ManipulatedExtraPriceInJSON_Rejected(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): rompía el precio editable legítimo del POS. Reactivar este test junto con el override.")
 	db := setupPriceHardeningDB(t)
 	series := seedNVSeries(t, db)
 	p, pres, opt := seedPoloConExtra(t, db)
@@ -243,6 +246,7 @@ func TestPriceHardening_PresentationPlusExtra_ManipulatedExtraPriceInJSON_Reject
 // Caso 4b: presentación + extra, pero el cliente omite el extra en unit_price (manda solo 28,
 // el precio de la presentación sola) aunque sí eligió el extra en modifiers_json → RECHAZADA.
 func TestPriceHardening_PresentationPlusExtra_MissingExtraInPrice_Rejected(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): rompía el precio editable legítimo del POS. Reactivar este test junto con el override.")
 	db := setupPriceHardeningDB(t)
 	series := seedNVSeries(t, db)
 	p, pres, opt := seedPoloConExtra(t, db)
@@ -380,6 +384,7 @@ func TestPriceHardening_Quantity_ValidValues_OK(t *testing.T) {
 // Una venta rechazada por precio o cantidad inválida no debe dejar ningún rastro: ni
 // TenantSale, ni TenantSaleItem, ni movimiento de Kardex.
 func TestPriceHardening_RejectedSale_LeavesNoTrace(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): el sub-caso de precio manipulado ya no se rechaza, contamina el conteo final. Reactivar junto con el override.")
 	db := setupPriceHardeningDB(t)
 	series := seedNVSeries(t, db)
 	p := newQtyTestProduct(t, db, true)

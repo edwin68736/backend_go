@@ -65,6 +65,7 @@ func createSUAtBranch(db *gorm.DB, branchID uint, series database.TenantDocument
 
 // A/B: SaleUnit con precio global, Branch A con override, Branch B sin override.
 func TestBranchPrice_OverrideVsGlobal(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): el sub-caso de rechazo por override ya no aplica. Reactivar junto con el override.")
 	db := setupSaleUnitIntegrationDB(t)
 	p, caja, branchA, branchB := seedAguaConCaja(t, db)
 	seriesA := database.TenantDocumentSeries{BranchID: branchA.ID, DocType: "Nota de Venta", SunatCode: "00", Series: "NVA1", Correlative: 1, Active: true}
@@ -250,6 +251,7 @@ func TestBranchPrice_LegacyProduct_UsesSalePriceRegardlessOfBranch(t *testing.T)
 // F: manipulación de precio vía HTTP — un precio distinto del resuelto (override o global) se
 // rechaza, la protección de Fase 0 sigue intacta con la nueva resolución de Fase 4.
 func TestBranchPrice_PriceManipulation_StillRejected(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): rompía el precio editable legítimo del POS. Reactivar este test junto con el override.")
 	db := setupSaleUnitIntegrationDB(t)
 	p, caja, branchA, _ := seedAguaConCaja(t, db)
 	db.Create(&database.TenantProductSaleUnitBranchPrice{SaleUnitID: caja.ID, BranchID: branchA.ID, Price1: 36, Active: true})
@@ -310,6 +312,7 @@ func TestBranchPrice_HistoricalPrice_PreservedAfterChange(t *testing.T) {
 
 // K: el precio de la SaleUnit (global o de sucursal) NUNCA se multiplica por ConversionFactor.
 func TestBranchPrice_NeverMultipliedByFactor(t *testing.T) {
+	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): rompía el precio editable legítimo del POS. Reactivar este test junto con el override.")
 	db := setupSaleUnitIntegrationDB(t)
 	p, caja, branchA, _ := seedAguaConCaja(t, db) // factor 12, precio global 34
 	db.Create(&database.TenantProductSaleUnitBranchPrice{SaleUnitID: caja.ID, BranchID: branchA.ID, Price1: 36, Active: true})

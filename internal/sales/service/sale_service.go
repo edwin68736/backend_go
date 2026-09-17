@@ -234,13 +234,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	if err := validateSaleUnits(s.db, input.Items); err != nil {
 		return nil, err
 	}
-	// Precio autorizado: el unit_price de cada línea con producto real debe coincidir con el
-	// catálogo (o su presentación + extras, o el Price1 de su unidad de venta). Las líneas ya
-	// vetadas por código de confianza (PriceAuthorized=true) no se reevalúan. Ver
-	// sale_price_authorization.go.
-	if err := validateAuthorizedPrices(s.db, input.BranchID, input.Items); err != nil {
-		return nil, err
-	}
+	// Precio autorizado: DESACTIVADO temporalmente (incidente en producción 2026-09-17) — el POS
+	// y "Registrar venta" de tukifac permiten editar el unit_price en cualquier línea (precio
+	// pactado, corrección manual) sin ningún mecanismo para marcarla como autorizada, y esta
+	// validación rechazaba esas ventas legítimas en varios tenants. Revertido a confiar en el
+	// unit_price del cliente, igual que antes de sale_price_authorization.go. Pendiente: diseñar
+	// un override explícito (permiso de rol) antes de reactivar esta validación.
+	// if err := validateAuthorizedPrices(s.db, input.BranchID, input.Items); err != nil {
+	// 	return nil, err
+	// }
 
 	series, err := docseries.ValidateForBranch(s.db, input.SeriesID, input.BranchID)
 	if err != nil {
