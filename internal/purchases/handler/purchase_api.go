@@ -136,6 +136,12 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 		TaxAmount          float64  `json:"tax_amount"`
 		Total              float64  `json:"total"`
 		Serials            []string `json:"serials"`
+		// SaleUnitID viene directo de TenantPurchaseItem. SaleUnitQuantity/ConversionFactor son
+		// el snapshot histórico que solo vive en el TenantStockMovement de ingreso vinculado
+		// (purchase_item_id + type=in) — ver la misma resolución en PurchaseService.Void.
+		SaleUnitID       *uint    `json:"sale_unit_id,omitempty"`
+		SaleUnitQuantity *float64 `json:"sale_unit_quantity,omitempty"`
+		ConversionFactor *float64 `json:"conversion_factor,omitempty"`
 	}
 	itemsWithSerials := make([]itemRow, 0, len(items))
 	for _, it := range items {
@@ -154,11 +160,19 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 			TaxAmount:          it.TaxAmount,
 			Total:              it.Total,
 			Serials:            []string{},
+			SaleUnitID:         it.SaleUnitID,
 		}
 		var serials []database.TenantProductSerial
 		if tdb.Where("purchase_item_id = ?", it.ID).Find(&serials).Error == nil {
 			for _, s := range serials {
 				row.Serials = append(row.Serials, s.Serial)
+			}
+		}
+		if it.SaleUnitID != nil {
+			var movement database.TenantStockMovement
+			if tdb.Where("purchase_item_id = ? AND type = ?", it.ID, "in").First(&movement).Error == nil {
+				row.SaleUnitQuantity = movement.SaleUnitQuantity
+				row.ConversionFactor = movement.ConversionFactor
 			}
 		}
 		itemsWithSerials = append(itemsWithSerials, row)
