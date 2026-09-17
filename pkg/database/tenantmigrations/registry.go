@@ -111,6 +111,7 @@ var TenantMigrations = []TenantMigration{
 	V137SaleUnitBranchPrice{},
 	V138ProductAttributes{},
 	V139SaleUnitUnitCode{},
+	V140SalesOverridePricePermission{},
 }
 
 // ByVersion mapa versión → migración.
