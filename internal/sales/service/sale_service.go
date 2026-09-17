@@ -1616,32 +1616,52 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	return out, nil
 }
 
-// SalesByProductRow es una fila del reporte de ventas por producto.
+// SalesByProductRow es una fila del reporte de ventas por producto — Fase 7J: cada fila
+// representa una combinación INEQUÍVOCA producto+SaleUnit, nunca cantidades mezcladas de
+// distintas unidades comerciales. SaleUnitID nil = línea legacy/venta en unidad base (se trata
+// como una combinación propia, separada de cualquier SaleUnit real del mismo producto).
 type SalesByProductRow struct {
-	ProductID     uint    `json:"product_id"`
-	ProductCode   string  `json:"product_code"`
-	ProductName   string  `json:"product_name"`
-	CategoryID    *uint   `json:"category_id,omitempty"`
-	CategoryName  string  `json:"category_name"`
-	Unit          string  `json:"unit"`
-	QuantitySold  float64 `json:"quantity_sold"`
-	TotalAmount   float64 `json:"total_amount"`
+	ProductID    uint  `json:"product_id"`
+	ProductCode  string `json:"product_code"`
+	ProductName  string `json:"product_name"`
+	CategoryID   *uint  `json:"category_id,omitempty"`
+	CategoryName string `json:"category_name"`
+	// SaleUnitID: unidad de venta de ESTA combinación (nil = unidad base/legacy). El nombre
+	// comercial se resuelve en el frontend (productsService.getSaleUnit / saleUnitNames.ts),
+	// igual que ya se hace en Compras (7H) y Kardex (7I) — este endpoint no lo resuelve para no
+	// duplicar esa lógica.
+	SaleUnitID *uint `json:"sale_unit_id,omitempty"`
+	// Unit: código SUNAT de la línea (fallback de UI cuando SaleUnitID es nil) — nunca representa
+	// el nombre comercial de una SaleUnit. Dentro de una misma combinación producto+SaleUnit este
+	// valor ya es homogéneo (MAX() deja de ser arbitrario porque el grupo es una sola escala).
+	Unit string `json:"unit"`
+	// QuantitySold: cantidad COMERCIAL sumada SOLO dentro de esta combinación — nunca se suma
+	// contra otra fila de SaleUnit distinta del mismo producto.
+	QuantitySold float64 `json:"quantity_sold"`
+	TotalAmount  float64 `json:"total_amount"`
 	// LinesCount/AvgLineAmount: métricas técnicas de granularidad interna (cuántas filas de
-	// detalle tuvo el producto, no cuántas ventas) — no se muestran en el reporte del front
+	// detalle tuvo esta combinación, no cuántas ventas) — no se muestran en el reporte del front
 	// porque no tienen lectura de negocio clara, pero se dejan calculadas por si se reusan.
 	LinesCount    int64   `json:"lines_count"`
 	SalesCount    int64   `json:"sales_count"`
 	AvgLineAmount float64 `json:"avg_line_amount"` // total_amount / lines_count
-	AvgUnitPrice  float64 `json:"avg_unit_price"`  // total_amount / quantity_sold (precio promedio de venta por unidad)
+	// AvgUnitPrice: total_amount / quantity_sold — precio promedio, ahora siempre calculado DENTRO
+	// de una combinación producto+SaleUnit homogénea (antes de 7J mezclaba escalas distintas).
+	AvgUnitPrice float64 `json:"avg_unit_price"`
 }
 
-// SalesByProductSummary totales del período (mismos filtros que las filas).
+// SalesByProductSummary totales del período (mismos filtros que las filas). Fase 7J: se quitó
+// TotalQuantity — sumar cantidades comerciales de todas las combinaciones (distintos productos Y
+// distintas SaleUnits) no tiene ninguna lectura de negocio válida, decisión explícita del usuario.
+// ProductsCount ahora es COUNT(DISTINCT product_id) real (antes de 7J coincidía con len(rows)
+// porque había una fila por producto; con el desglose por SaleUnit, len(rows) pasó a ser el
+// número de combinaciones, no de productos, así que se calcula aparte para que la tarjeta
+// "Productos" siga significando lo que dice).
 type SalesByProductSummary struct {
 	TotalAmount   float64 `json:"total_amount"`
-	TotalQuantity float64 `json:"total_quantity"`
 	LineItems     int64   `json:"line_items"`
 	DistinctSales int64   `json:"distinct_sales"`
-	ProductsCount int     `json:"products_count"`
+	ProductsCount int64   `json:"products_count"`
 }
 
 // SalesByProductParams filtros para el reporte de ventas por producto.
@@ -1685,7 +1705,12 @@ func (s *SaleService) salesByProductBaseQuery(params SalesByProductParams) *gorm
 	return q
 }
 
-// SalesByProduct agrupa ítems de ventas por producto (solo ventas no anuladas).
+// SalesByProduct agrupa ítems de ventas por PRODUCTO + SALEUNIT (solo ventas no anuladas) —
+// Fase 7J. Antes de esta fase agrupaba solo por product_id, mezclando en una sola suma cantidades
+// comerciales de distintas unidades (ej. "1 Caja" + "5 Unidades" = "6", número sin sentido de
+// negocio); ahora cada fila es una combinación homogénea — sale_unit_id=NULL (venta en unidad
+// base/legacy) se trata como una combinación propia, nunca se mezcla con ninguna SaleUnit real
+// del mismo producto. Ver FASE_7J_REPORTS_AUDIT_REPORT.md.
 func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProductRow, SalesByProductSummary, error) {
 	type row struct {
 		ProductID    uint
@@ -1693,6 +1718,7 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 		ProductName  string
 		CategoryID   *uint
 		CategoryName string
+		SaleUnitID   *uint
 		Unit         string
 		QuantitySold float64
 		TotalAmount  float64
@@ -1701,11 +1727,14 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 	}
 
 	var meta struct {
-		DistinctSales int64
-		LineItems     int64
+		DistinctSales    int64
+		LineItems        int64
+		DistinctProducts int64
 	}
 	qMeta := s.salesByProductBaseQuery(params).
-		Select("COUNT(DISTINCT tenant_sale_items.sale_id) as distinct_sales, COUNT(*) as line_items")
+		Select(`COUNT(DISTINCT tenant_sale_items.sale_id) as distinct_sales,
+			COUNT(*) as line_items,
+			COUNT(DISTINCT tenant_sale_items.product_id) as distinct_products`)
 	if err := qMeta.Scan(&meta).Error; err != nil {
 		return nil, SalesByProductSummary{}, err
 	}
@@ -1716,12 +1745,13 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 			COALESCE(MAX(NULLIF(TRIM(p.name), '')), MAX(tenant_sale_items.description)) as product_name,
 			MAX(p.category_id) as category_id,
 			COALESCE(MAX(c.name), '') as category_name,
+			tenant_sale_items.sale_unit_id as sale_unit_id,
 			COALESCE(MAX(NULLIF(TRIM(p.unit), '')), MAX(tenant_sale_items.unit)) as unit,
 			SUM(tenant_sale_items.quantity) as quantity_sold,
 			SUM(tenant_sale_items.total) as total_amount,
 			COUNT(*) as lines_count,
 			COUNT(DISTINCT tenant_sale_items.sale_id) as sales_count`).
-		Group("tenant_sale_items.product_id")
+		Group("tenant_sale_items.product_id, tenant_sale_items.sale_unit_id")
 
 	var raw []row
 	if err := q.Scan(&raw).Error; err != nil {
@@ -1729,7 +1759,7 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 	}
 
 	out := make([]SalesByProductRow, len(raw))
-	var sumAmt, sumQty float64
+	var sumAmt float64
 	for i, r := range raw {
 		catName := strings.TrimSpace(r.CategoryName)
 		if catName == "" {
@@ -1749,6 +1779,7 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 			ProductName:   r.ProductName,
 			CategoryID:    r.CategoryID,
 			CategoryName:  catName,
+			SaleUnitID:    r.SaleUnitID,
 			Unit:          strings.TrimSpace(r.Unit),
 			QuantitySold:  r.QuantitySold,
 			TotalAmount:   r.TotalAmount,
@@ -1758,25 +1789,26 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 			AvgUnitPrice:  avgUnit,
 		}
 		sumAmt += r.TotalAmount
-		sumQty += r.QuantitySold
 	}
 
+	// Orden: categoría, luego producto (agrupa entre sí las combinaciones de un mismo producto,
+	// ej. "Caja" y "Unidad suelta" del mismo Arroz quedan una junto a la otra), y dentro del mismo
+	// producto por monto descendente — decisión explícita del usuario (Fase 7J).
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CategoryName != out[j].CategoryName {
 			return out[i].CategoryName < out[j].CategoryName
 		}
-		if out[i].TotalAmount != out[j].TotalAmount {
-			return out[i].TotalAmount > out[j].TotalAmount
+		if out[i].ProductName != out[j].ProductName {
+			return out[i].ProductName < out[j].ProductName
 		}
-		return out[i].ProductName < out[j].ProductName
+		return out[i].TotalAmount > out[j].TotalAmount
 	})
 
 	summary := SalesByProductSummary{
 		TotalAmount:   sumAmt,
-		TotalQuantity: sumQty,
 		LineItems:     meta.LineItems,
 		DistinctSales: meta.DistinctSales,
-		ProductsCount: len(out),
+		ProductsCount: meta.DistinctProducts,
 	}
 	return out, summary, nil
 }
