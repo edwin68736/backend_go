@@ -12,6 +12,54 @@ import (
 	"gorm.io/gorm"
 )
 
+// dashboardTopProductRow es una fila del ranking "Productos más vendidos" del dashboard — Fase
+// 7J.2, mismo criterio que SalesByProductRow (7J.1, internal/sales/service/sale_service.go): cada
+// fila es una combinación INEQUÍVOCA producto+SaleUnit, nunca cantidades comerciales mezcladas de
+// distintas unidades. SaleUnitID nil = venta en unidad base/legacy — combinación propia, nunca se
+// funde con una SaleUnit real del mismo producto. Qty es la cantidad COMERCIAL de esa combinación
+// (nunca convertida a base); Total (dinero) sí puede compararse/ordenarse entre combinaciones
+// porque es una magnitud común. El "top N" se aplica DESPUÉS del desglose, sobre combinaciones,
+// no sobre productos — un mismo producto puede ocupar más de una posición del ranking si se
+// vendió con más de una SaleUnit. Ver FASE_7J_REPORTS_AUDIT_REPORT.md.
+type dashboardTopProductRow struct {
+	ProductID  uint    `json:"product_id"`
+	Name       string  `json:"name"`
+	SaleUnitID *uint   `json:"sale_unit_id,omitempty"`
+	Qty        float64 `json:"quantity"`
+	Total      float64 `json:"total"`
+}
+
+// computeTopProducts calcula el ranking "Productos más vendidos" — extraído a función propia
+// (antes vivía inline en AnalyticsAPI) para poder probarlo sin montar todo el handler.
+func computeTopProducts(tdb *gorm.DB, from, toExclusive time.Time, branchID uint, userID uint, restrictUser bool, limit int) ([]dashboardTopProductRow, error) {
+	var rows []dashboardTopProductRow
+	err := tdb.Table("tenant_sale_items si").
+		Select(`si.product_id, p.name, si.sale_unit_id as sale_unit_id,
+			COALESCE(SUM(si.quantity),0) as qty, COALESCE(SUM(si.total),0) as total`).
+		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
+		Scopes(salescope.ScopeCommercial("s")).
+		Joins("JOIN tenant_products p ON p.id = si.product_id").
+		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
+		Where("s.status != ?", "cancelled").
+		Scopes(func(db *gorm.DB) *gorm.DB {
+			if branchID > 0 {
+				return db.Where("s.branch_id = ?", branchID)
+			}
+			return db
+		}).
+		Scopes(func(db *gorm.DB) *gorm.DB {
+			if restrictUser && userID != 0 {
+				return db.Where("s.user_id = ?", userID)
+			}
+			return db
+		}).
+		Group("si.product_id, si.sale_unit_id, p.name").
+		Order("total DESC").
+		Limit(limit).
+		Scan(&rows).Error
+	return rows, err
+}
+
 // GET /api/dashboard/analytics?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&branch_id=
 // Resume KPIs, series temporales y desgloses para el dashboard analítico del tenant.
 func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
@@ -273,37 +321,8 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Limit(12).
 		Scan(&byCategory)
 
-	// Top productos
-	type prodRow struct {
-		ProductID uint    `json:"product_id"`
-		Name      string  `json:"name"`
-		Qty       float64 `json:"quantity"`
-		Total     float64 `json:"total"`
-	}
-	var topProducts []prodRow
-	tdb.Table("tenant_sale_items si").
-		Select("si.product_id, p.name, COALESCE(SUM(si.quantity),0) as qty, COALESCE(SUM(si.total),0) as total").
-		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
-		Scopes(salescope.ScopeCommercial("s")).
-		Joins("JOIN tenant_products p ON p.id = si.product_id").
-		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
-		Where("s.status != ?", "cancelled").
-		Scopes(func(db *gorm.DB) *gorm.DB {
-			if branchID > 0 {
-				return db.Where("s.branch_id = ?", branchID)
-			}
-			return db
-		}).
-		Scopes(func(db *gorm.DB) *gorm.DB {
-			if restrictUser && userID != 0 {
-				return db.Where("s.user_id = ?", userID)
-			}
-			return db
-		}).
-		Group("si.product_id, p.name").
-		Order("total DESC").
-		Limit(10).
-		Scan(&topProducts)
+	// Top productos — Fase 7J.2: computeTopProducts agrupa por producto+SaleUnit (ver su doc).
+	topProducts, _ := computeTopProducts(tdb, from, toExclusive, branchID, userID, restrictUser, 10)
 
 	// Stock bajo (actual global, no depende del rango de fechas del dashboard)
 	lowStock := make([]struct {
