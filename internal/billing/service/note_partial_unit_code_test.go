@@ -22,7 +22,7 @@ func TestBuildPartialNoteItems_PreservesSaleUnitAndUnitCode(t *testing.T) {
 
 	items, subtotal, taxAmount, total, err := buildPartialNoteItems(100, []database.TenantSaleItem{orig}, []NoteItemSelection{
 		{OriginalItemID: 1, Quantity: 1},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildPartialNoteItems: %v", err)
 	}

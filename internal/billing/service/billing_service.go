@@ -29,6 +29,7 @@ import (
 	"tukifac/pkg/tenantstorage"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type BillingService struct {
@@ -413,19 +414,6 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	if err := s.db.First(&cfg).Error; err != nil || !cfg.SunatEnabled {
 		return nil, nil, errors.New("la conexión con SUNAT no está activada")
 	}
-	var orig database.TenantSale
-	if err := s.db.First(&orig, originalSaleID).Error; err != nil {
-		return nil, nil, errors.New("venta no encontrada")
-	}
-	if orig.Status == "cancelled" {
-		return nil, nil, errors.New("la venta ya está anulada")
-	}
-	if orig.DocType != "FACTURA" && orig.DocType != "BOLETA" {
-		return nil, nil, errors.New("solo se puede anular con nota de crédito una factura o boleta")
-	}
-	if orig.BillingStatus != "accepted" {
-		return nil, nil, errors.New("el comprobante debe estar aceptado por SUNAT antes de anularlo con nota de crédito")
-	}
 	reasonCode = strings.TrimSpace(reasonCode)
 	if reasonCode == "" {
 		reasonCode = "01"
@@ -437,92 +425,118 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 	if reason == "" {
 		reason = sunatnote.ReasonLabel("07", reasonCode)
 	}
-	if orig.ContactID == nil {
-		return nil, nil, errors.New("para nota de crédito electrónica debe asignar un cliente con dirección y ubigeo en la venta original")
-	}
-	ncSeries, err := s.resolveCreditNoteSeries(orig.BranchID, &orig)
-	if err != nil {
-		return nil, nil, err
-	}
-	saleSvc := salesvc.NewSaleService(s.db)
-	nextCorr, err := saleSvc.NextCorrelative(ncSeries.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-	numberStr := fmt.Sprintf("%s-%08d", ncSeries.Series, nextCorr)
-	now := time.Now()
-	origIDRef := originalSaleID
 
-	var origItems []database.TenantSaleItem
-	s.db.Where("sale_id = ?", originalSaleID).Find(&origItems)
-
-	// Nota parcial (Fase 2): el usuario eligió ítems/cantidades y el motivo mueve bienes —
-	// la nota se arma solo con esas líneas y sus propios totales, no con el 100% de la venta.
-	partial := IsPartialCreditNoteReason(reasonCode) && len(selections) > 0
-	var partialItems []database.TenantSaleItem
-	subtotal, taxAmount, total := orig.Subtotal, orig.TaxAmount, orig.Total
-	if partial {
-		var err error
-		partialItems, subtotal, taxAmount, total, err = buildPartialNoteItems(originalSaleID, origItems, selections)
+	// Fase 7G — concurrencia: TODA la secuencia leer→validar cantidad acumulada→crear la nota→
+	// crear sus ítems se ejecuta en una única transacción, con un lock exclusivo (SELECT ... FOR
+	// UPDATE) sobre la fila `orig` (la venta original en tenant_sales). Dos solicitudes de nota de
+	// crédito concurrentes sobre la MISMA venta se serializan: la segunda espera a que la primera
+	// confirme (o falle) antes de poder leer "cuánto se devolvió ya" y crear su propia nota — así
+	// ninguna de las dos puede basar su validación en una lectura desactualizada de la otra. El
+	// lock se libera al terminar la transacción (commit o rollback), antes de construir el payload
+	// fiscal y encolar el envío a SUNAT (I/O externo que nunca debe correr con una fila bloqueada).
+	var orig database.TenantSale
+	var ncSale database.TenantSale
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&orig, originalSaleID).Error; err != nil {
+			return errors.New("venta no encontrada")
+		}
+		if orig.Status == "cancelled" {
+			return errors.New("la venta ya está anulada")
+		}
+		if orig.DocType != "FACTURA" && orig.DocType != "BOLETA" {
+			return errors.New("solo se puede anular con nota de crédito una factura o boleta")
+		}
+		if orig.BillingStatus != "accepted" {
+			return errors.New("el comprobante debe estar aceptado por SUNAT antes de anularlo con nota de crédito")
+		}
+		if orig.ContactID == nil {
+			return errors.New("para nota de crédito electrónica debe asignar un cliente con dirección y ubigeo en la venta original")
+		}
+		ncSeries, err := s.resolveCreditNoteSeries(orig.BranchID, &orig)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
+		saleSvc := salesvc.NewSaleService(s.db)
+		nextCorr, err := saleSvc.NextCorrelative(ncSeries.ID)
+		if err != nil {
+			return err
+		}
+		numberStr := fmt.Sprintf("%s-%08d", ncSeries.Series, nextCorr)
+		now := time.Now()
+		origIDRef := originalSaleID
+
+		var origItems []database.TenantSaleItem
+		tx.Where("sale_id = ?", originalSaleID).Find(&origItems)
+
+		// Nota parcial (Fase 2): el usuario eligió ítems/cantidades y el motivo mueve bienes —
+		// la nota se arma solo con esas líneas y sus propios totales, no con el 100% de la venta.
+		partial := IsPartialCreditNoteReason(reasonCode) && len(selections) > 0
+		var partialItems []database.TenantSaleItem
+		subtotal, taxAmount, total := orig.Subtotal, orig.TaxAmount, orig.Total
+		if partial {
+			ids := make([]uint, len(selections))
+			for i, sel := range selections {
+				ids[i] = sel.OriginalItemID
+			}
+			alreadyReturned, err := sumReturnedQuantitiesByOriginalItem(tx, ids)
+			if err != nil {
+				return err
+			}
+			partialItems, subtotal, taxAmount, total, err = buildPartialNoteItems(originalSaleID, origItems, selections, alreadyReturned)
+			if err != nil {
+				return err
+			}
+		}
+
+		ncSale = database.TenantSale{
+			BranchID:       orig.BranchID,
+			ContactID:      orig.ContactID,
+			UserID:         orig.UserID,
+			CashSessionID:  nil,
+			SeriesID:       ncSeries.ID,
+			DocType:        "NOTA_CREDITO",
+			Series:         ncSeries.Series,
+			Correlative:    nextCorr,
+			Number:         numberStr,
+			IssueDate:      now,
+			Subtotal:       subtotal,
+			TaxAmount:      taxAmount,
+			Total:          total,
+			Currency:       orig.Currency,
+			PaymentMethod:  orig.PaymentMethod,
+			Notes:          reason,
+			NoteReasonCode: reasonCode,
+			Status:         "paid",
+			BillingStatus:  "pending",
+			OriginalSaleID: &origIDRef,
+		}
+		if err := tx.Create(&ncSale).Error; err != nil {
+			return fmt.Errorf("crear venta nota de crédito: %w", err)
+		}
+		if err := s.reserveGenericDocument("credit_note", ncSale.ID, ncSale.Number); err != nil {
+			return err
+		}
+		if partial {
+			for i := range partialItems {
+				partialItems[i].SaleID = ncSale.ID
+				if err := tx.Create(&partialItems[i]).Error; err != nil {
+					return fmt.Errorf("crear ítem de nota de crédito: %w", err)
+				}
+			}
+		} else {
+			fullItems := buildFullNoteItems(ncSale.ID, origItems)
+			for i := range fullItems {
+				if err := tx.Create(&fullItems[i]).Error; err != nil {
+					return fmt.Errorf("crear ítem de nota de crédito: %w", err)
+				}
+			}
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, nil, txErr
 	}
 
-	ncSale := database.TenantSale{
-		BranchID:       orig.BranchID,
-		ContactID:      orig.ContactID,
-		UserID:         orig.UserID,
-		CashSessionID:  nil,
-		SeriesID:       ncSeries.ID,
-		DocType:        "NOTA_CREDITO",
-		Series:         ncSeries.Series,
-		Correlative:    nextCorr,
-		Number:         numberStr,
-		IssueDate:      now,
-		Subtotal:       subtotal,
-		TaxAmount:      taxAmount,
-		Total:          total,
-		Currency:       orig.Currency,
-		PaymentMethod:  orig.PaymentMethod,
-		Notes:          reason,
-		NoteReasonCode: reasonCode,
-		Status:         "paid",
-		BillingStatus:  "pending",
-		OriginalSaleID: &origIDRef,
-	}
-	if err := s.db.Create(&ncSale).Error; err != nil {
-		return nil, nil, fmt.Errorf("crear venta nota de crédito: %w", err)
-	}
-	if err := s.reserveGenericDocument("credit_note", ncSale.ID, ncSale.Number); err != nil {
-		return nil, nil, err
-	}
-	if partial {
-		for i := range partialItems {
-			partialItems[i].SaleID = ncSale.ID
-			s.db.Create(&partialItems[i])
-		}
-	} else {
-		for _, it := range origItems {
-			ncItem := database.TenantSaleItem{
-				SaleID:             ncSale.ID,
-				ProductID:          it.ProductID,
-				SaleUnitID:         it.SaleUnitID,
-				Code:               it.Code,
-				Description:        it.Description,
-				Unit:               it.Unit,
-				Quantity:           it.Quantity,
-				UnitPrice:          it.UnitPrice,
-				Discount:           it.Discount,
-				TaxRate:            it.TaxRate,
-				IgvAffectationType: it.IgvAffectationType,
-				Subtotal:           it.Subtotal,
-				TaxAmount:          it.TaxAmount,
-				Total:              it.Total,
-			}
-			s.db.Create(&ncItem)
-		}
-	}
 	notePayload, err := s.buildCreditNotePayload(ncSale.ID)
 	if err != nil {
 		return nil, nil, err
