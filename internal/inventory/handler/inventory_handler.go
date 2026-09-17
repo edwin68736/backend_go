@@ -689,6 +689,13 @@ func (h *InventoryHandler) MovementsAPI(c fiber.Ctx) error {
 		UserID              uint      `json:"user_id"`
 		UserName            string    `json:"user_name"`
 		CreatedAt           time.Time `json:"created_at"`
+		// SaleUnitID/SaleUnitQuantity/ConversionFactor: snapshot histórico de la unidad de venta
+		// usada en el movimiento (ventas y compras con SaleUnit, ver purchase_service.go/
+		// sale_service.go) — Quantity/Balance arriba siempre están en unidad BASE, esto es solo
+		// para mostrar la equivalencia comercial (ej. "1.5 Saco 100 KG") sin reinterpretar nada.
+		SaleUnitID       *uint    `json:"sale_unit_id,omitempty"`
+		SaleUnitQuantity *float64 `json:"sale_unit_quantity,omitempty"`
+		ConversionFactor *float64 `json:"conversion_factor,omitempty"`
 	}
 	opMap := enrichMovementsWithOperationTypes(tdb, movements)
 	out := make([]movementRow, 0, len(movements))
@@ -717,6 +724,9 @@ func (h *InventoryHandler) MovementsAPI(c fiber.Ctx) error {
 			UserID:              m.UserID,
 			UserName:            userNames[m.UserID],
 			CreatedAt:           m.CreatedAt,
+			SaleUnitID:          m.SaleUnitID,
+			SaleUnitQuantity:    m.SaleUnitQuantity,
+			ConversionFactor:    m.ConversionFactor,
 		}
 		if m.PresentationID != nil {
 			row.PresentationName = presNameMap[*m.PresentationID]
