@@ -153,6 +153,10 @@ func (s *EcommerceService) ConvertToSale(orderID uint, input ConvertInput) (*dat
 			UnitPrice:          it.UnitPrice,
 			IgvAffectationType: igvType,
 			PriceIncludesIgv:   priceIncludesIgv,
+			// El precio es el que el cliente vio y pagó al hacer el pedido web — puede haber
+			// cambiado en el catálogo desde entonces; convertir no debe reevaluarlo contra
+			// validateAuthorizedPrices (mismo criterio que una cotización ya pactada).
+			PriceAuthorized: true,
 		})
 	}
 

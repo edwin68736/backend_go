@@ -191,6 +191,12 @@ type CreateSaleInput struct {
 	FiscalContext           *salecontext.FiscalContextInput
 	Detraccion              *detraccionsvc.SaleInput
 	Prepayment              *prepaymentsvc.SaleInput
+	// UserCanOverridePrice: resuelto por el HANDLER contra los permisos del JWT del usuario
+	// autenticado (middleware.HasPermission(claims, "sales.override_price")) — nunca un valor que
+	// pueda mandar el cliente en el body. true exime a TODA la venta de validateAuthorizedPrices,
+	// igual que ya hacían las líneas con item.PriceAuthorized=true (combos/Tukichef/reconstrucción
+	// desde nota) antes de este permiso. Ver docs/INCIDENT-2026-09-17-PRICE-AUTHORIZATION.md.
+	UserCanOverridePrice bool
 }
 
 // NextCorrelative retorna el siguiente correlativo para una serie y lo incrementa (transacción con bloqueo de fila).
@@ -234,15 +240,21 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	if err := validateSaleUnits(s.db, input.Items); err != nil {
 		return nil, err
 	}
-	// Precio autorizado: DESACTIVADO temporalmente (incidente en producción 2026-09-17) — el POS
-	// y "Registrar venta" de tukifac permiten editar el unit_price en cualquier línea (precio
-	// pactado, corrección manual) sin ningún mecanismo para marcarla como autorizada, y esta
-	// validación rechazaba esas ventas legítimas en varios tenants. Revertido a confiar en el
-	// unit_price del cliente, igual que antes de sale_price_authorization.go. Pendiente: diseñar
-	// un override explícito (permiso de rol) antes de reactivar esta validación.
-	// if err := validateAuthorizedPrices(s.db, input.BranchID, input.Items); err != nil {
-	// 	return nil, err
-	// }
+	// Precio autorizado: el unit_price de cada línea con producto real debe coincidir con el
+	// catálogo (o su presentación + extras, o el Price1 de su unidad de venta), SALVO que el
+	// usuario autenticado tenga el permiso sales.override_price (UserCanOverridePrice, resuelto
+	// server-side por el handler contra el JWT — nunca un flag que mande el cliente). Reactivada
+	// el 2026-09-17 tras el incidente que la desactivó por completo (ver
+	// docs/INCIDENT-2026-09-17-PRICE-AUTHORIZATION.md): el hueco real no era la validación en sí,
+	// sino la falta de una excepción para el precio pactado/corrección manual que el POS y
+	// "Registrar venta" ya permiten editar — sales.override_price es esa excepción. Las líneas ya
+	// vetadas por código de confianza (item.PriceAuthorized=true) no se reevalúan de todos modos.
+	// Ver sale_price_authorization.go.
+	if !input.UserCanOverridePrice {
+		if err := validateAuthorizedPrices(s.db, input.BranchID, input.Items); err != nil {
+			return nil, err
+		}
+	}
 
 	series, err := docseries.ValidateForBranch(s.db, input.SeriesID, input.BranchID)
 	if err != nil {

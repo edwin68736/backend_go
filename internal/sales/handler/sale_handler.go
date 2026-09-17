@@ -17,6 +17,7 @@ import (
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	emailpkg "tukifac/pkg/email"
+	"tukifac/pkg/middleware"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
 
@@ -39,6 +40,13 @@ func email(c fiber.Ctx) string {
 func userID(c fiber.Ctx) uint {
 	v, _ := c.Locals("user_id").(uint)
 	return v
+}
+
+// userCanOverridePrice resuelve sales.override_price contra el JWT del usuario autenticado
+// (nunca contra el body de la request) — ver CreateSaleInput.UserCanOverridePrice.
+func userCanOverridePrice(c fiber.Ctx) bool {
+	claims, _ := c.Locals("tenant_claims").(*middleware.TenantClaims)
+	return middleware.HasPermission(claims, "sales.override_price")
 }
 
 func (h *SaleHandler) ListPage(c fiber.Ctx) error {
@@ -207,6 +215,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Detraccion:            body.Detraccion,
 		Prepayment:            body.Prepayment,
 		IssuedFromQuotationID: issuedFromQuotationID,
+		UserCanOverridePrice:  userCanOverridePrice(c),
 	})
 	if err != nil {
 		return saleCreateErrorResponse(c, err)
@@ -651,16 +660,17 @@ func (h *SaleHandler) CreateForm(c fiber.Ctx) error {
 
 	svc := service.NewSaleService(db(c))
 	sale, err := svc.Create(service.CreateSaleInput{
-		BranchID:      uint(branchID),
-		ContactID:     contactID,
-		UserID:        userID(c),
-		SeriesID:      uint(seriesID),
-		DocType:       c.FormValue("doc_type"),
-		IssueDate:     issueDate,
-		Currency:      c.FormValue("currency"),
-		PaymentMethod: c.FormValue("payment_method"),
-		Notes:         c.FormValue("notes"),
-		Items:         items,
+		BranchID:             uint(branchID),
+		ContactID:            contactID,
+		UserID:               userID(c),
+		SeriesID:             uint(seriesID),
+		DocType:              c.FormValue("doc_type"),
+		IssueDate:            issueDate,
+		Currency:             c.FormValue("currency"),
+		PaymentMethod:        c.FormValue("payment_method"),
+		Notes:                c.FormValue("notes"),
+		Items:                items,
+		UserCanOverridePrice: userCanOverridePrice(c),
 	})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(err.Error())

@@ -487,6 +487,10 @@ func (s *QuotationService) ConvertToSale(quotationID uint, input ConvertInput) (
 			PriceIncludesIgv:   it.PriceIncludesIgv,
 			ModifiersJSON:      it.ModifiersJSON,
 			ItemNote:           it.ItemNote,
+			// El precio ya fue pactado/autorizado al crear la cotización (puede ser distinto del
+			// catálogo vigente a propósito — precio negociado); convertir no debe reevaluarlo
+			// contra validateAuthorizedPrices.
+			PriceAuthorized: true,
 		})
 	}
 

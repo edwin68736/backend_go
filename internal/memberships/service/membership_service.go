@@ -472,6 +472,9 @@ func (s *MembershipService) GenerateSale(membershipID uint, userID uint, central
 			Discount:           0,
 			IgvAffectationType: m.IgvAffectationType,
 			PriceIncludesIgv:   m.PriceIncludesIgv,
+			// m.Amount es el monto pactado de la membresía, no el SalePrice del producto vinculado
+			// (son conceptos distintos a propósito) — no reevaluar contra validateAuthorizedPrices.
+			PriceAuthorized: true,
 		}
 	} else {
 		desc := strings.TrimSpace(m.Title)
@@ -489,6 +492,7 @@ func (s *MembershipService) GenerateSale(membershipID uint, userID uint, central
 			Discount:           0,
 			IgvAffectationType: m.IgvAffectationType,
 			PriceIncludesIgv:   m.PriceIncludesIgv,
+			PriceAuthorized:    true, // línea manual sin ProductID; validateAuthorizedPrices tampoco la tocaría, pero se marca por consistencia con la rama de arriba.
 		}
 	}
 	cid := m.ContactID

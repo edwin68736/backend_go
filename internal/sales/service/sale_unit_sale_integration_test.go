@@ -277,7 +277,6 @@ func TestSaleUnitIntegration_AllowFraction_EnforcedServerSide(t *testing.T) {
 // Precio manipulado usando SaleUnit → rechazada (extiende el hardening de Fase 0). Precio
 // correcto (Price1 de la SaleUnit) → OK.
 func TestSaleUnitIntegration_PriceAuthorization_UsesSaleUnitPrice(t *testing.T) {
-	t.Skip("validateAuthorizedPrices desactivada temporalmente en sale_service.go (incidente 2026-09-17): rompía el precio editable legítimo del POS. Reactivar este test junto con el override.")
 	db := setupSaleUnitIntegrationDB(t)
 	p, saco := seedArroz(t, db, 1000)
 	series := seedNVSeriesSU(t, db)
