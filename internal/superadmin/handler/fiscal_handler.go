@@ -344,7 +344,7 @@ func (h *FiscalHandler) OperationsQueueAPI(c fiber.Ctx) error {
 	if err := h.ensureConfigured(c); err != nil {
 		return err
 	}
-	raw, status, err := fiscaladmin.GetJSON("/api/v1/fiscal/operations/queue", nil)
+	raw, status, err := fiscaladmin.GetJSON("/api/v1/fiscal/operations/queue", collectQuery(c))
 	if err != nil {
 		return h.proxyError(c, err, raw, status)
 	}
