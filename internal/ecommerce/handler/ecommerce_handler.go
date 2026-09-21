@@ -2,12 +2,14 @@ package handler
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"tukifac/config"
 	"tukifac/internal/ecommerce/service"
 	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
@@ -355,6 +357,91 @@ func (h *EcommerceHandler) PublicSettingsAPI(c fiber.Ctx) error {
 		"show_stock":           settings.ShowStock,
 		"sliders":              sliders,
 	})
+}
+
+// publicAssetAbsoluteURL replica la resolución de logo_url del frontend (config/apiBaseUrl.ts
+// resolvePublicAssetUrl): si ya es absoluta la deja igual, si no la prefija con el origen
+// central de assets (https://api.{AppDomain}) — necesario porque los bots de link preview no
+// ejecutan JS y necesitan una URL absoluta en <meta property="og:image">.
+func publicAssetAbsoluteURL(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	root := ""
+	if config.AppConfig != nil {
+		root = strings.TrimSpace(config.AppConfig.AppDomain)
+	}
+	if root == "" || root == "localhost" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return "https://api." + root + path
+}
+
+// PublicMetaHTMLAPI sirve un HTML mínimo con Open Graph tags de la tienda del tenant (nombre,
+// descripción, logo), para que WhatsApp/Facebook/Telegram etc. muestren la marca del negocio en
+// vez de la genérica de Tukifac al compartir el link /ecommerce. Estos crawlers no ejecutan JS,
+// así que no basta con lo que la SPA setea en runtime — necesitan esto en el HTML de la primera
+// respuesta. Pensado para que nginx lo sirva SOLO a bots conocidos (User-Agent) en /ecommerce*;
+// usuarios reales siguen recibiendo la SPA normal vía <meta refresh> hacia la misma ruta.
+func (h *EcommerceHandler) PublicMetaHTMLAPI(c fiber.Ctx) error {
+	svc := service.NewEcommerceService(db(c))
+	settings, err := svc.GetSettings()
+	if err != nil {
+		return c.Status(500).SendString("error cargando la tienda")
+	}
+
+	storeName := strings.TrimSpace(settings.StoreName)
+	if storeName == "" {
+		storeName = "Tienda online"
+	}
+	description := strings.TrimSpace(settings.Description)
+	if description == "" {
+		description = strings.TrimSpace(settings.Tagline)
+	}
+	if description == "" {
+		description = "Catálogo y pedidos online de " + storeName
+	}
+	logoURL := publicAssetAbsoluteURL(settings.LogoURL)
+
+	host := strings.TrimSpace(c.Hostname())
+	pageURL := ""
+	if host != "" {
+		pageURL = "https://" + host + "/ecommerce"
+	}
+
+	title := html.EscapeString(storeName)
+	desc := html.EscapeString(description)
+	img := html.EscapeString(logoURL)
+	url := html.EscapeString(pageURL)
+
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\">")
+	b.WriteString("<title>" + title + "</title>")
+	b.WriteString("<meta name=\"description\" content=\"" + desc + "\">")
+	b.WriteString("<meta property=\"og:type\" content=\"website\">")
+	b.WriteString("<meta property=\"og:title\" content=\"" + title + "\">")
+	b.WriteString("<meta property=\"og:description\" content=\"" + desc + "\">")
+	if img != "" {
+		b.WriteString("<meta property=\"og:image\" content=\"" + img + "\">")
+	}
+	if url != "" {
+		b.WriteString("<meta property=\"og:url\" content=\"" + url + "\">")
+	}
+	b.WriteString("<meta name=\"twitter:card\" content=\"summary_large_image\">")
+	if url != "" {
+		b.WriteString("<meta http-equiv=\"refresh\" content=\"0; url=" + url + "\">")
+	}
+	b.WriteString("</head><body></body></html>")
+
+	c.Set("Content-Type", "text/html; charset=utf-8")
+	return c.SendString(b.String())
 }
 
 func (h *EcommerceHandler) PublicCategoriesAPI(c fiber.Ctx) error {
