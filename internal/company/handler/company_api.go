@@ -324,6 +324,13 @@ func (h *CompanyHandler) ListBranchesAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	// Igual que GetConfigAPI con el logo global: se embebe como data URL para que cualquier
+	// dispositivo lo tenga sin depender de red/CORS al imprimir.
+	if ruc, rucErr := tenantstorage.ResolveTenantRUC(c); rucErr == nil {
+		for i := range branches {
+			attachBranchLogoDataURL(ruc, &branches[i])
+		}
+	}
 	return c.JSON(fiber.Map{"data": branches})
 }
 
@@ -381,6 +388,85 @@ func (h *CompanyHandler) DeleteBranchAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
+}
+
+// UploadBranchLogoAPI POST /api/company/branches/:id/logo — imagen en
+// uploads/tenants/{RUC}/company/branches/{id}/. Logo propio de la sucursal: no toca el logo
+// global de la empresa ni se sincroniza con el facturador (Lycet sigue usando solo el logo
+// global, ver pkg/branchlogo).
+func (h *CompanyHandler) UploadBranchLogoAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	ruc, err := tenantstorage.ResolveTenantRUC(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	file, err := c.FormFile("image")
+	if err != nil || file == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "envía un archivo en el campo 'image'"})
+	}
+	if file.Size > uploadlimits.MaxFileBytes {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "la imagen no debe superar 10 MB"})
+	}
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true}
+	if !allowed[ext] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "formato no permitido. Usa JPG, PNG o WebP"})
+	}
+
+	subdir := branchLogoSubdir(uint(id))
+	dir := tenantstorage.TenantUploadDir(ruc, subdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("no se pudo crear carpeta %s: %v", dir, err),
+		})
+	}
+	filename := "logo" + ext
+	savePath := filepath.Join(dir, filename)
+	for _, oldExt := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+		if oldExt == ext {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, "logo"+oldExt))
+	}
+	if err := c.SaveFile(file, savePath); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": fmt.Sprintf("error guardando logo en %s: %v", savePath, err),
+		})
+	}
+	imageURL := tenantstorage.TenantUploadPublicURL(ruc, subdir, filename)
+	// ?v= evita caché del navegador al reemplazar el mismo archivo logo.*
+	storedURL := fmt.Sprintf("%s?v=%d", imageURL, time.Now().UnixMilli())
+	svc := service.NewCompanyService(db(c))
+	if err := svc.UpdateBranchLogoURL(uint(id), storedURL); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	b, err := svc.GetBranch(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	attachBranchLogoDataURL(ruc, b)
+	return c.JSON(fiber.Map{"success": true, "logo_url": storedURL, "data": b})
+}
+
+// DeleteBranchLogoAPI DELETE /api/company/branches/:id/logo — quita el logo propio de la
+// sucursal; vuelve a depender del logo global de la empresa (pkg/branchlogo.ResolveURL).
+func (h *CompanyHandler) DeleteBranchLogoAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewCompanyService(db(c))
+	if err := svc.UpdateBranchLogoURL(uint(id), ""); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	b, err := svc.GetBranch(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": b})
 }
 
 // filterActiveSeries descarta las series desactivadas. Se aplica a todo consumidor que

@@ -143,19 +143,19 @@ func (s *CompanyService) SaveConfig(input database.TenantCompanyConfig) error {
 	}
 	updates := map[string]interface{}{
 		// Razón Social y RUC no se actualizan desde el panel tenant; solo desde el panel central.
-		"trade_name": input.TradeName,
-		"address":    input.Address,
-		"ubigeo":     input.Ubigeo,
-		"country":    input.Country,
-		"phone":      input.Phone,
-		"email":      input.Email,
-		"website":    input.Website,
-		"currency":         input.Currency,
-		"tax_rate":         input.TaxRate,
-		"additional_notes": strings.TrimSpace(input.AdditionalNotes),
-		"terms_and_conditions":  strings.TrimSpace(input.TermsAndConditions),
-		"show_terms_conditions": input.ShowTermsConditions,
-		"detraction_bn_account":            strings.TrimSpace(input.DetractionBNAccount),
+		"trade_name":                        input.TradeName,
+		"address":                           input.Address,
+		"ubigeo":                            input.Ubigeo,
+		"country":                           input.Country,
+		"phone":                             input.Phone,
+		"email":                             input.Email,
+		"website":                           input.Website,
+		"currency":                          input.Currency,
+		"tax_rate":                          input.TaxRate,
+		"additional_notes":                  strings.TrimSpace(input.AdditionalNotes),
+		"terms_and_conditions":              strings.TrimSpace(input.TermsAndConditions),
+		"show_terms_conditions":             input.ShowTermsConditions,
+		"detraction_bn_account":             strings.TrimSpace(input.DetractionBNAccount),
 		"detraction_default_payment_method": normalizeDetractionPaymentMethod(input.DetractionDefaultPaymentMethod),
 	}
 	// color_theme solo desde panel tenant; Tukichef y otros clientes no deben vaciarlo.
@@ -205,12 +205,12 @@ func (s *CompanyService) SaveReceiptWallet(provider, phone, qrURL string, showOn
 		return errors.New("el QR es demasiado grande: use el botón Subir QR (se guardará como archivo en el servidor)")
 	}
 	return s.db.Model(&existing).Updates(map[string]interface{}{
-		"wallet_provider":            provider,
-		"wallet_phone":               phone,
-		"wallet_qr_url":              qrURL,
-		"wallet_show_on_a4":          showOnA4,
-		"wallet_show_on_ticket":      showOnTicket,
-		"receipt_bank_account_ids":   EncodeReceiptBankAccountIDs(bankAccountIDs),
+		"wallet_provider":          provider,
+		"wallet_phone":             phone,
+		"wallet_qr_url":            qrURL,
+		"wallet_show_on_a4":        showOnA4,
+		"wallet_show_on_ticket":    showOnTicket,
+		"receipt_bank_account_ids": EncodeReceiptBankAccountIDs(bankAccountIDs),
 	}).Error
 }
 
@@ -344,6 +344,12 @@ func (s *CompanyService) UpdateBranch(id uint, name, address, phone, fiscalDomic
 
 func (s *CompanyService) DeleteBranch(id uint) error {
 	return s.db.Delete(&database.TenantBranch{}, id).Error
+}
+
+// UpdateBranchLogoURL guarda (o, con url="", borra) el logo propio de la sucursal. Vacío no es
+// un error: es la forma de volver a depender del logo global (ver pkg/branchlogo.ResolveURL).
+func (s *CompanyService) UpdateBranchLogoURL(branchID uint, url string) error {
+	return s.db.Model(&database.TenantBranch{}).Where("id = ?", branchID).Update("logo_url", url).Error
 }
 
 // Series y correlativos

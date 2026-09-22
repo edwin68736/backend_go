@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,38 +35,64 @@ func attachLogoDataURL(ruc string, cfg *database.TenantCompanyConfig) {
 	if cfg == nil {
 		return
 	}
-	raw := strings.TrimSpace(cfg.LogoURL)
-	if raw == "" {
+	if dataURL := resolveLogoDataURL(ruc, "company", cfg.LogoURL); dataURL != "" {
+		cfg.LogoDataURL = dataURL
+	}
+}
+
+// attachBranchLogoDataURL es el equivalente de attachLogoDataURL para el logo propio de una
+// sucursal (guardado aparte, en company/branches/{id}/). No hace nada si la sucursal no tiene
+// logo propio — el fallback al logo global lo resuelve pkg/branchlogo.ResolveURL, no esta función.
+func attachBranchLogoDataURL(ruc string, b *database.TenantBranch) {
+	if b == nil {
 		return
+	}
+	if dataURL := resolveLogoDataURL(ruc, branchLogoSubdir(b.ID), b.LogoURL); dataURL != "" {
+		b.LogoDataURL = dataURL
+	}
+}
+
+// branchLogoSubdir carpeta de uploads del logo propio de una sucursal.
+func branchLogoSubdir(branchID uint) string {
+	return fmt.Sprintf("company/branches/%d", branchID)
+}
+
+// resolveLogoDataURL embebe como data: URL el archivo guardado en
+// uploads/tenants/{ruc}/{subdir}/{filename tomado de rawURL}. Compartido por el logo global de
+// la empresa (subdir "company") y por el logo propio de cada sucursal (subdir
+// "company/branches/{id}") — misma lógica, distinta carpeta.
+func resolveLogoDataURL(ruc, subdir, rawURL string) string {
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return ""
 	}
 	// Config antigua con el logo ya embebido: se devuelve tal cual.
 	if strings.HasPrefix(raw, "data:") {
-		cfg.LogoDataURL = raw
-		return
+		return raw
 	}
 	if ruc == "" {
-		return
+		return ""
 	}
 
 	filename := logoFilenameFromURL(raw)
 	if filename == "" {
-		return
+		return ""
 	}
 	mime, ok := logoMimeByExt[strings.ToLower(filepath.Ext(filename))]
 	if !ok {
-		return
+		return ""
 	}
 
-	path := filepath.Join(tenantstorage.TenantUploadDir(ruc, "company"), filename)
+	path := filepath.Join(tenantstorage.TenantUploadDir(ruc, subdir), filename)
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > logoDataURLMaxBytes {
-		return
+		return ""
 	}
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) == 0 {
-		return
+		return ""
 	}
-	cfg.LogoDataURL = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 // logoFilenameFromURL extrae el nombre de archivo de la URL pública, sin el ?v= que se le

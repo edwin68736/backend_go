@@ -798,16 +798,21 @@ type TenantUserBranch struct {
 func (TenantUserBranch) TableName() string { return "tenant_user_branches" }
 
 type TenantBranch struct {
-	ID                 uint           `gorm:"primaryKey" json:"id"`
-	Name               string         `gorm:"size:255;not null" json:"name"`
-	Address            string         `gorm:"size:255" json:"address"`
-	Phone              string         `gorm:"size:50" json:"phone"`
-	FiscalDomicileCode string         `gorm:"size:20" json:"fiscal_domicile_code"`
-	IsMain             bool           `gorm:"default:false" json:"is_main"`
-	Active             bool           `gorm:"default:true" json:"active"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
-	DeletedAt          gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                 uint   `gorm:"primaryKey" json:"id"`
+	Name               string `gorm:"size:255;not null" json:"name"`
+	Address            string `gorm:"size:255" json:"address"`
+	Phone              string `gorm:"size:50" json:"phone"`
+	FiscalDomicileCode string `gorm:"size:20" json:"fiscal_domicile_code"`
+	IsMain             bool   `gorm:"default:false" json:"is_main"`
+	Active             bool   `gorm:"default:true" json:"active"`
+	// Logo propio de la sucursal (opcional). Vacío = se usa el logo global de
+	// TenantCompanyConfig.LogoURL — ver pkg/branchlogo.ResolveURL, el único punto que decide
+	// esta cadena de fallback (mismo patrón que TenantProductSaleUnitBranchPrice para precios).
+	LogoURL     string         `gorm:"type:longtext" json:"logo_url"`
+	LogoDataURL string         `gorm:"-" json:"logo_data_url,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 type TenantCompanyConfig struct {
@@ -993,14 +998,14 @@ type TenantProduct struct {
 	// directo, se sincroniza al guardar (ver ProductService.resolveUnitReference). Se conserva como
 	// string porque ventas/cotizaciones/compras/facturación/impresión ya lo leen así en decenas de
 	// lugares; UnitID es la fuente de verdad para la UI (selects por ID, no texto libre).
-	Unit               string  `gorm:"size:50;default:'NIU'" json:"unit"`
-	UnitID             *uint   `gorm:"index" json:"unit_id"`
+	Unit      string  `gorm:"size:50;default:'NIU'" json:"unit"`
+	UnitID    *uint   `gorm:"index" json:"unit_id"`
 	SalePrice float64 `gorm:"type:decimal(15,2);not null" json:"sale_price"`
 	// PurchasePrice: costo BASE (por unidad base del producto), no comercial. Ampliado a
 	// decimal(15,6) en v136 por el mismo motivo que TenantStockMovement.UnitCost (ver ahí):
 	// cuando la compra usa una SaleUnit, este valor es commercial_unit_cost/ConversionFactor, que
 	// puede necesitar más de 2 decimales exactos (ej. S/100 ÷ 24 = S/4.1666...).
-	PurchasePrice float64 `gorm:"type:decimal(15,6)" json:"purchase_price"`
+	PurchasePrice      float64 `gorm:"type:decimal(15,6)" json:"purchase_price"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:18.00" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"` // Catálogo SUNAT N°7
 	PriceIncludesIgv   bool    `gorm:"default:true" json:"price_includes_igv"`
@@ -1185,9 +1190,9 @@ type TenantProductSaleUnit struct {
 // una fila borrada más una activa", porque NULL en una columna de un índice único no colisiona
 // consigo mismo.
 type TenantProductSaleUnitBranchPrice struct {
-	ID         uint    `gorm:"primaryKey" json:"id"`
-	SaleUnitID uint    `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price" json:"sale_unit_id"`
-	BranchID   uint    `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price;index" json:"branch_id"`
+	ID         uint     `gorm:"primaryKey" json:"id"`
+	SaleUnitID uint     `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price" json:"sale_unit_id"`
+	BranchID   uint     `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price;index" json:"branch_id"`
 	Price1     float64  `gorm:"type:decimal(15,2);not null" json:"price1"`
 	Price2     *float64 `gorm:"type:decimal(15,2)" json:"price2"`
 	Price3     *float64 `gorm:"type:decimal(15,2)" json:"price3"`
@@ -2039,8 +2044,8 @@ type TenantPurchasePayment struct {
 }
 
 type TenantPurchaseItem struct {
-	ID                 uint    `gorm:"primaryKey" json:"id"`
-	PurchaseID         uint    `gorm:"not null;index" json:"purchase_id"`
+	ID          uint   `gorm:"primaryKey" json:"id"`
+	PurchaseID  uint   `gorm:"not null;index" json:"purchase_id"`
 	ProductID   *uint  `gorm:"index" json:"product_id"`
 	Code        string `gorm:"size:100" json:"code"`
 	Description string `gorm:"size:255;not null" json:"description"`

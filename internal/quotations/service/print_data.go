@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	salessvc "tukifac/internal/sales/service"
+	"tukifac/pkg/branchlogo"
 	"tukifac/pkg/database"
 	"tukifac/pkg/datespe"
 	"tukifac/pkg/money"
@@ -102,6 +103,7 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 		if addr := strings.TrimSpace(branch.Address); addr != "" {
 			pd.Company.Address = addr
 		}
+		pd.Company.LogoURL = branchlogo.ResolveURL(branch.LogoURL, pd.Company.LogoURL)
 	}
 
 	pd.Items = make([]salessvc.PrintItem, len(items))

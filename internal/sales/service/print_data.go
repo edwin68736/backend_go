@@ -9,6 +9,7 @@ import (
 	detraccionsvc "tukifac/internal/detraccion"
 	"tukifac/internal/fiscal/salecontext"
 	prepaymentsvc "tukifac/internal/prepayment"
+	"tukifac/pkg/branchlogo"
 	"tukifac/pkg/database"
 	"tukifac/pkg/datespe"
 	"tukifac/pkg/facturador"
@@ -463,6 +464,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 				pd.Company.Address = addr
 			}
 		}
+		pd.Company.LogoURL = branchlogo.ResolveURL(branch.LogoURL, pd.Company.LogoURL)
 	}
 
 	// Items
