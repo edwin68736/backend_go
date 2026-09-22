@@ -256,12 +256,15 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 			if err := guardBillingCycleApprove(tx, cycle.ID, payment.ID); err != nil {
 				return err
 			}
-			// Conciliación de monto: exigir pago completo (tolerancia de 1 céntimo).
-			var subPtr *database.SaasSubscription
-			if hasCurSub {
-				subPtr = &curSub
-			}
-			due := BillingCycleAmountDue(cycle, &tenant, subPtr)
+			// Conciliación de monto: exigir pago completo (tolerancia de 1 céntimo). Usa el
+			// recargo de reconexión ya CONGELADO en payment.ReconnectionFee (fijado en
+			// SubmitPayment cuando el tenant AÚN estaba suspendido) en vez de recalcularlo con
+			// BillingCycleAmountDue + estado en vivo del tenant: SubmitPayment ya reactivó al
+			// tenant a "active" como parte de la reactivación provisional (línea ~184, antes de
+			// llegar acá), así que recalcular con el estado actual siempre daba recargo = 0
+			// aunque el tenant sí estuviera suspendido al momento de pagar — dejaba aprobar
+			// pagos que no cubrían el recargo (bug reportado en pruebas locales, set-2026).
+			due := cycle.Amount + payment.ReconnectionFee
 			if payment.Amount+0.009 < due {
 				return fmt.Errorf("el pago (S/ %.2f) no cubre la deuda (S/ %.2f); registra un pago que cubra el total", payment.Amount, due)
 			}
