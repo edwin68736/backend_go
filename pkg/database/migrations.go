@@ -986,7 +986,7 @@ type TenantProduct struct {
 	CategoryID  *uint  `gorm:"index" json:"category_id"`
 	BrandID     *uint  `gorm:"index" json:"brand_id"`
 	Code        string `gorm:"size:100;not null;index" json:"code"`
-	Name        string `gorm:"size:255;not null" json:"name"`
+	Name        string `gorm:"size:500;not null" json:"name"`
 	Description string `gorm:"type:text" json:"description"`
 	Type        string `gorm:"size:20;default:'product'" json:"type"` // product, service
 	// Unit: código SUNAT catálogo N°03 denormalizado desde UnitID.TenantUnit.Code — no se edita
