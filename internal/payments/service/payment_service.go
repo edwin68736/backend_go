@@ -20,6 +20,10 @@ type PaymentDetail struct {
 	TenantName string `json:"tenant_name"`
 	TenantSlug string `json:"tenant_slug"`
 	TenantRUC  string `json:"tenant_ruc"`
+	// CycleAmount: monto BASE del ciclo (plan, sin reconexión) que este pago cancela — para que
+	// el panel pueda desglosar plan vs. reconexión en vez de mostrar solo un total sin explicar.
+	// nil si el pago no está ligado a un ciclo (ver SaasPayment.BillingCycleID).
+	CycleAmount *float64 `json:"cycle_amount,omitempty"`
 }
 
 // PaymentListParams filtros de /superadmin/payments — mismo patrón que
@@ -85,6 +89,21 @@ func (s *PaymentService) List(params PaymentListParams) ([]PaymentDetail, int64,
 		}
 	}
 
+	cycleIDs := make([]uint, 0, len(payments))
+	for _, p := range payments {
+		if p.BillingCycleID != nil {
+			cycleIDs = append(cycleIDs, *p.BillingCycleID)
+		}
+	}
+	cycleAmountByID := map[uint]float64{}
+	if len(cycleIDs) > 0 {
+		var cycles []database.SaasBillingCycle
+		database.CentralDB.Select("id", "amount").Where("id IN ?", cycleIDs).Find(&cycles)
+		for _, c := range cycles {
+			cycleAmountByID[c.ID] = c.Amount
+		}
+	}
+
 	result := make([]PaymentDetail, 0, len(payments))
 	for _, p := range payments {
 		d := PaymentDetail{SaasPayment: p}
@@ -92,6 +111,11 @@ func (s *PaymentService) List(params PaymentListParams) ([]PaymentDetail, int64,
 			d.TenantName = t.Name
 			d.TenantSlug = t.Slug
 			d.TenantRUC = t.RUC
+		}
+		if p.BillingCycleID != nil {
+			if amt, ok := cycleAmountByID[*p.BillingCycleID]; ok {
+				d.CycleAmount = &amt
+			}
 		}
 		result = append(result, d)
 	}
