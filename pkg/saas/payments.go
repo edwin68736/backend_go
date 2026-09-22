@@ -215,7 +215,13 @@ func SubmitPayment(in SubmitPaymentInput) (*database.SaasPayment, error) {
 // (una deuda de 6 meses da +6 meses, no +1 del plan). La extensión es EN SITIO (no crea una
 // suscripción nueva ni una deuda fantasma del período recién pagado); el ciclo pagado queda
 // ligado a la suscripción y sirve de cupo de documentos del período.
-func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes string, reviewerID uint) error {
+// reconnectionFeeOverride: excepción SOLO del panel central para condonar o descontar el
+// recargo de reconexión de este pago puntual — nil deja el recargo congelado en
+// payment.ReconnectionFee tal cual (comportamiento de siempre); un valor (0 = condonar del
+// todo, cualquier monto menor al original = descuento parcial) lo reemplaza tanto para la
+// conciliación de monto como para lo que queda grabado en el pago. Nunca lo decide el tenant:
+// no hay ningún camino tenant-facing que llegue acá con un valor distinto de nil.
+func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes string, reviewerID uint, reconnectionFeeOverride *float64) error {
 	var tenantID uint
 	err := database.CentralDB.Transaction(func(tx *gorm.DB) error {
 		var payment database.SaasPayment
@@ -264,7 +270,11 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 			// llegar acá), así que recalcular con el estado actual siempre daba recargo = 0
 			// aunque el tenant sí estuviera suspendido al momento de pagar — dejaba aprobar
 			// pagos que no cubrían el recargo (bug reportado en pruebas locales, set-2026).
-			due := cycle.Amount + payment.ReconnectionFee
+			effectiveReconnectionFee := payment.ReconnectionFee
+			if reconnectionFeeOverride != nil {
+				effectiveReconnectionFee = *reconnectionFeeOverride
+			}
+			due := cycle.Amount + effectiveReconnectionFee
 			if payment.Amount+0.009 < due {
 				return fmt.Errorf("el pago (S/ %.2f) no cubre la deuda (S/ %.2f); registra un pago que cubra el total", payment.Amount, due)
 			}
@@ -302,10 +312,18 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 		}
 
 		now := NowLima()
-		if err := tx.Model(&payment).Updates(map[string]interface{}{
+		paymentUpdates := map[string]interface{}{
 			"status": database.SaasPayApproved, "admin_notes": adminNotes,
 			"reviewed_by": reviewerID, "reviewed_at": now,
-		}).Error; err != nil {
+		}
+		// Deja grabado en el pago lo que realmente se le exigió, no el cálculo automático
+		// original — para que el historial (y un futuro RevertApprovedPayment) reflejen la
+		// condonación/descuento, no un monto que nunca se cobró.
+		originalReconnectionFee := payment.ReconnectionFee
+		if reconnectionFeeOverride != nil {
+			paymentUpdates["reconnection_fee"] = *reconnectionFeeOverride
+		}
+		if err := tx.Model(&payment).Updates(paymentUpdates).Error; err != nil {
 			return err
 		}
 
@@ -421,7 +439,14 @@ func ApprovePayment(paymentID uint, planID uint, periodMonths int, adminNotes st
 		if err := ClearStrikesOnApprove(tx, payment.TenantID, &sid, &reviewerID); err != nil {
 			return err
 		}
-		LogEventTx(tx, payment.TenantID, &sid, EventPaymentApproved, "admin", &reviewerID, adminNotes, "")
+		approvedMeta := ""
+		if reconnectionFeeOverride != nil {
+			approvedMeta = MetaJSON(map[string]interface{}{
+				"reconnection_fee_original": originalReconnectionFee,
+				"reconnection_fee_applied":  *reconnectionFeeOverride,
+			})
+		}
+		LogEventTx(tx, payment.TenantID, &sid, EventPaymentApproved, "admin", &reviewerID, adminNotes, approvedMeta)
 		LogEventTx(tx, payment.TenantID, &sid, EventReactivated, "admin", &reviewerID, adminNotes, "")
 		tenantID = payment.TenantID
 		return nil

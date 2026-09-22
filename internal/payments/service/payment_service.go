@@ -148,6 +148,10 @@ type CreatePaymentInput struct {
 	BillingCycleID uint `json:"billing_cycle_id" form:"billing_cycle_id"`
 	// ReviewedBy superadmin que registra el pago; queda como quien lo aprobó.
 	ReviewedBy uint `json:"-"`
+	// ReconnectionFeeOverride: excepción del panel central (ver saas.ApprovePayment) para
+	// condonar (0) o descontar el recargo de reconexión al registrar el pago del tenant que
+	// vino a pagar en persona. nil = cobrar el recargo completo, como siempre.
+	ReconnectionFeeOverride *float64 `json:"reconnection_fee_override" form:"reconnection_fee_override"`
 }
 
 // Create registra un pago cobrado fuera del sistema (efectivo, transferencia directa) y lo
@@ -174,7 +178,7 @@ func (s *PaymentService) Create(input CreatePaymentInput) (*database.SaasPayment
 	// Aplica la renovación: extiende la suscripción, marca el cobro pagado y sincroniza
 	// módulos. Si fallara, el pago queda registrado como pendiente y se puede aprobar a
 	// mano desde la misma pantalla; por eso el error dice dónde quedó.
-	if err := saas.ApprovePayment(payment.ID, 0, input.PeriodMonths, input.Notes, input.ReviewedBy); err != nil {
+	if err := saas.ApprovePayment(payment.ID, 0, input.PeriodMonths, input.Notes, input.ReviewedBy, input.ReconnectionFeeOverride); err != nil {
 		return nil, fmt.Errorf("el pago se registró pero no pudo aplicarse (queda pendiente de aprobación): %w", err)
 	}
 
@@ -192,10 +196,14 @@ type ApproveInput struct {
 	// el tenant), no fuerza 1 mes.
 	PeriodMonths int
 	ReviewerID   uint
+	// ReconnectionFeeOverride: excepción del panel central (ver saas.ApprovePayment) para
+	// condonar (0) o descontar el recargo de reconexión al aprobar. nil = exigir el recargo
+	// completo, como siempre.
+	ReconnectionFeeOverride *float64
 }
 
 func (s *PaymentService) Approve(paymentID uint, input ApproveInput) error {
-	return saas.ApprovePayment(paymentID, input.PlanID, input.PeriodMonths, input.AdminNotes, input.ReviewerID)
+	return saas.ApprovePayment(paymentID, input.PlanID, input.PeriodMonths, input.AdminNotes, input.ReviewerID, input.ReconnectionFeeOverride)
 }
 
 func (s *PaymentService) Reject(paymentID uint, adminNotes string, reviewerID uint) error {
