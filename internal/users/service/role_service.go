@@ -208,6 +208,17 @@ func (s *RoleService) SeedPermissions() error {
 		{Module: "fleet", Action: "manage", Label: "Gestionar transportistas, conductores y vehículos"},
 		{Module: "subscription", Action: "view", Label: "Ver suscripción y facturación de Tukifac"},
 		{Module: "subscription", Action: "manage", Label: "Registrar pagos y comprar paquetes de documentos"},
+		// reports.*: gatea la PÁGINA de cada reporte en /reports/* (solo Tukifac — Tukichef no
+		// tiene esta sección). Los endpoints que consumen esos reportes siguen exigiendo el
+		// permiso de su módulo real (sales.view, products.view, etc.), sin cambios.
+		{Module: "reports", Action: "manage", Label: "Ver todos los reportes"},
+		{Module: "reports", Action: "sales", Label: "Ver reporte de ventas"},
+		{Module: "reports", Action: "sales_by_product", Label: "Ver reporte de ventas por producto"},
+		{Module: "reports", Action: "notes", Label: "Ver reporte de notas de crédito/débito"},
+		{Module: "reports", Action: "products", Label: "Ver reporte de productos"},
+		{Module: "reports", Action: "purchases", Label: "Ver reporte de compras"},
+		{Module: "reports", Action: "kardex", Label: "Ver reporte de kardex"},
+		{Module: "reports", Action: "cash", Label: "Ver reporte de caja"},
 	}
 
 	for _, want := range perms {
@@ -248,6 +259,8 @@ var defaultRolePermissions = map[string][][2]string{
 		{"cashbank", "view"}, {"cashbank", "arqueo"},
 		{"memberships", "view"},
 		{"subscription", "view"},
+		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"},
+		{"reports", "products"}, {"reports", "purchases"}, {"reports", "kardex"}, {"reports", "cash"},
 	},
 	"Cajero": {
 		{"dashboard", "view"},
@@ -258,6 +271,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"receivables", "view"}, {"receivables", "collect"},
 		{"cashbank", "view"}, {"cashbank", "open"}, {"cashbank", "close"},
 		{"cashbank", "movements"}, {"cashbank", "arqueo"},
+		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"}, {"reports", "products"}, {"reports", "cash"},
 	},
 	"Vendedor": {
 		{"dashboard", "view"},
@@ -268,6 +282,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"receivables", "view"}, {"receivables", "collect"},
 		{"memberships", "view"}, {"memberships", "create"}, {"memberships", "generate_sale"},
 		{"cashbank", "view"},
+		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"}, {"reports", "products"}, {"reports", "cash"},
 	},
 	"Almacenero": {
 		{"dashboard", "view"},
@@ -278,6 +293,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"inventory", "transfer"}, {"inventory", "confirm_transfer"}, {"inventory", "cancel_transfer"},
 		{"inventory", "adjust"}, {"inventory", "import_adjustment"},
 		{"purchases", "view"}, {"purchases", "create"},
+		{"reports", "products"}, {"reports", "kardex"}, {"reports", "purchases"},
 	},
 	"Contador": {
 		{"dashboard", "view"},
@@ -291,6 +307,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"billing", "manage"}, {"billing", "send"}, {"billing", "credit_note"}, {"billing", "debit_note"},
 		{"billing", "despatch"}, {"billing", "advanced_docs"},
 		{"subscription", "view"}, {"subscription", "manage"},
+		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"}, {"reports", "purchases"}, {"reports", "cash"},
 	},
 }
 
