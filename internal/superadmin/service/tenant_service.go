@@ -698,13 +698,15 @@ func (s *TenantService) CleanupAbandonedQuickSalesFleet() (cleaned int64, failed
 
 func (s *TenantService) Stats() (map[string]int64, error) {
 	stats := make(map[string]int64)
-	var total, active, inactive int64
+	var total, active, inactive, suspended int64
 	s.db.Model(&database.Tenant{}).Count(&total)
 	s.db.Model(&database.Tenant{}).Where("status = ?", "active").Count(&active)
 	s.db.Model(&database.Tenant{}).Where("status = ?", "inactive").Count(&inactive)
+	s.db.Model(&database.Tenant{}).Where("status = ?", database.TenantStatusSuspended).Count(&suspended)
 	stats["total"] = total
 	stats["active"] = active
 	stats["inactive"] = inactive
+	stats["suspended"] = suspended
 
 	// Conteo por plan REAL (suscripción vigente), no por la columna legacy tenants.plan que se
 	// desincroniza. Dinámico: una clave "plan_<nombre>" por cada plan del catálogo.
