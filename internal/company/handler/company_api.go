@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tukifac/internal/company/service"
+	"tukifac/pkg/branchlogo"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/middleware"
@@ -416,7 +417,7 @@ func (h *CompanyHandler) UploadBranchLogoAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "formato no permitido. Usa JPG, PNG o WebP"})
 	}
 
-	subdir := branchLogoSubdir(uint(id))
+	subdir := branchlogo.BranchSubdir(uint(id))
 	dir := tenantstorage.TenantUploadDir(ruc, subdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

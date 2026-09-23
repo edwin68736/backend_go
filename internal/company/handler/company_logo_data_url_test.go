@@ -10,31 +10,9 @@ import (
 	"tukifac/pkg/tenantstorage"
 )
 
-func TestLogoFilenameFromURL(t *testing.T) {
-	cases := []struct {
-		name string
-		url  string
-		want string
-	}{
-		{"ruta pública normal", "/uploads/tenants/10726187938/company/logo.png", "logo.png"},
-		{"con ?v= antichaché", "/uploads/tenants/10726187938/company/logo.png?v=1736899200000", "logo.png"},
-		{"con fragmento", "/uploads/tenants/1/company/logo.webp#x", "logo.webp"},
-		{"absoluta", "https://api.tukifac.com/uploads/tenants/1/company/logo.jpg?v=9", "logo.jpg"},
-		{"vacía", "", ""},
-		{"solo barras", "///", ""},
-		// La URL sale de la BD: pase lo que pase, el resultado debe ser un nombre plano que
-		// no permita salir de la carpeta del tenant.
-		{"traversal codificado se rechaza", "/uploads/tenants/1/company/..%2f..%2fsecret.png", ""},
-		{"traversal literal se queda en el nombre base", "/uploads/tenants/1/company/../../secret.png", "secret.png"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := logoFilenameFromURL(tc.url); got != tc.want {
-				t.Errorf("logoFilenameFromURL(%q) = %q, want %q", tc.url, got, tc.want)
-			}
-		})
-	}
-}
+// logoFilenameFromURL se movió a pkg/branchlogo (dataurl.go) — su test vive ahí ahora
+// (pkg/branchlogo/dataurl_test.go), ya que attachLogoDataURL/attachBranchLogoDataURL en este
+// paquete son solo wrappers finos sobre branchlogo.ResolveCompanyDataURL/ResolveBranchDataURL.
 
 func TestAttachLogoDataURL(t *testing.T) {
 	ruc := "10726187938"

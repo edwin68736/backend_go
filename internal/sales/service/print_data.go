@@ -465,6 +465,16 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			}
 		}
 		pd.Company.LogoURL = branchlogo.ResolveURL(branch.LogoURL, pd.Company.LogoURL)
+		// Embebido como data: URL — sin esto el frontend necesita un fetch en vivo a /uploads/*
+		// al generar el PDF (CORS/alcanzabilidad, puede fallar en producción); embebido de una,
+		// el logo de sucursal es tan confiable como el global (ver
+		// pkg/branchlogo.ResolveDataURL, mismo mecanismo que attachLogoDataURL usa para
+		// /api/company/config).
+		branchDataURL := branchlogo.ResolveBranchDataURL(company.RUC, branch.ID, branch.LogoURL)
+		companyDataURL := branchlogo.ResolveCompanyDataURL(company.RUC, company.LogoURL)
+		if dataURL := branchlogo.ResolveURL(branchDataURL, companyDataURL); dataURL != "" {
+			pd.Company.LogoURL = dataURL
+		}
 	}
 
 	// Items
