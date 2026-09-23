@@ -64,6 +64,12 @@ type ProductListItem struct {
 	database.TenantProduct
 	CategoryName string `json:"category_name,omitempty"`
 	BrandName    string `json:"brand_name,omitempty"`
+	// HasSaleUnits: true si el producto tiene al menos una SaleUnit activa (ej. "Caja x6") —
+	// batcheado acá para que el POS (addToCart en POSPage.tsx) no tenga que preguntar por
+	// producto con GET /products/:id/sale-units en el primer click de cada producto distinto
+	// (esa espera de red, antes del fly-to-cart/sonido, era la causa de la lentitud reportada al
+	// agregar varios productos seguidos — Fase 7E lo dejaba así, sin batchear).
+	HasSaleUnits bool `json:"has_sale_units"`
 }
 
 // ProductReportItem extiende el producto con totales, stock por sucursal y series.
@@ -295,6 +301,21 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 			brandName[b.ID] = b.Name
 		}
 	}
+	productIDs := make([]uint, len(products))
+	for i, p := range products {
+		productIDs[i] = p.ID
+	}
+	hasSaleUnits := map[uint]bool{}
+	if len(productIDs) > 0 {
+		var withUnits []uint
+		s.db.Model(&database.TenantProductSaleUnit{}).
+			Distinct("product_id").
+			Where("product_id IN ? AND active = ?", productIDs, true).
+			Pluck("product_id", &withUnits)
+		for _, id := range withUnits {
+			hasSaleUnits[id] = true
+		}
+	}
 	out := make([]ProductListItem, len(products))
 	for i, p := range products {
 		item := ProductListItem{TenantProduct: p}
@@ -304,6 +325,7 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 		if p.BrandID != nil {
 			item.BrandName = brandName[*p.BrandID]
 		}
+		item.HasSaleUnits = hasSaleUnits[p.ID]
 		out[i] = item
 	}
 	return out
@@ -554,13 +576,13 @@ func (s *ProductService) EnsureRestaurantBranchAccess(p *database.TenantProduct,
 }
 
 type ProductInput struct {
-	CategoryID           *uint
-	BrandID              *uint
-	Code                 string
-	Name                 string
-	Description          string
-	Type                 string
-	Unit                 string
+	CategoryID  *uint
+	BrandID     *uint
+	Code        string
+	Name        string
+	Description string
+	Type        string
+	Unit        string
 	// UnitID: si viene, manda sobre Unit (el catálogo por ID es la fuente de verdad para altas/
 	// ediciones desde la UI). Si viene nil, se resuelve/crea a partir de Unit (compatibilidad con
 	// importación masiva y clientes de API que todavía mandan solo texto) — ver resolveUnitReference.
@@ -1411,7 +1433,7 @@ func (s *ProductService) DeleteBrand(id uint) error {
 
 // SaleUnitInput datos de entrada para crear/actualizar una unidad de venta.
 type SaleUnitInput struct {
-	Name             string
+	Name string
 	// UnitID: unidad comercial SUNAT (Catálogo N°03) de esta SaleUnit — FK a TenantUnit, mismo
 	// campo/patrón que ProductInput usa para la unidad base del producto. Requerido al crear
 	// (requireUnit=true en validateSaleUnitInput); opcional al actualizar, para no forzar a
