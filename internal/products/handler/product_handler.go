@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"tukifac/internal/products/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/imageprocess"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/saas"
 	"tukifac/pkg/tax"
@@ -760,19 +762,44 @@ func (h *ProductHandler) UploadImageAPI(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "formato no permitido. Usa JPG, PNG o WebP"})
 	}
 
+	opened, err := file.Open()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "no se pudo leer la imagen"})
+	}
+	data, err := io.ReadAll(opened)
+	_ = opened.Close()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "no se pudo leer la imagen"})
+	}
+
+	// Reduce peso/dimensiones antes de guardar — una foto de celular en alta resolución no debe
+	// quedar tal cual en disco, ni servirse completa a vistas que la muestran en una tarjeta de
+	// 40-60px (POS, catálogo, selector de "Nuevo comprobante"). Si no se puede optimizar (webp,
+	// formato inválido, o el resultado no queda más liviano), se guarda el original sin tocar —
+	// nunca bloquea la subida.
+	saveExt := ext
+	if optimized, ok := imageprocess.Optimize(data, ext); ok {
+		data = optimized.Data
+		saveExt = optimized.Extension
+	}
+
 	dir := tenantstorage.TenantUploadDir(ruc, "products")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "no se pudo crear la carpeta de imágenes"})
 	}
-	filename := fmt.Sprintf("%d_%s_%d%s", p.ID, uuid.New().String()[:8], time.Now().Unix(), ext)
+	filename := fmt.Sprintf("%d_%s_%d%s", p.ID, uuid.New().String()[:8], time.Now().Unix(), saveExt)
 	savePath := filepath.Join(dir, filename)
-	if err := c.SaveFile(file, savePath); err != nil {
+	if err := os.WriteFile(savePath, data, 0644); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "error guardando la imagen"})
 	}
 	imageURL := tenantstorage.TenantUploadPublicURL(ruc, "products", filename)
+	previousImageURL := p.ImageURL
 	if err := db(c).Model(&database.TenantProduct{}).Where("id = ?", p.ID).Update("image_url", imageURL).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "error actualizando el producto"})
 	}
+	// Best-effort: la imagen anterior queda huérfana en disco si esto falla, pero nunca debe
+	// romper la subida de la nueva (mismo criterio que contact_handler.go al reemplazar foto).
+	_ = tenantstorage.DeleteUploadByPublicURL(previousImageURL)
 	return c.JSON(fiber.Map{"image_url": imageURL})
 }
 
