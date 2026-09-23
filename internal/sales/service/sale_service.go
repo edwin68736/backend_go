@@ -1814,11 +1814,15 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 }
 
 // ProfitDetailRow una línea de venta con su ganancia — precio_venta - precio_compra, ganancia
-// total = ganancia_unidad * cantidad. El costo es el purchase_price ACTUAL del catálogo (join en
-// vivo): TenantSaleItem no guarda un snapshot histórico del costo al momento de la venta, así que
-// si el costo del producto cambió después de esa venta, el reporte refleja el costo de hoy, no el
-// de ese día. Igual que en el reporte por producto: si el producto no tiene costo (0 o sin
-// catálogo), la ganancia unidad es el precio de venta completo.
+// total = ganancia_unidad * cantidad. El costo es el snapshot guardado en
+// TenantSaleItem.PurchasePrice al momento de vender esa línea (ver
+// v145_sale_item_purchase_price_snapshot.go y resolveSaleItemPurchasePrice en
+// sale_service_calc.go) — no cambia si el costo del producto cambia después. Las líneas de venta
+// anteriores a esa migración no tienen snapshot (PurchasePrice=nil): para esas se usa el costo
+// ACTUAL del catálogo como resguardo (join a tenant_products), así el reporte nunca queda en
+// blanco para ventas viejas, aunque para esas sí puede diferir del costo real de ese día. Igual
+// que en el reporte por producto: si el producto no tiene costo (0 o sin catálogo), la ganancia
+// unidad es el precio de venta completo.
 type ProfitDetailRow struct {
 	SaleItemID    uint    `json:"sale_item_id"`
 	SaleID        uint    `json:"sale_id"`
@@ -1869,7 +1873,7 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 			COALESCE(ct.doc_number, '') as contact_doc,
 			COALESCE(NULLIF(TRIM(p.name), ''), tenant_sale_items.description) as product_name,
 			tenant_sale_items.quantity as quantity,
-			COALESCE(p.purchase_price, 0) as purchase_price,
+			COALESCE(tenant_sale_items.purchase_price, p.purchase_price, 0) as purchase_price,
 			tenant_sale_items.unit_price as sale_price`).
 		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
 		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").

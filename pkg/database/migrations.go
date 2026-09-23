@@ -1556,21 +1556,27 @@ type TenantSaleItem struct {
 	// COMERCIALES (1.5, 450) — la conversión a unidad base solo afecta al Kardex (ver
 	// TenantStockMovement.SaleUnitID/SaleUnitQuantity/ConversionFactor). Mutuamente excluyente con
 	// PresentationID (no se combinan variantes con unidades de venta en esta fase).
-	SaleUnitID             *uint   `gorm:"index" json:"sale_unit_id,omitempty"`
-	Code                   string  `gorm:"size:100" json:"code"`
-	Description            string  `gorm:"size:255;not null" json:"description"`
-	Unit                   string  `gorm:"size:50" json:"unit"`
-	Quantity               float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitPrice              float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
-	Discount               float64 `gorm:"type:decimal(15,2);default:0" json:"discount"`
-	LineDiscountSubtotal   float64 `gorm:"type:decimal(15,2);default:0" json:"line_discount_subtotal"`
-	GlobalDiscountSubtotal float64 `gorm:"type:decimal(15,2);default:0" json:"global_discount_subtotal"`
-	TaxRate                float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
-	IgvAffectationType     string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
-	Subtotal               float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
-	TaxAmount              float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
-	Total                  float64 `gorm:"type:decimal(15,2);not null" json:"total"`
-	ModifiersJSON          string  `gorm:"type:text" json:"modifiers_json"` // JSON array de { option_id, name, extra_price } para el detalle
+	SaleUnitID  *uint   `gorm:"index" json:"sale_unit_id,omitempty"`
+	Code        string  `gorm:"size:100" json:"code"`
+	Description string  `gorm:"size:255;not null" json:"description"`
+	Unit        string  `gorm:"size:50" json:"unit"`
+	Quantity    float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitPrice   float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
+	// PurchasePrice: snapshot del costo del producto (TenantProduct.PurchasePrice) al momento de
+	// vender esta línea — para reportes de utilidad exactos aunque el costo del catálogo cambie
+	// después (ver v145_sale_item_purchase_price_snapshot.go). nil en líneas manuales (sin
+	// producto de catálogo) y en toda venta anterior a esta migración — ProfitDetail cae al costo
+	// actual del catálogo como fallback en ese caso.
+	PurchasePrice          *float64 `gorm:"type:decimal(15,6)" json:"purchase_price,omitempty"`
+	Discount               float64  `gorm:"type:decimal(15,2);default:0" json:"discount"`
+	LineDiscountSubtotal   float64  `gorm:"type:decimal(15,2);default:0" json:"line_discount_subtotal"`
+	GlobalDiscountSubtotal float64  `gorm:"type:decimal(15,2);default:0" json:"global_discount_subtotal"`
+	TaxRate                float64  `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
+	IgvAffectationType     string   `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
+	Subtotal               float64  `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount              float64  `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total                  float64  `gorm:"type:decimal(15,2);not null" json:"total"`
+	ModifiersJSON          string   `gorm:"type:text" json:"modifiers_json"` // JSON array de { option_id, name, extra_price } para el detalle
 	// ItemNote nota libre de esta línea (p. ej. "segundo uso"). Queda en el snapshot de la
 	// venta; NO modifica el producto del catálogo.
 	ItemNote string `gorm:"size:255" json:"item_note"`

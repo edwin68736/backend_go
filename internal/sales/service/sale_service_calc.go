@@ -64,6 +64,7 @@ func buildSaleLinesFromEngine(input CreateSaleInput, taxCfg tax.Config, db *gorm
 			Unit:                   resolveSaleItemUnitCode(db, item, itemType),
 			Quantity:               item.Quantity,
 			UnitPrice:              item.UnitPrice,
+			PurchasePrice:          resolveSaleItemPurchasePrice(db, item),
 			Discount:               lr.StoredDiscount,
 			LineDiscountSubtotal:   lr.LineDiscountSubtotal,
 			GlobalDiscountSubtotal: lr.GlobalDiscountSubtotal,
@@ -78,6 +79,22 @@ func buildSaleLinesFromEngine(input CreateSaleInput, taxCfg tax.Config, db *gorm
 	}
 	return result.Subtotal, result.TaxAmount, result.Total, saleItems, result.GlobalDiscountAmount,
 		strings.TrimSpace(input.GlobalDiscountMode), input.GlobalDiscountValue
+}
+
+// resolveSaleItemPurchasePrice snapshotea el costo ACTUAL del producto (TenantProduct.PurchasePrice)
+// al momento de vender esta línea — ver v145_sale_item_purchase_price_snapshot.go. nil para líneas
+// manuales (sin producto de catálogo) o si el producto ya no existe; el reporte de Utilidades cae
+// al costo actual del catálogo como resguardo en ese caso.
+func resolveSaleItemPurchasePrice(db *gorm.DB, item SaleItemInput) *float64 {
+	if item.ProductID == nil || *item.ProductID == 0 {
+		return nil
+	}
+	var product database.TenantProduct
+	if err := db.Select("purchase_price").First(&product, *item.ProductID).Error; err != nil {
+		return nil
+	}
+	price := product.PurchasePrice
+	return &price
 }
 
 func resolveSaleItemType(db *gorm.DB, item SaleItemInput) string {
@@ -166,6 +183,7 @@ func buildSaleLinesLegacy(input CreateSaleInput, taxCfg tax.Config, db *gorm.DB)
 			Unit:               resolveSaleItemUnitCode(db, item, itemType),
 			Quantity:           item.Quantity,
 			UnitPrice:          item.UnitPrice,
+			PurchasePrice:      resolveSaleItemPurchasePrice(db, item),
 			Discount:           item.Discount,
 			TaxRate:            effectiveRate,
 			IgvAffectationType: affType,

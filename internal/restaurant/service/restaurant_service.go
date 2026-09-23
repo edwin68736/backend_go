@@ -1207,7 +1207,10 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		return nil, err
 	}
 
-	// Construir ítems de venta desde las comandas (con tipo de afectación IGV para Lycet)
+	// Construir ítems de venta desde las comandas (con tipo de afectación IGV para Lycet).
+	// restaurantSaleItemPurchasePrice snapshotea el costo actual del producto al vender esta
+	// línea — mismo criterio que resolveSaleItemPurchasePrice en
+	// internal/sales/service/sale_service_calc.go (ver v145_sale_item_purchase_price_snapshot.go).
 	type saleItemData struct {
 		ProductID          *uint
 		PresentationID     *uint
@@ -1296,6 +1299,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			Unit:                   item.Unit,
 			Quantity:               item.Quantity,
 			UnitPrice:              item.UnitPrice,
+			PurchasePrice:          restaurantSaleItemPurchasePrice(s.db, item.ProductID),
 			Discount:               lr.StoredDiscount,
 			LineDiscountSubtotal:   lr.LineDiscountSubtotal,
 			GlobalDiscountSubtotal: lr.GlobalDiscountSubtotal,
@@ -1514,6 +1518,21 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 		return nil
 	})
+}
+
+// restaurantSaleItemPurchasePrice snapshotea el costo actual del producto al vender esta línea —
+// nil para líneas sin producto de catálogo, mismo criterio que resolveSaleItemPurchasePrice en
+// internal/sales/service/sale_service_calc.go (ver v145_sale_item_purchase_price_snapshot.go).
+func restaurantSaleItemPurchasePrice(db *gorm.DB, productID *uint) *float64 {
+	if productID == nil || *productID == 0 {
+		return nil
+	}
+	var product database.TenantProduct
+	if err := db.Select("purchase_price").First(&product, *productID).Error; err != nil {
+		return nil
+	}
+	price := product.PurchasePrice
+	return &price
 }
 
 // CancelSession anula un pedido abierto: exige PIN, sin venta asociada, elimina registros (hard delete).
