@@ -48,6 +48,8 @@ func Execute(args []string) int {
 		return RunRepairTenantMigrations(args[1:])
 	case "backfill-product-codes":
 		return RunBackfillProductCodes(args[1:])
+	case "backfill-product-images":
+		return RunBackfillProductImages(args[1:])
 	case "backfill-sale-payment-cash-session":
 		return RunBackfillSalePaymentCashSession(args[1:])
 	case "audit-migration-history-errors":
@@ -91,6 +93,7 @@ func printUsage() {
   migrate-backfill-branch    Alias backfill V31 fleet
   repair-tenant-migrations   Reconciliar drift [--slug=] [--limit=50] [--dry-run] [--reconcile-only]
   backfill-product-codes     Código a productos sin él + snapshot de ventas [--tenant=slug] [--dry-run] [--active-only]
+  backfill-product-images   Reprocesa imágenes de producto ya subidas (reduce peso/dimensiones) [--tenant=slug] [--dry-run]
   backfill-sale-payment-cash-session  cash_session_id histórico en tenant_sale_payments [--tenant=slug] [--dry-run] [--active-only]
   audit-migration-history-errors  Detecta fallos de migración/backfill mal registrados como éxito [--active-only]
   reset-migration-history   Reparación puntual: borra historial de un tenant/versión para reintentar [--tenant=slug] [--version=n] [--type=schema|backfill] [--dry-run]
