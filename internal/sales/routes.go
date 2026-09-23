@@ -14,6 +14,7 @@ func RegisterRoutes(api fiber.Router) {
 
 	api.Get("/sales", mod, loadRest, middleware.RequireSalesAccess("view"), h.ListAPI)
 	api.Get("/sales/by-product", mod, loadRest, middleware.RequireSalesAccess("view"), h.ListByProductAPI)
+	api.Get("/sales/profit-detail", mod, loadRest, middleware.RequireSalesAccess("view"), h.ListProfitDetailAPI)
 	api.Post("/sales", mod, loadRest, middleware.RequireSalesAccess("create"), h.CreateAPI)
 	// Conversión NV→FE: el frontend ya la esconde sin sales.create (SalesPage.tsx); antes el
 	// backend no lo exigía en absoluto (solo el módulo "billing" del plan). Mismo permiso/bridge

@@ -219,6 +219,7 @@ func (s *RoleService) SeedPermissions() error {
 		{Module: "reports", Action: "purchases", Label: "Ver reporte de compras"},
 		{Module: "reports", Action: "kardex", Label: "Ver reporte de kardex"},
 		{Module: "reports", Action: "cash", Label: "Ver reporte de caja"},
+		{Module: "reports", Action: "profit", Label: "Ver reporte de utilidades"},
 	}
 
 	for _, want := range perms {
@@ -261,6 +262,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"subscription", "view"},
 		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"},
 		{"reports", "products"}, {"reports", "purchases"}, {"reports", "kardex"}, {"reports", "cash"},
+		{"reports", "profit"},
 	},
 	"Cajero": {
 		{"dashboard", "view"},
@@ -272,6 +274,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"cashbank", "view"}, {"cashbank", "open"}, {"cashbank", "close"},
 		{"cashbank", "movements"}, {"cashbank", "arqueo"},
 		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"}, {"reports", "products"}, {"reports", "cash"},
+		{"reports", "profit"},
 	},
 	"Vendedor": {
 		{"dashboard", "view"},
@@ -283,6 +286,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"memberships", "view"}, {"memberships", "create"}, {"memberships", "generate_sale"},
 		{"cashbank", "view"},
 		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"}, {"reports", "products"}, {"reports", "cash"},
+		{"reports", "profit"},
 	},
 	"Almacenero": {
 		{"dashboard", "view"},
@@ -308,6 +312,7 @@ var defaultRolePermissions = map[string][][2]string{
 		{"billing", "despatch"}, {"billing", "advanced_docs"},
 		{"subscription", "view"}, {"subscription", "manage"},
 		{"reports", "sales"}, {"reports", "sales_by_product"}, {"reports", "notes"}, {"reports", "purchases"}, {"reports", "cash"},
+		{"reports", "profit"},
 	},
 }
 

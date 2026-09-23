@@ -466,6 +466,39 @@ func (h *SaleHandler) ListByProductAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": rows, "summary": summary})
 }
 
+// GET /api/sales/profit-detail?from=&to=&branch_id=&category_id=&q=
+func (h *SaleHandler) ListProfitDetailAPI(c fiber.Ctx) error {
+	svc := service.NewSaleService(db(c))
+	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ResolveReadBranchFilter(c, uint(reqBranch))
+	catID, _ := strconv.ParseUint(c.Query("category_id"), 10, 32)
+	var dateFrom, dateTo *time.Time
+	if from := c.Query("from"); from != "" {
+		if t, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
+			start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+			dateFrom = &start
+		}
+	}
+	if to := c.Query("to"); to != "" {
+		if t, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
+			end := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.Local)
+			dateTo = &end
+		}
+	}
+	params := service.ProfitDetailParams{
+		DateFrom:   dateFrom,
+		DateTo:     dateTo,
+		BranchID:   uint(branchID),
+		CategoryID: uint(catID),
+		Q:          c.Query("q"),
+	}
+	rows, summary, err := svc.ProfitDetail(params)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows, "summary": summary})
+}
+
 func (h *SaleHandler) GetAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {

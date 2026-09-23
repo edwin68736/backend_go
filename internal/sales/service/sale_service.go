@@ -1462,7 +1462,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	}
 	var saleTotals []saleTotalRow
 	if err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
-		Select(`tenant_sales.id AS id, ` + netTotal + ` AS total`).
+		Select(`tenant_sales.id AS id, `+netTotal+` AS total`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
 		Scan(&saleTotals).Error; err != nil {
@@ -1571,7 +1571,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 
 	var fromHeader []payRow
 	err = salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
-		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, COALESCE(SUM(` + netTotal + `), 0) AS total`).
+		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, COALESCE(SUM(`+netTotal+`), 0) AS total`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
 		Where("NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = tenant_sales.id)").
@@ -1621,7 +1621,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 // distintas unidades comerciales. SaleUnitID nil = línea legacy/venta en unidad base (se trata
 // como una combinación propia, separada de cualquier SaleUnit real del mismo producto).
 type SalesByProductRow struct {
-	ProductID    uint  `json:"product_id"`
+	ProductID    uint   `json:"product_id"`
 	ProductCode  string `json:"product_code"`
 	ProductName  string `json:"product_name"`
 	CategoryID   *uint  `json:"category_id,omitempty"`
@@ -1810,6 +1810,137 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 		DistinctSales: meta.DistinctSales,
 		ProductsCount: meta.DistinctProducts,
 	}
+	return out, summary, nil
+}
+
+// ProfitDetailRow una línea de venta con su ganancia — precio_venta - precio_compra, ganancia
+// total = ganancia_unidad * cantidad. El costo es el purchase_price ACTUAL del catálogo (join en
+// vivo): TenantSaleItem no guarda un snapshot histórico del costo al momento de la venta, así que
+// si el costo del producto cambió después de esa venta, el reporte refleja el costo de hoy, no el
+// de ese día. Igual que en el reporte por producto: si el producto no tiene costo (0 o sin
+// catálogo), la ganancia unidad es el precio de venta completo.
+type ProfitDetailRow struct {
+	SaleItemID    uint    `json:"sale_item_id"`
+	SaleID        uint    `json:"sale_id"`
+	IssueDate     string  `json:"issue_date"`
+	DocType       string  `json:"doc_type"`
+	Series        string  `json:"series"`
+	Number        string  `json:"number"`
+	ContactName   string  `json:"contact_name"`
+	ContactDoc    string  `json:"contact_doc_number"`
+	ProductName   string  `json:"product_name"`
+	Quantity      float64 `json:"quantity"`
+	PurchasePrice float64 `json:"purchase_price"`
+	SalePrice     float64 `json:"sale_price"`
+	ProfitUnit    float64 `json:"profit_unit"`
+	ProfitTotal   float64 `json:"profit_total"`
+}
+
+type ProfitDetailSummary struct {
+	LineItems     int64   `json:"line_items"`
+	DistinctSales int64   `json:"distinct_sales"`
+	TotalSales    float64 `json:"total_sales"`
+	TotalProfit   float64 `json:"total_profit"`
+}
+
+// ProfitDetailParams filtros para el reporte de utilidades (ganancia por línea de venta).
+type ProfitDetailParams struct {
+	DateFrom   *time.Time
+	DateTo     *time.Time
+	BranchID   uint
+	CategoryID uint
+	// Q busca por código o nombre de producto (LIKE, case-insensitive).
+	Q string
+}
+
+// ProfitDetail replica el reporte "Utilidades detallado" del sistema anterior (reports/
+// commissions-detail): una fila por línea de venta con su ganancia. Mismo scope que
+// SalesByProduct (ScopeCommercial + status != cancelled) — evita el doble conteo de una boleta/
+// factura emitida por conversión de una NV ya contada, y excluye ventas anuladas.
+func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow, ProfitDetailSummary, error) {
+	q := s.db.Table("tenant_sale_items").
+		Select(`tenant_sale_items.id as sale_item_id,
+			tenant_sale_items.sale_id as sale_id,
+			tenant_sales.issue_date as issue_date,
+			tenant_sales.doc_type as doc_type,
+			tenant_sales.series as series,
+			tenant_sales.number as number,
+			COALESCE(NULLIF(TRIM(ct.business_name), ''), 'Clientes Varios') as contact_name,
+			COALESCE(ct.doc_number, '') as contact_doc,
+			COALESCE(NULLIF(TRIM(p.name), ''), tenant_sale_items.description) as product_name,
+			tenant_sale_items.quantity as quantity,
+			COALESCE(p.purchase_price, 0) as purchase_price,
+			tenant_sale_items.unit_price as sale_price`).
+		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
+		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").
+		Joins("LEFT JOIN tenant_contacts ct ON ct.id = tenant_sales.contact_id").
+		Scopes(salescope.ScopeCommercial("tenant_sales"))
+	if params.DateFrom != nil {
+		q = q.Where("tenant_sales.issue_date >= ?", params.DateFrom)
+	}
+	if params.DateTo != nil {
+		q = q.Where("tenant_sales.issue_date <= ?", params.DateTo)
+	}
+	if params.BranchID > 0 {
+		q = q.Where("tenant_sales.branch_id = ?", params.BranchID)
+	}
+	if params.CategoryID > 0 {
+		q = q.Where("p.category_id = ?", params.CategoryID)
+	}
+	if qStr := strings.TrimSpace(params.Q); qStr != "" {
+		like := "%" + qStr + "%"
+		q = q.Where("p.code LIKE ? OR p.name LIKE ? OR tenant_sale_items.description LIKE ?", like, like, like)
+	}
+	q = q.Order("tenant_sales.issue_date ASC, tenant_sale_items.id ASC")
+
+	type row struct {
+		SaleItemID    uint
+		SaleID        uint
+		IssueDate     time.Time
+		DocType       string
+		Series        string
+		Number        string
+		ContactName   string
+		ContactDoc    string
+		ProductName   string
+		Quantity      float64
+		PurchasePrice float64
+		SalePrice     float64
+	}
+	var raw []row
+	if err := q.Scan(&raw).Error; err != nil {
+		return nil, ProfitDetailSummary{}, err
+	}
+
+	out := make([]ProfitDetailRow, len(raw))
+	var summary ProfitDetailSummary
+	distinctSales := map[uint]struct{}{}
+	for i, r := range raw {
+		unitProfit := r.SalePrice - r.PurchasePrice
+		totalProfit := unitProfit * r.Quantity
+		out[i] = ProfitDetailRow{
+			SaleItemID:    r.SaleItemID,
+			SaleID:        r.SaleID,
+			IssueDate:     r.IssueDate.Format("2006-01-02"),
+			DocType:       r.DocType,
+			Series:        r.Series,
+			Number:        r.Number,
+			ContactName:   r.ContactName,
+			ContactDoc:    r.ContactDoc,
+			ProductName:   r.ProductName,
+			Quantity:      r.Quantity,
+			PurchasePrice: r.PurchasePrice,
+			SalePrice:     r.SalePrice,
+			ProfitUnit:    unitProfit,
+			ProfitTotal:   totalProfit,
+		}
+		summary.TotalSales += r.SalePrice * r.Quantity
+		summary.TotalProfit += totalProfit
+		distinctSales[r.SaleID] = struct{}{}
+	}
+	summary.LineItems = int64(len(raw))
+	summary.DistinctSales = int64(len(distinctSales))
+
 	return out, summary, nil
 }
 
