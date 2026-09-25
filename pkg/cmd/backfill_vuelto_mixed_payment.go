@@ -10,7 +10,7 @@ import (
 )
 
 // RunBackfillVueltoMixedPayment revisa (o aplica) el backfill de vuelto en pagos mixtos
-// (V037VueltoMixedPaymentBackfill) — corrige tenant_cash_movements/tenant_bank_movements de
+// (V146VueltoMixedPaymentBackfill) — corrige tenant_cash_movements/tenant_bank_movements de
 // ventas con pago mixto (efectivo + electrónico) en sesión de caja abierta, donde el vuelto se
 // había repartido proporcionalmente entre todos los métodos en vez de salir 100% de efectivo.
 //
@@ -25,7 +25,7 @@ func RunBackfillVueltoMixedPayment(args []string) int {
 
 	if !*dryRun {
 		summary := engine.RunBackfillFleet(engine.BackfillOptions{
-			Version:    tenantbackfills.V037VueltoMixedPaymentBackfill{}.Version(),
+			Version:    tenantbackfills.V146VueltoMixedPaymentBackfill{}.Version(),
 			TenantSlug: *slug,
 			ActiveOnly: *activeOnly,
 		})
@@ -60,7 +60,7 @@ func RunBackfillVueltoMixedPayment(args []string) int {
 
 	fmt.Printf("backfill-vuelto-mixed-payment mode=dry-run tenants=%d\n", len(tenants))
 	var totalAnalyzed, totalFixed, totalNeedsReview, totalErrors, failed int
-	bf := tenantbackfills.V037VueltoMixedPaymentBackfill{}
+	bf := tenantbackfills.V146VueltoMixedPaymentBackfill{}
 	for _, t := range tenants {
 		db, err := database.OpenTenantDBForMigration(t.DBName)
 		if err != nil {

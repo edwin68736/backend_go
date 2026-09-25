@@ -10,7 +10,19 @@ import (
 	"tukifac/pkg/paymentcondition"
 )
 
-// V037VueltoMixedPaymentBackfill corrige tenant_cash_movements/tenant_bank_movements (y el saldo
+// NOTA DE VERSIÓN: este backfill nació registrado como versión 37 y NUNCA llegó a correr en
+// producción con ese número — tenant_migration_history comparte el mismo espacio de versiones
+// entre migraciones de esquema (tenantmigrations) y backfills (tenantbackfills), y la versión 37
+// ya la tenía tomada V146StaffSchemaRepair (tenantmigrations) desde junio. El motor de selección
+// de tenants pendientes trata "versión" como una sola progresión por tenant sin filtrar por
+// `type`, así que cualquier tenant que ya tuviera esa fila de esquema (la mayoría, por ser vieja)
+// quedaba marcado como "ya al día" y este backfill jamás se le intentaba — confirmado en
+// producción: cero filas type='backfill' version=37 para los tenants afectados, ni siquiera un
+// intento fallido. Renombrado a 146 (siguiente versión libre real, ver el máximo entre
+// tenantmigrations y tenantbackfills) para evitar la colisión. Lección: el número de versión de
+// un nuevo backfill se elige contra el máximo de AMBOS registros, nunca solo tenantbackfills.
+//
+// V146VueltoMixedPaymentBackfill corrige tenant_cash_movements/tenant_bank_movements (y el saldo
 // cacheado de tenant_bank_accounts.balance que depende de ellos) de ventas con pago MIXTO
 // (efectivo + electrónico) donde el vuelto se había repartido proporcionalmente entre TODOS los
 // métodos en vez de salir 100% de efectivo (bug reportado 2026-09-25, corregido en
@@ -47,41 +59,41 @@ import (
 // V036SalePaymentCashSessionBackfill). Para no inventar una relación por orden de inserción (que
 // puede no coincidir si algún pago no generó movimiento — p.ej. método sin cuenta bancaria
 // configurada, ver CashBankService.RecordPaymentToAccount), se recalcula cuánto habría reportado
-// la fórmula ANTERIOR (proporcional entre todas las líneas, ver v037LegacyAllocate) para cada
+// la fórmula ANTERIOR (proporcional entre todas las líneas, ver v146LegacyAllocate) para cada
 // línea de pago y se busca, entre los movimientos de esa venta y esa clase (cash/bank), exactamente
 // UNO cuyo monto actual coincida (± centavos). 0 o 2+ candidatos → esa línea queda sin corregir y
 // se cuenta en NeedsReview, igual que "ambiguo"/"sin candidato" en V036.
-type V037VueltoMixedPaymentBackfill struct{}
+type V146VueltoMixedPaymentBackfill struct{}
 
-func (V037VueltoMixedPaymentBackfill) Version() int { return 37 }
-func (V037VueltoMixedPaymentBackfill) Name() string { return "vuelto_mixed_payment_backfill" }
+func (V146VueltoMixedPaymentBackfill) Version() int { return 146 }
+func (V146VueltoMixedPaymentBackfill) Name() string { return "vuelto_mixed_payment_backfill" }
 
-func (V037VueltoMixedPaymentBackfill) Description() string {
+func (V146VueltoMixedPaymentBackfill) Description() string {
 	return "Corrige tenant_cash_movements/tenant_bank_movements de ventas con pago mixto " +
 		"(efectivo + electrónico) donde el vuelto se prorrateaba entre todos los métodos en vez " +
 		"de salir 100% de efectivo. Solo sesiones de caja ABIERTAS; nunca toca tenant_sale_payments " +
 		"ni una venta donde el vuelto supere el efectivo disponible."
 }
 
-// V037BackfillResult contadores de una pasada — los usan tanto Run como Diagnose.
-type V037BackfillResult struct {
+// V146BackfillResult contadores de una pasada — los usan tanto Run como Diagnose.
+type V146BackfillResult struct {
 	SalesAnalyzed    int
 	MovementsFixed   int
 	SalesNeedsReview int
 	Errors           int
 }
 
-func (b V037VueltoMixedPaymentBackfill) Diagnose(db *gorm.DB) (V037BackfillResult, error) {
-	result, updates, err := v037Analyze(db)
-	// MovementsFixed en v037Analyze cuenta lo que HAY que corregir (independientemente de si se
+func (b V146VueltoMixedPaymentBackfill) Diagnose(db *gorm.DB) (V146BackfillResult, error) {
+	result, updates, err := v146Analyze(db)
+	// MovementsFixed en v146Analyze cuenta lo que HAY que corregir (independientemente de si se
 	// llega a escribir o no) — Diagnose nunca escribe, así que reporta directamente len(updates);
 	// Run reutiliza el mismo resultado y solo descuenta lo que falle al aplicar el UPDATE real.
 	result.MovementsFixed = len(updates)
 	return result, err
 }
 
-func (b V037VueltoMixedPaymentBackfill) Run(db *gorm.DB) error {
-	result, updates, err := v037Analyze(db)
+func (b V146VueltoMixedPaymentBackfill) Run(db *gorm.DB) error {
+	result, updates, err := v146Analyze(db)
 	if err != nil {
 		return err
 	}
@@ -119,28 +131,28 @@ func (b V037VueltoMixedPaymentBackfill) Run(db *gorm.DB) error {
 		}
 		result.MovementsFixed++
 	}
-	v037LogResult(result)
+	v146LogResult(result)
 	return nil
 }
 
-type v037SaleRow struct {
+type v146SaleRow struct {
 	ID    uint    `gorm:"column:id"`
 	Total float64 `gorm:"column:total"`
 }
 
-type v037PaymentRow struct {
+type v146PaymentRow struct {
 	ID     uint    `gorm:"column:id"`
 	Method string  `gorm:"column:method"`
 	Amount float64 `gorm:"column:amount"`
 }
 
-type v037MovementRow struct {
+type v146MovementRow struct {
 	ID            uint    `gorm:"column:id"`
 	Amount        float64 `gorm:"column:amount"`
 	BankAccountID uint    `gorm:"column:bank_account_id"`
 }
 
-type v037MovementUpdate struct {
+type v146MovementUpdate struct {
 	MovementID    uint
 	IsCash        bool
 	OldAmount     float64
@@ -148,15 +160,15 @@ type v037MovementUpdate struct {
 	BankAccountID uint // solo relevante cuando !IsCash — ver ajuste de saldo cacheado en Run
 }
 
-// v037Analyze hace TODO el análisis de solo lectura (Diagnose y Run comparten esta función; Run
+// v146Analyze hace TODO el análisis de solo lectura (Diagnose y Run comparten esta función; Run
 // solo agrega los UPDATE). Nunca escribe.
-func v037Analyze(db *gorm.DB) (V037BackfillResult, []v037MovementUpdate, error) {
+func v146Analyze(db *gorm.DB) (V146BackfillResult, []v146MovementUpdate, error) {
 	mig := db.Migrator()
 	if !mig.HasTable("tenant_sale_payments") || !mig.HasTable("tenant_cash_sessions") {
-		return V037BackfillResult{}, nil, nil
+		return V146BackfillResult{}, nil, nil
 	}
 
-	var sales []v037SaleRow
+	var sales []v146SaleRow
 	if err := db.Table("tenant_sales ts").
 		Select(`
 			ts.id AS id, ts.total AS total
@@ -170,14 +182,14 @@ func v037Analyze(db *gorm.DB) (V037BackfillResult, []v037MovementUpdate, error) 
 		Having("SUM(CASE WHEN LOWER(TRIM(tsp.method)) IN ('cash','efectivo') THEN 1 ELSE 0 END) > 0").
 		Having("SUM(tsp.amount) > ts.total + 0.01").
 		Find(&sales).Error; err != nil {
-		return V037BackfillResult{}, nil, err
+		return V146BackfillResult{}, nil, err
 	}
 
-	result := V037BackfillResult{SalesAnalyzed: len(sales)}
-	var updates []v037MovementUpdate
+	result := V146BackfillResult{SalesAnalyzed: len(sales)}
+	var updates []v146MovementUpdate
 
 	for _, sale := range sales {
-		var payments []v037PaymentRow
+		var payments []v146PaymentRow
 		if err := db.Table("tenant_sale_payments").
 			Select("id, method, amount").
 			Where("sale_id = ? AND method != ?", sale.ID, paymentcondition.CodeCredit).
@@ -202,16 +214,16 @@ func v037Analyze(db *gorm.DB) (V037BackfillResult, []v037MovementUpdate, error) 
 			totalPaid += l.Amount
 		}
 		change := totalPaid - sale.Total
-		if change > cashAvailable+PaymentToleranceV037 {
+		if change > cashAvailable+PaymentToleranceV146 {
 			// El vuelto supera el efectivo disponible (anómalo) — nunca se corrige a ciegas.
 			result.SalesNeedsReview++
 			continue
 		}
 
 		newAmounts := money.AllocateSalePaymentReportAmounts(sale.Total, lines)
-		legacyAmounts := v037LegacyAllocate(sale.Total, lines)
+		legacyAmounts := v146LegacyAllocate(sale.Total, lines)
 
-		var cashMoves, bankMoves []v037MovementRow
+		var cashMoves, bankMoves []v146MovementRow
 		if err := db.Table("tenant_cash_movements").
 			Select("id, amount").
 			Where("sale_id = ? AND type = ?", sale.ID, "income").
@@ -235,7 +247,7 @@ func v037Analyze(db *gorm.DB) (V037BackfillResult, []v037MovementUpdate, error) 
 			id     uint
 		}
 		claimed := make(map[claimKey]bool, len(cashMoves)+len(bankMoves))
-		var saleUpdates []v037MovementUpdate
+		var saleUpdates []v146MovementUpdate
 		for _, p := range payments {
 			isCash := money.IsCashMethod(p.Method)
 			candidates := bankMoves
@@ -243,7 +255,7 @@ func v037Analyze(db *gorm.DB) (V037BackfillResult, []v037MovementUpdate, error) 
 				candidates = cashMoves
 			}
 			legacy := money.RoundDisplay(legacyAmounts[p.ID])
-			var match v037MovementRow
+			var match v146MovementRow
 			matches := 0
 			for _, m := range candidates {
 				key := claimKey{isCash: isCash, id: m.ID}
@@ -265,7 +277,7 @@ func v037Analyze(db *gorm.DB) (V037BackfillResult, []v037MovementUpdate, error) 
 			if newAmt == legacy {
 				continue // ya coincide (nada que corregir), no cuenta como fix
 			}
-			saleUpdates = append(saleUpdates, v037MovementUpdate{
+			saleUpdates = append(saleUpdates, v146MovementUpdate{
 				MovementID: match.ID, IsCash: isCash, OldAmount: legacy, NewAmount: newAmt,
 				BankAccountID: match.BankAccountID,
 			})
@@ -276,15 +288,15 @@ func v037Analyze(db *gorm.DB) (V037BackfillResult, []v037MovementUpdate, error) 
 	return result, updates, nil
 }
 
-// PaymentToleranceV037 mismo margen que money.PaymentTolerance, repetido acá para no acoplar el
+// PaymentToleranceV146 mismo margen que money.PaymentTolerance, repetido acá para no acoplar el
 // backfill a cambios futuros de esa constante interna.
-const PaymentToleranceV037 = 0.01
+const PaymentToleranceV146 = 0.01
 
-// v037LegacyAllocate replica la fórmula ANTERIOR al fix (prorrateo proporcional entre TODAS las
+// v146LegacyAllocate replica la fórmula ANTERIOR al fix (prorrateo proporcional entre TODAS las
 // líneas, sin distinguir efectivo) — solo para correlacionar qué movimiento histórico generó cada
 // línea de pago (ver comentario del tipo). No se usa para nada más; la fórmula vigente es
 // money.AllocateSalePaymentReportAmounts.
-func v037LegacyAllocate(saleTotal float64, payments []money.SalePaymentLine) map[uint]float64 {
+func v146LegacyAllocate(saleTotal float64, payments []money.SalePaymentLine) map[uint]float64 {
 	out := make(map[uint]float64, len(payments))
 	if len(payments) == 0 {
 		return out
@@ -300,7 +312,7 @@ func v037LegacyAllocate(saleTotal float64, payments []money.SalePaymentLine) map
 			sum += amt
 		}
 	}
-	if sum <= payable+PaymentToleranceV037 {
+	if sum <= payable+PaymentToleranceV146 {
 		for _, p := range payments {
 			out[p.ID] = money.RoundDisplay(p.Amount)
 		}
@@ -331,7 +343,7 @@ func v037LegacyAllocate(saleTotal float64, payments []money.SalePaymentLine) map
 	return out
 }
 
-func v037LogResult(r V037BackfillResult) {
+func v146LogResult(r V146BackfillResult) {
 	if logger.L == nil {
 		return
 	}

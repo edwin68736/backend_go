@@ -11,27 +11,27 @@ import (
 )
 
 // Modelos mínimos para el test — mismo patrón que v036_sale_payment_cash_session_backfill_test.go.
-type v037Sale struct {
+type v146Sale struct {
 	ID            uint `gorm:"primaryKey"`
 	Total         float64
 	CashSessionID *uint
 }
 
-func (v037Sale) TableName() string { return "tenant_sales" }
+func (v146Sale) TableName() string { return "tenant_sales" }
 
-type v037CashSession struct {
+type v146CashSession struct {
 	ID     uint `gorm:"primaryKey"`
 	Status string
 }
 
-func (v037CashSession) TableName() string { return "tenant_cash_sessions" }
+func (v146CashSession) TableName() string { return "tenant_cash_sessions" }
 
-type v037BankAccount struct {
+type v146BankAccount struct {
 	ID      uint `gorm:"primaryKey"`
 	Balance float64
 }
 
-func (v037BankAccount) TableName() string { return "tenant_bank_accounts" }
+func (v146BankAccount) TableName() string { return "tenant_bank_accounts" }
 
 func setupVueltoBackfillDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -40,7 +40,7 @@ func setupVueltoBackfillDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&v037Sale{}, &v037CashSession{}, &v037BankAccount{}, &tsalePayment{}, &tcashMovement{}, &tbankMovement{}); err != nil {
+	if err := db.AutoMigrate(&v146Sale{}, &v146CashSession{}, &v146BankAccount{}, &tsalePayment{}, &tcashMovement{}, &tbankMovement{}); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -49,21 +49,21 @@ func setupVueltoBackfillDB(t *testing.T) *gorm.DB {
 // Escenario real de producción (tenant doriconta, venta NV001-00000746): cash+plin mixto con
 // vuelto, sesión abierta. El movimiento de caja debe corregirse a 200 (300 - 100 de vuelto); el
 // de plin vuelve a su monto íntegro (400), tal cual se ingresó.
-func TestV037_MixedCashPlin_OpenSession_CorrectsCashOnly(t *testing.T) {
+func TestV146_MixedCashPlin_OpenSession_CorrectsCashOnly(t *testing.T) {
 	db := setupVueltoBackfillDB(t)
 	sess := uint(1)
-	db.Create(&v037CashSession{ID: sess, Status: "open"})
-	db.Create(&v037Sale{ID: 1, Total: 600, CashSessionID: &sess})
+	db.Create(&v146CashSession{ID: sess, Status: "open"})
+	db.Create(&v146Sale{ID: 1, Total: 600, CashSessionID: &sess})
 	db.Create(&tsalePayment{ID: 1, SaleID: 1, Method: "plin", Amount: 400})
 	db.Create(&tsalePayment{ID: 2, SaleID: 1, Method: "cash", Amount: 300})
 	// Saldo cacheado de la billetera Plin, ya incrementado con el monto viejo (342.86) al
 	// registrar la venta — mismo que hace CashBankService.RecordPaymentToAccount.
-	db.Create(&v037BankAccount{ID: 9, Balance: 1000})
+	db.Create(&v146BankAccount{ID: 9, Balance: 1000})
 	// Montos actuales = lo que produjo la fórmula ANTERIOR (proporcional entre las 2 líneas).
 	db.Create(&tcashMovement{ID: 1, CashSessionID: sess, Type: "income", Amount: 257.14, SaleID: saleIDPtr(1)})
 	db.Create(&tbankMovement{ID: 1, CashSessionID: &sess, Type: "credit", Amount: 342.86, SaleID: saleIDPtr(1), BankAccountID: 9})
 
-	bf := V037VueltoMixedPaymentBackfill{}
+	bf := V146VueltoMixedPaymentBackfill{}
 	result, err := bf.Diagnose(db)
 	if err != nil {
 		t.Fatalf("Diagnose: %v", err)
@@ -93,7 +93,7 @@ func TestV037_MixedCashPlin_OpenSession_CorrectsCashOnly(t *testing.T) {
 	}
 	// El saldo cacheado de la cuenta debe moverse por el mismo delta (+57.14) que el UPDATE del
 	// movimiento — de 1000 a 1057.14 — o la cuenta quedaría desalineada con su propio historial.
-	var acc v037BankAccount
+	var acc v146BankAccount
 	db.First(&acc, 9)
 	if money.RoundDisplay(acc.Balance) != 1057.14 {
 		t.Fatalf("saldo cuenta bancaria: expected 1057.14, got %v", acc.Balance)
@@ -101,17 +101,17 @@ func TestV037_MixedCashPlin_OpenSession_CorrectsCashOnly(t *testing.T) {
 }
 
 // Sesión ya CERRADA: no se toca nada, aunque el patrón sea idéntico al caso anterior.
-func TestV037_ClosedSession_NeverTouched(t *testing.T) {
+func TestV146_ClosedSession_NeverTouched(t *testing.T) {
 	db := setupVueltoBackfillDB(t)
 	sess := uint(2)
-	db.Create(&v037CashSession{ID: sess, Status: "closed"})
-	db.Create(&v037Sale{ID: 2, Total: 600, CashSessionID: &sess})
+	db.Create(&v146CashSession{ID: sess, Status: "closed"})
+	db.Create(&v146Sale{ID: 2, Total: 600, CashSessionID: &sess})
 	db.Create(&tsalePayment{ID: 3, SaleID: 2, Method: "plin", Amount: 400})
 	db.Create(&tsalePayment{ID: 4, SaleID: 2, Method: "cash", Amount: 300})
 	db.Create(&tcashMovement{ID: 2, CashSessionID: sess, Type: "income", Amount: 257.14, SaleID: saleIDPtr(2)})
 	db.Create(&tbankMovement{ID: 2, CashSessionID: &sess, Type: "credit", Amount: 342.86, SaleID: saleIDPtr(2)})
 
-	bf := V037VueltoMixedPaymentBackfill{}
+	bf := V146VueltoMixedPaymentBackfill{}
 	result, err := bf.Diagnose(db)
 	if err != nil {
 		t.Fatalf("Diagnose: %v", err)
@@ -133,11 +133,11 @@ func TestV037_ClosedSession_NeverTouched(t *testing.T) {
 // Escenario real (tenant juanpedro, venta NV001-00000003): DOS líneas de efectivo + una
 // electrónica, vuelto igual al efectivo total disponible -> ambas líneas de efectivo deben quedar
 // en 0; la electrónica intacta.
-func TestV037_MultipleCashLines_BothZeroed(t *testing.T) {
+func TestV146_MultipleCashLines_BothZeroed(t *testing.T) {
 	db := setupVueltoBackfillDB(t)
 	sess := uint(3)
-	db.Create(&v037CashSession{ID: sess, Status: "open"})
-	db.Create(&v037Sale{ID: 3, Total: 16, CashSessionID: &sess})
+	db.Create(&v146CashSession{ID: sess, Status: "open"})
+	db.Create(&v146Sale{ID: 3, Total: 16, CashSessionID: &sess})
 	db.Create(&tsalePayment{ID: 5, SaleID: 3, Method: "yape", Amount: 16})
 	db.Create(&tsalePayment{ID: 6, SaleID: 3, Method: "cash", Amount: 12})
 	db.Create(&tsalePayment{ID: 7, SaleID: 3, Method: "cash", Amount: 25})
@@ -146,7 +146,7 @@ func TestV037_MultipleCashLines_BothZeroed(t *testing.T) {
 	db.Create(&tcashMovement{ID: 3, CashSessionID: sess, Type: "income", Amount: 3.62, SaleID: saleIDPtr(3)})
 	db.Create(&tcashMovement{ID: 4, CashSessionID: sess, Type: "income", Amount: 7.55, SaleID: saleIDPtr(3)})
 
-	bf := V037VueltoMixedPaymentBackfill{}
+	bf := V146VueltoMixedPaymentBackfill{}
 	if err := bf.Run(db); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -161,15 +161,15 @@ func TestV037_MultipleCashLines_BothZeroed(t *testing.T) {
 
 // Anomalía (vuelto > efectivo disponible, tipo guillenbegazo real): nunca se corrige a ciegas,
 // se cuenta como "requiere revisión manual".
-func TestV037_ChangeExceedsCash_NeedsReview(t *testing.T) {
+func TestV146_ChangeExceedsCash_NeedsReview(t *testing.T) {
 	db := setupVueltoBackfillDB(t)
 	sess := uint(4)
-	db.Create(&v037CashSession{ID: sess, Status: "open"})
-	db.Create(&v037Sale{ID: 4, Total: 0.01, CashSessionID: &sess})
+	db.Create(&v146CashSession{ID: sess, Status: "open"})
+	db.Create(&v146Sale{ID: 4, Total: 0.01, CashSessionID: &sess})
 	db.Create(&tsalePayment{ID: 8, SaleID: 4, Method: "tarjeta", Amount: 2588})
 	db.Create(&tsalePayment{ID: 9, SaleID: 4, Method: "cash", Amount: 0})
 
-	bf := V037VueltoMixedPaymentBackfill{}
+	bf := V146VueltoMixedPaymentBackfill{}
 	result, err := bf.Diagnose(db)
 	if err != nil {
 		t.Fatalf("Diagnose: %v", err)
@@ -180,19 +180,19 @@ func TestV037_ChangeExceedsCash_NeedsReview(t *testing.T) {
 }
 
 // Idempotencia: correrlo dos veces produce el mismo resultado final, sin doble-corrección.
-func TestV037_Idempotent(t *testing.T) {
+func TestV146_Idempotent(t *testing.T) {
 	db := setupVueltoBackfillDB(t)
 	sess := uint(5)
-	db.Create(&v037CashSession{ID: sess, Status: "open"})
-	db.Create(&v037Sale{ID: 5, Total: 120, CashSessionID: &sess})
+	db.Create(&v146CashSession{ID: sess, Status: "open"})
+	db.Create(&v146Sale{ID: 5, Total: 120, CashSessionID: &sess})
 	db.Create(&tsalePayment{ID: 10, SaleID: 5, Method: "cash", Amount: 100})
 	db.Create(&tsalePayment{ID: 11, SaleID: 5, Method: "yape", Amount: 50})
-	db.Create(&v037BankAccount{ID: 7, Balance: 500})
+	db.Create(&v146BankAccount{ID: 7, Balance: 500})
 	// Fórmula anterior: sum=150, payable=120 -> cash=80, yape=40.
 	db.Create(&tcashMovement{ID: 5, CashSessionID: sess, Type: "income", Amount: 80, SaleID: saleIDPtr(5)})
 	db.Create(&tbankMovement{ID: 3, CashSessionID: &sess, Type: "credit", Amount: 40, SaleID: saleIDPtr(5), BankAccountID: 7})
 
-	bf := V037VueltoMixedPaymentBackfill{}
+	bf := V146VueltoMixedPaymentBackfill{}
 	if err := bf.Run(db); err != nil {
 		t.Fatalf("Run 1: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestV037_Idempotent(t *testing.T) {
 	if bm.Amount != 50 {
 		t.Fatalf("yape: expected 50, got %v", bm.Amount)
 	}
-	var acc v037BankAccount
+	var acc v146BankAccount
 	db.First(&acc, 7)
 	if money.RoundDisplay(acc.Balance) != 510 {
 		t.Fatalf("saldo cuenta bancaria: expected 510 (500 + 10 de delta), got %v", acc.Balance)
