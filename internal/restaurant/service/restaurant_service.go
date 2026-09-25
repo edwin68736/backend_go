@@ -1102,6 +1102,20 @@ type PaymentInput struct {
 	Notes     string  `json:"notes"`
 }
 
+// sumNonCashPayments suma los pagos que NO son efectivo — usado para bloquear el vuelto vía
+// métodos electrónicos (mismo criterio que sale_service.go::sumNonCashDirectPayments; acá no
+// existen los marcadores credito/detraccion que sí hay en el flujo de ventas del ERP).
+func sumNonCashPayments(payments []PaymentInput) float64 {
+	var sum float64
+	for _, p := range payments {
+		if p.Amount <= 0 || p.Method == "" || money.IsCashMethod(p.Method) {
+			continue
+		}
+		sum += p.Amount
+	}
+	return money.RoundDisplay(sum)
+}
+
 func resolveBillDiscountAmount(subtotalBase float64, input BillInput) float64 {
 	subtotalBase = money.RoundSunat(subtotalBase)
 	var amount float64
@@ -1323,6 +1337,15 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	if !money.PaidCoversTotal(totalPaid, total) {
 		return nil, fmt.Errorf("monto pagado (%.2f) es menor al total (%.2f)", money.RoundDisplay(totalPaid), money.RoundDisplay(total))
 	}
+	// El vuelto solo puede salir de efectivo (ver pkg/money/payment_report.go): ningún método
+	// no-efectivo puede por sí solo superar el total a pagar, mismo criterio que
+	// sale_service.go::sumNonCashDirectPayments.
+	if nonCash := sumNonCashPayments(input.Payments); nonCash > total+money.PaymentTolerance {
+		return nil, fmt.Errorf(
+			"el vuelto solo aplica a efectivo: los métodos no efectivo (%.2f) superan el total a pagar (%.2f)",
+			money.RoundDisplay(nonCash), money.RoundDisplay(total),
+		)
+	}
 
 	currency := input.Currency
 	if currency == "" {
@@ -1450,14 +1473,14 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 		// Registrar pagos múltiples: distribuir a caja o cuenta bancaria según método
 		cbSvc := cashbanksvc.NewCashBankService(s.db)
-		var recordAmounts []float64
+		var recordLines []money.SalePaymentLine
 		for _, p := range input.Payments {
 			if p.Amount <= 0 || p.Method == "" {
 				continue
 			}
-			recordAmounts = append(recordAmounts, p.Amount)
+			recordLines = append(recordLines, money.SalePaymentLine{Amount: p.Amount, IsCash: money.IsCashMethod(p.Method)})
 		}
-		netRecordAmounts := money.AllocateSalePaymentNetAmounts(total, recordAmounts)
+		netRecordAmounts := money.AllocateSalePaymentNetAmounts(total, recordLines)
 		recordIdx := 0
 		for _, p := range input.Payments {
 			tx.Create(&database.TenantSalePayment{
@@ -1633,17 +1656,26 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 	if !money.PaidCoversTotal(totalPaid, sale.Total) {
 		return fmt.Errorf("el total pagado (%.2f) es menor al total de la venta (%.2f)", totalPaid, sale.Total)
 	}
+	// El vuelto solo puede salir de efectivo — mismo criterio que BillTable/sale_service.go.
+	// Se compara contra sale.Total (no contra el saldo restante) porque AllocateSalePaymentNetAmounts,
+	// más abajo, reparte este lote de payments contra ese mismo total.
+	if nonCash := sumNonCashPayments(payments); nonCash > sale.Total+money.PaymentTolerance {
+		return fmt.Errorf(
+			"el vuelto solo aplica a efectivo: los métodos no efectivo (%.2f) superan el total a pagar (%.2f)",
+			money.RoundDisplay(nonCash), money.RoundDisplay(sale.Total),
+		)
+	}
 
 	cbSvc := cashbanksvc.NewCashBankService(s.db)
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var recordAmounts []float64
+		var recordLines []money.SalePaymentLine
 		for _, p := range payments {
 			if p.Amount <= 0 || p.Method == "" {
 				continue
 			}
-			recordAmounts = append(recordAmounts, p.Amount)
+			recordLines = append(recordLines, money.SalePaymentLine{Amount: p.Amount, IsCash: money.IsCashMethod(p.Method)})
 		}
-		netRecordAmounts := money.AllocateSalePaymentNetAmounts(sale.Total, recordAmounts)
+		netRecordAmounts := money.AllocateSalePaymentNetAmounts(sale.Total, recordLines)
 		recordIdx := 0
 		for _, p := range payments {
 			tx.Create(&database.TenantSalePayment{

@@ -610,6 +610,16 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				money.RoundDisplay(salePayable),
 			)
 		}
+		// El vuelto solo puede salir de efectivo (ver pkg/money/payment_report.go): ningún método
+		// no-efectivo puede por sí solo superar el total a pagar, porque no hay forma real de
+		// devolver cambio por Yape/Plin/tarjeta/transferencia.
+		if nonCash := sumNonCashDirectPayments(payments); nonCash > salePayable+money.PaymentTolerance {
+			return nil, fmt.Errorf(
+				"el vuelto solo aplica a efectivo: los métodos no efectivo (%.2f) superan el total a pagar (%.2f)",
+				nonCash,
+				money.RoundDisplay(salePayable),
+			)
+		}
 	}
 
 	if payCond == "" {
@@ -707,14 +717,14 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				return err
 			}
 		}
-		var recordAmounts []float64
+		var recordLines []money.SalePaymentLine
 		for _, p := range payments {
 			if p.Amount <= 0 || p.Method == "" {
 				continue
 			}
-			recordAmounts = append(recordAmounts, p.Amount)
+			recordLines = append(recordLines, money.SalePaymentLine{Amount: p.Amount, IsCash: money.IsCashMethod(p.Method)})
 		}
-		netRecordAmounts := money.AllocateSalePaymentNetAmounts(sale.Total, recordAmounts)
+		netRecordAmounts := money.AllocateSalePaymentNetAmounts(sale.Total, recordLines)
 		recordIdx := 0
 		for _, p := range payments {
 			if p.Amount <= 0 || p.Method == "" {
@@ -1523,7 +1533,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 			if paymentcondition.IsCreditCode(r.Method) {
 				continue
 			}
-			lines = append(lines, money.SalePaymentLine{ID: r.ID, Amount: r.Amount})
+			lines = append(lines, money.SalePaymentLine{ID: r.ID, Amount: r.Amount, IsCash: money.IsCashMethod(r.Method)})
 		}
 		for id, amt := range money.AllocateSalePaymentReportAmounts(saleTotal, lines) {
 			addToMethod(methodByPaymentID[id], amt)

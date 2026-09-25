@@ -52,6 +52,8 @@ func Execute(args []string) int {
 		return RunBackfillProductImages(args[1:])
 	case "backfill-sale-payment-cash-session":
 		return RunBackfillSalePaymentCashSession(args[1:])
+	case "backfill-vuelto-mixed-payment":
+		return RunBackfillVueltoMixedPayment(args[1:])
 	case "audit-migration-history-errors":
 		return RunAuditMigrationHistoryErrors(args[1:])
 	case "reset-migration-history":
@@ -95,6 +97,7 @@ func printUsage() {
   backfill-product-codes     Código a productos sin él + snapshot de ventas [--tenant=slug] [--dry-run] [--active-only]
   backfill-product-images   Reprocesa imágenes de producto ya subidas (reduce peso/dimensiones) [--tenant=slug] [--dry-run]
   backfill-sale-payment-cash-session  cash_session_id histórico en tenant_sale_payments [--tenant=slug] [--dry-run] [--active-only]
+  backfill-vuelto-mixed-payment  vuelto de pagos mixtos mal repartido en tenant_cash_movements/tenant_bank_movements (solo sesión abierta) [--tenant=slug] [--dry-run] [--active-only]
   audit-migration-history-errors  Detecta fallos de migración/backfill mal registrados como éxito [--active-only]
   reset-migration-history   Reparación puntual: borra historial de un tenant/versión para reintentar [--tenant=slug] [--version=n] [--type=schema|backfill] [--dry-run]
   diagnose-tenant-permissions  Compara catálogo/asignación de permisos de un tenant contra el código vigente [--ruc=n | --slug=s] [--role=nombre]

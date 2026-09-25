@@ -47,7 +47,7 @@ func TestBillTable_splitByComandaIDs_partialKeepsSessionOpen(t *testing.T) {
 		DocType:    "03",
 		IssueDate:  time.Now(),
 		ComandaIDs: []uint{c1.ID},
-		Payments:   []PaymentInput{{Method: "card", Amount: 35.4}},
+		Payments:   []PaymentInput{{Method: "cash", Amount: 35.4}},
 	}, tax.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestBillTable_splitByComandaIDs_coveringAllPendingClosesSession(t *testing.
 		IssueDate:    time.Now(),
 		CloseSession: false,
 		ComandaIDs:   []uint{c1.ID},
-		Payments:     []PaymentInput{{Method: "card", Amount: 35.4}},
+		Payments:     []PaymentInput{{Method: "cash", Amount: 35.4}},
 	}, tax.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestBillTable_splitByComandaIDs_partialComboRejected(t *testing.T) {
 		DocType:    "03",
 		IssueDate:  time.Now(),
 		ComandaIDs: []uint{combo1.ID, suelto.ID},
-		Payments:   []PaymentInput{{Method: "card", Amount: 100}},
+		Payments:   []PaymentInput{{Method: "cash", Amount: 100}},
 	}, tax.DefaultConfig())
 	if err == nil {
 		t.Fatal("esperaba error al partir un combo entre selecciones")
@@ -196,7 +196,7 @@ func TestBillTable_splitByComandaIDs_alreadyBilledRejected(t *testing.T) {
 
 	if _, err := svc.BillTable(BillInput{
 		SessionID: sess.ID, UserID: 1, SeriesID: series.ID, DocType: "03", IssueDate: time.Now(),
-		ComandaIDs: []uint{c1.ID}, Payments: []PaymentInput{{Method: "card", Amount: 35.4}},
+		ComandaIDs: []uint{c1.ID}, Payments: []PaymentInput{{Method: "cash", Amount: 35.4}},
 	}, tax.DefaultConfig()); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestBillTable_splitByComandaIDs_alreadyBilledRejected(t *testing.T) {
 	// Reintentar cobrar c1 (ya facturada) junto con c2: debe rechazar por completo.
 	_, err = svc.BillTable(BillInput{
 		SessionID: sess.ID, UserID: 1, SeriesID: series.ID, DocType: "03", IssueDate: time.Now(),
-		ComandaIDs: []uint{c1.ID, c2.ID}, Payments: []PaymentInput{{Method: "card", Amount: 45}},
+		ComandaIDs: []uint{c1.ID, c2.ID}, Payments: []PaymentInput{{Method: "cash", Amount: 45}},
 	}, tax.DefaultConfig())
 	if err == nil {
 		t.Fatal("esperaba error al reintentar cobrar una comanda ya facturada")
@@ -239,7 +239,7 @@ func TestCancelComanda_alreadyBilledRejected(t *testing.T) {
 
 	if _, err := svc.BillTable(BillInput{
 		SessionID: sess.ID, UserID: 1, SeriesID: series.ID, DocType: "03", IssueDate: time.Now(),
-		ComandaIDs: []uint{c1.ID}, Payments: []PaymentInput{{Method: "card", Amount: 35.4}},
+		ComandaIDs: []uint{c1.ID}, Payments: []PaymentInput{{Method: "cash", Amount: 35.4}},
 	}, tax.DefaultConfig()); err != nil {
 		t.Fatal(err)
 	}

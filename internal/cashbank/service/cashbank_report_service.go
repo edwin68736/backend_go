@@ -1886,7 +1886,7 @@ func buildSalePaymentReportAmountsFromPayments(
 			if paymentcondition.IsCreditCode(p.Method) {
 				continue
 			}
-			lines = append(lines, money.SalePaymentLine{ID: p.ID, Amount: p.Amount})
+			lines = append(lines, money.SalePaymentLine{ID: p.ID, Amount: p.Amount, IsCash: money.IsCashMethod(p.Method)})
 		}
 		for id, amt := range money.AllocateSalePaymentReportAmounts(sale.Total, lines) {
 			out[id] = amt
