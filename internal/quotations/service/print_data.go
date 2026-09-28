@@ -88,6 +88,9 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 			LogoURL:         company.LogoURL,
 			AdditionalNotes: strings.TrimSpace(company.AdditionalNotes),
 		}
+		// Wallet Yape/Plin y cuentas bancarias — mismo criterio que un comprobante de venta
+		// (BuildPrintData), para que la cotización también los muestre cuando estén configurados.
+		pd.PaymentWallet, pd.BankAccounts = salessvc.PopulateCompanyPaymentInfo(db, company)
 	}
 
 	if q.UserID > 0 {

@@ -378,10 +378,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	// Empresa
 	var company database.TenantCompanyConfig
 	companyOK := db.First(&company).Error == nil
-	var receiptBankIDs []uint
-	var receiptBanksConfigured bool
 	if companyOK {
-		receiptBankIDs, receiptBanksConfigured = decodeReceiptBankAccountIDs(company.ReceiptBankAccountIDs)
 		pd.Company = PrintCompany{
 			RUC:             company.RUC,
 			BusinessName:    company.BusinessName,
@@ -398,47 +395,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			LogoSizeTicket:             normalizePrintLogoSize(company.LogoSizeTicket),
 			LogoSizeA4:                 normalizePrintLogoSize(company.LogoSizeA4),
 		}
-		provider := strings.TrimSpace(strings.ToLower(company.WalletProvider))
-		phone := strings.TrimSpace(company.WalletPhone)
-		qrURL := strings.TrimSpace(company.WalletQrURL)
-		if provider != "" && phone != "" && qrURL != "" {
-			pd.PaymentWallet = &PrintPaymentWallet{
-				Provider:     provider,
-				Phone:        phone,
-				QrURL:        qrURL,
-				ShowOnA4:     company.WalletShowOnA4,
-				ShowOnTicket: company.WalletShowOnTicket,
-			}
-		}
-	}
-
-	var bankAccounts []database.TenantBankAccount
-	if db.Where("active = ?", true).Order("id ASC").Find(&bankAccounts).Error == nil {
-		for _, ba := range bankAccounts {
-			// Cuentas tipo caja no van en el comprobante.
-			if strings.EqualFold(strings.TrimSpace(ba.Type), "cash") {
-				continue
-			}
-			name := strings.TrimSpace(ba.Name)
-			bankName := strings.TrimSpace(ba.BankName)
-			acct := strings.TrimSpace(ba.AccountNumber)
-			// Muchas cuentas seed solo tienen Name (sin bank_name ni número); igual deben imprimirse.
-			if name == "" && bankName == "" && acct == "" {
-				continue
-			}
-			if receiptBanksConfigured && !receiptBankAccountAllowed(ba.ID, receiptBankIDs) {
-				continue
-			}
-			if bankName == "" {
-				bankName = name
-			}
-			pd.BankAccounts = append(pd.BankAccounts, PrintBankAccount{
-				Name:          name,
-				BankName:      bankName,
-				AccountNumber: acct,
-				Currency:      ba.Currency,
-			})
-		}
+		pd.PaymentWallet, pd.BankAccounts = PopulateCompanyPaymentInfo(db, company)
 	}
 
 	if sale.UserID > 0 {
@@ -777,6 +734,58 @@ func receiptBankAccountAllowed(id uint, selected []uint) bool {
 		}
 	}
 	return false
+}
+
+// PopulateCompanyPaymentInfo resuelve el wallet Yape/Plin y las cuentas bancarias a incluir en un
+// comprobante impreso (venta, cotización, etc.) a partir de la config de empresa ya cargada — único
+// punto que lee esto, para que ningún builder de PrintData se quede sin esta sección por
+// duplicar la lógica a mano (pasó con cotizaciones: BuildPrintDataForQuotation nunca la tenía).
+func PopulateCompanyPaymentInfo(db *gorm.DB, company database.TenantCompanyConfig) (*PrintPaymentWallet, []PrintBankAccount) {
+	var wallet *PrintPaymentWallet
+	provider := strings.TrimSpace(strings.ToLower(company.WalletProvider))
+	phone := strings.TrimSpace(company.WalletPhone)
+	qrURL := strings.TrimSpace(company.WalletQrURL)
+	if provider != "" && phone != "" && qrURL != "" {
+		wallet = &PrintPaymentWallet{
+			Provider:     provider,
+			Phone:        phone,
+			QrURL:        qrURL,
+			ShowOnA4:     company.WalletShowOnA4,
+			ShowOnTicket: company.WalletShowOnTicket,
+		}
+	}
+
+	receiptBankIDs, receiptBanksConfigured := decodeReceiptBankAccountIDs(company.ReceiptBankAccountIDs)
+	var accounts []PrintBankAccount
+	var bankAccounts []database.TenantBankAccount
+	if db.Where("active = ?", true).Order("id ASC").Find(&bankAccounts).Error == nil {
+		for _, ba := range bankAccounts {
+			// Cuentas tipo caja no van en el comprobante.
+			if strings.EqualFold(strings.TrimSpace(ba.Type), "cash") {
+				continue
+			}
+			name := strings.TrimSpace(ba.Name)
+			bankName := strings.TrimSpace(ba.BankName)
+			acct := strings.TrimSpace(ba.AccountNumber)
+			// Muchas cuentas seed solo tienen Name (sin bank_name ni número); igual deben imprimirse.
+			if name == "" && bankName == "" && acct == "" {
+				continue
+			}
+			if receiptBanksConfigured && !receiptBankAccountAllowed(ba.ID, receiptBankIDs) {
+				continue
+			}
+			if bankName == "" {
+				bankName = name
+			}
+			accounts = append(accounts, PrintBankAccount{
+				Name:          name,
+				BankName:      bankName,
+				AccountNumber: acct,
+				Currency:      ba.Currency,
+			})
+		}
+	}
+	return wallet, accounts
 }
 
 func isCreditOrDebitNotePrint(sunatCode, docType string) bool {
