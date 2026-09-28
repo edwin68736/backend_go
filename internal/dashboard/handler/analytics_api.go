@@ -153,18 +153,8 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status = ?", "cancelled").
-		Scopes(func(db *gorm.DB) *gorm.DB {
-			if branchID > 0 {
-				return db.Where("branch_id = ?", branchID)
-			}
-			return db
-		}).
-		Scopes(func(db *gorm.DB) *gorm.DB {
-			if restrictUser && userID != 0 {
-				return db.Where("user_id = ?", userID)
-			}
-			return db
-		}).
+		Scopes(branchScope(branchID)).
+		Scopes(userScope(restrictUser, userID)).
 		Count(&cancelledCount)
 
 	// Serie diaria: ventas + cantidad documentos (no anulados)
@@ -514,10 +504,16 @@ func analyticsSaleScope(tdb *gorm.DB, from, toExclusive time.Time, branchID uint
 	return q
 }
 
+// branchScope/userScope siempre filtran sobre `tenant_sales` (toda esta base la usa vía
+// tdb.Model(&database.TenantSale{})) — se califica el nombre de columna explícitamente porque
+// byDocType y recentSales hacen self-join de tenant_sales (alias `fe`, para resolver el
+// comprobante electrónico emitido desde una nota de venta), y ese segundo `tenant_sales` también
+// tiene branch_id/user_id: sin calificar, MySQL devuelve "Column 'user_id' in where clause is
+// ambiguous" (Error 1052) y la consulta entera falla, en vez de solo filtrar mal.
 func branchScope(branchID uint) func(*gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		if branchID > 0 {
-			return db.Where("branch_id = ?", branchID)
+			return db.Where("tenant_sales.branch_id = ?", branchID)
 		}
 		return db
 	}
@@ -526,7 +522,7 @@ func branchScope(branchID uint) func(*gorm.DB) *gorm.DB {
 func userScope(restrict bool, userID uint) func(*gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		if restrict && userID != 0 {
-			return db.Where("user_id = ?", userID)
+			return db.Where("tenant_sales.user_id = ?", userID)
 		}
 		return db
 	}
