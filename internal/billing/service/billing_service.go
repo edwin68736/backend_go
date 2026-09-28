@@ -253,21 +253,23 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		clientTipoDoc = "0"
 		clientNumDoc = "99999999999"
 	}
-	// Dirección cliente: SUNAT no acepta "-"; debe ser dirección y ubigeo reales
-	clientAddr := facturador.InvoiceAddress{Ubigueo: "150101", CodigoPais: "PE", Departamento: "Lima", Provincia: "Lima", Distrito: "Lima", Urbanizacion: "", Direccion: clientDir}
-	if contact.ID > 0 {
+	if contact.ID == 0 {
+		return nil, errors.New("para facturación electrónica debe asignar un cliente en la venta")
+	}
+	// Dirección cliente: SUNAT NO la exige en factura/boleta (solo la del emisor) — si el
+	// contacto no tiene dirección/ubigeo real, se omite el campo entero en vez de fabricar
+	// un valor (ver comentario en NormalizeTenantContactAddressUbigeo).
+	var clientAddr *facturador.InvoiceAddress
+	if clientDir != "" && clientUbigeo != "" {
 		depC, provC, distC, errC := s.resolveUbigeoToAddress(clientUbigeo)
 		if errC != nil {
 			return nil, fmt.Errorf("cliente: %w", errC)
 		}
-		clientAddr = facturador.InvoiceAddress{
+		clientAddr = &facturador.InvoiceAddress{
 			Ubigueo: clientUbigeo, CodigoPais: "PE",
 			Departamento: depC, Provincia: provC, Distrito: distC,
 			Urbanizacion: "", Direccion: clientDir,
 		}
-	} else {
-		// Cliente genérico (sin contacto): SUNAT exige dirección real; no se acepta "-"
-		return nil, errors.New("para facturación electrónica debe asignar un cliente con dirección y ubigeo completos en la venta")
 	}
 	companyTaxRate, err := s.resolveCompanyTaxRate()
 	if err != nil {
@@ -1842,7 +1844,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		Correlativo:  correlativoStr,
 		FechaEmision: fechaEmision,
 		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
-		Destinatario: facturador.InvoiceClient{TipoDoc: input.Destinatario.TipoDoc, NumDoc: input.Destinatario.NumDoc, RznSocial: input.Destinatario.RznSocial, Address: destAddr},
+		Destinatario: facturador.InvoiceClient{TipoDoc: input.Destinatario.TipoDoc, NumDoc: input.Destinatario.NumDoc, RznSocial: input.Destinatario.RznSocial, Address: &destAddr},
 		Envio:        shipment,
 		Details:      details,
 	}
@@ -1856,7 +1858,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 			TipoDoc:   remTipoDoc,
 			NumDoc:    remNumDoc,
 			RznSocial: strings.TrimSpace(input.Remitente.RznSocial),
-			Address:   remAddr,
+			Address:   &remAddr,
 		}
 	}
 	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
@@ -2154,7 +2156,7 @@ func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*da
 	payload := &facturador.RetentionPayload{
 		FechaEmision: fechaEmision,
 		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
-		Proveedor:    facturador.InvoiceClient{TipoDoc: party.TipoDoc, NumDoc: party.NumDoc, RznSocial: party.RznSocial, Address: provAddr},
+		Proveedor:    facturador.InvoiceClient{TipoDoc: party.TipoDoc, NumDoc: party.NumDoc, RznSocial: party.RznSocial, Address: &provAddr},
 		Regimen:      strings.TrimSpace(input.Regimen),
 		Tasa:         input.Tasa,
 		ImpRetenido:  roundMoney(input.ImpRetenido),
@@ -2398,7 +2400,7 @@ func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*
 	payload := &facturador.PerceptionPayload{
 		FechaEmision: fechaEmision,
 		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
-		Proveedor:    facturador.InvoiceClient{TipoDoc: party.TipoDoc, NumDoc: party.NumDoc, RznSocial: party.RznSocial, Address: provAddr},
+		Proveedor:    facturador.InvoiceClient{TipoDoc: party.TipoDoc, NumDoc: party.NumDoc, RznSocial: party.RznSocial, Address: &provAddr},
 		Regimen:      strings.TrimSpace(input.Regimen),
 		Tasa:         input.Tasa,
 		ImpPercibido: roundMoney(input.ImpPercibido),

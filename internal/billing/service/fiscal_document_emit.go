@@ -325,7 +325,7 @@ func formatAffectedDocumentNumber(orig *database.TenantSale) string {
 	return nro
 }
 
-func (s *BillingService) resolveInvoiceClient(contact *database.TenantContact) (tipoDoc, numDoc, rzn string, addr facturador.InvoiceAddress, err error) {
+func (s *BillingService) resolveInvoiceClient(contact *database.TenantContact) (tipoDoc, numDoc, rzn string, addr *facturador.InvoiceAddress, err error) {
 	tipoDoc = "6"
 	numDoc = "00000000000"
 	rzn = "CLIENTE VARIOS"
@@ -363,16 +363,20 @@ func (s *BillingService) resolveInvoiceClient(contact *database.TenantContact) (
 		numDoc = "99999999999"
 	}
 	if contact == nil || contact.ID == 0 {
-		return "", "", "", addr, errors.New("cliente con dirección y ubigeo requerido")
+		return "", "", "", addr, errors.New("debe asignar un cliente")
 	}
-	depC, provC, distC, errC := s.resolveUbigeoToAddress(clientUbigeo)
-	if errC != nil {
-		return "", "", "", addr, fmt.Errorf("cliente: %w", errC)
-	}
-	addr = facturador.InvoiceAddress{
-		Ubigueo: clientUbigeo, CodigoPais: "PE",
-		Departamento: depC, Provincia: provC, Distrito: distC,
-		Direccion: clientDir,
+	// Dirección: SUNAT no la exige para el cliente en NC/ND (solo la del emisor) — si no hay
+	// dirección/ubigeo real, se omite el campo entero (ver NormalizeTenantContactAddressUbigeo).
+	if clientDir != "" && clientUbigeo != "" {
+		depC, provC, distC, errC := s.resolveUbigeoToAddress(clientUbigeo)
+		if errC != nil {
+			return "", "", "", addr, fmt.Errorf("cliente: %w", errC)
+		}
+		addr = &facturador.InvoiceAddress{
+			Ubigueo: clientUbigeo, CodigoPais: "PE",
+			Departamento: depC, Provincia: provC, Distrito: distC,
+			Direccion: clientDir,
+		}
 	}
 	return tipoDoc, numDoc, rzn, addr, nil
 }

@@ -342,11 +342,16 @@ type InvoiceAddress struct {
 	Direccion    string `json:"direccion"`
 }
 
+// Address es un puntero: SUNAT no exige dirección del cliente en factura/boleta (solo la del
+// emisor) — cuando el contacto no tiene dirección real, se omite el campo entero (nil,
+// omitempty) en vez de mandar un objeto con strings vacíos. Greenter (Client::$address es
+// nullable) y su propio template UBL 2.1 soportan esto de forma nativa: omiten
+// <cac:RegistrationAddress> completo cuando el address es null, generando XML válido.
 type InvoiceClient struct {
-	TipoDoc  string         `json:"tipoDoc"`
-	NumDoc   string         `json:"numDoc"`
-	RznSocial string        `json:"rznSocial"`
-	Address  InvoiceAddress `json:"address"`
+	TipoDoc   string          `json:"tipoDoc"`
+	NumDoc    string          `json:"numDoc"`
+	RznSocial string          `json:"rznSocial"`
+	Address   *InvoiceAddress `json:"address,omitempty"`
 }
 
 type InvoiceCharge struct {
