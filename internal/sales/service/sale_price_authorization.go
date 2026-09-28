@@ -8,6 +8,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/modifierkind"
 	"tukifac/pkg/money"
+	"tukifac/pkg/productprice"
 	"tukifac/pkg/saleunit"
 
 	"gorm.io/gorm"
@@ -42,10 +43,12 @@ type saleModifierEntry struct {
 // Líneas manuales (ProductID == nil, ítems sin catálogo) no se validan aquí: ya exigen
 // unit_price > 0 en validateSaleItemPrices, que es todo lo que se puede verificar sin catálogo.
 //
-// branchID (Fase 4): cuando la línea usa SaleUnit, el precio autorizado se resuelve con
+// branchID: cuando la línea usa SaleUnit, el precio autorizado se resuelve con
 // saleunit.ResolvePrice(branchID, ...) — override de la sucursal si existe y está activo, si no
-// el precio global de la SaleUnit. product.SalePrice/presentation.SalePrice (líneas sin SaleUnit)
-// no tienen precio por sucursal en esta fase — branchID no les aplica.
+// el precio global de la SaleUnit. Una línea "normal" (sin SaleUnit ni presentación) resuelve su
+// propio override vía productprice.ResolveSalePrice(branchID, ...) — TenantProductBranchPrice,
+// independiente de SaleUnit para no activar su selector de unidad en el POS. Presentación
+// (variante) no tiene precio por sucursal todavía: usa presentation.SalePrice tal cual.
 func validateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput) error {
 	for _, item := range items {
 		if item.PriceAuthorized {
@@ -65,7 +68,14 @@ func validateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput)
 			continue
 		}
 
-		basePrice := product.SalePrice
+		// Producto "normal" (sin SaleUnit): resuelve su propio precio por sucursal si existe
+		// (TenantProductBranchPrice) — nunca activa el selector de unidad del POS, a diferencia
+		// de un SaleUnit con override (ver comentario del modelo). Las ramas de abajo
+		// (usesSaleUnit / presentación) sobrescriben este valor incondicionalmente cuando aplican.
+		basePrice, err := productprice.ResolveSalePrice(db, product.ID, branchID, product.SalePrice)
+		if err != nil {
+			return fmt.Errorf("no se pudo resolver el precio de '%s': %w", saleItemLabel(item), err)
+		}
 		usesSaleUnit := item.SaleUnitID != nil && *item.SaleUnitID > 0
 		switch {
 		case usesSaleUnit:

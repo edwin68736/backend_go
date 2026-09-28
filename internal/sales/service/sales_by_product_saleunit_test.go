@@ -28,7 +28,7 @@ func setupSalesByProductDB(t *testing.T) *gorm.DB {
 		&database.TenantCashSession{}, &database.TenantPaymentMethod{}, &database.TenantProduct{},
 		&database.TenantBranch{}, &database.TenantProductStock{}, &database.TenantStockMovement{},
 		&database.TenantInventoryOperationType{}, &database.TenantProductSerial{},
-		&database.TenantProductSaleUnit{}, &database.TenantProductSaleUnitBranchPrice{}, &database.TenantCategory{},
+		&database.TenantProductSaleUnit{}, &database.TenantProductSaleUnitBranchPrice{}, &database.TenantProductBranchPrice{}, &database.TenantCategory{},
 	}
 	for _, m := range models {
 		if err := db.AutoMigrate(m); err != nil {

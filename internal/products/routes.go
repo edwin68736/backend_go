@@ -85,6 +85,14 @@ func RegisterRoutes(api fiber.Router) {
 	api.Post("/products/:id/sale-units/:suid/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.SaleUnitBranchPriceCreateAPI)
 	api.Put("/products/:id/sale-units/:suid/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.SaleUnitBranchPriceUpdateAPI)
 	api.Delete("/products/:id/sale-units/:suid/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.SaleUnitBranchPriceDeleteAPI)
+	// Precio por sucursal de un producto "normal" (sin unidades de venta): mismo permiso/patrón
+	// que sale-units/branch-prices, pero cuelga directo del producto (sin unidad de venta de por
+	// medio) para no activar el selector de "elegir unidad" del POS.
+	api.Get("/products/:id/branch-prices", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.ProductBranchPriceListAPI)
+	api.Get("/products/:id/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.ProductBranchPriceGetAPI)
+	api.Post("/products/:id/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.ProductBranchPriceCreateAPI)
+	api.Put("/products/:id/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.ProductBranchPriceUpdateAPI)
+	api.Delete("/products/:id/branch-prices/:branchId", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.ProductBranchPriceDeleteAPI)
 	// Atributos descriptivos de producto (Fase 5): mismo permiso/patrón que sale-units.
 	api.Get("/products/:id/attributes", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.ProductAttributeListAPI)
 	api.Get("/products/:id/attributes/:attrId", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.ProductAttributeGetAPI)

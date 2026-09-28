@@ -119,6 +119,7 @@ var TenantMigrations = []TenantMigration{
 	V145SaleItemPurchasePriceSnapshot{},
 	V146CompanyShowBusinessNameOnSaleNote{},
 	V147CompanyLogoSizeByFormat{},
+	V148ProductBranchPrice{},
 }
 
 // ByVersion mapa versión → migración.

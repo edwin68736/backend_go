@@ -1215,6 +1215,28 @@ type TenantProductSaleUnitBranchPrice struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TenantProductBranchPrice: override del precio base de un producto (TenantProduct.SalePrice)
+// para UNA sucursal puntual. Deliberadamente separado de TenantProductSaleUnitBranchPrice: una
+// SaleUnit con is_base=true activa el selector de "elegir unidad" en el POS en cada venta (ver
+// POSPage.tsx, has_sale_units) — un producto "normal" (sin unidades de venta) debe poder tener
+// precio por sucursal SIN ganar ese paso extra. Un solo precio, sin niveles 2/3 (eso es
+// multiprecios, concepto de SaleUnit, no de este). Cuando no existe fila para (product_id,
+// branch_id), o existe pero Active=false, se usa TenantProduct.SalePrice — ver
+// ProductService.loadProductBranchPriceOverrides, el único punto que resuelve este override
+// (list/report/venta), igual que pkg/saleunit.ResolvePrice para SaleUnits.
+type TenantProductBranchPrice struct {
+	ID        uint    `gorm:"primaryKey" json:"id"`
+	ProductID uint    `gorm:"not null;uniqueIndex:idx_product_branch_price" json:"product_id"`
+	BranchID  uint    `gorm:"not null;uniqueIndex:idx_product_branch_price;index" json:"branch_id"`
+	SalePrice float64 `gorm:"type:decimal(15,2);not null" json:"sale_price"`
+	// Active: sin gorm:"default:..." a propósito — mismo motivo que TenantProductSaleUnitBranchPrice
+	// (GORM omite del INSERT los campos con tag `default` cuando el valor Go es su zero value). El
+	// servicio siempre lo setea explícitamente al crear/actualizar.
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // TenantProductAttribute: característica descriptiva del producto (ej. "Color: Rojo",
 // "RAM: 16 GB") — Fase 5. Puramente informativo: no tiene stock propio, no genera Kardex, no
 // afecta precios, no genera TenantProductSaleUnit ni interactúa con TenantProductPresentation.

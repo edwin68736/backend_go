@@ -261,10 +261,15 @@ func (s *ProductService) ListWithCategoryNames(params ProductListParams) ([]Prod
 	if err != nil {
 		return nil, 0, err
 	}
-	return s.attachCategoryNames(products), total, nil
+	return s.attachCategoryNames(products, params.BranchID), total, nil
 }
 
-func (s *ProductService) attachCategoryNames(products []database.TenantProduct) []ProductListItem {
+// attachCategoryNames enriquece el listado general (POS, registro de ventas, cotizaciones,
+// catálogo) — branchID resuelve el precio por sucursal de productos "normales" (sin unidades de
+// venta) vía loadProductBranchPriceOverrides, sobrescribiendo SalePrice en la respuesta. 0 = sin
+// contexto de sucursal (ej. ProductListItemFrom tras crear/editar, donde se muestra el precio base
+// que se está editando, no uno resuelto).
+func (s *ProductService) attachCategoryNames(products []database.TenantProduct, branchID uint) []ProductListItem {
 	if len(products) == 0 {
 		return nil
 	}
@@ -319,8 +324,12 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 			hasSaleUnits[id] = true
 		}
 	}
+	branchPrices := s.loadProductBranchPriceOverrides(productIDs, branchID)
 	out := make([]ProductListItem, len(products))
 	for i, p := range products {
+		if override, ok := branchPrices[p.ID]; ok {
+			p.SalePrice = override
+		}
 		item := ProductListItem{TenantProduct: p}
 		if p.CategoryID != nil {
 			item.CategoryName = catName[*p.CategoryID]
@@ -336,7 +345,7 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct) 
 
 // ProductListItemFrom devuelve un ítem de listado con category_name para un solo producto.
 func (s *ProductService) ProductListItemFrom(p database.TenantProduct) ProductListItem {
-	items := s.attachCategoryNames([]database.TenantProduct{p})
+	items := s.attachCategoryNames([]database.TenantProduct{p}, 0)
 	if len(items) == 0 {
 		return ProductListItem{TenantProduct: p}
 	}
@@ -473,8 +482,12 @@ func (s *ProductService) enrichReport(products []database.TenantProduct, branchI
 		}
 	}
 
+	productBranchPrices := s.loadProductBranchPriceOverrides(ids, branchID)
 	out := make([]ProductReportItem, len(products))
 	for i, p := range products {
+		if override, ok := productBranchPrices[p.ID]; ok {
+			p.SalePrice = override
+		}
 		cn := ""
 		if p.CategoryID != nil {
 			cn = catName[*p.CategoryID]
@@ -1765,6 +1778,154 @@ func (s *ProductService) DeleteSaleUnitBranchPrice(productID, saleUnitID, branch
 		return errors.New("precio de sucursal no encontrado")
 	}
 	return nil
+}
+
+// ── Precio por sucursal de un producto "normal" (TenantProductBranchPrice) ──────────────────────
+//
+// Override de TenantProduct.SalePrice para una sucursal puntual, sin pasar por SaleUnit (eso
+// activaría el selector de "elegir unidad" en el POS en cada venta — ver comentario del modelo).
+// Un solo precio, sin niveles 2/3.
+
+// ProductBranchPriceInput datos de entrada para crear/actualizar un override de sucursal.
+type ProductBranchPriceInput struct {
+	SalePrice float64
+	Active    bool
+}
+
+func validateProductBranchPriceInput(salePrice float64) error {
+	if salePrice <= 0 {
+		return errors.New("el precio debe ser mayor a cero")
+	}
+	return nil
+}
+
+// getProductForBranchPrice confirma que el producto existe — reutilizado por todo el CRUD de
+// precios por sucursal, mismo criterio que getSaleUnitOwnedByProduct.
+func (s *ProductService) getProductForBranchPrice(productID uint) (*database.TenantProduct, error) {
+	var p database.TenantProduct
+	if err := s.db.First(&p, productID).Error; err != nil {
+		return nil, errors.New("producto no encontrado")
+	}
+	return &p, nil
+}
+
+// ListProductBranchPrices lista los overrides de sucursal configurados para un producto.
+func (s *ProductService) ListProductBranchPrices(productID uint) ([]database.TenantProductBranchPrice, error) {
+	if _, err := s.getProductForBranchPrice(productID); err != nil {
+		return nil, err
+	}
+	var rows []database.TenantProductBranchPrice
+	err := s.db.Where("product_id = ?", productID).Order("branch_id ASC").Find(&rows).Error
+	return rows, err
+}
+
+// GetProductBranchPrice obtiene el override de una sucursal puntual.
+func (s *ProductService) GetProductBranchPrice(productID, branchID uint) (*database.TenantProductBranchPrice, error) {
+	if _, err := s.getProductForBranchPrice(productID); err != nil {
+		return nil, err
+	}
+	var row database.TenantProductBranchPrice
+	if err := s.db.Where("product_id = ? AND branch_id = ?", productID, branchID).First(&row).Error; err != nil {
+		return nil, errors.New("precio de sucursal no encontrado")
+	}
+	return &row, nil
+}
+
+// CreateProductBranchPrice crea el override de precio de un producto para una sucursal. Rechaza si
+// ya existe una fila para ese par — se edita con UpdateProductBranchPrice en vez de duplicar.
+func (s *ProductService) CreateProductBranchPrice(productID, branchID uint, in ProductBranchPriceInput) (*database.TenantProductBranchPrice, error) {
+	if _, err := s.getProductForBranchPrice(productID); err != nil {
+		return nil, err
+	}
+	if _, err := s.getTenantBranch(branchID); err != nil {
+		return nil, err
+	}
+	if err := validateProductBranchPriceInput(in.SalePrice); err != nil {
+		return nil, err
+	}
+	var existing database.TenantProductBranchPrice
+	err := s.db.Where("product_id = ? AND branch_id = ?", productID, branchID).First(&existing).Error
+	if err == nil {
+		return nil, errors.New("ya existe un precio configurado para esta sucursal; edítelo o elimínelo primero")
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	row := &database.TenantProductBranchPrice{ProductID: productID, BranchID: branchID, SalePrice: in.SalePrice, Active: true}
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateProductBranchPriceError(err) {
+			return nil, errors.New("ya existe un precio configurado para esta sucursal; edítelo o elimínelo primero")
+		}
+		return nil, err
+	}
+	return row, nil
+}
+
+// isDuplicateProductBranchPriceError detecta la violación del índice único idx_product_branch_price
+// (MySQL 1062) — mismo patrón que isDuplicateBranchPriceError (SaleUnit).
+func isDuplicateProductBranchPriceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "1062") ||
+		strings.Contains(msg, "unique") ||
+		strings.Contains(msg, "idx_product_branch_price")
+}
+
+// UpdateProductBranchPrice actualiza precio y estado activo de un override existente.
+func (s *ProductService) UpdateProductBranchPrice(productID, branchID uint, in ProductBranchPriceInput) (*database.TenantProductBranchPrice, error) {
+	if _, err := s.getProductForBranchPrice(productID); err != nil {
+		return nil, err
+	}
+	var row database.TenantProductBranchPrice
+	if err := s.db.Where("product_id = ? AND branch_id = ?", productID, branchID).First(&row).Error; err != nil {
+		return nil, errors.New("precio de sucursal no encontrado")
+	}
+	if err := validateProductBranchPriceInput(in.SalePrice); err != nil {
+		return nil, err
+	}
+	row.SalePrice = in.SalePrice
+	row.Active = in.Active
+	if err := s.db.Save(&row).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// DeleteProductBranchPrice elimina físicamente el override, liberando el par (product_id,
+// branch_id) para poder configurarse de nuevo más adelante.
+func (s *ProductService) DeleteProductBranchPrice(productID, branchID uint) error {
+	if _, err := s.getProductForBranchPrice(productID); err != nil {
+		return err
+	}
+	res := s.db.Where("product_id = ? AND branch_id = ?", productID, branchID).
+		Delete(&database.TenantProductBranchPrice{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("precio de sucursal no encontrado")
+	}
+	return nil
+}
+
+// loadProductBranchPriceOverrides resuelve en lote el precio por sucursal (activo) de varios
+// productos — único punto que lee TenantProductBranchPrice para listar/vender, igual que
+// pkg/saleunit.ResolvePrice para SaleUnits. branchID=0 se trata como "sin contexto de sucursal":
+// devuelve un mapa vacío sin consultar la tabla.
+func (s *ProductService) loadProductBranchPriceOverrides(productIDs []uint, branchID uint) map[uint]float64 {
+	out := map[uint]float64{}
+	if branchID == 0 || len(productIDs) == 0 {
+		return out
+	}
+	var rows []database.TenantProductBranchPrice
+	s.db.Where("product_id IN ? AND branch_id = ? AND active = ?", productIDs, branchID, true).Find(&rows)
+	for _, r := range rows {
+		out[r.ProductID] = r.SalePrice
+	}
+	return out
 }
 
 // ── Atributos descriptivos de producto (TenantProductAttribute) ─────────────────────────────────

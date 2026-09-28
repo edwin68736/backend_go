@@ -1179,6 +1179,105 @@ func (h *ProductHandler) SaleUnitBranchPriceDeleteAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// ── Precio por sucursal de un producto "normal" (TenantProductBranchPrice) ──────────────────────
+
+type productBranchPriceRequestBody struct {
+	SalePrice float64 `json:"sale_price"`
+	Active    bool    `json:"active"`
+}
+
+func (b productBranchPriceRequestBody) toInput() service.ProductBranchPriceInput {
+	return service.ProductBranchPriceInput{SalePrice: b.SalePrice, Active: b.Active}
+}
+
+// ProductBranchPriceListAPI lista los overrides de sucursal de un producto.
+func (h *ProductHandler) ProductBranchPriceListAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	rows, err := service.NewProductService(db(c)).ListProductBranchPrices(uint(productID))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// ProductBranchPriceGetAPI obtiene el override de una sucursal puntual.
+func (h *ProductHandler) ProductBranchPriceGetAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	row, err := service.NewProductService(db(c)).GetProductBranchPrice(uint(productID), uint(branchID))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": row})
+}
+
+// ProductBranchPriceCreateAPI crea el override de precio de un producto para una sucursal.
+func (h *ProductHandler) ProductBranchPriceCreateAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	var body productBranchPriceRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	row, err := service.NewProductService(db(c)).CreateProductBranchPrice(uint(productID), uint(branchID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(fiber.Map{"data": row})
+}
+
+// ProductBranchPriceUpdateAPI actualiza el override de precio de una sucursal.
+func (h *ProductHandler) ProductBranchPriceUpdateAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	var body productBranchPriceRequestBody
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	row, err := service.NewProductService(db(c)).UpdateProductBranchPrice(uint(productID), uint(branchID), body.toInput())
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": row})
+}
+
+// ProductBranchPriceDeleteAPI elimina el override de precio de una sucursal.
+func (h *ProductHandler) ProductBranchPriceDeleteAPI(c fiber.Ctx) error {
+	productID, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	if err := service.NewProductService(db(c)).DeleteProductBranchPrice(uint(productID), uint(branchID)); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 // ── Atributos descriptivos de producto (TenantProductAttribute) ─────────────────────────────────
 //
 // Fase 5: puramente informativo, sin CRUD propio en Tukichef ni efecto en precio/stock/Kardex.

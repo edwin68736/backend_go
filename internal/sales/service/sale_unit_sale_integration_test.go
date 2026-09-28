@@ -28,7 +28,7 @@ func setupSaleUnitIntegrationDB(t *testing.T) *gorm.DB {
 		&database.TenantCashSession{}, &database.TenantPaymentMethod{}, &database.TenantProduct{},
 		&database.TenantBranch{}, &database.TenantProductStock{}, &database.TenantStockMovement{},
 		&database.TenantInventoryOperationType{}, &database.TenantProductSerial{},
-		&database.TenantProductSaleUnit{}, &database.TenantProductSaleUnitBranchPrice{}, &database.TenantProductAttribute{}, &database.TenantCashMovement{},
+		&database.TenantProductSaleUnit{}, &database.TenantProductSaleUnitBranchPrice{}, &database.TenantProductBranchPrice{}, &database.TenantProductAttribute{}, &database.TenantCashMovement{},
 		&database.TenantBankMovement{}, &database.TenantBankAccount{},
 		&database.TenantModifierGroup{}, &database.TenantModifierOption{}, &database.TenantProductModifierGroup{},
 		&database.TenantComboGroup{}, &database.TenantComboGroupItem{},

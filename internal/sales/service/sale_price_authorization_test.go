@@ -30,6 +30,7 @@ func setupPriceHardeningDB(t *testing.T) *gorm.DB {
 		&database.TenantInventoryOperationType{},
 		&database.TenantProductPresentation{}, &database.TenantProductPresentationStock{},
 		&database.TenantModifierGroup{}, &database.TenantModifierOption{}, &database.TenantProductModifierGroup{},
+		&database.TenantProductBranchPrice{},
 	}
 	for _, m := range models {
 		if err := db.AutoMigrate(m); err != nil {
