@@ -142,21 +142,24 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	}
 	if params.BranchID > 0 {
 		bid := params.BranchID
-		// Un producto con branch_id propio (>0) queda exclusivo de esa sucursal en CUALQUIER
-		// listado filtrado por sucursal — antes esto solo se respetaba con RestaurantOnly
-		// (carta Tukichef); POS/inventario/listado general de Tukifac ignoraban por completo
-		// el branch_id del producto y mostraban todo sin importar la sucursal activa, aunque
-		// el tenant hubiera asignado sus productos a una sucursal específica. branch_id vacío/0
-		// sigue significando "disponible en todas las sucursales" (comportamiento de siempre
-		// para el comercio general, que no asigna productos por sucursal).
-		q = q.Where(p+"branch_id IS NULL OR "+p+"branch_id = 0 OR "+p+"branch_id = ?", bid)
-		if !params.RestaurantOnly {
-			// Fuera de la carta, además hay que respetar el stock por sucursal para productos
-			// que sí lo gestionan (comportamiento sin cambios).
+		if params.RestaurantOnly {
+			// Carta del POS restaurante (RestaurantProductsPage): un producto con branch_id
+			// propio (>0) queda exclusivo de esa sucursal — es una decisión de qué se vende en
+			// cada local, no de dónde hay stock físico. branch_id vacío/0 sigue significando
+			// "disponible en todas las sucursales" (comercio general que no asigna productos
+			// por sucursal).
+			q = q.Where(p+"branch_id IS NULL OR "+p+"branch_id = 0 OR "+p+"branch_id = ?", bid)
+		} else {
+			// Fuera de la carta (Movimientos, Kardex, Transferencias, POS de venta general):
+			// NO se exige branch_id propio — importa si el producto gestiona stock o tiene
+			// stock real en esta sucursal. Antes esto SÍ exigía branch_id incluso aquí: un
+			// producto "de la carta" de otra sucursal quedaba invisible/invendible en cualquier
+			// otra sucursal aunque una transferencia aprobada le hubiera movido stock real
+			// (bug reportado 2026-09-28 — la transferencia quedaba confirmada en BD, con stock
+			// correcto en destino, pero el inventario de esa sucursal no lo mostraba).
 			// Productos con variantes: el stock vive en tenant_product_presentation_stocks, no en
 			// tenant_product_stocks — sin este OR, un producto con variantes nunca tiene fila en
-			// la tabla vieja y quedaría invisible en cualquier listado filtrado por sucursal
-			// (transferencias, POS, etc.) aunque sí tenga stock real en alguna presentación.
+			// la tabla vieja y quedaría invisible en cualquier listado filtrado por sucursal.
 			q = q.Where(`(`+p+`manage_stock = ? OR EXISTS (
 				SELECT 1 FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = ?
 			) OR EXISTS (
