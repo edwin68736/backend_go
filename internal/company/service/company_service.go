@@ -47,6 +47,8 @@ func (s *CompanyService) GetConfig() (*database.TenantCompanyConfig, error) {
 	if strings.TrimSpace(cfg.SendMode) == "" {
 		cfg.SendMode = "sunat_direct"
 	}
+	cfg.LogoSizeTicket = normalizeLogoSize(cfg.LogoSizeTicket)
+	cfg.LogoSizeA4 = normalizeLogoSize(cfg.LogoSizeA4)
 	return &cfg, nil
 }
 
@@ -65,6 +67,8 @@ type CompanyConfigPatch struct {
 	TermsAndConditions             *string  `json:"terms_and_conditions"`
 	ShowTermsConditions            *bool    `json:"show_terms_conditions"`
 	ShowBusinessNameOnSaleNote     *bool    `json:"show_business_name_on_sale_note"`
+	LogoSizeTicket                 *string  `json:"logo_size_ticket"`
+	LogoSizeA4                     *string  `json:"logo_size_a4"`
 	DetractionBNAccount            *string  `json:"detraction_bn_account"`
 	DetractionDefaultPaymentMethod *string  `json:"detraction_default_payment_method"`
 	ColorTheme                     *string  `json:"color_theme"`
@@ -117,6 +121,12 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 	}
 	if patch.ShowBusinessNameOnSaleNote != nil {
 		updates["show_business_name_on_sale_note"] = *patch.ShowBusinessNameOnSaleNote
+	}
+	if patch.LogoSizeTicket != nil {
+		updates["logo_size_ticket"] = normalizeLogoSize(*patch.LogoSizeTicket)
+	}
+	if patch.LogoSizeA4 != nil {
+		updates["logo_size_a4"] = normalizeLogoSize(*patch.LogoSizeA4)
 	}
 	if patch.DetractionBNAccount != nil {
 		updates["detraction_bn_account"] = strings.TrimSpace(*patch.DetractionBNAccount)
@@ -187,6 +197,17 @@ func normalizeDetractionPaymentMethod(raw string) string {
 		return "001"
 	}
 	return code
+}
+
+// normalizeLogoSize valida el tamaño de logo (ticket/A4): cualquier valor fuera de las 3
+// opciones soportadas cae a "mediano" (el tamaño base de los renderers).
+func normalizeLogoSize(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "pequeno", "grande":
+		return strings.TrimSpace(raw)
+	default:
+		return "mediano"
+	}
 }
 
 // SaveReceiptWallet guarda QR Yape/Plin y cuentas bancarias visibles en comprobantes.

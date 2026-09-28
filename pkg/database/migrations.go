@@ -860,6 +860,11 @@ type TenantCompanyConfig struct {
 	// nombre comercial en su lugar; sin nombre comercial, la razón social se sigue
 	// mostrando igual (nunca queda el comprobante sin identificar al emisor).
 	ShowBusinessNameOnSaleNote bool `gorm:"default:true" json:"show_business_name_on_sale_note"`
+	// Tamaño del logo en TODOS los comprobantes (factura/boleta/NV), separado por formato
+	// porque ticket (rollo térmico) y A4 tienen proporciones muy distintas.
+	// Valores: pequeno | mediano | grande.
+	LogoSizeTicket string `gorm:"size:10;default:'mediano'" json:"logo_size_ticket"`
+	LogoSizeA4     string `gorm:"size:10;default:'mediano'" json:"logo_size_a4"`
 	// QR de pago Yape/Plin en comprobantes locales (PDF ticket / A4)
 	WalletProvider     string `gorm:"size:20" json:"wallet_provider"` // yape | plin
 	WalletPhone        string `gorm:"size:30" json:"wallet_phone"`

@@ -234,6 +234,9 @@ type PrintCompany struct {
 	ShowIgvBreakdown bool `json:"show_igv_breakdown"`
 	// Solo aplica a nota de venta (SUNAT 00): mostrar razón social del emisor en el impreso.
 	ShowBusinessNameOnSaleNote bool `json:"show_business_name_on_sale_note"`
+	// Tamaño de logo por formato (todos los comprobantes): pequeno | mediano | grande.
+	LogoSizeTicket string `json:"logo_size_ticket"`
+	LogoSizeA4     string `json:"logo_size_a4"`
 }
 
 type PrintBankAccount struct {
@@ -392,6 +395,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			// Nuevo RUS: la boleta no discrimina IGV en el impreso (Reglamento CP Art. 8).
 			ShowIgvBreakdown:           taxregime.For(company.TaxpayerRegime).ShowIgvBreakdown,
 			ShowBusinessNameOnSaleNote: company.ShowBusinessNameOnSaleNote,
+			LogoSizeTicket:             normalizePrintLogoSize(company.LogoSizeTicket),
+			LogoSizeA4:                 normalizePrintLogoSize(company.LogoSizeA4),
 		}
 		provider := strings.TrimSpace(strings.ToLower(company.WalletProvider))
 		phone := strings.TrimSpace(company.WalletPhone)
@@ -740,6 +745,17 @@ func (p *PrintData) buildQRData() string {
 	return fmt.Sprintf("%s|%s|%s|%s|%.2f|%.2f|%s|%s|%s|%s",
 		ruc, p.SunatCode, p.Series, numero,
 		p.TaxAmount, p.Total, p.IssueDate, clienteTipo, clienteNumero, hash)
+}
+
+// normalizePrintLogoSize: cualquier valor fuera de las 3 opciones soportadas cae a "mediano"
+// (el tamaño base de los renderers de ticket/A4/ESC-POS).
+func normalizePrintLogoSize(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "pequeno", "grande":
+		return strings.TrimSpace(raw)
+	default:
+		return "mediano"
+	}
 }
 
 func decodeReceiptBankAccountIDs(raw string) (ids []uint, configured bool) {
