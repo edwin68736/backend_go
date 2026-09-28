@@ -64,6 +64,7 @@ type CompanyConfigPatch struct {
 	AdditionalNotes                *string  `json:"additional_notes"`
 	TermsAndConditions             *string  `json:"terms_and_conditions"`
 	ShowTermsConditions            *bool    `json:"show_terms_conditions"`
+	ShowBusinessNameOnSaleNote     *bool    `json:"show_business_name_on_sale_note"`
 	DetractionBNAccount            *string  `json:"detraction_bn_account"`
 	DetractionDefaultPaymentMethod *string  `json:"detraction_default_payment_method"`
 	ColorTheme                     *string  `json:"color_theme"`
@@ -113,6 +114,9 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 	}
 	if patch.ShowTermsConditions != nil {
 		updates["show_terms_conditions"] = *patch.ShowTermsConditions
+	}
+	if patch.ShowBusinessNameOnSaleNote != nil {
+		updates["show_business_name_on_sale_note"] = *patch.ShowBusinessNameOnSaleNote
 	}
 	if patch.DetractionBNAccount != nil {
 		updates["detraction_bn_account"] = strings.TrimSpace(*patch.DetractionBNAccount)

@@ -855,6 +855,11 @@ type TenantCompanyConfig struct {
 	TermsAndConditions     string     `gorm:"type:text" json:"terms_and_conditions"`
 	// Preferencia global: incluir términos en comprobantes/NV/cotizaciones nuevas.
 	ShowTermsConditions bool `gorm:"default:false" json:"show_terms_conditions"`
+	// Solo nota de venta (SUNAT 00): mostrar razón social del emisor en el impreso.
+	// Default true = comportamiento previo (siempre visible). Si se oculta, se muestra
+	// nombre comercial en su lugar; sin nombre comercial, la razón social se sigue
+	// mostrando igual (nunca queda el comprobante sin identificar al emisor).
+	ShowBusinessNameOnSaleNote bool `gorm:"default:true" json:"show_business_name_on_sale_note"`
 	// QR de pago Yape/Plin en comprobantes locales (PDF ticket / A4)
 	WalletProvider     string `gorm:"size:20" json:"wallet_provider"` // yape | plin
 	WalletPhone        string `gorm:"size:30" json:"wallet_phone"`

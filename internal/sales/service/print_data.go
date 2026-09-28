@@ -232,6 +232,8 @@ type PrintCompany struct {
 	AdditionalNotes string `json:"additional_notes,omitempty"`
 	// Discriminar IGV/valor de venta en el impreso. Nuevo RUS = false (solo total).
 	ShowIgvBreakdown bool `json:"show_igv_breakdown"`
+	// Solo aplica a nota de venta (SUNAT 00): mostrar razón social del emisor en el impreso.
+	ShowBusinessNameOnSaleNote bool `json:"show_business_name_on_sale_note"`
 }
 
 type PrintBankAccount struct {
@@ -388,7 +390,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			LogoURL:         company.LogoURL,
 			AdditionalNotes: strings.TrimSpace(company.AdditionalNotes),
 			// Nuevo RUS: la boleta no discrimina IGV en el impreso (Reglamento CP Art. 8).
-			ShowIgvBreakdown: taxregime.For(company.TaxpayerRegime).ShowIgvBreakdown,
+			ShowIgvBreakdown:           taxregime.For(company.TaxpayerRegime).ShowIgvBreakdown,
+			ShowBusinessNameOnSaleNote: company.ShowBusinessNameOnSaleNote,
 		}
 		provider := strings.TrimSpace(strings.ToLower(company.WalletProvider))
 		phone := strings.TrimSpace(company.WalletPhone)
