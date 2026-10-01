@@ -475,6 +475,31 @@ func (h *RestaurantHandler) MarkTableOrderPrinted(c fiber.Ctx) error {
 }
 
 // GET /api/restaurant/kitchen   — vista de cocina: comandas activas
+// GET /api/restaurant/comandas/cancelled?from=YYYY-MM-DD&to=YYYY-MM-DD&q=&page=&per_page=
+func (h *RestaurantHandler) ListCancelledComandas(c fiber.Ctx) error {
+	bid, err := activeBranch(c)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchRequired})
+	}
+	f := service.CancelledComandasFilter{
+		BranchID: bid,
+		Query:    c.Query("q"),
+		Page:     fiber.Query[int](c, "page", 1),
+		PerPage:  fiber.Query[int](c, "per_page", 50),
+	}
+	if t, err := time.ParseInLocation("2006-01-02", c.Query("from"), time.Local); err == nil {
+		f.From = t
+	}
+	if t, err := time.ParseInLocation("2006-01-02", c.Query("to"), time.Local); err == nil {
+		f.To = t
+	}
+	rows, total, err := svc(c).ListCancelledComandas(f)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows, "total": total, "page": f.Page, "per_page": f.PerPage})
+}
+
 func (h *RestaurantHandler) KitchenView(c fiber.Ctx) error {
 	bid, err := activeBranch(c)
 	if err != nil {
