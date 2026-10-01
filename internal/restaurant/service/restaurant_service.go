@@ -186,19 +186,22 @@ type TableWithSession struct {
 	SessionID   *uint   `json:"session_id"`
 	TotalAmount float64 `json:"total_amount"`
 	WaiterName  string  `json:"waiter_name"`
+	// SessionNotes: nota escrita al abrir la mesa (solo si está ocupada).
+	SessionNotes string `json:"session_notes"`
 }
 
 func (s *RestaurantService) ListTables(branchID, floorID uint) ([]TableWithSession, error) {
 	type raw struct {
 		database.TenantRestaurantTable
-		FloorName   string  `gorm:"column:floor_name"`
-		SessionID   *uint   `gorm:"column:session_id"`
-		TotalAmount float64 `gorm:"column:total_amount"`
-		WaiterName  string  `gorm:"column:waiter_name"`
+		FloorName    string  `gorm:"column:floor_name"`
+		SessionID    *uint   `gorm:"column:session_id"`
+		TotalAmount  float64 `gorm:"column:total_amount"`
+		WaiterName   string  `gorm:"column:waiter_name"`
+		SessionNotes string  `gorm:"column:session_notes"`
 	}
 	var rows []raw
 	q := s.db.Table("tenant_restaurant_tables t").
-		Select("t.*, f.name AS floor_name, ts.id AS session_id, COALESCE(ts.total_amount,0) AS total_amount, COALESCE(NULLIF(st.display_name,''), u.name, '') AS waiter_name").
+		Select("t.*, f.name AS floor_name, ts.id AS session_id, COALESCE(ts.total_amount,0) AS total_amount, COALESCE(NULLIF(st.display_name,''), u.name, '') AS waiter_name, COALESCE(ts.notes,'') AS session_notes").
 		Joins("JOIN tenant_restaurant_floors f ON f.id = t.floor_id").
 		Joins(`LEFT JOIN tenant_table_sessions ts ON ts.id = (
 			SELECT s2.id FROM tenant_table_sessions s2
@@ -228,6 +231,7 @@ func (s *RestaurantService) ListTables(branchID, floorID uint) ([]TableWithSessi
 			SessionID:             r.SessionID,
 			TotalAmount:           r.TotalAmount,
 			WaiterName:            r.WaiterName,
+			SessionNotes:          r.SessionNotes,
 		}
 	}
 	return result, nil
