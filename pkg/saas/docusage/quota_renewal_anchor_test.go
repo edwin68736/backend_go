@@ -161,3 +161,22 @@ func TestCuotaTransicionNoQuitaCupoYaDisponible(t *testing.T) {
 			p.DocumentsLimit-p.DocumentsUsed, legacy.DocumentsLimit-legacy.DocumentsUsed)
 	}
 }
+
+// El relleno histórico no debe crear períodos anclados al registro en una suscripción que ya
+// tiene los suyos (ni solapar el cupo vigente).
+func TestBackfillNoTocaSuscripcionesConPeriodos(t *testing.T) {
+	sub, c1, _ := seedAnchorFixture(t)
+	db := database.CentralDB
+	ensurePeriodAt(t, db, sub, c1, day(2026, time.September, 10))
+
+	var antes int64
+	db.Model(&database.SaasDocumentQuotaPeriod{}).Where("subscription_id = ?", sub.ID).Count(&antes)
+	if _, err := BackfillDocumentQuotaPeriods(); err != nil {
+		t.Fatal(err)
+	}
+	var despues int64
+	db.Model(&database.SaasDocumentQuotaPeriod{}).Where("subscription_id = ?", sub.ID).Count(&despues)
+	if despues != antes {
+		t.Fatalf("el relleno creó períodos extra: %d → %d", antes, despues)
+	}
+}
