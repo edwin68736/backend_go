@@ -204,6 +204,21 @@ func ensureQuotaPeriodTx(
 			sub.ID, "plan_base", start, end).
 		Count(&alreadyUsed)
 
+	// Transición: un período anclado al registro (el esquema anterior) que ya cubre hoy se
+	// respeta mientras le quede igual o más cupo que el que daría la ventana nueva. Así el
+	// re-anclaje a la renovación corrige a quien se quedó sin cupo, pero nadie pierde el que ya
+	// tenía disponible por haber desplegado este cambio.
+	if !plan.IsUnlimitedDocuments {
+		var legacy database.SaasDocumentQuotaPeriod
+		if tx.Where("subscription_id = ? AND period_start <= ? AND period_end > ?", sub.ID, at, at).
+			Order("period_start desc").First(&legacy).Error == nil &&
+			!legacy.IsUnlimitedDocuments &&
+			legacy.DocumentsLimit-legacy.DocumentsUsed >= planLimitFromPlan(&plan)-int(alreadyUsed) {
+			syncPeriodQuotaFromPlanTx(tx, &legacy, sub.PlanID)
+			return &legacy, nil
+		}
+	}
+
 	period = database.SaasDocumentQuotaPeriod{
 		TenantID:             sub.TenantID,
 		SubscriptionID:       sub.ID,

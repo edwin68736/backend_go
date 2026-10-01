@@ -128,3 +128,36 @@ func TestCuotaSigueElAjusteDeVigencia(t *testing.T) {
 		t.Fatalf("el fin del cupo quedó en %s, se esperaba 20-sep", p.PeriodEnd)
 	}
 }
+
+// Transición: si el período anclado al registro todavía tiene más cupo que la ventana nueva,
+// se respeta; nadie pierde cupo por el cambio (caso del RUC 10468149589).
+func TestCuotaTransicionNoQuitaCupoYaDisponible(t *testing.T) {
+	sub, _, c2 := seedAnchorFixture(t)
+	db := database.CentralDB
+
+	// Período del esquema anterior, recién abierto, sin consumo.
+	legacy := database.SaasDocumentQuotaPeriod{
+		TenantID: sub.TenantID, SubscriptionID: sub.ID, BillingCycleID: c2.ID, PlanID: sub.PlanID,
+		PeriodStart: day(2026, time.October, 1), PeriodEnd: endOfDay(day(2026, time.October, 24)),
+		PeriodIndex: 2, DocumentsLimit: 200, DocumentsUsed: 0,
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Gastó 113 del plan desde la renovación del 24-sep: la ventana nueva le dejaría 87.
+	for i := 0; i < 113; i++ {
+		u := database.SaasElectronicDocumentUsage{
+			TenantID: sub.TenantID, SubscriptionID: sub.ID, BillingCycleID: c2.ID,
+			DocumentType: "receipt", DocumentID: uint(500 + i), ConsumedFrom: "plan_base",
+			ConsumedAt: day(2026, time.September, 28),
+		}
+		if err := db.Create(&u).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := ensurePeriodAt(t, db, sub, c2, day(2026, time.October, 2))
+	if p.ID != legacy.ID {
+		t.Fatalf("se creó un período nuevo y el tenant pierde cupo: disponible %d en vez de %d",
+			p.DocumentsLimit-p.DocumentsUsed, legacy.DocumentsLimit-legacy.DocumentsUsed)
+	}
+}
