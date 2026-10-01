@@ -109,7 +109,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 
 	// Últimas ventas
 	var recentSales []database.TenantSale
-	tdb.Where("status != ?", "cancelled").Order("created_at DESC").Limit(5).Find(&recentSales)
+	tdb.Where("status != ? AND doc_type NOT IN ?", "cancelled", salescope.NoteDocTypes).Order("created_at DESC").Limit(5).Find(&recentSales)
 
 	// Sesiones de caja abiertas
 	var openCashSessions int64

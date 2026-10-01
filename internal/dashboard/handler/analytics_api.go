@@ -344,7 +344,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Limit(8).
 		Scan(&expiringProducts)
 
-	// Últimos comprobantes
+	// Últimos comprobantes (sin notas de crédito/débito: son el reverso de un comprobante, no una venta)
 	type recentDoc struct {
 		ID             uint      `json:"id"`
 		DocType        string    `json:"doc_type"`
@@ -357,7 +357,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		ContactDisplay string    `json:"contact_name" gorm:"column:contact_display"`
 	}
 	var recentSales []recentDoc
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select(`tenant_sales.id,
 			COALESCE(fe.doc_type, tenant_sales.doc_type) as doc_type,
 			COALESCE(fe.number, tenant_sales.number) as number,
