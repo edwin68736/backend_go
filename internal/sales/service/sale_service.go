@@ -436,12 +436,19 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 			if product.ManageStock && !productIsCatalogService(&product) {
+				// Producto con presentaciones: exige una presentación válida (del producto y activa)
+				// antes de mirar stock; sin esto la venta sin presentación (o con una ajena) caía en el
+				// stock "agregado" y fallaba con un engañoso "stock insuficiente… hay 0.00".
+				_, presentationName, presErr := invsvc.CheckProductPresentation(s.db, *item.ProductID, item.PresentationID, true)
+				if presErr != nil {
+					return nil, presErr
+				}
 				switch {
 				case product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0:
 					var pstock database.TenantProductPresentationStock
 					s.db.Where("presentation_id = ? AND branch_id = ?", *item.PresentationID, input.BranchID).First(&pstock)
 					if pstock.Quantity < item.Quantity {
-						return nil, fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f", item.Description, item.Quantity, pstock.Quantity)
+						return nil, fmt.Errorf("stock insuficiente para %s (%s): requiere %.2f, hay %.2f", item.Description, presentationName, item.Quantity, pstock.Quantity)
 					}
 				case item.SaleUnitID != nil && *item.SaleUnitID > 0:
 					// validateSaleUnits ya corrió antes y garantiza que esto no falle salvo carrera

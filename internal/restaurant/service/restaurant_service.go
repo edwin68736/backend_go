@@ -603,10 +603,16 @@ func (s *RestaurantService) AddOrder(sessionID uint, staffID *uint, userID uint,
 
 		var sessionTotal float64
 		taxCfg := tax.LoadFromDB(tx)
+		requestedStock := make(map[orderStockKey]float64, len(items))
 		for i := range items {
 			item := &items[i]
 			product, err := resolveRestaurantOrderItem(tx, item)
 			if err != nil {
+				return err
+			}
+			// Stock al pedir (por presentación si la tiene): evita mandar a cocina lo que no se
+			// podrá cobrar. Los combos validan stock de sus componentes al cobrar.
+			if err := checkOrderItemStock(tx, sess.BranchID, sessionID, product, item, requestedStock); err != nil {
 				return err
 			}
 			comboDrafts, err := resolveComboOrderItem(tx, item, product)

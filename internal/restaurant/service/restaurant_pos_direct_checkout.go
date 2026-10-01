@@ -83,7 +83,7 @@ func (s *RestaurantPOSCheckoutService) resolveDirectSaleItems(
 			ProductID:          item.ProductID,
 			PresentationID:     item.PresentationID,
 			Code:               item.ProductCode,
-			Description:        item.ProductName,
+			Description:        nameWithPresentation(item.ProductName, item.ModifiersJSON),
 			Unit:               "NIU",
 			Quantity:           item.Quantity,
 			UnitPrice:          item.UnitPrice,

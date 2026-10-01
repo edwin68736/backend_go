@@ -70,6 +70,19 @@ type ProductListItem struct {
 	// (esa espera de red, antes del fly-to-cart/sonido, era la causa de la lentitud reportada al
 	// agregar varios productos seguidos — Fase 7E lo dejaba así, sin batchear).
 	HasSaleUnits bool `json:"has_sale_units"`
+	// MinPresentationPrice: precio de la presentación activa más barata, solo para productos con
+	// presentaciones. Su sale_price propio suele ser 0 (el precio real vive en cada presentación),
+	// así que el POS y los listados mostraban "Desde S/ 0.00".
+	MinPresentationPrice *float64 `json:"min_presentation_price,omitempty"`
+}
+
+// PresentationStockRow es una fila de stock de una presentación en una sucursal (reportes).
+type PresentationStockRow struct {
+	PresentationID   uint    `json:"presentation_id"`
+	PresentationName string  `json:"presentation_name"`
+	BranchID         uint    `json:"branch_id"`
+	BranchName       string  `json:"branch_name"`
+	Quantity         float64 `json:"quantity"`
 }
 
 // ProductReportItem extiende el producto con totales, stock por sucursal y series.
@@ -80,6 +93,11 @@ type ProductReportItem struct {
 	StockByBranch []BranchStockRow `json:"stock_by_branch"`
 	Serials       []string         `json:"serials"`
 	SerialCount   int              `json:"serial_count"`
+	// MinPresentationPrice: ver ProductListItem.
+	MinPresentationPrice *float64 `json:"min_presentation_price,omitempty"`
+	// StockByPresentation: solo productos con presentaciones. El total por sucursal
+	// (StockByBranch) suma todas las presentaciones y no dice cuánto hay de cada una.
+	StockByPresentation []PresentationStockRow `json:"stock_by_presentation,omitempty"`
 }
 
 func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
@@ -325,6 +343,7 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct, 
 		}
 	}
 	branchPrices := s.loadProductBranchPriceOverrides(productIDs, branchID)
+	minPresentation := s.loadMinPresentationPrices(variantProductIDs(products))
 	out := make([]ProductListItem, len(products))
 	for i, p := range products {
 		if override, ok := branchPrices[p.ID]; ok {
@@ -338,7 +357,43 @@ func (s *ProductService) attachCategoryNames(products []database.TenantProduct, 
 			item.BrandName = brandName[*p.BrandID]
 		}
 		item.HasSaleUnits = hasSaleUnits[p.ID]
+		if v, ok := minPresentation[p.ID]; ok {
+			price := v
+			item.MinPresentationPrice = &price
+		}
 		out[i] = item
+	}
+	return out
+}
+
+// variantProductIDs devuelve los ids de los productos que venden por presentación.
+func variantProductIDs(products []database.TenantProduct) []uint {
+	ids := make([]uint, 0)
+	for _, p := range products {
+		if p.HasVariants {
+			ids = append(ids, p.ID)
+		}
+	}
+	return ids
+}
+
+// loadMinPresentationPrices devuelve, por producto, el precio de su presentación activa más barata.
+func (s *ProductService) loadMinPresentationPrices(productIDs []uint) map[uint]float64 {
+	out := map[uint]float64{}
+	if len(productIDs) == 0 {
+		return out
+	}
+	var rows []struct {
+		ProductID uint
+		MinPrice  float64
+	}
+	s.db.Model(&database.TenantProductPresentation{}).
+		Select("product_id, MIN(sale_price) AS min_price").
+		Where("product_id IN ? AND active = ?", productIDs, true).
+		Group("product_id").
+		Scan(&rows)
+	for _, r := range rows {
+		out[r.ProductID] = r.MinPrice
 	}
 	return out
 }
@@ -459,6 +514,34 @@ func (s *ProductService) enrichReport(products []database.TenantProduct, branchI
 		}
 	}
 
+	minPresentation := s.loadMinPresentationPrices(variantIDs)
+	presStock := map[uint][]PresentationStockRow{}
+	if len(variantIDs) > 0 {
+		var prs []struct {
+			ProductID        uint
+			PresentationID   uint
+			PresentationName string
+			BranchID         uint
+			BranchName       string
+			Quantity         float64
+		}
+		psq := s.db.Table("tenant_product_presentation_stocks AS ps").
+			Select("pr.product_id, pr.id AS presentation_id, pr.name AS presentation_name, ps.branch_id, b.name AS branch_name, ps.quantity").
+			Joins("JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL").
+			Joins("JOIN tenant_branches b ON b.id = ps.branch_id").
+			Where("pr.product_id IN ?", variantIDs)
+		if branchID > 0 {
+			psq = psq.Where("ps.branch_id = ?", branchID)
+		}
+		_ = psq.Order("pr.sort_order ASC, pr.id ASC, b.name ASC").Scan(&prs).Error
+		for _, r := range prs {
+			presStock[r.ProductID] = append(presStock[r.ProductID], PresentationStockRow{
+				PresentationID: r.PresentationID, PresentationName: r.PresentationName,
+				BranchID: r.BranchID, BranchName: r.BranchName, Quantity: r.Quantity,
+			})
+		}
+	}
+
 	seriesIDs := make([]uint, 0)
 	for _, p := range products {
 		if p.ManageSeries {
@@ -512,6 +595,11 @@ func (s *ProductService) enrichReport(products []database.TenantProduct, branchI
 			Serials:       ser,
 			SerialCount:   sc,
 		}
+		if v, ok := minPresentation[p.ID]; ok {
+			price := v
+			out[i].MinPresentationPrice = &price
+		}
+		out[i].StockByPresentation = presStock[p.ID]
 	}
 	return out
 }

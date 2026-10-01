@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -72,6 +73,61 @@ func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *Move
 	return nil
 }
 
+// CheckProductPresentation valida la combinación producto/presentación de un movimiento de stock
+// y devuelve los nombres para armar mensajes legibles.
+//   - Un producto con presentaciones (has_variants) SIEMPRE mueve el stock de una presentación:
+//     sin ella el movimiento caía en la fila "agregada" del producto, que ningún total ni venta
+//     lee (stock invisible).
+//   - La presentación debe pertenecer al producto (antes se aceptaba la de otro producto) y, si
+//     requireActive, estar activa (las ventas/egresos no deben salir de una presentación inactiva).
+//   - Un producto sin presentaciones no acepta presentation_id.
+//
+// Si el producto no existe devuelve nil: quien llama ya valida eso por su cuenta.
+func CheckProductPresentation(tx *gorm.DB, productID uint, presentationID *uint, requireActive bool) (productName, presentationName string, err error) {
+	var product database.TenantProduct
+	if tx.Select("id", "name", "has_variants").First(&product, productID).Error != nil {
+		return "", "", nil
+	}
+	byPresentation := presentationID != nil && *presentationID > 0
+	if !product.HasVariants {
+		if byPresentation {
+			return product.Name, "", fmt.Errorf("«%s» no maneja presentaciones", product.Name)
+		}
+		return product.Name, "", nil
+	}
+	if !byPresentation {
+		var n int64
+		tx.Model(&database.TenantProductPresentation{}).Where("product_id = ?", productID).Count(&n)
+		if n == 0 {
+			return product.Name, "", nil // marcado con variantes pero sin ninguna creada: sin qué elegir
+		}
+		return product.Name, "", fmt.Errorf("«%s» maneja stock por presentación: seleccione una presentación", product.Name)
+	}
+	var pres database.TenantProductPresentation
+	if tx.First(&pres, *presentationID).Error != nil {
+		return product.Name, "", fmt.Errorf("la presentación indicada no existe para «%s»", product.Name)
+	}
+	if pres.ProductID != productID {
+		return product.Name, pres.Name, fmt.Errorf("la presentación «%s» no pertenece a «%s»", pres.Name, product.Name)
+	}
+	if requireActive && !pres.Active {
+		return product.Name, pres.Name, fmt.Errorf("la presentación «%s» de «%s» está inactiva", pres.Name, product.Name)
+	}
+	return product.Name, pres.Name, nil
+}
+
+// stockLabel arma «Producto» o «Producto» (Presentación) para los mensajes de stock.
+func stockLabel(productName, presentationName string) string {
+	switch {
+	case productName == "":
+		return "el producto"
+	case presentationName == "":
+		return "«" + productName + "»"
+	default:
+		return "«" + productName + "» (" + presentationName + ")"
+	}
+}
+
 // RecordMovementTx registra un movimiento y actualiza stock dentro de una transacción existente.
 // Si input.PresentationID viene informado, el saldo afectado es el de esa variante
 // (TenantProductPresentationStock) en vez del agregado del producto (TenantProductStock).
@@ -83,6 +139,11 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 		return errors.New("la cantidad debe ser mayor a cero")
 	}
 	if err := s.resolveMovementOperationType(tx, &input); err != nil {
+		return err
+	}
+	isOut := input.Type == "out" || input.Type == "adjustment_out"
+	productName, presentationName, err := CheckProductPresentation(tx, input.ProductID, input.PresentationID, isOut)
+	if err != nil {
 		return err
 	}
 
@@ -106,7 +167,8 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	case "out", "adjustment_out":
 		newBalance = currentQty - input.Quantity
 		if newBalance < 0 {
-			return errors.New("stock insuficiente")
+			return fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f",
+				stockLabel(productName, presentationName), input.Quantity, currentQty)
 		}
 	case "adjustment":
 		newBalance = input.Quantity
