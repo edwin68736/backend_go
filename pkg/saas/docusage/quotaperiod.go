@@ -178,6 +178,12 @@ func ensureQuotaPeriodTx(
 	}
 	cycle = quotaCycleAt(tx, sub, cycle, at)
 	start, end, index := CycleQuotaPeriodBoundsAt(cycle, at)
+	if calendarDateLima(cycle.PeriodStart).After(at.In(lima())) {
+		// Ningún ciclo pagado cubre hoy y el vigente empieza más adelante (cobro adelantado, o el
+		// ciclo anterior quedó rechazado/en otra suscripción): abrir ya la ventana futura haría
+		// consumir su cupo antes de tiempo. Mientras tanto vale el cálculo desde el registro.
+		start, end, index = QuotaPeriodBoundsAt(sub, at)
+	}
 
 	var period database.SaasDocumentQuotaPeriod
 	err := tx.Where("subscription_id = ? AND period_start = ?", sub.ID, start).First(&period).Error

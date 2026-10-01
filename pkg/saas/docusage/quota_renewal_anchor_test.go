@@ -180,3 +180,24 @@ func TestBackfillNoTocaSuscripcionesConPeriodos(t *testing.T) {
 		t.Fatalf("el relleno creó períodos extra: %d → %d", antes, despues)
 	}
 }
+
+// Cobro adelantado sin ciclo pagado que cubra hoy: no se abre la ventana futura.
+func TestCuotaNoAbreVentanaFuturaSinCicloQueCubraHoy(t *testing.T) {
+	sub, c1, c2 := seedAnchorFixture(t)
+	db := database.CentralDB
+	// Solo queda el ciclo adelantado: el primero deja de contar como pagado.
+	if err := db.Model(c1).Update("status", database.SaasInvoiceRejected).Error; err != nil {
+		t.Fatal(err)
+	}
+	c2.PeriodStart = endOfDay(day(2026, time.October, 26))
+	c2.PeriodEnd = endOfDay(day(2026, time.November, 26))
+	if err := db.Save(c2).Error; err != nil {
+		t.Fatal(err)
+	}
+	sub.EndDate = c2.PeriodEnd
+
+	p := ensurePeriodAt(t, db, sub, c2, day(2026, time.October, 1))
+	if p.PeriodStart.After(day(2026, time.October, 1)) {
+		t.Fatalf("se abrió una ventana futura (%s): el cupo se consumiría antes de tiempo", p.PeriodStart)
+	}
+}
