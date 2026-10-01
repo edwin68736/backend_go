@@ -2,10 +2,14 @@ package handler
 
 import (
 	"errors"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/money"
+	"tukifac/pkg/paymentcondition"
 	"tukifac/pkg/salescope"
 
 	"github.com/gofiber/fiber/v3"
@@ -37,7 +41,7 @@ func computeTopProducts(tdb *gorm.DB, from, toExclusive time.Time, branchID uint
 		Select(`si.product_id, p.name, si.sale_unit_id as sale_unit_id,
 			COALESCE(SUM(si.quantity),0) as qty, COALESCE(SUM(si.total),0) as total`).
 		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
-		Scopes(salescope.ScopeCommercial("s")).
+		Scopes(salescope.ScopeCommercialNoNotes("s")).
 		Joins("JOIN tenant_products p ON p.id = si.product_id").
 		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
 		Where("s.status != ?", "cancelled").
@@ -150,7 +154,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 
 	// Ventas anuladas en el período
 	var cancelledCount int64
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status = ?", "cancelled").
 		Scopes(branchScope(branchID)).
@@ -164,7 +168,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Docs  int64   `json:"documents"`
 	}
 	var daily []dayRow
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select("DATE(issue_date) as day, COALESCE(SUM(total),0) as sales, COUNT(*) as docs").
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status != ?", "cancelled").
@@ -192,7 +196,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Total float64 `json:"total"`
 	}
 	var byBranch []namedTotal
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select("tenant_branches.id, tenant_branches.name, COALESCE(SUM(tenant_sales.total),0) as total").
 		Joins("JOIN tenant_branches ON tenant_branches.id = tenant_sales.branch_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
@@ -204,7 +208,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 
 	// Por vendedor
 	var bySeller []namedTotal
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select("tenant_users.id, tenant_users.name, COALESCE(SUM(tenant_sales.total),0) as total").
 		Joins("JOIN tenant_users ON tenant_users.id = tenant_sales.user_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
@@ -223,7 +227,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		SalesCount int64   `json:"sales_count"`
 	}
 	var topContacts []contactTotal
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select("tenant_contacts.id, COALESCE(NULLIF(TRIM(tenant_contacts.trade_name),''), tenant_contacts.business_name) as name, COALESCE(SUM(tenant_sales.total),0) as total, COUNT(tenant_sales.id) as sales_count").
 		Joins("JOIN tenant_contacts ON tenant_contacts.id = tenant_sales.contact_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
@@ -243,7 +247,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Count int64   `json:"count"`
 	}
 	var byDocType []kvFloat
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select("COALESCE(fe.doc_type, tenant_sales.doc_type) as `key`, COALESCE(SUM(tenant_sales.total),0) as total, COUNT(*) as count").
 		Joins("LEFT JOIN tenant_sales fe ON fe.issued_from_nota_sale_id = tenant_sales.id AND fe.deleted_at IS NULL").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
@@ -253,16 +257,12 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Group("COALESCE(fe.doc_type, tenant_sales.doc_type)").
 		Scan(&byDocType)
 
-	// Por método de pago (campo en venta)
-	var byPayment []kvFloat
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
-		Select("COALESCE(NULLIF(TRIM(payment_method),''),'sin_definir') as `key`, COALESCE(SUM(total),0) as total, COUNT(*) as count").
-		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
-		Where("status != ?", "cancelled").
-		Scopes(branchScope(branchID)).
-		Scopes(userScope(restrictUser, userID)).
-		Group("COALESCE(NULLIF(TRIM(payment_method),''),'sin_definir')").
-		Scan(&byPayment)
+	// Por método de pago: según las líneas de pago reales (una venta dividida reparte su total
+	// entre los métodos usados), igual que el dashboard de restaurante y el listado de ventas.
+	byPayment, err := computeSalesByPaymentMethod(tdb, from, toExclusive, branchID, userID, restrictUser)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "no se pudo calcular ventas por método de pago"})
+	}
 
 	// Estado operativo de venta (paid, draft, credit — cancelled excluido arriba en métricas principales)
 	type kvInt struct {
@@ -270,7 +270,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Count int64  `json:"count"`
 	}
 	var bySaleStatus []kvInt
-	salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select("status as `key`, COUNT(*) as count").
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status != ?", "cancelled").
@@ -288,7 +288,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	tdb.Table("tenant_sale_items si").
 		Select("COALESCE(tc.name, 'Sin categoría') as name, COALESCE(SUM(si.total),0) as total").
 		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
-		Scopes(salescope.ScopeCommercial("s")).
+		Scopes(salescope.ScopeCommercialNoNotes("s")).
 		Joins("LEFT JOIN tenant_products p ON p.id = si.product_id").
 		Joins("LEFT JOIN tenant_categories tc ON tc.id = p.category_id").
 		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
@@ -370,6 +370,9 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Joins("LEFT JOIN tenant_branches ON tenant_branches.id = tenant_sales.branch_id").
 		Joins("LEFT JOIN tenant_contacts ON tenant_contacts.id = tenant_sales.contact_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
+		// Una venta anulada no es un comprobante vigente: la tabla no muestra el estado, así que
+		// aparecería con su total como si fuera una venta normal.
+		Where("tenant_sales.status != ?", "cancelled").
 		Scopes(branchScope(branchID)).
 		Scopes(userScope(restrictUser, userID)).
 		Order("tenant_sales.issue_date DESC, tenant_sales.id DESC").
@@ -406,7 +409,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 			COUNT(*) AS count_detraccion
 		`).
 		Joins("JOIN tenant_sales s ON s.id = d.sale_id").
-		Scopes(salescope.ScopeCommercial("s")).
+		Scopes(salescope.ScopeCommercialNoNotes("s")).
 		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
 		Where("s.status != ?", "cancelled").
 		Scopes(func(db *gorm.DB) *gorm.DB {
@@ -495,8 +498,119 @@ func parseAnalyticsDateRange(c fiber.Ctx) (from, toExclusive time.Time, err erro
 	return from, toExclusive, nil
 }
 
+// paymentMethodTotal es una fila de "ventas por método de pago" (key = código del método).
+type paymentMethodTotal struct {
+	Key   string  `json:"key"`
+	Total float64 `json:"total"`
+	Count int64   `json:"count"`
+}
+
+// computeSalesByPaymentMethod agrupa el dinero de las ventas vigentes del período por MÉTODO DE
+// PAGO usando tenant_sale_payments. Antes se agrupaba por tenant_sales.payment_method (un solo
+// campo por venta), así que una venta dividida (p. ej. Efectivo + Yape + Plin) caía ENTERA en un
+// único método y el gráfico no coincidía con el dashboard de restaurante ni con el listado de
+// ventas.
+//   - El vuelto se descuenta del efectivo (money.AllocateSalePaymentReportAmounts), igual que el
+//     listado de ventas, para que ningún método supere lo que realmente cubrió el total.
+//   - El marcador "credito" (venta a crédito sin cobrar) se informa como "credito" y la
+//     detracción SPOT con su propio código: ambos forman parte del total de la venta.
+//   - Una venta sin ninguna línea de pago (histórico) se atribuye por tenant_sales.payment_method.
+//
+// Count es la cantidad de ventas distintas que usaron cada método.
+func computeSalesByPaymentMethod(tdb *gorm.DB, from, toExclusive time.Time, branchID uint, userID uint, restrictUser bool) ([]paymentMethodTotal, error) {
+	var sales []struct {
+		ID            uint
+		Total         float64
+		PaymentMethod string
+	}
+	if err := analyticsSaleScope(tdb, from, toExclusive, branchID, userID, restrictUser).
+		Select("id, total, payment_method").Scan(&sales).Error; err != nil {
+		return nil, err
+	}
+
+	type payRow struct {
+		ID     uint
+		SaleID uint
+		Method string
+		Amount float64
+	}
+	var pays []payRow
+	q := tdb.Table("tenant_sale_payments tsp").
+		Select("tsp.id AS id, tsp.sale_id AS sale_id, LOWER(TRIM(tsp.method)) AS method, tsp.amount AS amount").
+		Joins("JOIN tenant_sales ON tenant_sales.id = tsp.sale_id").
+		Scopes(salescope.ScopeCommercialNoNotes("tenant_sales")).
+		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
+		Where("tenant_sales.status != ?", "cancelled")
+	q = branchScope(branchID)(q)
+	q = userScope(restrictUser, userID)(q)
+	if err := q.Order("tsp.id ASC").Scan(&pays).Error; err != nil {
+		return nil, err
+	}
+
+	paysBySale := make(map[uint][]payRow, len(sales))
+	for _, p := range pays {
+		paysBySale[p.SaleID] = append(paysBySale[p.SaleID], p)
+	}
+
+	totals := make(map[string]float64)
+	counts := make(map[string]int64)
+	for _, sale := range sales {
+		rows := paysBySale[sale.ID]
+		if len(rows) == 0 {
+			method := strings.ToLower(strings.TrimSpace(sale.PaymentMethod))
+			if method == "" {
+				method = "sin_definir"
+			}
+			totals[method] += sale.Total
+			counts[method]++
+			continue
+		}
+		lines := make([]money.SalePaymentLine, 0, len(rows))
+		methodByID := make(map[uint]string, len(rows))
+		for _, r := range rows {
+			methodByID[r.ID] = r.Method
+			// El marcador "credito" no es dinero recibido: no entra a la base del vuelto.
+			if paymentcondition.IsCreditCode(r.Method) {
+				continue
+			}
+			lines = append(lines, money.SalePaymentLine{ID: r.ID, Amount: r.Amount, IsCash: money.IsCashMethod(r.Method)})
+		}
+		seen := make(map[string]struct{}, len(rows))
+		add := func(method string, amount float64) {
+			if method == "" {
+				method = "sin_definir"
+			}
+			totals[method] += amount
+			if _, ok := seen[method]; !ok {
+				seen[method] = struct{}{}
+				counts[method]++
+			}
+		}
+		for id, amt := range money.AllocateSalePaymentReportAmounts(sale.Total, lines) {
+			add(methodByID[id], amt)
+		}
+		for _, r := range rows {
+			if paymentcondition.IsCreditCode(r.Method) {
+				add(r.Method, r.Amount)
+			}
+		}
+	}
+
+	out := make([]paymentMethodTotal, 0, len(totals))
+	for k, v := range totals {
+		out = append(out, paymentMethodTotal{Key: k, Total: money.RoundDisplay(v), Count: counts[k]})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Total != out[j].Total {
+			return out[i].Total > out[j].Total
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out, nil
+}
+
 func analyticsSaleScope(tdb *gorm.DB, from, toExclusive time.Time, branchID uint, userID uint, restrictUser bool) *gorm.DB {
-	q := salescope.CommercialSales(tdb.Model(&database.TenantSale{})).
+	q := salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status != ?", "cancelled")
 	q = branchScope(branchID)(q)

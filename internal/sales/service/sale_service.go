@@ -1692,7 +1692,7 @@ func (s *SaleService) salesByProductBaseQuery(params SalesByProductParams) *gorm
 		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
 		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").
 		Joins("LEFT JOIN tenant_categories c ON c.id = p.category_id").
-		Scopes(salescope.ScopeCommercial("tenant_sales"))
+		Scopes(salescope.ScopeCommercialNoNotes("tenant_sales"))
 	if params.DateFrom != nil {
 		q = q.Where("tenant_sales.issue_date >= ?", params.DateFrom)
 	}
@@ -1884,11 +1884,14 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 			COALESCE(NULLIF(TRIM(p.name), ''), tenant_sale_items.description) as product_name,
 			tenant_sale_items.quantity as quantity,
 			COALESCE(tenant_sale_items.purchase_price, p.purchase_price, 0) as purchase_price,
-			tenant_sale_items.unit_price as sale_price`).
+			tenant_sale_items.unit_price as sale_price,
+			tenant_sale_items.subtotal as line_subtotal,
+			tenant_sale_items.line_discount_subtotal as line_discount_subtotal,
+			tenant_sale_items.global_discount_subtotal as global_discount_subtotal`).
 		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
 		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").
 		Joins("LEFT JOIN tenant_contacts ct ON ct.id = tenant_sales.contact_id").
-		Scopes(salescope.ScopeCommercial("tenant_sales"))
+		Scopes(salescope.ScopeCommercialNoNotes("tenant_sales"))
 	if params.DateFrom != nil {
 		q = q.Where("tenant_sales.issue_date >= ?", params.DateFrom)
 	}
@@ -1908,18 +1911,21 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 	q = q.Order("tenant_sales.issue_date ASC, tenant_sale_items.id ASC")
 
 	type row struct {
-		SaleItemID    uint
-		SaleID        uint
-		IssueDate     time.Time
-		DocType       string
-		Series        string
-		Number        string
-		ContactName   string
-		ContactDoc    string
-		ProductName   string
-		Quantity      float64
-		PurchasePrice float64
-		SalePrice     float64
+		SaleItemID             uint
+		SaleID                 uint
+		IssueDate              time.Time
+		DocType                string
+		Series                 string
+		Number                 string
+		ContactName            string
+		ContactDoc             string
+		ProductName            string
+		Quantity               float64
+		PurchasePrice          float64
+		SalePrice              float64
+		LineSubtotal           float64
+		LineDiscountSubtotal   float64
+		GlobalDiscountSubtotal float64
 	}
 	var raw []row
 	if err := q.Scan(&raw).Error; err != nil {
@@ -1930,6 +1936,15 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 	var summary ProfitDetailSummary
 	distinctSales := map[uint]struct{}{}
 	for i, r := range raw {
+		// SalePrice es el precio de lista de la línea; lo realmente cobrado descuenta los
+		// descuentos de línea y el descuento global de la venta (ya prorrateado por línea en
+		// subtotal/line_discount_subtotal/global_discount_subtotal). Sin esto la utilidad se
+		// calculaba sobre el precio sin descuento y no coincidía con "Ventas por producto".
+		// La proporción se calcula aquí (no en SQL): en SQL, según el motor, una división de
+		// columnas decimal puede truncarse a entero.
+		if listSubtotal := r.LineSubtotal + r.LineDiscountSubtotal + r.GlobalDiscountSubtotal; listSubtotal > 0 && r.LineSubtotal > 0 && r.LineSubtotal < listSubtotal {
+			r.SalePrice = money.RoundSunat(r.SalePrice * (r.LineSubtotal / listSubtotal))
+		}
 		unitProfit := r.SalePrice - r.PurchasePrice
 		totalProfit := unitProfit * r.Quantity
 		out[i] = ProfitDetailRow{
@@ -2318,7 +2333,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 
 // SummaryStats retorna estadísticas resumidas de ventas.
 func (s *SaleService) SummaryStats(branchID uint, from, to time.Time) map[string]interface{} {
-	q := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+	q := salescope.CommercialSalesNoNotes(s.db.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date <= ? AND status != ?", from, to, "cancelled")
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)

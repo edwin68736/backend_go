@@ -277,6 +277,33 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 	manualExpenseByMethod := make(map[string]float64)
 	seenPurchaseIDs := make(map[uint]struct{})
 
+	// Ventas ANULADAS cuyo efectivo ya fue devuelto en ESTA misma sesión (egreso "Anulación venta"
+	// ligado a la venta). Una venta anulada no es una venta: no debe sumar a "Ventas", a los totales
+	// por método ni al detalle de ingresos. Como el front calcula "Efectivo en caja" como
+	// ingresos-por-venta menos egresos (y el egreso de anulación existe justamente para compensar
+	// ese ingreso), la venta y su reversión se retiran JUNTAS: el saldo físico no cambia. Cuando la
+	// devolución cayó en OTRA sesión ("Devolución por anulación") o aún está pendiente, el efectivo
+	// original sigue contado aquí, tal como estaba al cerrar el arqueo.
+	voidedSaleIDs := make(map[uint]struct{})
+	for _, m := range movements {
+		if m.Type == "expense" && m.Category == "Anulación venta" && m.SaleID != nil {
+			voidedSaleIDs[*m.SaleID] = struct{}{}
+		}
+	}
+	// skipCancelledPayment decide si un pago de venta anulada se excluye de las ventas del reporte:
+	// los no-efectivo siempre (su reversión vive en el movimiento bancario, no en caja) y el efectivo
+	// solo si su devolución está en esta sesión (ver comentario de voidedSaleIDs).
+	skipCancelledPayment := func(sale database.TenantSale, known bool, method string) bool {
+		if !known || !strings.EqualFold(sale.Status, "cancelled") {
+			return false
+		}
+		if !IsCashPaymentMethod(method) {
+			return true
+		}
+		_, voided := voidedSaleIDs[sale.ID]
+		return voided
+	}
+
 	var sessionSales []database.TenantSale
 	if err := s.db.Where("cash_session_id = ? AND status NOT IN ?", sessionID, []string{"cancelled", "draft"}).
 		Order("created_at ASC").Find(&sessionSales).Error; err != nil {
@@ -445,6 +472,9 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				continue // el marcador "credito" no debería tener Caja propia, pero por si acaso
 			}
 			sale, saleKnown := salesMap[p.SaleID]
+			if skipCancelledPayment(sale, saleKnown, meth) {
+				continue // venta anulada: no es ingreso de "Ventas" (aparece en cancelled_sales_detail)
+			}
 			reportAmt := paymentReportAmount(p.Amount, p.ID, receivedReportAmounts)
 			salesByMethod[meth] += reportAmt
 			report.Totals.TotalSales += reportAmt
@@ -472,6 +502,15 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 
 	for _, m := range movements {
 		paymentMethod := normalizeReportMethod(m.PaymentMethod)
+
+		// Venta anulada con devolución en esta sesión: se omite el ingreso original y su egreso de
+		// reversión (se compensan; la anulación sigue visible en cancelled_sales_detail).
+		if m.SaleID != nil {
+			if _, voided := voidedSaleIDs[*m.SaleID]; voided &&
+				(m.Type == "income" || (m.Type == "expense" && m.Category == "Anulación venta")) {
+				continue
+			}
+		}
 
 		if m.Type == "income" {
 			// TotalIncome/TotalExpense/FinalBalance alimentan CashPhysical.PhysicalBalance más

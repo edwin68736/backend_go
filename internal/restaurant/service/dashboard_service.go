@@ -131,7 +131,7 @@ func (s *DashboardService) GetDashboard(branchID uint, from, toExclusive time.Ti
 // restaurantSalesScope: ventas de la sucursal en el rango (mismo criterio que /api/sales).
 // No exige restaurant_session_id: NV/FE, ventas legacy y emisiones sin sesión también cuentan.
 func restaurantSalesScope(db *gorm.DB, branchID uint, from, toExclusive time.Time, filter DashboardFilter) *gorm.DB {
-	q := salescope.CommercialSales(db.Model(&database.TenantSale{})).
+	q := salescope.CommercialSalesNoNotes(db.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status != ?", "cancelled")
 	if branchID > 0 {
@@ -197,7 +197,7 @@ func (s *DashboardService) loadSummary(branchID uint, from, toExclusive time.Tim
 	err = s.db.Table("tenant_sale_items si").
 		Select("COALESCE(SUM(si.quantity), 0)").
 		Joins("INNER JOIN tenant_sales s ON s.id = si.sale_id").
-		Scopes(salescope.ScopeCommercial("s")).
+		Scopes(salescope.ScopeCommercialNoNotes("s")).
 		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
 		Where("s.status != ?", "cancelled").
 		Scopes(branchScopeSales(branchID)).
@@ -331,7 +331,7 @@ func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive t
 			INNER JOIN tenant_sales s ON s.id = tsp.sale_id
 			WHERE s.issue_date >= ? AND s.issue_date < ?
 				AND s.status != 'cancelled'
-				AND ` + salescope.CommercialWhere("s") + branchClause + userClause + `
+				AND ` + salescope.CommercialWhereNoNotes("s") + branchClause + userClause + `
 			UNION ALL
 			SELECT
 				CASE
@@ -347,7 +347,7 @@ func (s *DashboardService) loadSalesByPayment(branchID uint, from, toExclusive t
 			FROM tenant_sales s
 			WHERE s.issue_date >= ? AND s.issue_date < ?
 				AND s.status != 'cancelled'
-				AND ` + salescope.CommercialWhere("s") + `
+				AND ` + salescope.CommercialWhereNoNotes("s") + `
 				AND NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = s.id)` + branchClause + userClause + `
 		) AS combined
 		GROUP BY bucket
@@ -397,7 +397,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
 		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'
-			AND ` + salescope.CommercialWhere("s") + branchClause + userClause
+			AND ` + salescope.CommercialWhereNoNotes("s") + branchClause + userClause
 	if err := s.db.Raw(totalSQL, args...).Scan(&totalAmountAll).Error; err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 		LEFT JOIN tenant_products p ON p.id = si.product_id
 		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'
-			AND ` + salescope.CommercialWhere("s") + branchClause + userClause + `
+			AND ` + salescope.CommercialWhereNoNotes("s") + branchClause + userClause + `
 		GROUP BY COALESCE(si.product_id, 0), product_name
 		ORDER BY quantity_sold DESC
 		LIMIT ?
@@ -479,7 +479,7 @@ func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive ti
 		LEFT JOIN tenant_categories pc ON pc.id = p.category_id
 		WHERE s.issue_date >= ? AND s.issue_date < ?
 			AND s.status != 'cancelled'
-			AND ` + salescope.CommercialWhere("s") + branchClause + userClause + `
+			AND ` + salescope.CommercialWhereNoNotes("s") + branchClause + userClause + `
 		GROUP BY category_name
 		ORDER BY total_amount DESC
 		LIMIT 20
