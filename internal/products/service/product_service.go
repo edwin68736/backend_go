@@ -1174,10 +1174,72 @@ func (s *ProductService) syncPresentations(productID uint, inputs []ProductPrese
 		existingByID[e.ID] = e
 	}
 
-	keep := make(map[uint]bool, len(inputs))
+	// 1) Asignar cada entrada a una presentación existente: primero por ID y, si el cliente no lo
+	// envió, por NOMBRE (sin distinguir mayúsculas). Antes una entrada sin ID se creaba como nueva y
+	// la anterior se eliminaba, con lo que cualquier edición de un producto desde un cliente que no
+	// reenviaba los IDs (Tukichef) dejaba las presentaciones con IDs nuevos y SIN su stock ni su
+	// historial de movimientos.
+	assigned := make([]uint, len(inputs)) // 0 = entrada nueva
+	used := make(map[uint]bool, len(inputs))
+	for i, in := range inputs {
+		if strings.TrimSpace(in.Name) == "" || in.ID == nil || *in.ID == 0 {
+			continue
+		}
+		if _, ok := existingByID[*in.ID]; ok && !used[*in.ID] {
+			assigned[i] = *in.ID
+			used[*in.ID] = true
+		}
+	}
+	for i, in := range inputs {
+		name := strings.TrimSpace(in.Name)
+		if name == "" || assigned[i] != 0 {
+			continue
+		}
+		for _, e := range existing {
+			if !used[e.ID] && strings.EqualFold(strings.TrimSpace(e.Name), name) {
+				assigned[i] = e.ID
+				used[e.ID] = true
+				break
+			}
+		}
+	}
+
+	// 2) Una presentación que ya no viene en la lista solo puede quitarse si no tiene stock: dar
+	// de baja una con unidades dejaba ese stock invisible (el JOIN de totales descarta las
+	// presentaciones eliminadas) sin ningún movimiento que lo explique.
+	var toRemove []uint
+	for _, e := range existing {
+		if !used[e.ID] {
+			toRemove = append(toRemove, e.ID)
+		}
+	}
+	if len(toRemove) > 0 {
+		var withStock []struct {
+			PresentationID uint
+			Qty            float64
+		}
+		s.db.Table("tenant_product_presentation_stocks").
+			Select("presentation_id, SUM(quantity) AS qty").
+			Where("presentation_id IN ?", toRemove).
+			Group("presentation_id").
+			Having("SUM(quantity) > 0").
+			Scan(&withStock)
+		if len(withStock) > 0 {
+			name := ""
+			for _, e := range existing {
+				if e.ID == withStock[0].PresentationID {
+					name = e.Name
+				}
+			}
+			return nil, fmt.Errorf("no se puede quitar la presentación «%s»: todavía tiene %.0f en stock. Ajuste su stock a 0 antes de quitarla",
+				name, withStock[0].Qty)
+		}
+	}
+
+	// 3) Escribir: actualizar las asignadas (preservando su stock) y crear las nuevas.
 	out := make([]PresentationSyncResult, 0, len(inputs))
 	sortOrder := 0
-	for _, in := range inputs {
+	for i, in := range inputs {
 		name := strings.TrimSpace(in.Name)
 		if name == "" {
 			continue
@@ -1186,20 +1248,18 @@ func (s *ProductService) syncPresentations(productID uint, inputs []ProductPrese
 		if in.SortOrder > 0 {
 			order = in.SortOrder
 		}
-		if in.ID != nil && *in.ID > 0 {
-			if row, ok := existingByID[*in.ID]; ok {
-				row.Name = name
-				row.SalePrice = money.RoundDisplay(in.SalePrice)
-				row.SortOrder = order
-				row.Active = true
-				if err := s.db.Save(&row).Error; err != nil {
-					return nil, err
-				}
-				keep[row.ID] = true
-				out = append(out, PresentationSyncResult{Presentation: row, IsNew: false})
-				sortOrder++
-				continue
+		if assigned[i] != 0 {
+			row := existingByID[assigned[i]]
+			row.Name = name
+			row.SalePrice = money.RoundDisplay(in.SalePrice)
+			row.SortOrder = order
+			row.Active = true
+			if err := s.db.Save(&row).Error; err != nil {
+				return nil, err
 			}
+			out = append(out, PresentationSyncResult{Presentation: row, IsNew: false})
+			sortOrder++
+			continue
 		}
 		row := database.TenantProductPresentation{
 			ProductID: productID,
@@ -1215,12 +1275,6 @@ func (s *ProductService) syncPresentations(productID uint, inputs []ProductPrese
 		sortOrder++
 	}
 
-	var toRemove []uint
-	for id := range existingByID {
-		if !keep[id] {
-			toRemove = append(toRemove, id)
-		}
-	}
 	if len(toRemove) > 0 {
 		if err := s.db.Where("id IN ?", toRemove).Delete(&database.TenantProductPresentation{}).Error; err != nil {
 			return nil, err

@@ -34,6 +34,13 @@ func restoreStockFromKardexTx(tx *gorm.DB, sale *database.TenantSale, ref string
 		return nil
 	}
 
+	// Lo que ya repusieron notas de crédito parciales aceptadas de esta venta no se repone dos
+	// veces al anularla en total (parcial + total dejaba el stock inflado).
+	alreadyBack, err := partialNoteRestoredQty(tx, sale.ID)
+	if err != nil {
+		return err
+	}
+
 	uid := userID
 	if uid == 0 {
 		uid = sale.UserID
@@ -44,12 +51,25 @@ func restoreStockFromKardexTx(tx *gorm.DB, sale *database.TenantSale, ref string
 		if mv.Quantity <= 0 {
 			continue
 		}
+		qty := mv.Quantity
+		key := stockKey{mv.ProductID, presentationKey(mv.PresentationID), mv.BranchID}
+		if back := alreadyBack[key]; back > 0 {
+			d := back
+			if d > qty {
+				d = qty
+			}
+			alreadyBack[key] = back - d
+			qty -= d
+		}
+		if qty <= 0 {
+			continue
+		}
 		if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
 			ProductID:      mv.ProductID,
 			PresentationID: mv.PresentationID,
 			BranchID:       mv.BranchID,
 			Type:           "in",
-			Quantity:       mv.Quantity,
+			Quantity:       qty,
 			Reference:      ref,
 			UserID:         uid,
 			OperationCode:  "SALE",
@@ -65,6 +85,47 @@ func restoreStockFromKardexTx(tx *gorm.DB, sale *database.TenantSale, ref string
 		}
 	}
 	return nil
+}
+
+type stockKey struct {
+	productID      uint
+	presentationID uint
+	branchID       uint
+}
+
+func presentationKey(p *uint) uint {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// partialNoteRestoredQty suma lo que las notas de crédito (parciales) de la venta ya repusieron
+// al kardex, por producto/presentación/sucursal. Las notas guardan su reposición con la
+// referencia "NC/<número de la nota>".
+func partialNoteRestoredQty(tx *gorm.DB, saleID uint) (map[stockKey]float64, error) {
+	out := map[stockKey]float64{}
+	var numbers []string
+	if err := tx.Model(&database.TenantSale{}).
+		Where("original_sale_id = ? AND doc_type = ?", saleID, "NOTA_CREDITO").
+		Pluck("number", &numbers).Error; err != nil {
+		return nil, err
+	}
+	if len(numbers) == 0 {
+		return out, nil
+	}
+	refs := make([]string, len(numbers))
+	for i, n := range numbers {
+		refs[i] = "NC/" + n
+	}
+	var ins []database.TenantStockMovement
+	if err := tx.Where("reference IN ? AND type = ?", refs, "in").Find(&ins).Error; err != nil {
+		return nil, err
+	}
+	for _, m := range ins {
+		out[stockKey{m.ProductID, presentationKey(m.PresentationID), m.BranchID}] += m.Quantity
+	}
+	return out, nil
 }
 
 // RestorePartialStockFromKardexTx repone al inventario SOLO lo que corresponde a las líneas
