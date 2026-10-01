@@ -220,10 +220,12 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 		Reason     string                      `json:"reason"`
 		ReasonCode string                      `json:"reason_code"`
 		Items      []service.NoteItemSelection `json:"items"`
+		// IssueDate: fecha de emisión de la nota (AAAA-MM-DD). Vacía = hoy.
+		IssueDate string `json:"issue_date"`
 	}
 	_ = c.Bind().Body(&body)
 	svc := billingSvc(c)
-	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode), body.Items)
+	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode), body.Items, strings.TrimSpace(body.IssueDate))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error":   err.Error(),

@@ -408,7 +408,7 @@ func (s *BillingService) ResendToSUNAT(saleID uint) (*database.TenantInvoice, er
 // no vacío; en ese caso la nota se arma SOLO con esas líneas, con sus propios totales
 // proporcionales — no se copia el 100% de la venta. Vacío o motivo no-parcial: comportamiento
 // de siempre (copia completa, mismos totales que la venta original).
-func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string, reasonCode string, selections []NoteItemSelection) (*database.TenantSale, *database.TenantInvoice, error) {
+func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string, reasonCode string, selections []NoteItemSelection, issueDate string) (*database.TenantSale, *database.TenantInvoice, error) {
 	if !s.facturadorConfigured() {
 		return nil, nil, errors.New("la anulación con nota de crédito requiere facturador configurado")
 	}
@@ -464,7 +464,12 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 			return err
 		}
 		numberStr := fmt.Sprintf("%s-%08d", ncSeries.Series, nextCorr)
-		now := time.Now()
+		// Fecha de emisión elegida por el usuario (vacía = hoy): hasta 3 días atrás y nunca futura.
+		// Se valida antes de reservar nada.
+		now, dateErr := ResolveCreditNoteIssueDate(issueDate, time.Now())
+		if dateErr != nil {
+			return dateErr
+		}
 		origIDRef := originalSaleID
 
 		var origItems []database.TenantSaleItem
