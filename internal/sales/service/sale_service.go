@@ -2006,7 +2006,7 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 		return errors.New("para anular facturas o boletas debe usar nota de crédito electrónica")
 	}
 	var electronicChild int64
-	if err := s.db.Model(&database.TenantSale{}).Where("issued_from_nota_sale_id = ?", id).Count(&electronicChild).Error; err != nil {
+	if err := s.db.Model(&database.TenantSale{}).Where("issued_from_nota_sale_id = ? AND status <> ?", id, "cancelled").Count(&electronicChild).Error; err != nil {
 		return err
 	}
 	if electronicChild > 0 {
@@ -2183,7 +2183,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		return nil, errors.New("solo se puede emitir comprobante electrónico a partir de una nota de venta (SUNAT 00)")
 	}
 	var dup int64
-	if err := s.db.Model(&database.TenantSale{}).Where("issued_from_nota_sale_id = ?", notaSaleID).Count(&dup).Error; err != nil {
+	if err := s.db.Model(&database.TenantSale{}).Where("issued_from_nota_sale_id = ? AND status <> ?", notaSaleID, "cancelled").Count(&dup).Error; err != nil {
 		return nil, err
 	}
 	if dup > 0 {

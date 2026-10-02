@@ -169,6 +169,7 @@ func (s *RoleService) SeedPermissions() error {
 		{Module: "sales", Action: "create", Label: "Crear ventas"},
 		{Module: "sales", Action: "cancel", Label: "Anular ventas"},
 		{Module: "sales", Action: "pos", Label: "Usar punto de venta"},
+		{Module: "sales", Action: "void_rejected", Label: "Anular localmente un comprobante rechazado por SUNAT"},
 		{Module: "sales", Action: "override_price", Label: "Cambiar precio al vender sin restricción de catálogo"},
 		{Module: "quotations", Action: "view", Label: "Ver cotizaciones"},
 		{Module: "quotations", Action: "create", Label: "Crear cotizaciones"},

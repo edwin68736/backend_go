@@ -24,6 +24,10 @@ func RegisterRoutes(api fiber.Router) {
 	// Anular venta: sales.cancel ya existía en el catálogo y el frontend ya lo usaba para
 	// esconder el botón (SalesPage.tsx) — el backend nunca lo exigía.
 	api.Post("/sales/:id/cancel", mod, loadRest, middleware.RequireSalesAccess("cancel"), h.CancelAPI)
+	// Anular localmente un comprobante rechazado por SUNAT (no pasa por NC ni baja: SUNAT nunca lo
+	// aceptó). Permiso propio sales.void_rejected; el staff de restaurante usa el mismo puente que
+	// anular (orders.cancel) y el rol Administrador.
+	api.Post("/sales/:id/void-rejected", mod, loadRest, middleware.RequireSalesAccess("void_rejected"), h.VoidRejectedAPI)
 	// Devoluciones pendientes: anulaciones cuyo dinero aún no salió de ninguna caja — misma
 	// acción que anular (aplican la devolución de una venta/nota ya anulada), sin permiso propio.
 	api.Get("/sales/pending-refunds", mod, loadRest, middleware.RequireSalesAccess("view"), h.PendingRefundsAPI)

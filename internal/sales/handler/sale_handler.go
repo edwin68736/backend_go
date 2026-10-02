@@ -340,6 +340,36 @@ func (h *SaleHandler) CancelAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "Venta anulada correctamente"})
 }
 
+// VoidRejectedAPI POST /api/sales/:id/void-rejected — anula localmente una factura o boleta que SUNAT
+// rechazó: revierte caja, bancos, stock, seriales y anticipos (ver BillingService.VoidRejectedSale).
+func (h *SaleHandler) VoidRejectedAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	svc := billingSvc.NewBillingService(db(c))
+	if t, ok := c.Locals("tenant").(*database.Tenant); ok && t != nil {
+		svc.SetCentralTenantID(t.ID)
+		svc.SetTenantSlug(t.Slug)
+	}
+	if err := svc.VoidRejectedSale(billingSvc.VoidRejectedInput{
+		SaleID:     uint(id),
+		Reason:     body.Reason,
+		ActorID:    userID(c),
+		ActorEmail: email(c),
+		ClientIP:   c.IP(),
+	}); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "message": "Venta rechazada anulada correctamente"})
+}
+
 // GET /api/sales?q=&from=&to=&doc_type=&billing_status=&sunat_code=00|01,03&contact_id=
 func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 	svc := service.NewSaleService(db(c))
