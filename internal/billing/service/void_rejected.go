@@ -88,6 +88,11 @@ func (s *BillingService) VoidRejectedSale(in VoidRejectedInput) error {
 	if hasLaterCollections(s.db, &sale) {
 		return errors.New("la venta a crédito ya tiene cobros registrados; revierta primero esos cobros desde Cuentas por cobrar")
 	}
+	// Si el comprobante nació de una nota de venta, esa nota se anula con él y sus cobros posteriores
+	// también bloquean: se valida ANTES de anular nada para no dejar la operación a medias.
+	if nv := s.sourceNotaVenta(&sale); nv != nil && hasLaterCollections(s.db, nv) {
+		return fmt.Errorf("la nota de venta %s (de la que nació este comprobante) es a crédito y ya tiene cobros registrados; revierta primero esos cobros desde Cuentas por cobrar", nv.Number)
+	}
 
 	reasonFull := "Comprobante rechazado por SUNAT. " + reason
 	if err := salesvc.NewSaleService(s.db).Cancel(in.SaleID, in.ActorID, reasonFull); err != nil {
@@ -106,7 +111,69 @@ func (s *BillingService) VoidRejectedSale(in VoidRejectedInput) error {
 		)
 	}
 
+	// La nota de venta de origen es donde se gestionan el pago, el stock y los demás registros de la
+	// operación (el comprobante emitido desde ella no mueve nada): al anularse el comprobante, la
+	// operación entera deja de existir y la nota se anula con toda su reversión.
+	if err := s.cancelSourceNotaVenta(&sale, in.ActorID, "Anulada junto con el comprobante "+sale.Number+", rechazado por SUNAT. "+reason); err != nil {
+		logger.L.Warn("void_rejected_cancel_source_nv_failed",
+			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+			slog.Uint64("sale_id", uint64(in.SaleID)),
+			slog.Any("error", err),
+		)
+		s.auditVoidRejected(in, &sale)
+		return fmt.Errorf("el comprobante quedó anulado, pero no se pudo anular su nota de venta de origen: %w", err)
+	}
+
 	s.auditVoidRejected(in, &sale)
+	return nil
+}
+
+// sourceNotaVenta nota de venta de la que nació un comprobante emitido por conversión NV→FE, o nil
+// si el documento no vino de una nota de venta.
+func (s *BillingService) sourceNotaVenta(doc *database.TenantSale) *database.TenantSale {
+	if doc == nil || doc.IssuedFromNotaSaleID == nil || *doc.IssuedFromNotaSaleID == 0 {
+		return nil
+	}
+	var nv database.TenantSale
+	if err := s.db.First(&nv, *doc.IssuedFromNotaSaleID).Error; err != nil {
+		return nil
+	}
+	return &nv
+}
+
+// cancelSourceNotaVenta anula la nota de venta de la que nació `doc` (un comprobante electrónico que
+// ya quedó anulado: por rechazo de SUNAT o por una nota de crédito de anulación total), con toda su
+// reversión (caja, bancos, stock, seriales) y la devolución de anticipos.
+//
+// No hace nada si `doc` no vino de una nota de venta, si la nota ya está anulada, o si esa nota
+// respalda OTRO comprobante vigente (p. ej. se re-emitió uno nuevo desde ella): anularla dejaría sin
+// operación a un comprobante válido. Es idempotente, para poder reintentarse.
+func (s *BillingService) cancelSourceNotaVenta(doc *database.TenantSale, actorID uint, reason string) error {
+	nv := s.sourceNotaVenta(doc)
+	if nv == nil || strings.EqualFold(nv.Status, "cancelled") {
+		return nil
+	}
+	var otherActive int64
+	if err := s.db.Model(&database.TenantSale{}).
+		Where("issued_from_nota_sale_id = ? AND id <> ? AND status <> ?", nv.ID, doc.ID, "cancelled").
+		Count(&otherActive).Error; err != nil {
+		return err
+	}
+	if otherActive > 0 {
+		return nil
+	}
+	if err := salesvc.NewSaleService(s.db).CancelNotaVenta(nv.ID, actorID, reason); err != nil {
+		return err
+	}
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		return prepaymentsvc.NewService(tx).ReverseApplicationsForConsumerSaleTx(tx, nv.ID)
+	}); err != nil {
+		logger.L.Warn("cancel_source_nv_reverse_prepayment_failed",
+			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+			slog.Uint64("nota_venta_id", uint64(nv.ID)),
+			slog.Any("error", err),
+		)
+	}
 	return nil
 }
 
