@@ -1133,7 +1133,15 @@ type SaleListParams struct {
 	DateTo          *time.Time
 	Query           string
 	SunatCodes      []string
-	Limit           int // 0 = sin límite
+	// CommercialReport: el listado se calcula igual que el dashboard, para que las filas, las
+	// tarjetas de totales y los gráficos cuenten lo mismo. Excluye los comprobantes emitidos por
+	// conversión NV→FE (ya están representados por su nota de venta) y filtra SunatCodes por el
+	// tipo de comprobante EFECTIVO: una nota de venta convertida cuenta como la boleta o factura
+	// que originó, no como nota de venta. Sin este flag (pantallas de ventas y facturación) el
+	// listado conserva todas las filas, incluidos los comprobantes hijo, porque ahí se necesita ver
+	// el estado SUNAT de cada uno.
+	CommercialReport bool
+	Limit            int // 0 = sin límite
 	Offset          int
 }
 
@@ -1163,10 +1171,19 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 	var sales []database.TenantSale
 	q := s.db.Model(&database.TenantSale{})
 	useDistinct := false
+	if params.CommercialReport {
+		q = salescope.CommercialSales(q)
+	}
 	if len(params.SunatCodes) > 0 {
-		q = q.Joins("JOIN tenant_document_series ON tenant_document_series.id = tenant_sales.series_id").
-			Where("tenant_document_series.sunat_code IN ?", params.SunatCodes)
-		useDistinct = true
+		if params.CommercialReport {
+			// Tipo efectivo = el del comprobante hijo si la venta es una NV convertida, y si no
+			// el de su propia serie (mismo criterio que el gráfico por tipo del dashboard).
+			q = q.Where(effectiveSunatCodeSQL+" IN ?", params.SunatCodes)
+		} else {
+			q = q.Joins("JOIN tenant_document_series ON tenant_document_series.id = tenant_sales.series_id").
+				Where("tenant_document_series.sunat_code IN ?", params.SunatCodes)
+			useDistinct = true
+		}
 	}
 	if params.BranchID > 0 {
 		q = q.Where("tenant_sales.branch_id = ?", params.BranchID)
@@ -1385,6 +1402,14 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 	return sales, total, summary, nil
 }
 
+// effectiveSunatCodeSQL código SUNAT efectivo de una venta (subconsulta correlacionada sobre
+// tenant_sales): el de su comprobante electrónico hijo si es una nota de venta convertida, y si no
+// el de su propia serie. Equivale al COALESCE(fe.doc_type, tenant_sales.doc_type) del dashboard.
+const effectiveSunatCodeSQL = "COALESCE(" +
+	"(SELECT fds.sunat_code FROM tenant_sales fe JOIN tenant_document_series fds ON fds.id = fe.series_id " +
+	"WHERE fe.issued_from_nota_sale_id = tenant_sales.id AND fe.deleted_at IS NULL ORDER BY fe.id LIMIT 1), " +
+	"(SELECT ds.sunat_code FROM tenant_document_series ds WHERE ds.id = tenant_sales.series_id))"
+
 // saleListSummary agrega montos sobre el mismo conjunto filtrado que List (sin paginar).
 func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSummary, error) {
 	var out SaleListSummary
@@ -1408,9 +1433,15 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	// reversión se contaría dos veces (una por excluir la original, otra por restar la NC) y el
 	// neto quedaría negativo de más. netTotal simplemente la excluye (aporta 0): su efecto ya
 	// está reflejado en que la original no se cuenta como venta vigente.
-	const netTotal = "(CASE WHEN tenant_sales.doc_type = 'NOTA_CREDITO' THEN 0 ELSE tenant_sales.total END)"
-	const netSubtotal = "(CASE WHEN tenant_sales.doc_type = 'NOTA_CREDITO' THEN 0 ELSE tenant_sales.subtotal END)"
-	const netTax = "(CASE WHEN tenant_sales.doc_type = 'NOTA_CREDITO' THEN 0 ELSE tenant_sales.tax_amount END)"
+	//
+	// La nota de débito se trata igual (aporta 0): el dashboard excluye TODAS las notas
+	// (salescope.CommercialSalesNoNotes) porque una nota es el ajuste de un comprobante ya contado,
+	// y sumarla aquí hacía que este reporte y el dashboard dejaran de coincidir en cuanto se emitía
+	// una. Tampoco cuentan en count_*: son documentos, no operaciones de venta.
+	const isNote = "tenant_sales.doc_type IN ('NOTA_CREDITO', 'NOTA_DEBITO')"
+	const netTotal = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.total END)"
+	const netSubtotal = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.subtotal END)"
+	const netTax = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.tax_amount END)"
 	var row aggRow
 	err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
 		Where("tenant_sales.id IN (?)", idSub).
@@ -1420,8 +1451,8 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 			COALESCE(SUM(` + netTax + `), 0) AS sum_tax,
 			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' THEN tenant_sales.total ELSE 0 END), 0) AS sum_cancelled,
 			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN ` + netTotal + ` ELSE 0 END), 0) AS sum_active,
-			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' THEN 1 ELSE 0 END), 0) AS count_cancelled,
-			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN 1 ELSE 0 END), 0) AS count_active
+			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_cancelled,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_active
 		`).
 		Scan(&row).Error
 	if err != nil {

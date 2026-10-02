@@ -340,6 +340,19 @@ func (h *SaleHandler) CancelAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "Venta anulada correctamente"})
 }
 
+// resolveSalesReportBranch sucursal de un listado/reporte de ventas. branch_id=all pide "todas las
+// sucursales" de forma explícita (el selector de los reportes, que antes con el valor vacío caía en
+// la sucursal activa); un número filtra esa sucursal; sin valor, la sucursal activa como siempre.
+// Quien no puede cambiar de sucursal queda siempre en la suya (ver branch.ResolveReportBranchFilter).
+func resolveSalesReportBranch(c fiber.Ctx) uint {
+	raw := strings.TrimSpace(c.Query("branch_id"))
+	if strings.EqualFold(raw, "all") {
+		return branch.ResolveReportBranchFilter(c, 0, true)
+	}
+	req, _ := strconv.ParseUint(raw, 10, 32)
+	return branch.ResolveReadBranchFilter(c, uint(req))
+}
+
 // VoidRejectedAPI POST /api/sales/:id/void-rejected — anula localmente una factura o boleta que SUNAT
 // rechazó: revierte caja, bancos, stock, seriales y anticipos (ver BillingService.VoidRejectedSale).
 func (h *SaleHandler) VoidRejectedAPI(c fiber.Ctx) error {
@@ -373,8 +386,7 @@ func (h *SaleHandler) VoidRejectedAPI(c fiber.Ctx) error {
 // GET /api/sales?q=&from=&to=&doc_type=&billing_status=&sunat_code=00|01,03&contact_id=
 func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 	svc := service.NewSaleService(db(c))
-	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
-	branchID := branch.ResolveReadBranchFilter(c, uint(reqBranch))
+	branchID := resolveSalesReportBranch(c)
 	contactID, _ := strconv.ParseUint(c.Query("contact_id"), 10, 32)
 	var dateFrom, dateTo *time.Time
 	if from := c.Query("from"); from != "" {
@@ -409,6 +421,9 @@ func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 		DateFrom:      dateFrom,
 		DateTo:        dateTo,
 		SunatCodes:    sunatCodes,
+		// scope=commercial: el reporte de ventas cuenta lo mismo que el dashboard (ver
+		// SaleListParams.CommercialReport). Sin él, el listado conserva todas las filas.
+		CommercialReport: c.Query("scope") == "commercial",
 	}
 	switch strings.TrimSpace(c.Query("sale_status")) {
 	case "active":
@@ -465,8 +480,7 @@ func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 // GET /api/sales/by-product?from=&to=&branch_id=&category_id=
 func (h *SaleHandler) ListByProductAPI(c fiber.Ctx) error {
 	svc := service.NewSaleService(db(c))
-	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
-	branchID := branch.ResolveReadBranchFilter(c, uint(reqBranch))
+	branchID := resolveSalesReportBranch(c)
 	catID, _ := strconv.ParseUint(c.Query("category_id"), 10, 32)
 	var dateFrom, dateTo *time.Time
 	if from := c.Query("from"); from != "" {
@@ -499,8 +513,7 @@ func (h *SaleHandler) ListByProductAPI(c fiber.Ctx) error {
 // GET /api/sales/profit-detail?from=&to=&branch_id=&category_id=&q=
 func (h *SaleHandler) ListProfitDetailAPI(c fiber.Ctx) error {
 	svc := service.NewSaleService(db(c))
-	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
-	branchID := branch.ResolveReadBranchFilter(c, uint(reqBranch))
+	branchID := resolveSalesReportBranch(c)
 	catID, _ := strconv.ParseUint(c.Query("category_id"), 10, 32)
 	var dateFrom, dateTo *time.Time
 	if from := c.Query("from"); from != "" {

@@ -115,6 +115,27 @@ func ResolveReadBranchFilter(c fiber.Ctx, requested uint) uint {
 	return active
 }
 
+// ResolveReportBranchFilter sucursal para dashboards y reportes de ventas, donde "Todas las
+// sucursales" es una opción real: el administrador de sucursales que no elige ninguna (requested
+// = 0) y pide "todas" (allWhenEmpty) ve el total de la empresa; si elige una, esa. Quien no puede
+// cambiar de sucursal queda siempre en la suya.
+//
+// ResolveReadBranchFilter no sirve para esto: con requested = 0 devuelve la sucursal activa, así
+// que un reporte con el selector en "Todas" mostraba solo la sucursal activa mientras el
+// dashboard (sin ese filtro) sumaba todas, y los totales de ambos no coincidían.
+func ResolveReportBranchFilter(c fiber.Ctx, requested uint, allWhenEmpty bool) uint {
+	if !IsBranchAdmin(c) {
+		return ActiveBranchID(c)
+	}
+	if requested > 0 {
+		return requested
+	}
+	if allWhenEmpty {
+		return 0
+	}
+	return ActiveBranchID(c)
+}
+
 // BumpSessionVersion incrementa versión al cambiar asignación de sucursal del usuario.
 // No-op si el tenant aún no tiene la columna (rolling deploy / legacy).
 func BumpSessionVersion(db *gorm.DB, userID uint) error {

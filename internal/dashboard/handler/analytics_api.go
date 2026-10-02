@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/paymentcondition"
@@ -77,14 +78,21 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "fechas inválidas (use date_from y date_to como YYYY-MM-DD)"})
 	}
 
-	var branchID uint
+	// Misma regla de sucursal que los reportes de ventas (branch.ResolveReportBranchFilter): quien
+	// puede cambiar de sucursal ve todas si no elige una; el resto queda en la suya. Antes el
+	// dashboard sumaba TODAS las sucursales para cualquiera y los reportes solo la activa, y los
+	// totales no coincidían.
+	var requestedBranch uint
 	if v, e := strconv.ParseUint(c.Query("branch_id"), 10, 32); e == nil {
-		branchID = uint(v)
+		requestedBranch = uint(v)
 	}
+	branchID := branch.ResolveReportBranchFilter(c, requestedBranch, true)
 
 	userID, _ := c.Locals("user_id").(uint)
-	userRole, _ := c.Locals("user_role").(string)
-	restrictUser := userRole != "Administrador" && userID != 0
+	// Ya no se restringe a "solo mis ventas" a quien no es Administrador: el reporte de ventas
+	// muestra todas las de la sucursal y las cifras de ambas pantallas deben coincidir. El acceso
+	// al dashboard sigue protegido por el permiso dashboard.view.
+	restrictUser := false
 
 	duration := toExclusive.Sub(from)
 	prevToExclusive := from
