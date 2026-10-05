@@ -658,3 +658,42 @@ func TestQuotation_PrintDataShowsIgvBreakdownLikeSale(t *testing.T) {
 		t.Fatal("en régimen general el documento debe discriminar subtotal e IGV, como una venta")
 	}
 }
+
+// Regresión: el formulario manda en CADA línea `discount` = descuento bruto ya calculado, que
+// incluye la parte repartida del descuento global. Una línea sin descuento propio no debe
+// interpretarlo como descuento de línea (aplicaba el global dos veces: 216.13 en vez de 218.50).
+func TestQuotation_FormPayloadWithGlobalDiscountIsNotAppliedTwice(t *testing.T) {
+	e := newQuotationEnv(t)
+	q, err := e.create(t, []QuotationItemInput{
+		manualItem(func(i *QuotationItemInput) {
+			i.Description, i.UnitPrice = "Servicio de consultoria", 200
+			i.LineDiscountMode, i.LineDiscountValue = "percent", 10
+			i.Discount = 29 // 10 % de línea + su parte del 5 % global, en bruto (como lo calcula el formulario)
+		}),
+		manualItem(func(i *QuotationItemInput) {
+			i.Description, i.UnitPrice = "Soporte mensual", 50
+			i.Discount = 2.5 // SOLO su parte del global; no es un descuento de línea
+		}),
+	}, func(in *CreateQuotationInput) { in.GlobalDiscountMode, in.GlobalDiscountValue = "percent", 5 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(q.Total, 218.50) {
+		t.Fatalf("total = %.2f, want 218.50 (el global no debe aplicarse dos veces)", q.Total)
+	}
+	_, items, _ := e.svc.GetByID(q.ID)
+	if items[1].LineDiscountMode != "" || items[1].LineDiscountValue != 0 {
+		t.Fatalf("la línea sin descuento propio no debe quedar con descuento de línea: %q %.4f", items[1].LineDiscountMode, items[1].LineDiscountValue)
+	}
+	if !near(items[0].Total, 171.00) || !near(items[1].Total, 47.50) {
+		t.Fatalf("totales por línea = %.2f / %.2f, want 171.00 / 47.50", items[0].Total, items[1].Total)
+	}
+	// Y la venta convertida vale lo mismo.
+	sale, err := e.convert(t, q.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(sale.Total, 218.50) {
+		t.Fatalf("venta = %.2f, want 218.50", sale.Total)
+	}
+}

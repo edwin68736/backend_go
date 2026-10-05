@@ -112,6 +112,19 @@ func (s *QuotationService) buildQuotation(
 		return out, err
 	}
 
+	// ¿La petición trae descuentos ESTRUCTURADOS (modo+valor, de línea o global)? Entonces el campo
+	// heredado `discount` de cada línea es solo informativo: el formulario lo manda siempre con el
+	// descuento ya calculado, que INCLUYE la parte repartida del descuento global. Tomarlo como
+	// descuento propio de una línea sin descuento aplicaba el global dos veces (50 con 5 % global
+	// quedaba como 2.12 de línea + 2.38 de global y el total bajaba de 218.50 a 216.13). Solo un
+	// cliente anterior, que no conoce los modos, depende de `discount`.
+	requestStructured := globalMode != "" || globalValue > 0
+	for _, in := range inputItems {
+		if strings.TrimSpace(in.LineDiscountMode) != "" || in.LineDiscountValue > 0 {
+			requestStructured = true
+		}
+	}
+
 	// Normalizar y validar cada línea.
 	items := make([]QuotationItemInput, len(inputItems))
 	copy(items, inputItems)
@@ -173,7 +186,7 @@ func (s *QuotationService) buildQuotation(
 			mode = discountModeAmount
 		}
 		legacyGross := 0.0 // descuento bruto original (cliente anterior), para citarlo tal cual en errores
-		if mode == "" && it.Discount > 0 {
+		if mode == "" && it.Discount > 0 && !requestStructured {
 			mode = discountModeAmount
 			legacyGross = it.Discount
 			it.LineDiscountValue = legacyDiscountToBase(it.Discount, aff, it.PriceIncludesIgv, taxCfg)
