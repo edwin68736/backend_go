@@ -122,6 +122,7 @@ var TenantMigrations = []TenantMigration{
 	V148ProductBranchPrice{},
 	V149SalesVoidRejectedPermission{},
 	V150SaleIdempotencyKey{},
+	V151QuotationDiscountModes{},
 }
 
 // ByVersion mapa versión → migración.

@@ -1779,6 +1779,12 @@ type TenantQuotation struct {
 	Subtotal            float64    `gorm:"type:decimal(15,2);not null" json:"subtotal"`
 	TaxAmount           float64    `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
 	Total               float64    `gorm:"type:decimal(15,2);not null" json:"total"`
+	// Descuento global tal como lo tecleó el usuario (modo percent|amount + valor) y el monto en
+	// base imponible que resultó. Sin esto, al editar o convertir solo se podía reconstruir el
+	// reparto por línea y se perdía el "15 %" original (ver v151).
+	GlobalDiscountMode   string     `gorm:"size:20" json:"global_discount_mode,omitempty"`
+	GlobalDiscountValue  float64    `gorm:"type:decimal(15,4);default:0" json:"global_discount_value"`
+	GlobalDiscountAmount float64    `gorm:"type:decimal(15,2);default:0" json:"global_discount_amount"`
 	Currency            string     `gorm:"size:10;default:'PEN'" json:"currency"`
 	ExchangeRate        *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
 	Notes               string     `gorm:"type:text" json:"notes"`
@@ -1804,14 +1810,23 @@ type TenantQuotationItem struct {
 	Unit               string  `gorm:"size:50" json:"unit"`
 	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
 	UnitPrice          float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
-	Discount           float64 `gorm:"type:decimal(15,2);default:0" json:"discount"`
+	// Discount: monto en formato CalcItem (resta del bruto qty*precio). Se conserva para ventas y
+	// consumidores que no conocen LineDiscountMode; el dato de verdad es LineDiscountMode/Value.
+	Discount float64 `gorm:"type:decimal(15,2);default:0" json:"discount"`
+	// LineDiscountMode/Value: el descuento de la línea como lo tecleó el usuario (percent|amount
+	// sobre la base imponible). Vacío en cotizaciones anteriores a v151.
+	LineDiscountMode   string  `gorm:"size:20" json:"line_discount_mode,omitempty"`
+	LineDiscountValue  float64 `gorm:"type:decimal(15,4);default:0" json:"line_discount_value"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
-	PriceIncludesIgv   bool    `gorm:"default:true" json:"price_includes_igv"`
-	Subtotal           float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
-	TaxAmount          float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
-	Total              float64 `gorm:"type:decimal(15,2);not null" json:"total"`
-	ModifiersJSON      string  `gorm:"type:text" json:"modifiers_json"`
+	// Sin `default:true` a propósito: con ese tag GORM reemplaza un false explícito por true al
+	// insertar, y toda cotización con precios SIN IGV se guardaba (y luego se convertía) como si
+	// el precio ya lo incluyera.
+	PriceIncludesIgv bool    `json:"price_includes_igv"`
+	Subtotal         float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount        float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total            float64 `gorm:"type:decimal(15,2);not null" json:"total"`
+	ModifiersJSON    string  `gorm:"type:text" json:"modifiers_json"`
 	// ItemNote nota libre de esta línea; queda en el snapshot de la cotización.
 	ItemNote string `gorm:"size:255" json:"item_note"`
 }

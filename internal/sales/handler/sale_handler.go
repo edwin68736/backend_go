@@ -191,7 +191,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		qid := *body.FromQuotationID
 		issuedFromQuotationID = &qid
 	}
-	sale, err := svc.Create(service.CreateSaleInput{
+	createInput := service.CreateSaleInput{
 		BranchID:              branchID,
 		ContactID:             body.ContactID,
 		UserID:                userID(c),
@@ -219,23 +219,29 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		IssuedFromQuotationID: issuedFromQuotationID,
 		UserCanOverridePrice:  userCanOverridePrice(c),
 		IdempotencyKey:        body.IdempotencyKey,
-	})
+	}
+	// Cotización de origen: marcarla convertida DENTRO de la transacción de la venta (UPDATE
+	// condicional). Antes se marcaba después y con el error ignorado: dos conversiones simultáneas
+	// creaban dos ventas y una cotización "borrador" con venta emitida si el marcado fallaba.
+	if issuedFromQuotationID != nil {
+		qid := *issuedFromQuotationID
+		createInput.OnCreatedTx = func(tx *gorm.DB, created *database.TenantSale) error {
+			target := "nota_venta"
+			var ser database.TenantDocumentSeries
+			if tx.First(&ser, created.SeriesID).Error == nil {
+				if code := strings.TrimSpace(ser.SunatCode); code == "01" || code == "03" {
+					target = code
+				}
+			}
+			return quotationsvc.ClaimForConversionTx(tx, qid, created.ID, target)
+		}
+	}
+	sale, err := svc.Create(createInput)
 	// Reintento de un cobro ya guardado: se responde con la venta original y NO se repiten los
 	// efectos secundarios (conversión de cotización, encolado a SUNAT) que ya ocurrieron.
 	replayed := errors.Is(err, service.ErrIdempotentReplay)
 	if err != nil && !replayed {
 		return saleCreateErrorResponse(c, err)
-	}
-	if !replayed && body.FromQuotationID != nil && *body.FromQuotationID > 0 {
-		target := "nota_venta"
-		var ser database.TenantDocumentSeries
-		if dbc.First(&ser, sale.SeriesID).Error == nil {
-			code := strings.TrimSpace(ser.SunatCode)
-			if code == "01" || code == "03" {
-				target = code
-			}
-		}
-		_ = quotationsvc.NewQuotationService(dbc).MarkConverted(*body.FromQuotationID, sale.ID, target)
 	}
 
 	if !replayed {

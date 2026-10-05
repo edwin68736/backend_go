@@ -200,6 +200,13 @@ type CreateSaleInput struct {
 	// IdempotencyKey: clave por intento de cobro generada por el cliente (ver sale_idempotency.go).
 	// Vacía = sin protección (flujos internos: ecommerce, membresías, cotizaciones, reemisión).
 	IdempotencyKey string
+	// OnCreatedTx se ejecuta DENTRO de la transacción de la venta, cuando ya está completamente
+	// persistida (cabecera, ítems, pagos, caja, kardex). Si devuelve error, la transacción entera
+	// hace rollback —venta, correlativo, caja y stock incluidos—. Sirve para atar a la venta una
+	// operación que debe ocurrir "o ambas o ninguna" (p. ej. marcar una cotización como
+	// convertida con un UPDATE condicional, para que dos conversiones simultáneas no creen dos
+	// ventas). nil = sin hook.
+	OnCreatedTx func(tx *gorm.DB, sale *database.TenantSale) error
 }
 
 // NextCorrelative retorna el siguiente correlativo para una serie y lo incrementa (transacción con bloqueo de fila).
@@ -927,6 +934,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 		if err := s.persistPrepaymentDeductionTx(tx, sale.ID, prepaymentDeductionPlan); err != nil {
 			return err
+		}
+		if input.OnCreatedTx != nil {
+			if err := input.OnCreatedTx(tx, sale); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

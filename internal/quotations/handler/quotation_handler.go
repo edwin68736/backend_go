@@ -127,6 +127,8 @@ func (h *QuotationHandler) CreateAPI(c fiber.Ctx) error {
 		Notes               string                            `json:"notes"`
 		ShowTermsConditions bool                              `json:"show_terms_conditions"`
 		Items               []quotationsvc.QuotationItemInput `json:"items"`
+		GlobalDiscountMode  string                            `json:"global_discount_mode"`
+		GlobalDiscountValue float64                           `json:"global_discount_value"`
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
@@ -150,6 +152,8 @@ func (h *QuotationHandler) CreateAPI(c fiber.Ctx) error {
 		ShowTermsConditions: body.ShowTermsConditions,
 		Items:               body.Items,
 		TaxConfig:    taxCfg,
+		GlobalDiscountMode:  body.GlobalDiscountMode,
+		GlobalDiscountValue: body.GlobalDiscountValue,
 	})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -177,6 +181,8 @@ func (h *QuotationHandler) UpdateAPI(c fiber.Ctx) error {
 		Notes               string                            `json:"notes"`
 		ShowTermsConditions bool                              `json:"show_terms_conditions"`
 		Items               []quotationsvc.QuotationItemInput `json:"items"`
+		GlobalDiscountMode  string                            `json:"global_discount_mode"`
+		GlobalDiscountValue float64                           `json:"global_discount_value"`
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
@@ -194,6 +200,8 @@ func (h *QuotationHandler) UpdateAPI(c fiber.Ctx) error {
 		ShowTermsConditions: body.ShowTermsConditions,
 		Items:               body.Items,
 		TaxConfig:    taxCfg,
+		GlobalDiscountMode:  body.GlobalDiscountMode,
+		GlobalDiscountValue: body.GlobalDiscountValue,
 	})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -229,6 +237,9 @@ func (h *QuotationHandler) ConvertAPI(c fiber.Ctx) error {
 		SeriesID  uint   `json:"series_id"`
 		IssueDate string `json:"issue_date"`
 		ContactID *uint  `json:"contact_id"`
+		// Pagos opcionales; sin ellos se cobra al contado en efectivo por el total real de la venta.
+		Payments             []salessvc.PaymentInput `json:"payments"`
+		PaymentConditionCode string                  `json:"payment_condition_code"`
 	}
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
@@ -245,9 +256,15 @@ func (h *QuotationHandler) ConvertAPI(c fiber.Ctx) error {
 		UserID:        userID(c),
 		CentralTenant: centralTenantID(c),
 		TaxConfig:     tax.LoadFromDB(db(c)),
+		Payments:             body.Payments,
+		PaymentConditionCode: body.PaymentConditionCode,
 	})
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		st := fiber.StatusBadRequest
+		if errors.Is(err, quotationsvc.ErrQuotationAlreadyConverted) {
+			st = fiber.StatusConflict
+		}
+		return c.Status(st).JSON(fiber.Map{"error": err.Error()})
 	}
 	triggerAutoFiscalEnqueue(c, sale)
 	out := fiber.Map{"sale": sale}

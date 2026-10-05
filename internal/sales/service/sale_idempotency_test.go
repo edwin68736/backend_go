@@ -163,3 +163,44 @@ func TestNormalizeIdempotencyKey(t *testing.T) {
 		}
 	}
 }
+
+// OnCreatedTx corre dentro de la transacción de la venta: si falla, rollback total (venta,
+// ítems, pagos y correlativo). Es lo que hace atómica la conversión de cotizaciones.
+func TestSaleService_Create_OnCreatedTxFailureRollsBackEverything(t *testing.T) {
+	db, seriesID := setupIdempotencyDB(t)
+	svc := NewSaleService(db)
+
+	boom := errors.New("otra conversión ganó la carrera")
+	in := idemInput(seriesID, 1, "")
+	in.OnCreatedTx = func(tx *gorm.DB, sale *database.TenantSale) error {
+		if sale.ID == 0 {
+			t.Error("el hook debe ejecutarse con la venta ya persistida")
+		}
+		return boom
+	}
+	if _, err := svc.Create(in); !errors.Is(err, boom) {
+		t.Fatalf("debe propagar el error del hook, obtuve %v", err)
+	}
+	if n := countSales(t, db); n != 0 {
+		t.Fatalf("no debe quedar ninguna venta, hay %d", n)
+	}
+	var items, pays int64
+	db.Model(&database.TenantSaleItem{}).Count(&items)
+	db.Model(&database.TenantSalePayment{}).Count(&pays)
+	if items != 0 || pays != 0 {
+		t.Fatalf("no deben quedar ítems ni pagos: %d / %d", items, pays)
+	}
+	var ser database.TenantDocumentSeries
+	db.First(&ser, seriesID)
+	if ser.Correlative != 1 {
+		t.Fatalf("el correlativo no debe consumirse: %d", ser.Correlative)
+	}
+
+	// Y con un hook que no falla, la venta se crea normalmente.
+	ok := idemInput(seriesID, 1, "")
+	called := false
+	ok.OnCreatedTx = func(tx *gorm.DB, sale *database.TenantSale) error { called = true; return nil }
+	if _, err := svc.Create(ok); err != nil || !called {
+		t.Fatalf("con hook exitoso la venta debe crearse: err=%v called=%v", err, called)
+	}
+}
