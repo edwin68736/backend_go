@@ -600,3 +600,61 @@ func TestQuotation_ComboConvertsWithComponentStock(t *testing.T) {
 		t.Fatalf("deben salir los componentes: polo=%.0f pantalón=%.0f (want 9 y 9)", e.stockOf(t, polo.ID), e.stockOf(t, pant.ID))
 	}
 }
+
+// El documento impreso de la cotización trae el mismo desglose de descuentos que el de la venta
+// (por línea y global), para que el PDF los muestre igual y no los reconstruya con una heurística.
+func TestQuotation_PrintDataHasSameDiscountBreakdownAsSale(t *testing.T) {
+	e := newQuotationEnv(t)
+	q, err := e.create(t, []QuotationItemInput{manualItem(func(i *QuotationItemInput) {
+		i.UnitPrice = 100
+		i.LineDiscountMode = "percent"
+		i.LineDiscountValue = 10
+	})}, func(in *CreateQuotationInput) { in.GlobalDiscountMode = "amount"; in.GlobalDiscountValue = 5 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd, err := BuildPrintDataForQuotation(e.db, q.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(pd.LineDiscountTotal, 8.47) || !near(pd.GlobalDiscountAmount, 5) {
+		t.Fatalf("desglose del documento: línea=%.2f (want 8.47) global=%.2f (want 5.00)", pd.LineDiscountTotal, pd.GlobalDiscountAmount)
+	}
+	it := pd.Items[0]
+	if !near(it.LineDiscountSubtotal, 8.47) || !near(it.GlobalDiscountSubtotal, 5) {
+		t.Fatalf("desglose de la línea: %.2f / %.2f", it.LineDiscountSubtotal, it.GlobalDiscountSubtotal)
+	}
+
+	// Es el mismo desglose que registra la venta al convertir.
+	sale, err := e.convert(t, q.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(sale.GlobalDiscountAmount, pd.GlobalDiscountAmount) || !near(sale.Total, q.Total) {
+		t.Fatalf("venta: global=%.2f total=%.2f vs cotización: global=%.2f total=%.2f",
+			sale.GlobalDiscountAmount, sale.Total, pd.GlobalDiscountAmount, q.Total)
+	}
+
+	// Sin descuentos: no se inventa desglose.
+	plain, _ := e.create(t, []QuotationItemInput{manualItem(nil)}, nil)
+	pp, _ := BuildPrintDataForQuotation(e.db, plain.ID)
+	if pp.LineDiscountTotal != 0 || pp.GlobalDiscountAmount != 0 {
+		t.Fatalf("sin descuentos no debe haber desglose: %.2f / %.2f", pp.LineDiscountTotal, pp.GlobalDiscountAmount)
+	}
+}
+
+// El PDF de la cotización muestra Subtotal/descuentos/IGV igual que una venta (régimen general).
+func TestQuotation_PrintDataShowsIgvBreakdownLikeSale(t *testing.T) {
+	e := newQuotationEnv(t)
+	q, err := e.create(t, []QuotationItemInput{manualItem(nil)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd, err := BuildPrintDataForQuotation(e.db, q.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pd.Company.ShowIgvBreakdown {
+		t.Fatal("en régimen general el documento debe discriminar subtotal e IGV, como una venta")
+	}
+}
