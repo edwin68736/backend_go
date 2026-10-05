@@ -28,6 +28,7 @@ func setupQuotationConvertDB(t *testing.T) *gorm.DB {
 		&database.TenantCashSession{}, &database.TenantPaymentMethod{}, &database.TenantProduct{},
 		&database.TenantBranch{}, &database.TenantProductStock{}, &database.TenantStockMovement{},
 		&database.TenantInventoryOperationType{}, &database.TenantQuotation{}, &database.TenantQuotationItem{},
+		&database.TenantProductBranchPrice{},
 	}
 	for _, m := range models {
 		if err := db.AutoMigrate(m); err != nil {

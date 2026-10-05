@@ -411,3 +411,192 @@ func TestQuotation_EditRules(t *testing.T) {
 		t.Fatal("una cotización convertida no se elimina")
 	}
 }
+
+// ── Precios: misma regla que la venta (sales.override_price) ──────────────────────────────
+
+func TestQuotation_CatalogPriceMustMatchUnlessUserCanOverride(t *testing.T) {
+	e := newQuotationEnv(t)
+	p := database.TenantProduct{Code: "SILLA", Name: "Silla", Type: "product", Unit: "NIU", SalePrice: 25,
+		IgvAffectationType: "10", PriceIncludesIgv: true, BranchID: 1, Active: true}
+	if err := e.db.Create(&p).Error; err != nil {
+		t.Fatal(err)
+	}
+	pid := p.ID
+	line := func(price float64) []QuotationItemInput {
+		return []QuotationItemInput{{ProductID: &pid, Quantity: 1, UnitPrice: price, Unit: "NIU", IgvAffectationType: "10", PriceIncludesIgv: true}}
+	}
+
+	// Sin override: el precio de catálogo pasa; uno alterado se rechaza (igual que en una venta).
+	if _, err := e.create(t, line(25), nil); err != nil {
+		t.Fatalf("precio de catálogo debe aceptarse: %v", err)
+	}
+	if _, err := e.create(t, line(0.01), nil); err == nil || !strings.Contains(err.Error(), "precio autorizado") {
+		t.Fatalf("precio alterado sin override debe rechazarse con 'precio autorizado': %v", err)
+	}
+	// Con override: aceptado (precio pactado).
+	q, err := e.create(t, line(0.01), func(in *CreateQuotationInput) { in.UserCanOverridePrice = true })
+	if err != nil {
+		t.Fatalf("con sales.override_price el precio pactado debe aceptarse: %v", err)
+	}
+
+	// Un usuario SIN override edita esa cotización sin tocar el precio (pactado por otro): permitido.
+	cid := e.contact
+	if _, err := e.svc.Update(q.ID, UpdateQuotationInput{
+		ContactID: &cid, SeriesID: e.quoteSer, IssueDate: time.Now(), Currency: "PEN", Notes: "solo cambia la nota",
+		TaxConfig: tax.DefaultConfig(), Items: line(0.01),
+	}); err != nil {
+		t.Fatalf("editar sin cambiar el precio pactado no debe exigir override: %v", err)
+	}
+	// Pero si ese mismo usuario CAMBIA el precio a otro distinto del catálogo, se rechaza.
+	if _, err := e.svc.Update(q.ID, UpdateQuotationInput{
+		ContactID: &cid, SeriesID: e.quoteSer, IssueDate: time.Now(), Currency: "PEN",
+		TaxConfig: tax.DefaultConfig(), Items: line(0.02),
+	}); err == nil {
+		t.Fatal("cambiar el precio a uno no autorizado sin override debe rechazarse")
+	}
+}
+
+// ── Unidad de venta, series y combos se conservan hasta la venta ──────────────────────────
+
+func (e quotationEnv) withInventoryTables(t *testing.T) {
+	t.Helper()
+	for _, m := range []interface{}{
+		&database.TenantProductSerial{}, &database.TenantProductSaleUnit{}, &database.TenantProductSaleUnitBranchPrice{},
+		&database.TenantProductAttribute{}, &database.TenantCashMovement{}, &database.TenantBankMovement{}, &database.TenantBankAccount{},
+		&database.TenantModifierGroup{}, &database.TenantModifierOption{}, &database.TenantProductModifierGroup{},
+		&database.TenantComboGroup{}, &database.TenantComboGroupItem{},
+	} {
+		if err := e.db.AutoMigrate(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (e quotationEnv) stockOf(t *testing.T, productID uint) float64 {
+	t.Helper()
+	var st database.TenantProductStock
+	if err := e.db.Where("product_id = ? AND branch_id = 1", productID).First(&st).Error; err != nil {
+		t.Fatal(err)
+	}
+	return st.Quantity
+}
+
+// Cotizar 2 «Saco 100 KG» y convertir debe descontar 200 KG, igual que una venta directa
+// (antes descontaba 2: la venta salía bien y el inventario quedaba mal, sin ningún error).
+func TestQuotation_SaleUnitIsPreservedAndStockMatchesDirectSale(t *testing.T) {
+	e := newQuotationEnv(t)
+	e.withInventoryTables(t)
+	p := database.TenantProduct{Code: "ARR", Name: "Arroz", Type: "product", Unit: "KGM", SalePrice: 4.5,
+		IgvAffectationType: "10", PriceIncludesIgv: true, ManageStock: true, BranchID: 1, Active: true}
+	e.db.Create(&p)
+	e.db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 500})
+	su := database.TenantProductSaleUnit{ProductID: p.ID, Name: "Saco 100 KG", ConversionFactor: 100, AllowFraction: true, Price1: 450, Active: true}
+	e.db.Create(&su)
+	pid, suid := p.ID, su.ID
+
+	q, err := e.create(t, []QuotationItemInput{{
+		ProductID: &pid, SaleUnitID: &suid, Quantity: 2, UnitPrice: 450, Unit: "KGM", IgvAffectationType: "10", PriceIncludesIgv: true,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("crear: %v", err)
+	}
+	_, items, _ := e.svc.GetByID(q.ID)
+	if items[0].SaleUnitID == nil || *items[0].SaleUnitID != suid {
+		t.Fatalf("la unidad de venta debe guardarse en la línea: %v", items[0].SaleUnitID)
+	}
+	if _, err := e.convert(t, q.ID); err != nil {
+		t.Fatalf("convertir: %v", err)
+	}
+	if got := e.stockOf(t, pid); !near(got, 300) {
+		t.Fatalf("stock tras vender 2 sacos = %.2f, want 300 (500 − 2×100)", got)
+	}
+
+	// Unidad de venta inexistente / de otro producto: se rechaza al cotizar, no al convertir.
+	bad := uint(9999)
+	if _, err := e.create(t, []QuotationItemInput{{
+		ProductID: &pid, SaleUnitID: &bad, Quantity: 1, UnitPrice: 450, Unit: "KGM", IgvAffectationType: "10", PriceIncludesIgv: true,
+	}}, nil); err == nil {
+		t.Fatal("una unidad de venta inexistente debe rechazarse al cotizar")
+	}
+}
+
+// Las series elegidas al cotizar son las que se venden.
+func TestQuotation_SerialsAreCarriedToTheSale(t *testing.T) {
+	e := newQuotationEnv(t)
+	e.withInventoryTables(t)
+	p := database.TenantProduct{Code: "LAP", Name: "Laptop", Type: "product", Unit: "NIU", SalePrice: 100,
+		IgvAffectationType: "10", PriceIncludesIgv: true, ManageStock: true, ManageSeries: true, BranchID: 1, Active: true}
+	e.db.Create(&p)
+	e.db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 3})
+	for _, s := range []string{"S1", "S2", "S3"} {
+		e.db.Create(&database.TenantProductSerial{ProductID: p.ID, BranchID: 1, Serial: s, Status: "available"})
+	}
+	pid := p.ID
+	q, err := e.create(t, []QuotationItemInput{{
+		ProductID: &pid, Quantity: 1, UnitPrice: 100, Unit: "NIU", IgvAffectationType: "10", PriceIncludesIgv: true, Serials: []string{"S2"},
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.convert(t, q.ID); err != nil {
+		t.Fatalf("convertir: %v", err)
+	}
+	status := func(serial string) string {
+		var s database.TenantProductSerial
+		e.db.Where("product_id = ? AND serial = ?", pid, serial).First(&s)
+		return s.Status
+	}
+	if status("S2") != "sold" || status("S1") != "available" || status("S3") != "available" {
+		t.Fatalf("debía venderse la serie elegida (S2): S1=%s S2=%s S3=%s", status("S1"), status("S2"), status("S3"))
+	}
+}
+
+// Un combo cotizado se vende como combo: precio del grupo y salida de stock de sus componentes
+// (antes la cotización ignoraba combo_json y la venta convertida no resolvía los componentes
+// elegidos).
+func TestQuotation_ComboConvertsWithComponentStock(t *testing.T) {
+	e := newQuotationEnv(t)
+	e.withInventoryTables(t)
+	newProduct := func(name, code string, price float64) database.TenantProduct {
+		p := database.TenantProduct{Code: code, Name: name, Type: "product", Unit: "NIU", SalePrice: price,
+			IgvAffectationType: "10", PriceIncludesIgv: true, ManageStock: true, BranchID: 1, Active: true}
+		if err := e.db.Create(&p).Error; err != nil {
+			t.Fatal(err)
+		}
+		e.db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 10})
+		return p
+	}
+	polo := newProduct("Polo", "POLO", 10)
+	pant := newProduct("Pantalón", "PANT", 30)
+	combo := database.TenantProduct{Code: "PROMO", Name: "Promoción verano", Type: "product", Unit: "NIU", SalePrice: 20,
+		IgvAffectationType: "10", PriceIncludesIgv: true, BranchID: 1, HasCombo: true, Active: true}
+	if err := e.db.Create(&combo).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i, comp := range []database.TenantProduct{polo, pant} {
+		g := database.TenantComboGroup{ProductID: combo.ID, Name: comp.Name, SelectionType: database.ComboSelectionFixed,
+			MinSelect: 1, MaxSelect: 1, SortOrder: i, Active: true}
+		e.db.Create(&g)
+		e.db.Create(&database.TenantComboGroupItem{GroupID: g.ID, ProductID: comp.ID, DefaultQuantity: 1, MaxQuantity: 1, Active: true})
+	}
+	cid := combo.ID
+	q, err := e.create(t, []QuotationItemInput{{
+		ProductID: &cid, Quantity: 1, UnitPrice: 20, Unit: "NIU", IgvAffectationType: "10", PriceIncludesIgv: true,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("cotizar combo: %v", err)
+	}
+	if !near(q.Total, 20) {
+		t.Fatalf("el combo cuesta 20 (no 40 = suma de componentes): %.2f", q.Total)
+	}
+	sale, err := e.convert(t, q.ID)
+	if err != nil {
+		t.Fatalf("convertir combo: %v", err)
+	}
+	if !near(sale.Total, 20) {
+		t.Fatalf("venta del combo = %.2f, want 20", sale.Total)
+	}
+	if e.stockOf(t, polo.ID) != 9 || e.stockOf(t, pant.ID) != 9 {
+		t.Fatalf("deben salir los componentes: polo=%.0f pantalón=%.0f (want 9 y 9)", e.stockOf(t, polo.ID), e.stockOf(t, pant.ID))
+	}
+}

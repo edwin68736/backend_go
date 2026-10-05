@@ -123,6 +123,7 @@ var TenantMigrations = []TenantMigration{
 	V149SalesVoidRejectedPermission{},
 	V150SaleIdempotencyKey{},
 	V151QuotationDiscountModes{},
+	V152QuotationItemSaleUnitCombo{},
 }
 
 // ByVersion mapa versión → migración.

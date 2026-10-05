@@ -49,6 +49,13 @@ type saleModifierEntry struct {
 // propio override vía productprice.ResolveSalePrice(branchID, ...) — TenantProductBranchPrice,
 // independiente de SaleUnit para no activar su selector de unidad en el POS. Presentación
 // (variante) no tiene precio por sucursal todavía: usa presentation.SalePrice tal cual.
+// ValidateAuthorizedPrices expone la validación de precio de catálogo a otros módulos que fijan
+// precios que luego se convierten en venta (cotizaciones): sin ella, esos precios llegaban a la
+// venta marcados PriceAuthorized y se saltaban el control.
+func ValidateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput) error {
+	return validateAuthorizedPrices(db, branchID, items)
+}
+
 func validateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput) error {
 	for _, item := range items {
 		if item.PriceAuthorized {

@@ -44,6 +44,12 @@ type QuotationItemInput struct {
 	// sobre la base imponible). Si no vienen y sí `discount` (clientes anteriores), se deriva.
 	LineDiscountMode  string  `json:"line_discount_mode"`
 	LineDiscountValue float64 `json:"line_discount_value"`
+	// SaleUnitID / ComboJSON / Serials: se conservan en la línea y se propagan a la venta al
+	// convertir. Antes se ignoraban y la venta descontaba mal el inventario (unidad de venta),
+	// no resolvía el combo ni respetaba las series elegidas.
+	SaleUnitID *uint    `json:"sale_unit_id"`
+	ComboJSON  string   `json:"combo_json"`
+	Serials    []string `json:"serials"`
 }
 
 type CreateQuotationInput struct {
@@ -61,6 +67,9 @@ type CreateQuotationInput struct {
 	TaxConfig           tax.Config
 	GlobalDiscountMode  string
 	GlobalDiscountValue float64
+	// UserCanOverridePrice: resuelto por el HANDLER contra los permisos del JWT (sales.override_price),
+	// nunca un valor que mande el cliente. false = los precios de catálogo deben coincidir.
+	UserCanOverridePrice bool
 }
 
 type UpdateQuotationInput struct {
@@ -76,6 +85,7 @@ type UpdateQuotationInput struct {
 	TaxConfig           tax.Config
 	GlobalDiscountMode  string
 	GlobalDiscountValue float64
+	UserCanOverridePrice bool
 }
 
 type QuotationListParams struct {
@@ -139,6 +149,9 @@ func (s *QuotationService) Create(input CreateQuotationInput) (*database.TenantQ
 	if err != nil {
 		return nil, err
 	}
+	if err := s.checkAuthorizedPrices(input.BranchID, input.Items, input.UserCanOverridePrice, nil); err != nil {
+		return nil, err
+	}
 	items := calc.items
 
 	q := &database.TenantQuotation{
@@ -181,6 +194,15 @@ func (s *QuotationService) Create(input CreateQuotationInput) (*database.TenantQ
 		return nil, err
 	}
 	return q, nil
+}
+
+// BranchOf devuelve la sucursal de una cotización (para comprobar acceso antes de operar sobre ella).
+func (s *QuotationService) BranchOf(id uint) (uint, error) {
+	var q database.TenantQuotation
+	if err := s.db.Select("id", "branch_id").First(&q, id).Error; err != nil {
+		return 0, errors.New("cotización no encontrada")
+	}
+	return q.BranchID, nil
 }
 
 func (s *QuotationService) GetByID(id uint) (*database.TenantQuotation, []database.TenantQuotationItem, error) {
@@ -292,6 +314,13 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 	}
 	calc, err := s.buildQuotation(input.Items, input.GlobalDiscountMode, input.GlobalDiscountValue, taxCfg)
 	if err != nil {
+		return nil, err
+	}
+	var storedItems []database.TenantQuotationItem
+	if err := s.db.Where("quotation_id = ?", id).Find(&storedItems).Error; err != nil {
+		return nil, err
+	}
+	if err := s.checkAuthorizedPrices(q.BranchID, input.Items, input.UserCanOverridePrice, storedItems); err != nil {
 		return nil, err
 	}
 	items := calc.items
@@ -473,6 +502,9 @@ func (s *QuotationService) ConvertToSale(quotationID uint, input ConvertInput) (
 			Discount:           it.Discount,
 			LineDiscountMode:   it.LineDiscountMode,
 			LineDiscountValue:  it.LineDiscountValue,
+			SaleUnitID:         it.SaleUnitID,
+			ComboJSON:          it.ComboJSON,
+			Serials:            parseSerialsJSON(it.SerialsJSON),
 			IgvAffectationType: it.IgvAffectationType,
 			PriceIncludesIgv:   it.PriceIncludesIgv,
 			ModifiersJSON:      it.ModifiersJSON,

@@ -1,12 +1,14 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
 
+	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/salecurrency"
@@ -197,6 +199,32 @@ func (s *QuotationService) buildQuotation(
 		}
 	}
 
+	// Unidad de venta y combos: se validan y resuelven con las MISMAS funciones que usa la venta,
+	// para que la línea cotizada sea la que luego se vende (precio del combo, unidad válida).
+	saleLike := make([]salessvc.SaleItemInput, len(items))
+	for i, it := range items {
+		saleLike[i] = salessvc.SaleItemInput{
+			ProductID: it.ProductID, PresentationID: it.PresentationID, SaleUnitID: it.SaleUnitID,
+			Code: it.Code, Description: it.Description, Unit: it.Unit, Quantity: it.Quantity,
+			UnitPrice: it.UnitPrice, IgvAffectationType: it.IgvAffectationType,
+			PriceIncludesIgv: it.PriceIncludesIgv, ComboJSON: it.ComboJSON, ModifiersJSON: it.ModifiersJSON,
+		}
+	}
+	if err := salessvc.ValidateSaleUnits(s.db, saleLike); err != nil {
+		return out, err
+	}
+	resolved, _, err := salessvc.ResolveComboItems(s.db, saleLike)
+	if err != nil {
+		return out, err
+	}
+	if len(resolved) == len(items) {
+		for i := range items {
+			items[i].UnitPrice = resolved[i].UnitPrice
+			items[i].IgvAffectationType = resolved[i].IgvAffectationType
+			items[i].PriceIncludesIgv = resolved[i].PriceIncludesIgv
+		}
+	}
+
 	structured := globalMode != "" || globalValue > 0
 	for _, it := range items {
 		if it.LineDiscountMode != "" || it.LineDiscountValue > 0 {
@@ -299,6 +327,9 @@ func buildQuotationItemRow(
 		Discount:           storedDiscount,
 		LineDiscountMode:   it.LineDiscountMode,
 		LineDiscountValue:  it.LineDiscountValue,
+		SaleUnitID:         it.SaleUnitID,
+		ComboJSON:          strings.TrimSpace(it.ComboJSON),
+		SerialsJSON:        serialsToJSON(it.Serials),
 		TaxRate:            rate,
 		IgvAffectationType: it.IgvAffectationType,
 		PriceIncludesIgv:   it.PriceIncludesIgv,
@@ -308,6 +339,85 @@ func buildQuotationItemRow(
 		ModifiersJSON:      it.ModifiersJSON,
 		ItemNote:           it.ItemNote,
 	}
+}
+
+// checkAuthorizedPrices exige que los precios de líneas de catálogo coincidan con el catálogo
+// (misma regla que la venta), salvo que el usuario tenga sales.override_price. `existing` son las
+// líneas ya guardadas de la cotización que se edita: una línea con el mismo producto, presentación
+// y precio que antes no se vuelve a exigir (quien edita no cambió ese precio, p. ej. pactado por
+// otro usuario con permiso).
+func (s *QuotationService) checkAuthorizedPrices(
+	branchID uint,
+	inputs []QuotationItemInput,
+	canOverride bool,
+	existing []database.TenantQuotationItem,
+) error {
+	if canOverride {
+		return nil
+	}
+	items := make([]salessvc.SaleItemInput, 0, len(inputs))
+	for _, in := range inputs {
+		unchanged := false
+		for _, ex := range existing {
+			if sameProductRef(ex.ProductID, in.ProductID) && sameProductRef(ex.PresentationID, in.PresentationID) &&
+				sameProductRef(ex.SaleUnitID, in.SaleUnitID) && math.Abs(ex.UnitPrice-in.UnitPrice) < 0.005 {
+				unchanged = true
+				break
+			}
+		}
+		items = append(items, salessvc.SaleItemInput{
+			ProductID:       in.ProductID,
+			PresentationID:  in.PresentationID,
+			SaleUnitID:      in.SaleUnitID,
+			Code:            in.Code,
+			Description:     in.Description,
+			Quantity:        in.Quantity,
+			UnitPrice:       in.UnitPrice,
+			ModifiersJSON:   in.ModifiersJSON,
+			PriceAuthorized: unchanged,
+		})
+	}
+	return salessvc.ValidateAuthorizedPrices(s.db, branchID, items)
+}
+
+func serialsToJSON(serials []string) string {
+	clean := make([]string, 0, len(serials))
+	for _, s := range serials {
+		if v := strings.TrimSpace(s); v != "" {
+			clean = append(clean, v)
+		}
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(clean)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func parseSerialsJSON(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func sameProductRef(a, b *uint) bool {
+	av, bv := uint(0), uint(0)
+	if a != nil {
+		av = *a
+	}
+	if b != nil {
+		bv = *b
+	}
+	return av == bv
 }
 
 // validateHeader comprueba lo que no depende de las líneas: cliente, moneda y vigencia.

@@ -24,6 +24,12 @@ func resolveSaleUnitForLine(db *gorm.DB, productID uint, saleUnitID *uint, comme
 // PriceAuthorized=true: ese flag ya significa "código de confianza resolvió/vetó esta línea antes
 // de llegar acá" (combo, reemisión de una nota de venta ya validada) — ninguno de esos casos usa
 // SaleUnitID hoy, así que en la práctica esto solo salta líneas que de todos modos no lo traen.
+// ValidateSaleUnits expone la validación de unidades de venta (pertenencia, activa, factor y
+// fracción) a otros módulos que cotizan lo mismo que luego se vende (cotizaciones).
+func ValidateSaleUnits(db *gorm.DB, items []SaleItemInput) error {
+	return validateSaleUnits(db, items)
+}
+
 func validateSaleUnits(db *gorm.DB, items []SaleItemInput) error {
 	for _, item := range items {
 		if item.PriceAuthorized {
