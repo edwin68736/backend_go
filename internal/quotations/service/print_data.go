@@ -92,6 +92,7 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 			// Mismo criterio que el comprobante de venta (BuildPrintData): sin esto el PDF ocultaba
 			// Subtotal, descuentos e IGV y solo mostraba el total.
 			ShowIgvBreakdown: taxregime.For(company.TaxpayerRegime).ShowIgvBreakdown,
+			ShowIgvBreakdownOnSaleNote: company.ShowIgvBreakdownOnSaleNote,
 		}
 		// Wallet Yape/Plin y cuentas bancarias — mismo criterio que un comprobante de venta
 		// (BuildPrintData), para que la cotización también los muestre cuando estén configurados.

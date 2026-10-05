@@ -860,6 +860,10 @@ type TenantCompanyConfig struct {
 	// nombre comercial en su lugar; sin nombre comercial, la razón social se sigue
 	// mostrando igual (nunca queda el comprobante sin identificar al emisor).
 	ShowBusinessNameOnSaleNote bool `gorm:"default:true" json:"show_business_name_on_sale_note"`
+	// Solo nota de venta (SUNAT 00): discriminar Op. gravadas / IGV en el impreso. Default true =
+	// comportamiento previo. Si se desactiva, la nota de venta muestra solo el total (los descuentos,
+	// si los hay, se siguen mostrando). No afecta boleta ni factura.
+	ShowIgvBreakdownOnSaleNote bool `gorm:"default:true" json:"show_igv_breakdown_on_sale_note"`
 	// Tamaño del logo en TODOS los comprobantes (factura/boleta/NV), separado por formato
 	// porque ticket (rollo térmico) y A4 tienen proporciones muy distintas.
 	// Valores: pequeno | mediano | grande.

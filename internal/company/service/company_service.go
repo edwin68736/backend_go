@@ -67,6 +67,7 @@ type CompanyConfigPatch struct {
 	TermsAndConditions             *string  `json:"terms_and_conditions"`
 	ShowTermsConditions            *bool    `json:"show_terms_conditions"`
 	ShowBusinessNameOnSaleNote     *bool    `json:"show_business_name_on_sale_note"`
+	ShowIgvBreakdownOnSaleNote     *bool    `json:"show_igv_breakdown_on_sale_note"`
 	LogoSizeTicket                 *string  `json:"logo_size_ticket"`
 	LogoSizeA4                     *string  `json:"logo_size_a4"`
 	DetractionBNAccount            *string  `json:"detraction_bn_account"`
@@ -121,6 +122,9 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 	}
 	if patch.ShowBusinessNameOnSaleNote != nil {
 		updates["show_business_name_on_sale_note"] = *patch.ShowBusinessNameOnSaleNote
+	}
+	if patch.ShowIgvBreakdownOnSaleNote != nil {
+		updates["show_igv_breakdown_on_sale_note"] = *patch.ShowIgvBreakdownOnSaleNote
 	}
 	if patch.LogoSizeTicket != nil {
 		updates["logo_size_ticket"] = normalizeLogoSize(*patch.LogoSizeTicket)

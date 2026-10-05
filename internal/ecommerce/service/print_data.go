@@ -63,6 +63,7 @@ func BuildPrintDataForOrder(db *gorm.DB, orderID uint) (*salessvc.PrintData, err
 			Website:         strings.TrimSpace(company.Website),
 			LogoURL:         company.LogoURL,
 			AdditionalNotes: strings.TrimSpace(company.AdditionalNotes),
+			ShowIgvBreakdownOnSaleNote: company.ShowIgvBreakdownOnSaleNote,
 		}
 	}
 
