@@ -537,6 +537,8 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		// ComandaIDs: dividir cuenta — factura solo estas comandas (deben estar pendientes en la
 		// sesión). Vacío = cobra todo lo pendiente (comportamiento clásico).
 		ComandaIDs []uint `json:"comanda_ids"`
+		// IdempotencyKey: UUID por intento de cobro; el reintento devuelve la venta ya creada.
+		IdempotencyKey string `json:"idempotency_key"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -586,8 +588,17 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		DiscountValue:   body.DiscountValue,
 		CentralTenantID: centralTenantID,
 		ComandaIDs:      body.ComandaIDs,
+		IdempotencyKey:  body.IdempotencyKey,
 	}, taxCfg)
-	if err != nil {
+	return respondRestaurantSale(c, dbc, sale, err, body.Payments)
+}
+
+// respondRestaurantSale cierra el cobro de restaurante: traduce errores, y si el resultado es un
+// reintento idempotente (ErrIdempotentReplay) responde con la venta original SIN volver a encolarla
+// a SUNAT — ese efecto ya ocurrió en el primer intento.
+func respondRestaurantSale(c fiber.Ctx, dbc *gorm.DB, sale *database.TenantSale, err error, payments []service.PaymentInput) error {
+	replayed := errors.Is(err, salesvc.ErrIdempotentReplay)
+	if err != nil && !replayed {
 		st := fiber.StatusBadRequest
 		payload := fiber.Map{"error": err.Error()}
 		if errors.Is(err, docusage.ErrQuotaExceeded) {
@@ -596,11 +607,17 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		}
 		return c.Status(st).JSON(payload)
 	}
-	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
-		_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(dbc, tenant, sale.ID)
+	if !replayed {
+		if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
+			_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(dbc, tenant, sale.ID)
+		}
 	}
-	printData := buildRestaurantPrintData(dbc, sale, body.Payments)
-	return c.Status(201).JSON(fiber.Map{"success": true, "data": sale, "print_data": printData})
+	printData := buildRestaurantPrintData(dbc, sale, payments)
+	resp := fiber.Map{"success": true, "data": sale, "print_data": printData}
+	if replayed {
+		resp["idempotent_replay"] = true
+	}
+	return c.Status(201).JSON(resp)
 }
 
 // POST /api/restaurant/pos/checkout
@@ -635,6 +652,8 @@ func (h *RestaurantHandler) POSCheckout(c fiber.Ctx) error {
 		DiscountValue  float64                `json:"discount_value"`
 		DiscountAmount float64                `json:"discount_amount"`
 		Payments       []service.PaymentInput `json:"payments"`
+		// IdempotencyKey: UUID por intento de cobro; el reintento devuelve la venta ya creada.
+		IdempotencyKey string `json:"idempotency_key"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -698,21 +717,9 @@ func (h *RestaurantHandler) POSCheckout(c fiber.Ctx) error {
 		DiscountAmount:  body.DiscountAmount,
 		Payments:        body.Payments,
 		CentralTenantID: centralTenantID,
+		IdempotencyKey:  body.IdempotencyKey,
 	}, taxCfg)
-	if err != nil {
-		st := fiber.StatusBadRequest
-		payload := fiber.Map{"error": err.Error()}
-		if errors.Is(err, docusage.ErrQuotaExceeded) {
-			st = fiber.StatusPaymentRequired
-			payload["code"] = "DOCUMENT_QUOTA_EXCEEDED"
-		}
-		return c.Status(st).JSON(payload)
-	}
-	if tenant, ok := c.Locals("tenant").(*database.Tenant); ok && tenant != nil {
-		_ = billingsvc.TriggerAutoEnqueueAfterSaleCommit(dbc, tenant, sale.ID)
-	}
-	printData := buildRestaurantPrintData(dbc, sale, body.Payments)
-	return c.Status(201).JSON(fiber.Map{"success": true, "data": sale, "print_data": printData})
+	return respondRestaurantSale(c, dbc, sale, err, body.Payments)
 }
 
 // POST /api/restaurant/sessions/:id/close — cierra la mesa sin generar venta (mesa ya pagada).

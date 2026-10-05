@@ -12,6 +12,7 @@ import (
 	cashbanksvc "tukifac/internal/cashbank/service"
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/internal/restaurant/staff"
+	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/gormutil"
@@ -1103,6 +1104,8 @@ type BillInput struct {
 	// mande el cliente en ese caso se ignora, para que el cierre de mesa no dependa de que el
 	// cliente cuente bien lo que queda.
 	ComandaIDs []uint
+	// IdempotencyKey: clave por intento de cobro (ver internal/sales/service/sale_idempotency.go).
+	IdempotencyKey string
 }
 
 type PaymentInput struct {
@@ -1149,6 +1152,15 @@ func resolveBillDiscountAmount(subtotalBase float64, input BillInput) float64 {
 
 // BillTable cierra la sesión, genera una venta formal y registra los pagos.
 func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*database.TenantSale, error) {
+	// Reintento de un cobro ya guardado: la mesa ya quedó cerrada/facturada en el primer intento,
+	// así que sin este chequeo el reintento fallaría con "sesión ya cerrada" aunque la venta exista.
+	input.IdempotencyKey = salesvc.NormalizeIdempotencyKey(input.IdempotencyKey)
+	if existing, err := salesvc.FindSaleByIdempotencyKey(s.db, input.UserID, input.IdempotencyKey); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, salesvc.ErrIdempotentReplay
+	}
+
 	var sess database.TenantTableSession
 	if err := s.db.First(&sess, input.SessionID).Error; err != nil {
 		return nil, errors.New("sesión no encontrada")
@@ -1386,9 +1398,14 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		Status:               "paid",
 		BillingStatus:        "pending",
 	}
+	input.IdempotencyKey = salesvc.NormalizeIdempotencyKey(input.IdempotencyKey)
+	if input.IdempotencyKey != "" {
+		key := input.IdempotencyKey
+		sale.IdempotencyKey = &key
+	}
 
 	now := time.Now()
-	return sale, s.db.Transaction(func(tx *gorm.DB) error {
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var lockedSess database.TenantTableSession
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedSess, input.SessionID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1551,6 +1568,13 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 		return nil
 	})
+	if txErr != nil {
+		// Carrera: otra petición con la misma clave ganó el insert; el rollback ya liberó la sesión.
+		if winner, replayErr := salesvc.ReplayIfIdempotentConflict(s.db, input.UserID, input.IdempotencyKey, txErr); winner != nil {
+			return winner, replayErr
+		}
+	}
+	return sale, txErr
 }
 
 // restaurantSaleItemPurchasePrice snapshotea el costo actual del producto al vender esta línea —

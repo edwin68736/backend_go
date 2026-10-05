@@ -3,6 +3,7 @@ package service
 import (
 	"time"
 
+	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 
@@ -43,6 +44,8 @@ type POSCheckoutInput struct {
 	DiscountAmount  float64
 	Payments        []PaymentInput
 	CentralTenantID uint
+	// IdempotencyKey: UUID por intento de cobro; un reintento devuelve la venta ya creada.
+	IdempotencyKey string
 }
 
 // RestaurantPOSCheckoutService orquesta el checkout del POS de venta rápida
@@ -73,6 +76,16 @@ func (s *RestaurantPOSCheckoutService) Checkout(in POSCheckoutInput, taxCfg tax.
 	// pedido + comandas para borrarlas al facturar.
 	if isDirectSaleCheckout(in) {
 		return s.checkoutDirect(in, taxCfg)
+	}
+
+	// Reintento de un cobro ya guardado: devolver la venta ANTES de abrir otra sesión y pedido
+	// (takeaway/delivery crean sesión nueva en cada llamada, así que sin esto un reintento
+	// dejaría pedidos huérfanos además de la venta duplicada).
+	in.IdempotencyKey = salesvc.NormalizeIdempotencyKey(in.IdempotencyKey)
+	if existing, err := salesvc.FindSaleByIdempotencyKey(s.rs.db, in.UserID, in.IdempotencyKey); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, salesvc.ErrIdempotentReplay
 	}
 
 	// 1) Sesión: reutilizar la existente o abrir una nueva (venta rápida sin mesa).
@@ -130,5 +143,6 @@ func (s *RestaurantPOSCheckoutService) Checkout(in POSCheckoutInput, taxCfg tax.
 		DiscountMode:    in.DiscountMode,
 		DiscountValue:   in.DiscountValue,
 		CentralTenantID: in.CentralTenantID,
+		IdempotencyKey:  in.IdempotencyKey,
 	}, taxCfg)
 }

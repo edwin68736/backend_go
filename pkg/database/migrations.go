@@ -1487,7 +1487,7 @@ type TenantSale struct {
 	ID                   uint       `gorm:"primaryKey" json:"id"`
 	BranchID             uint       `gorm:"not null;index" json:"branch_id"`
 	ContactID            *uint      `gorm:"index" json:"contact_id"`
-	UserID               uint       `gorm:"not null;index" json:"user_id"`
+	UserID               uint       `gorm:"not null;index;uniqueIndex:uk_tenant_sales_user_idempotency,priority:1" json:"user_id"`
 	CashSessionID        *uint      `gorm:"index" json:"cash_session_id"`
 	SeriesID             uint       `gorm:"not null;index" json:"series_id"`
 	DocType              string     `gorm:"size:50;not null" json:"doc_type"`
@@ -1535,6 +1535,11 @@ type TenantSale struct {
 	ReissueReason    string     `gorm:"type:text" json:"reissue_reason,omitempty"`
 	ReissuedByEmail  string     `gorm:"size:255" json:"reissued_by_email,omitempty"`
 	ReissueCount     int        `gorm:"default:0" json:"reissue_count,omitempty"`
+	// IdempotencyKey: clave que genera el cliente al abrir el cobro y reenvía idéntica en cada
+	// reintento. UNIQUE(user_id, idempotency_key) hace que un reintento (respuesta perdida, timeout,
+	// pantalla congelada) no pueda crear una segunda venta con otro correlativo: el servidor devuelve
+	// la ya creada. NULL en ventas sin clave (todas las anteriores y los flujos que no la mandan).
+	IdempotencyKey *string `gorm:"size:64;uniqueIndex:uk_tenant_sales_user_idempotency,priority:2" json:"-"`
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`

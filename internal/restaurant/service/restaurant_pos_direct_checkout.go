@@ -58,6 +58,7 @@ func (s *RestaurantPOSCheckoutService) checkoutDirect(
 		TaxConfig:           taxCfg,
 		ExtraStockMovements: extraStock,
 		CentralTenantID:     in.CentralTenantID,
+		IdempotencyKey:      in.IdempotencyKey,
 	})
 }
 

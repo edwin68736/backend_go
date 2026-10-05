@@ -197,6 +197,9 @@ type CreateSaleInput struct {
 	// igual que ya hacían las líneas con item.PriceAuthorized=true (combos/Tukichef/reconstrucción
 	// desde nota) antes de este permiso. Ver docs/INCIDENT-2026-09-17-PRICE-AUTHORIZATION.md.
 	UserCanOverridePrice bool
+	// IdempotencyKey: clave por intento de cobro generada por el cliente (ver sale_idempotency.go).
+	// Vacía = sin protección (flujos internos: ecommerce, membresías, cotizaciones, reemisión).
+	IdempotencyKey string
 }
 
 // NextCorrelative retorna el siguiente correlativo para una serie y lo incrementa (transacción con bloqueo de fila).
@@ -210,6 +213,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	if input.BranchID == 0 || input.UserID == 0 {
 		return nil, errors.New("sucursal y usuario son requeridos")
+	}
+
+	// Reintento de un cobro que ya se guardó (respuesta perdida, timeout, pantalla congelada):
+	// devolver la venta original ANTES de validar o reservar correlativo. Ver sale_idempotency.go.
+	input.IdempotencyKey = NormalizeIdempotencyKey(input.IdempotencyKey)
+	if existing, err := FindSaleByIdempotencyKey(s.db, input.UserID, input.IdempotencyKey); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, ErrIdempotentReplay
 	}
 
 	// Combos/promociones: fija el precio del grupo y añade las salidas de almacén de sus
@@ -672,13 +684,14 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		BillingStatus:         "pending",
 		IssuedFromNotaSaleID:  input.IssuedFromNotaSaleID,
 		IssuedFromQuotationID: input.IssuedFromQuotationID,
+		IdempotencyKey:        idempotencyKeyPtr(input.IdempotencyKey),
 	}
 
 	// Emisión electrónica desde NV: misma operación comercial; nunca repetir stock/seriales ni caja/bancos.
 	skipInv := input.SkipInventory || emitFromNV
 	skipPay := input.SkipPaymentDistribution || emitFromNV
 
-	return sale, s.db.Transaction(func(tx *gorm.DB) error {
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		correlative, seriesLocked, err := docseries.ReserveNext(tx, input.SeriesID)
 		if err != nil {
 			return err
@@ -917,6 +930,14 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 		return nil
 	})
+	if txErr != nil {
+		// Carrera: dos peticiones con la misma clave llegaron a la vez y la otra ganó el insert.
+		// La transacción ya hizo rollback (correlativo incluido); devolvemos la ganadora.
+		if winner, replayErr := ReplayIfIdempotentConflict(s.db, input.UserID, input.IdempotencyKey, txErr); winner != nil {
+			return winner, replayErr
+		}
+	}
+	return sale, txErr
 }
 
 func (s *SaleService) persistFiscalContextTx(tx *gorm.DB, sale *database.TenantSale, input CreateSaleInput, series database.TenantDocumentSeries) error {

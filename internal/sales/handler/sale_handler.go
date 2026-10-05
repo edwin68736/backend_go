@@ -140,6 +140,8 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Detraccion           *detraccionsvc.SaleInput         `json:"detraccion"`
 		Prepayment           *prepaymentsvc.SaleInput         `json:"prepayment"`
 		FromQuotationID      *uint                            `json:"from_quotation_id"`
+		// IdempotencyKey: UUID por intento de cobro; el reintento con la misma clave devuelve la venta ya creada.
+		IdempotencyKey string `json:"idempotency_key"`
 	}
 
 	if err := c.Bind().Body(&body); err != nil {
@@ -216,11 +218,15 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Prepayment:            body.Prepayment,
 		IssuedFromQuotationID: issuedFromQuotationID,
 		UserCanOverridePrice:  userCanOverridePrice(c),
+		IdempotencyKey:        body.IdempotencyKey,
 	})
-	if err != nil {
+	// Reintento de un cobro ya guardado: se responde con la venta original y NO se repiten los
+	// efectos secundarios (conversión de cotización, encolado a SUNAT) que ya ocurrieron.
+	replayed := errors.Is(err, service.ErrIdempotentReplay)
+	if err != nil && !replayed {
 		return saleCreateErrorResponse(c, err)
 	}
-	if body.FromQuotationID != nil && *body.FromQuotationID > 0 {
+	if !replayed && body.FromQuotationID != nil && *body.FromQuotationID > 0 {
 		target := "nota_venta"
 		var ser database.TenantDocumentSeries
 		if dbc.First(&ser, sale.SeriesID).Error == nil {
@@ -232,7 +238,9 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		_ = quotationsvc.NewQuotationService(dbc).MarkConverted(*body.FromQuotationID, sale.ID, target)
 	}
 
-	triggerAutoFiscalEnqueue(c, sale)
+	if !replayed {
+		triggerAutoFiscalEnqueue(c, sale)
+	}
 
 	// Construir print_data para impresión inmediata
 	items, _ := svc.GetItems(sale.ID)
@@ -254,6 +262,9 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		"success":    true,
 		"sale":       sale,
 		"print_data": printData,
+	}
+	if replayed {
+		resp["idempotent_replay"] = true
 	}
 	if body.FiscalContext != nil {
 		if fiscalCtx, err := svc.GetFiscalContext(sale.ID); err == nil && fiscalCtx != nil {
