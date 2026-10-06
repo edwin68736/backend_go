@@ -34,15 +34,15 @@ func TestPendingCandidatesSoloElectronicasAbiertasYAntiguas(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	add(1, "pending", old, false)  // 1: sí
-	add(2, "error", old, false)    // 2: sí
-	add(1, "", old, false)         // 3: billing_status vacío = pending, sí
-	add(1, "accepted", old, false) // 4: ya aceptada
-	add(1, "rejected", old, false) // 5: rechazada por SUNAT: no se reenvía
-	add(1, "sent", old, false)     // 6: en tránsito
-	add(3, "pending", old, false)  // 7: nota de venta (00): nunca
+	add(1, "pending", old, false)    // 1: sí
+	add(2, "error", old, false)      // 2: sí
+	add(1, "", old, false)           // 3: billing_status vacío = pending, sí
+	add(1, "accepted", old, false)   // 4: ya aceptada
+	add(1, "rejected", old, false)   // 5: rechazada por SUNAT: no se reenvía
+	add(1, "sent", old, false)       // 6: en tránsito
+	add(3, "pending", old, false)    // 7: nota de venta (00): nunca
 	add(1, "pending", recent, false) // 8: muy reciente
-	add(1, "pending", old, true)   // 9: eliminada
+	add(1, "pending", old, true)     // 9: eliminada
 
 	ids, total, err := pendingCandidates(db, now.Add(-ResendMinAge), 100)
 	if err != nil {
