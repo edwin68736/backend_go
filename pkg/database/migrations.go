@@ -2242,7 +2242,9 @@ type TenantBankAccount struct {
 	Name          string         `gorm:"size:255;not null" json:"name"`
 	BankName      string         `gorm:"size:255" json:"bank_name"`
 	AccountNumber string         `gorm:"size:100" json:"account_number"`
-	Currency      string         `gorm:"size:10;default:'PEN'" json:"currency"`
+	// CCI: Código de Cuenta Interbancario (20 dígitos), opcional; se imprime en comprobantes y cotizaciones.
+	CCI      string         `gorm:"column:cci;size:40" json:"cci"`
+	Currency string         `gorm:"size:10;default:'PEN'" json:"currency"`
 	Balance       float64        `gorm:"type:decimal(15,2);default:0" json:"balance"`
 	Type          string         `gorm:"size:30;default:'bank'" json:"type"`  // bank, wallet, cash
 	PaymentMethod string         `gorm:"size:50;index" json:"payment_method"` // legacy: efectivo, yape, etc.; preferir tenant_payment_methods

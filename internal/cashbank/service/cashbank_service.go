@@ -1151,7 +1151,7 @@ func (s *CashBankService) ListAllBankAccounts() ([]database.TenantBankAccount, e
 	return accounts, err
 }
 
-func (s *CashBankService) CreateBankAccount(name, bankName, accountNumber, currency, accountType, paymentMethod string, initialBalance float64) (*database.TenantBankAccount, error) {
+func (s *CashBankService) CreateBankAccount(name, bankName, accountNumber, cci, currency, accountType, paymentMethod string, initialBalance float64) (*database.TenantBankAccount, error) {
 	if name == "" {
 		return nil, errors.New("nombre de cuenta requerido")
 	}
@@ -1165,6 +1165,7 @@ func (s *CashBankService) CreateBankAccount(name, bankName, accountNumber, curre
 		Name:          name,
 		BankName:      bankName,
 		AccountNumber: accountNumber,
+		CCI:           strings.TrimSpace(cci),
 		Currency:      currency,
 		Balance:       initialBalance,
 		Type:          accountType,
@@ -1178,9 +1179,9 @@ func (s *CashBankService) CreateBankAccount(name, bankName, accountNumber, curre
 }
 
 // UpdateBankAccount actualiza nombre, tipo, método de pago y estado. No modifica el saldo.
-func (s *CashBankService) UpdateBankAccount(id uint, name, bankName, accountNumber, accountType, paymentMethod string, active bool) error {
+func (s *CashBankService) UpdateBankAccount(id uint, name, bankName, accountNumber, cci, accountType, paymentMethod string, active bool) error {
 	updates := map[string]interface{}{
-		"name": name, "bank_name": bankName, "account_number": accountNumber,
+		"name": name, "bank_name": bankName, "account_number": accountNumber, "cci": strings.TrimSpace(cci),
 		"type": accountType, "active": active,
 	}
 	if paymentMethod != "" {

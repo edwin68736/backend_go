@@ -129,6 +129,7 @@ var TenantMigrations = []TenantMigration{
 	V155SaleBillingStatusIndex{},
 	V156RepairHasVariants{},
 	V157PurchaseItemPresentation{},
+	V158BankAccountCCI{},
 }
 
 // ByVersion mapa versión → migración.

@@ -547,6 +547,7 @@ func (h *CashBankHandler) CreateBankAccountAPI(c fiber.Ctx) error {
 		Name           string  `json:"name"`
 		BankName       string  `json:"bank_name"`
 		AccountNumber  string  `json:"account_number"`
+		CCI            string  `json:"cci"`
 		Currency       string  `json:"currency"`
 		Type           string  `json:"type"`
 		PaymentMethod  string  `json:"payment_method"`
@@ -559,7 +560,7 @@ func (h *CashBankHandler) CreateBankAccountAPI(c fiber.Ctx) error {
 		body.Type = "bank"
 	}
 	acc, err := service.NewCashBankService(db(c)).CreateBankAccount(
-		body.Name, body.BankName, body.AccountNumber, body.Currency, body.Type, body.PaymentMethod, body.InitialBalance,
+		body.Name, body.BankName, body.AccountNumber, body.CCI, body.Currency, body.Type, body.PaymentMethod, body.InitialBalance,
 	)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -577,6 +578,7 @@ func (h *CashBankHandler) UpdateBankAccountAPI(c fiber.Ctx) error {
 		Name          string `json:"name"`
 		BankName      string `json:"bank_name"`
 		AccountNumber string `json:"account_number"`
+		CCI           string `json:"cci"`
 		Type          string `json:"type"`
 		PaymentMethod string `json:"payment_method"`
 		Active        bool   `json:"active"`
@@ -587,7 +589,7 @@ func (h *CashBankHandler) UpdateBankAccountAPI(c fiber.Ctx) error {
 	if body.Type == "" {
 		body.Type = "bank"
 	}
-	if err := service.NewCashBankService(db(c)).UpdateBankAccount(uint(id), body.Name, body.BankName, body.AccountNumber, body.Type, body.PaymentMethod, body.Active); err != nil {
+	if err := service.NewCashBankService(db(c)).UpdateBankAccount(uint(id), body.Name, body.BankName, body.AccountNumber, body.CCI, body.Type, body.PaymentMethod, body.Active); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

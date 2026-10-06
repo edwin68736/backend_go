@@ -248,7 +248,9 @@ type PrintBankAccount struct {
 	Name          string `json:"name,omitempty"`
 	BankName      string `json:"bank_name"`
 	AccountNumber string `json:"account_number"`
-	Currency      string `json:"currency"`
+	// CCI: Código de Cuenta Interbancario (opcional).
+	CCI      string `json:"cci,omitempty"`
+	Currency string `json:"currency"`
 }
 
 type PrintBranch struct {
@@ -773,8 +775,9 @@ func PopulateCompanyPaymentInfo(db *gorm.DB, company database.TenantCompanyConfi
 			name := strings.TrimSpace(ba.Name)
 			bankName := strings.TrimSpace(ba.BankName)
 			acct := strings.TrimSpace(ba.AccountNumber)
+			cci := strings.TrimSpace(ba.CCI)
 			// Muchas cuentas seed solo tienen Name (sin bank_name ni número); igual deben imprimirse.
-			if name == "" && bankName == "" && acct == "" {
+			if name == "" && bankName == "" && acct == "" && cci == "" {
 				continue
 			}
 			if receiptBanksConfigured && !receiptBankAccountAllowed(ba.ID, receiptBankIDs) {
@@ -787,6 +790,7 @@ func PopulateCompanyPaymentInfo(db *gorm.DB, company database.TenantCompanyConfi
 				Name:          name,
 				BankName:      bankName,
 				AccountNumber: acct,
+				CCI:           cci,
 				Currency:      ba.Currency,
 			})
 		}
