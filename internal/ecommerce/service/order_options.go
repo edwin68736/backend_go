@@ -302,3 +302,62 @@ func (s *EcommerceService) resolveOrderItem(it OrderItemInput) (OrderItemInput, 
 	}
 	return res, nil
 }
+
+type stockKey struct {
+	productID      uint
+	presentationID uint
+}
+
+// validateOrderStock rechaza un pedido que pide más de lo que hay. NO descuenta ni reserva nada:
+// el stock solo se descuenta al convertir el pedido en venta (ahí se vuelve a validar por sucursal).
+// Al crear el pedido todavía no hay sucursal, así que se compara contra el stock total de todas.
+func (s *EcommerceService) validateOrderStock(items []OrderItemInput) error {
+	need := map[stockKey]float64{}
+	label := map[stockKey]string{}
+	for _, it := range items {
+		var p database.TenantProduct
+		if s.db.Select("id", "name", "type", "manage_stock", "has_variants").First(&p, it.ProductID).Error != nil {
+			continue
+		}
+		if !p.ManageStock || strings.EqualFold(strings.TrimSpace(p.Type), "service") {
+			continue
+		}
+		qty := it.Quantity
+		k := stockKey{productID: p.ID}
+		switch {
+		case it.PresentationID != nil && *it.PresentationID > 0:
+			k.presentationID = *it.PresentationID
+		case it.SaleUnitID != nil && *it.SaleUnitID > 0:
+			res, err := saleunit.ResolveForLine(s.db, p.ID, it.SaleUnitID, it.Quantity)
+			if err != nil {
+				return err
+			}
+			qty = res.BaseQuantity
+		}
+		need[k] += qty
+		label[k] = it.Name
+	}
+	for k, qty := range need {
+		var have float64
+		if k.presentationID > 0 {
+			s.db.Model(&database.TenantProductPresentationStock{}).
+				Where("presentation_id = ?", k.presentationID).
+				Select("COALESCE(SUM(quantity), 0)").Scan(&have)
+		} else {
+			s.db.Model(&database.TenantProductStock{}).
+				Where("product_id = ?", k.productID).
+				Select("COALESCE(SUM(quantity), 0)").Scan(&have)
+		}
+		if have < qty-0.0001 {
+			return fmt.Errorf("no hay stock suficiente de '%s': pediste %s y hay %s", label[k], fmtQty(qty), fmtQty(have))
+		}
+	}
+	return nil
+}
+
+func fmtQty(n float64) string {
+	if n == math.Trunc(n) {
+		return fmt.Sprintf("%.0f", n)
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", n), "0"), ".")
+}

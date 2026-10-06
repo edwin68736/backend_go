@@ -354,6 +354,9 @@ func (s *EcommerceService) CreateOrder(input CreateOrderInput) (*database.Tenant
 		}
 		total += it.Quantity * it.UnitPrice
 	}
+	if err := s.validateOrderStock(input.Items); err != nil {
+		return nil, err
+	}
 	itemsJSON, err := json.Marshal(input.Items)
 	if err != nil {
 		return nil, err

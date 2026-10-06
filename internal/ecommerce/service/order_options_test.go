@@ -87,3 +87,31 @@ func TestCreateOrder_SaleUnitPrice(t *testing.T) {
 		t.Fatalf("total: %v", o.Total)
 	}
 }
+
+func TestCreateOrder_RejectsOverStockButDoesNotDiscount(t *testing.T) {
+	db := setupOrderOptionsDB(t)
+	if err := db.AutoMigrate(&database.TenantProductStock{}); err != nil {
+		t.Fatal(err)
+	}
+	p := database.TenantProduct{Code: "P4", Name: "Arroz", Unit: "KGM", SalePrice: 5, Active: true, ShowInDigitalCatalog: true, ManageStock: true}
+	db.Create(&p)
+	db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 1, Quantity: 3})
+	db.Create(&database.TenantProductStock{ProductID: p.ID, BranchID: 2, Quantity: 2})
+	svc := NewEcommerceService(db)
+
+	if _, err := svc.CreateOrder(CreateOrderInput{CustomerName: "Ana", CustomerPhone: "999", Items: []OrderItemInput{{ProductID: p.ID, Quantity: 6}}}); err == nil || !strings.Contains(err.Error(), "stock") {
+		t.Fatalf("debía rechazar por stock, got %v", err)
+	}
+	// Dos líneas del mismo producto suman contra el mismo stock.
+	if _, err := svc.CreateOrder(CreateOrderInput{CustomerName: "Ana", CustomerPhone: "999", Items: []OrderItemInput{{ProductID: p.ID, Quantity: 3}, {ProductID: p.ID, Quantity: 3}}}); err == nil {
+		t.Fatal("la suma de líneas debía rechazarse")
+	}
+	if _, err := svc.CreateOrder(CreateOrderInput{CustomerName: "Ana", CustomerPhone: "999", Items: []OrderItemInput{{ProductID: p.ID, Quantity: 5}}}); err != nil {
+		t.Fatalf("5 de 5 debía pasar: %v", err)
+	}
+	var total float64
+	db.Model(&database.TenantProductStock{}).Where("product_id = ?", p.ID).Select("SUM(quantity)").Scan(&total)
+	if total != 5 {
+		t.Fatalf("crear el pedido no debe descontar stock, quedó %v", total)
+	}
+}
