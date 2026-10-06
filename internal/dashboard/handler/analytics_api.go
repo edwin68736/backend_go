@@ -88,15 +88,16 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	}
 	branchID := branch.ResolveReportBranchFilter(c, requestedBranch, true)
 
-	userID, _ := c.Locals("user_id").(uint)
-	// Ya no se restringe a "solo mis ventas" a quien no es Administrador: el reporte de ventas
-	// muestra todas las de la sucursal y las cifras de ambas pantallas deben coincidir. El acceso
-	// al dashboard sigue protegido por el permiso dashboard.view.
-	restrictUser := false
+	// Usuario: el administrador ve a todos o elige uno (?user_id=); cualquier otro rol ve SOLO lo
+	// suyo, siempre (ver resolveDashboardUser). Es el mismo criterio que usa Inicio.
+	us := resolveDashboardUser(c)
+	userID, restrictUser := us.UserID, us.Restrict
 
+	now := time.Now()
 	duration := toExclusive.Sub(from)
-	prevToExclusive := from
-	prevFrom := from.Add(-duration)
+	// Comparación justa: un mes completo se compara con los mismos días del mes anterior.
+	cmp := comparisonWindow(from, toExclusive, now)
+	prevFrom, prevToExclusive := cmp.From, cmp.ToExclusive
 
 	// --- Resumen período actual (ventas no anuladas)
 	var salesTotal float64
@@ -119,7 +120,6 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	}
 
 	// Ventas del día (hoy) y del mes calendario actual (para KPIs fijos en tarjetas)
-	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	todayEnd := todayStart.AddDate(0, 0, 1)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
@@ -160,6 +160,16 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	countBilling("rejected", &rejectedSunat)
 	countBilling("error", &errorSunat)
 
+	// Lo que está pendiente HOY, sin límite de fecha y con la misma definición que la campanita del
+	// encabezado: los contadores de arriba son solo del período y daban otra cifra sin explicarlo.
+	pendingSunatAll := countElectronicBilling(tdb, "pending", branchID, userID, restrictUser)
+	errorSunatAll := countElectronicBilling(tdb, "error", branchID, userID, restrictUser)
+	rejectedSunatAll := countElectronicBilling(tdb, "rejected", branchID, userID, restrictUser)
+
+	// Ventas con total <= 0 (datos inconsistentes: distorsionan totales y ticket promedio).
+	var invalidTotalSales int64
+	analyticsSaleScope(tdb, from, toExclusive, branchID, userID, restrictUser).Where("tenant_sales.total <= 0").Count(&invalidTotalSales)
+
 	// Ventas anuladas en el período
 	var cancelledCount int64
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
@@ -170,12 +180,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Count(&cancelledCount)
 
 	// Serie diaria: ventas + cantidad documentos (no anulados)
-	type dayRow struct {
-		Day   string  `json:"day"`
-		Sales float64 `json:"sales"`
-		Docs  int64   `json:"documents"`
-	}
-	var daily []dayRow
+	var daily []dailyRow
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Select("DATE(issue_date) as day, COALESCE(SUM(total),0) as sales, COUNT(*) as docs").
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
@@ -185,10 +190,12 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Group("DATE(issue_date)").
 		Order("day").
 		Scan(&daily)
+	// Días sin ventas con 0 (y fecha "YYYY-MM-DD"): el gráfico no debe saltar días ni curvarse.
+	daily = fillDailySeries(daily, from, toExclusive, now)
 
 	// Comparación mes vs mes anterior calendario (ventas totales)
-	prevMonthStart := monthStart.AddDate(0, -1, 0)
-	prevMonthEnd := monthStart
+	monthCmp := comparisonWindow(monthStart, monthEnd, now)
+	prevMonthStart, prevMonthEnd := monthCmp.From, monthCmp.ToExclusive
 	var salesPrevMonth float64
 	qPM := analyticsSaleScope(tdb, prevMonthStart, prevMonthEnd, branchID, userID, restrictUser)
 	qPM.Select("COALESCE(SUM(total), 0)").Scan(&salesPrevMonth)
@@ -222,6 +229,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
 		Where("tenant_sales.status != ?", "cancelled").
 		Scopes(branchScope(branchID)).
+		Scopes(userScope(restrictUser, userID)).
 		Group("tenant_users.id, tenant_users.name").
 		Order("total DESC").
 		Limit(12).
@@ -291,6 +299,9 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	type catRow struct {
 		Name  string  `json:"name"`
 		Total float64 `json:"total"`
+		// Adjustment: fila que concilia el gráfico con el total de ventas (otras categorías,
+		// descuentos globales, líneas sin producto).
+		Adjustment bool `json:"adjustment,omitempty"`
 	}
 	var byCategory []catRow
 	tdb.Table("tenant_sale_items si").
@@ -319,22 +330,45 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Limit(12).
 		Scan(&byCategory)
 
+	// Conciliación: el gráfico suma líneas con producto (top 12); el resto hasta el total de ventas
+	// se muestra como filas de ajuste en vez de dejar una diferencia sin explicar.
+	var linesAll float64
+	tdb.Table("tenant_sale_items si").
+		Select("COALESCE(SUM(si.total),0)").
+		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
+		Scopes(salescope.ScopeCommercialNoNotes("s")).
+		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).
+		Where("s.status != ?", "cancelled").
+		Where("si.product_id IS NOT NULL").
+		Scopes(func(db *gorm.DB) *gorm.DB {
+			if branchID > 0 {
+				return db.Where("s.branch_id = ?", branchID)
+			}
+			return db
+		}).
+		Scopes(func(db *gorm.DB) *gorm.DB {
+			if restrictUser && userID != 0 {
+				return db.Where("s.user_id = ?", userID)
+			}
+			return db
+		}).
+		Scan(&linesAll)
+	var catTop float64
+	for _, r := range byCategory {
+		catTop += r.Total
+	}
+	if other := linesAll - catTop; other > 0.009 {
+		byCategory = append(byCategory, catRow{Name: "Otras categorías", Total: money.RoundDisplay(other), Adjustment: true})
+	}
+	if adj := salesTotal - linesAll; adj > 0.009 || adj < -0.009 {
+		byCategory = append(byCategory, catRow{Name: "Descuentos, líneas sin producto y ajustes", Total: money.RoundDisplay(adj), Adjustment: true})
+	}
+
 	// Top productos — Fase 7J.2: computeTopProducts agrupa por producto+SaleUnit (ver su doc).
 	topProducts, _ := computeTopProducts(tdb, from, toExclusive, branchID, userID, restrictUser, 10)
 
 	// Stock bajo (actual global, no depende del rango de fechas del dashboard)
-	lowStock := make([]struct {
-		ProductID   uint    `json:"product_id"`
-		ProductName string  `json:"product_name"`
-		Quantity    float64 `json:"quantity"`
-		MinStock    float64 `json:"min_stock"`
-	}, 0)
-	tdb.Table("tenant_product_stocks ps").
-		Select("ps.product_id, p.name as product_name, ps.quantity, p.min_stock").
-		Joins("JOIN tenant_products p ON p.id = ps.product_id").
-		Where("p.manage_stock = ? AND p.active = ? AND ps.quantity <= p.min_stock", true, true).
-		Limit(8).
-		Scan(&lowStock)
+	lowStock := queryLowStock(tdb, branchID, 8)
 
 	// Productos con vencimiento próximo (30 días) o ya vencidos
 	expiringProducts := make([]struct {
@@ -371,7 +405,8 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 			COALESCE(fe.number, tenant_sales.number) as number,
 			tenant_sales.issue_date, tenant_sales.total,
 			tenant_sales.status,
-			COALESCE(fe.billing_status, tenant_sales.billing_status) as billing_status,
+			CASE WHEN COALESCE(fe.doc_type, tenant_sales.doc_type) IN ('FACTURA','BOLETA')
+					THEN COALESCE(fe.billing_status, tenant_sales.billing_status) ELSE '' END as billing_status,
 			tenant_branches.name as branch_name,
 			COALESCE(NULLIF(TRIM(tenant_contacts.trade_name),''), tenant_contacts.business_name,'—') as contact_display`).
 		Joins("LEFT JOIN tenant_sales fe ON fe.issued_from_nota_sale_id = tenant_sales.id AND fe.deleted_at IS NULL").
@@ -396,13 +431,30 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		if branchID > 0 {
 			q = q.Where("cs.branch_id = ?", branchID)
 		}
+		if restrictUser && userID != 0 {
+			q = q.Where("cs.user_id = ?", userID)
+		}
 		return q
 	}
 	cashBase().Select("COALESCE(SUM(CASE WHEN m.type = 'income' THEN m.amount ELSE 0 END),0)").Scan(&cashIncome)
 	cashBase().Select("COALESCE(SUM(CASE WHEN m.type = 'expense' THEN m.amount ELSE 0 END),0)").Scan(&cashExpense)
 
-	var openCashSessions int64
-	tdb.Model(&database.TenantCashSession{}).Where("status = ?", "open").Count(&openCashSessions)
+	// Sesiones de caja abiertas: con el mismo filtro de sucursal/usuario que el resto del dashboard
+	// (antes contaba todas las sucursales y no coincidía con el módulo Caja, que lista la activa).
+	var openCashSessions, staleCashSessions int64
+	openCashQ := func() *gorm.DB {
+		q := tdb.Model(&database.TenantCashSession{}).Where("status = ?", "open")
+		if branchID > 0 {
+			q = q.Where("branch_id = ?", branchID)
+		}
+		if restrictUser && userID != 0 {
+			q = q.Where("user_id = ?", userID)
+		}
+		return q
+	}
+	openCashQ().Count(&openCashSessions)
+	// Abiertas hace más de 24 h: casi siempre un cierre olvidado.
+	openCashQ().Where("opened_at < ?", now.Add(-24*time.Hour)).Count(&staleCashSessions)
 
 	type detPeriodAgg struct {
 		SumDetraccion   float64 `gorm:"column:sum_detraccion"`
@@ -442,6 +494,18 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 			"previous_to":     prevToExclusive.Add(-time.Nanosecond).Format("2006-01-02"),
 			"duration_days":   int(duration.Hours() / 24),
 			"sales_change_pct": changePct,
+			"compare_mode":     cmp.Mode,
+			"compare_label":    cmp.Label,
+			"compare_from":     prevFrom.Format("2006-01-02"),
+			"compare_to":       prevToExclusive.Add(-time.Nanosecond).Format("2006-01-02"),
+		},
+		// Quién ve qué: el administrador recibe la lista de usuarios para el selector.
+		"scope": fiber.Map{
+			"is_admin":         us.IsAdmin,
+			"restricted":       us.Restrict,
+			"user_id":          us.UserID,
+			"month_compare":    monthCmp.Label,
+			"users":            scopeUsers(us, tdb),
 		},
 		"summary": fiber.Map{
 			"sales_total":           salesTotal,
@@ -464,6 +528,11 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 			"cash_expense":          cashExpense,
 			"cash_net":              cashIncome - cashExpense,
 			"open_cash_sessions":    openCashSessions,
+			"stale_cash_sessions":   staleCashSessions,
+			"pending_sunat_all":     pendingSunatAll,
+			"error_sunat_all":       errorSunatAll,
+			"rejected_sunat_all":    rejectedSunatAll,
+			"invalid_total_sales":   invalidTotalSales,
 			"sum_detraccion":        detPeriod.SumDetraccion,
 			"sum_net_payable":       detPeriod.SumNetPayable,
 			"count_detraccion":      detPeriod.CountDetraccion,
@@ -648,4 +717,12 @@ func userScope(restrict bool, userID uint) func(*gorm.DB) *gorm.DB {
 		}
 		return db
 	}
+}
+
+// scopeUsers: lista del selector de usuarios, solo para el administrador.
+func scopeUsers(us dashUser, tdb *gorm.DB) []dashboardUserOption {
+	if !us.IsAdmin {
+		return []dashboardUserOption{}
+	}
+	return listDashboardUsers(tdb)
 }

@@ -347,6 +347,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		total = plan.AdjustedTotal
 	}
 
+	// Un total negativo (descuentos mayores al subtotal, p. ej.) nunca es una venta válida: antes se
+	// guardaba y restaba de todos los totales del dashboard y de los reportes.
+	if total < 0 {
+		return nil, errors.New("el total de la venta no puede ser negativo: revise los descuentos y los precios")
+	}
+
 	opCode, err := salecurrency.NormalizeOperationType(input.OperationTypeCode)
 	if err != nil {
 		return nil, err
