@@ -1515,7 +1515,7 @@ type TenantSale struct {
 	PaymentConditionCode string     `gorm:"size:20;default:cash;index" json:"payment_condition_code"`
 	Notes                string     `gorm:"type:text" json:"notes"`
 	Status               string     `gorm:"size:30;default:'paid'" json:"status"`            // draft, paid, cancelled, credit
-	BillingStatus        string     `gorm:"size:30;default:'pending'" json:"billing_status"` // pending, sent, accepted, rejected
+	BillingStatus        string     `gorm:"size:30;default:'pending';index" json:"billing_status"` // pending, sent, accepted, rejected
 	RestaurantSessionID  *uint      `gorm:"index" json:"restaurant_session_id,omitempty"`    // pedido restaurante que originó la venta
 	OriginalSaleID       *uint      `gorm:"index" json:"original_sale_id"`                   // Si es NOTA_CREDITO: venta que se anuló
 	// Motivo SUNAT elegido al emitir la nota (catálogo 09 para NC, catálogo 10 para ND).

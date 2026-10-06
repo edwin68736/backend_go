@@ -10,6 +10,9 @@ import (
 	"tukifac/pkg/database"
 )
 
+// StaleAfterDays: un pendiente/error sin enviar con esta antigüedad (o más) se marca como atrasado.
+const StaleAfterDays = 3
+
 // Filter filtros de la tabla del panel central.
 type Filter struct {
 	From, To    string   // YYYY-MM-DD (día de emisión), vacíos = sin límite
@@ -17,6 +20,7 @@ type Filter struct {
 	RUC         string   // coincidencia parcial
 	Q           string   // nombre o slug, parcial
 	OnlyPending bool     // solo tenants con algo por enviar (pending + error)
+	StaleOnly   bool     // solo tenants con un pendiente de + días (sin importar el rango)
 	Sort        string   // to_send (def), emitted, accepted, name, oldest, scanned
 	Page        int
 	PerPage     int
@@ -48,7 +52,9 @@ type Row struct {
 	ByType map[string]TypeCount `json:"by_type"`
 
 	// Estado actual del tenant (no depende del rango de fechas).
-	OpenToSend   int        `json:"open_to_send"`
+	OpenToSend int `json:"open_to_send"`
+	// Stale: su pendiente más antiguo tiene StaleAfterDays o más.
+	Stale        bool       `json:"stale"`
 	OldestOpenAt *time.Time `json:"oldest_open_at"`
 	LastIssueAt  *time.Time `json:"last_issue_at"`
 	ScannedAt    *time.Time `json:"scanned_at"`
@@ -67,6 +73,8 @@ type Totals struct {
 	ToSend   int `json:"to_send"`
 	// WithToSend: tenants con algo por enviar. ScanErrors: tenants cuyo último escaneo falló.
 	WithToSend int `json:"with_to_send"`
+	// Stale: tenants con un pendiente de StaleAfterDays o más.
+	Stale      int `json:"stale"`
 	ScanErrors int `json:"scan_errors"`
 }
 
@@ -147,6 +155,7 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 			r.ScannedAt, r.ScanError = &sc, h.ScanError
 			r.OldestOpenAt, r.LastIssueAt = h.OldestOpenAt, h.LastIssueAt
 			r.OpenToSend = h.OpenPending + h.OpenError
+			r.Stale = h.OldestOpenAt != nil && r.OpenToSend > 0 && time.Since(*h.OldestOpenAt) >= StaleAfterDays*24*time.Hour
 		}
 		rowBy[t.ID] = r
 		rows = append(rows, r)
@@ -179,6 +188,15 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 		r.ToSend = r.Pending + r.Error
 	}
 
+	if f.StaleOnly {
+		kept := rows[:0]
+		for _, r := range rows {
+			if r.Stale {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
 	if f.OnlyPending {
 		kept := rows[:0]
 		for _, r := range rows {
@@ -201,6 +219,9 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 		totals.ToSend += r.ToSend
 		if r.ToSend > 0 {
 			totals.WithToSend++
+		}
+		if r.Stale {
+			totals.Stale++
 		}
 		if r.ScanError != "" {
 			totals.ScanErrors++

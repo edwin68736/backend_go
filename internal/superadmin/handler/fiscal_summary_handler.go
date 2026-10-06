@@ -18,10 +18,11 @@ import (
 type FiscalSummaryHandler struct {
 	mu          sync.Mutex
 	lastRefresh map[uint]time.Time
+	lastResend  map[uint]time.Time
 }
 
 func NewFiscalSummaryHandler() *FiscalSummaryHandler {
-	return &FiscalSummaryHandler{lastRefresh: map[uint]time.Time{}}
+	return &FiscalSummaryHandler{lastRefresh: map[uint]time.Time{}, lastResend: map[uint]time.Time{}}
 }
 
 // Mínimo entre dos "Verificar ahora" del mismo tenant, para no cargar su BD.
@@ -72,10 +73,11 @@ func (h *FiscalSummaryHandler) ListAPI(c fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page"))
 	perPage, _ := strconv.Atoi(c.Query("per_page"))
 	only, _ := strconv.ParseBool(c.Query("only_pending"))
+	stale, _ := strconv.ParseBool(c.Query("stale_only"))
 
 	res, err := summary.Summarize(database.CentralDB, summary.Filter{
 		From: from, To: to, DocTypes: docTypes,
-		RUC: c.Query("ruc"), Q: c.Query("q"), OnlyPending: only,
+		RUC: c.Query("ruc"), Q: c.Query("q"), OnlyPending: only, StaleOnly: stale,
 		Sort: c.Query("sort"), Page: page, PerPage: perPage,
 	})
 	if err != nil {

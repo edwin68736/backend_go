@@ -230,6 +230,7 @@ var protectedRoutesEtapa2 = []protectedRoute{
 	{"GET", "/api/superadmin/fiscal/alerts", "fiscal.view"},
 	{"GET", "/api/superadmin/fiscal/tenant-summary", "fiscal.view"},
 	{"POST", "/api/superadmin/fiscal/tenant-summary/1/refresh", "fiscal.view"},
+	{"POST", "/api/superadmin/fiscal/tenant-summary/1/resend-pending", "fiscal.retry"},
 	{"GET", "/api/superadmin/fiscal/documents", "fiscal.view"},
 	{"GET", "/api/superadmin/fiscal/documents/abc/audit-timeline", "fiscal.view"},
 	{"GET", "/api/superadmin/fiscal/documents/abc/download/pdf", "fiscal.view"},
@@ -237,9 +238,9 @@ var protectedRoutesEtapa2 = []protectedRoute{
 }
 
 func TestProtectedRoutesEtapa2_Count(t *testing.T) {
-	// 7 de la etapa 1 + 52 de la etapa 2 + 2 del resumen fiscal por tenant (tenant-summary) = 61.
-	if len(protectedRoutesEtapa2) != 61 {
-		t.Fatalf("protectedRoutesEtapa2 tiene %d entradas, esperado 61 — actualiza este test junto con el informe si cambia intencionalmente", len(protectedRoutesEtapa2))
+	// 7 de la etapa 1 + 52 de la etapa 2 + 3 del resumen fiscal por tenant (tenant-summary) = 62.
+	if len(protectedRoutesEtapa2) != 62 {
+		t.Fatalf("protectedRoutesEtapa2 tiene %d entradas, esperado 62 — actualiza este test junto con el informe si cambia intencionalmente", len(protectedRoutesEtapa2))
 	}
 }
 

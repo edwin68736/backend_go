@@ -240,3 +240,10 @@ Implementadas las fases 1–3 del plan.
 - **Contraste con la campanita del tenant (BD local):** para los dos tenants, `GetNotificationCounts` coincide exactamente con `open_pending/open_error/open_rejected` del resumen (doriconta 6/78/1; demo 27/2/0).
 - Pendiente de medir en producción: duración real de `fiscal_snapshot_done` tras el primer deploy, para ajustar el intervalo.
 - Pendiente (fase 4, opcional): índice en `tenant_sales.billing_status`, alerta por pendientes antiguos, "Reenviar pendientes".
+
+## 11. Fase 4 implementada (2026-10-06)
+
+- **Índice `tenant_sales.billing_status`:** migración versionada de tenant `v155_sale_billing_status_index` (idempotente, solo crea el índice) y `index` en el modelo `TenantSale` para tenants nuevos. **Requiere correr el fleet** (`migrate-fleet-cron`) tras el deploy; hasta entonces todo funciona igual, solo sin el índice. Aplicada y probada en los tenants locales.
+- **Pendientes atrasados:** un tenant es "atrasado" si su pendiente/error sin enviar más antiguo tiene 3 días o más (`summary.StaleAfterDays`). Aparece como total "Con pendientes de 3+ días", filtro `stale_only` y la fecha en rojo. Es una alerta visual en el panel; no hay notificación push.
+- **Reenviar pendientes:** `POST /superadmin/fiscal/tenant-summary/:id/resend-pending` (permiso `fiscal.retry`, solo tenants activos, enfriamiento de 60 s, auditado como `fiscal_tenant_resend_pending`). Toma hasta 100 ventas electrónicas pending/error con más de 10 min, las más antiguas primero; por cada una sincroniza antes con el facturador (si SUNAT ya la aceptó solo actualiza el estado) y luego reencola con `EnqueueSendToSUNAT` (mismos candados que el reenvío manual del tenant). Nunca toca notas de venta ni rechazados por SUNAT.
+- Probado en local: reenvío de 2 comprobantes del tenant demo (quedan 27 para otra pasada), segundo intento bloqueado por el enfriamiento, tenant suspendido rechazado con 409.

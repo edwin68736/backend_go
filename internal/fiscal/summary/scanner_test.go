@@ -318,3 +318,35 @@ func TestSummarizeFiltraPorFechaTipoRucYOrdena(t *testing.T) {
 		t.Errorf("paginación: items=%d total=%d", len(res.Items), res.Total)
 	}
 }
+
+func TestSummarizeMarcaPendientesAtrasadosYFiltra(t *testing.T) {
+	central := memDB(t, "central_stale")
+	if err := central.AutoMigrate(&database.Tenant{}, &database.TenantFiscalDaily{}, &database.TenantFiscalHealth{}); err != nil {
+		t.Fatal(err)
+	}
+	a := database.Tenant{Name: "Atrasado", Slug: "atrasado", DBName: "a", Status: "active"}
+	b := database.Tenant{Name: "Reciente", Slug: "reciente", DBName: "b", Status: "active"}
+	c := database.Tenant{Name: "Sin pendientes", Slug: "limpio", DBName: "c", Status: "active"}
+	central.Create(&a)
+	central.Create(&b)
+	central.Create(&c)
+	now := time.Now()
+	old := now.AddDate(0, 0, -(StaleAfterDays + 2))
+	recent := now.AddDate(0, 0, -1)
+	central.Create(&database.TenantFiscalHealth{TenantID: a.ID, ScannedAt: now, OpenPending: 4, OldestOpenAt: &old})
+	central.Create(&database.TenantFiscalHealth{TenantID: b.ID, ScannedAt: now, OpenError: 2, OldestOpenAt: &recent})
+	// Un OldestOpenAt viejo sin pendientes abiertos no es "atrasado".
+	central.Create(&database.TenantFiscalHealth{TenantID: c.ID, ScannedAt: now, OldestOpenAt: &old})
+
+	res, err := Summarize(central, Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Totals.Stale != 1 {
+		t.Fatalf("stale total=%d", res.Totals.Stale)
+	}
+	res, _ = Summarize(central, Filter{StaleOnly: true})
+	if res.Total != 1 || res.Items[0].Slug != "atrasado" || !res.Items[0].Stale {
+		t.Fatalf("stale_only: %+v", res)
+	}
+}
