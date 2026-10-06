@@ -12,7 +12,9 @@ import (
 
 // POST /api/superadmin/fiscal/alerts/:id/acknowledge — "Reconocer": alguien ya vio la alerta;
 // deja de contar para el estado del sistema pero sigue visible mientras la condición exista.
-func (h *FiscalHandler) AlertAcknowledgeAPI(c fiber.Ctx) error { return h.alertAction(c, "acknowledge") }
+func (h *FiscalHandler) AlertAcknowledgeAPI(c fiber.Ctx) error {
+	return h.alertAction(c, "acknowledge")
+}
 
 // POST /api/superadmin/fiscal/alerts/:id/resolve — "Resolver": se cierra a mano. Si la condición
 // sigue ocurriendo, la próxima detección abrirá una alerta nueva.
