@@ -140,6 +140,7 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 		// el snapshot histórico que solo vive en el TenantStockMovement de ingreso vinculado
 		// (purchase_item_id + type=in) — ver la misma resolución en PurchaseService.Void.
 		SaleUnitID       *uint    `json:"sale_unit_id,omitempty"`
+		PresentationID   *uint    `json:"presentation_id,omitempty"`
 		SaleUnitQuantity *float64 `json:"sale_unit_quantity,omitempty"`
 		ConversionFactor *float64 `json:"conversion_factor,omitempty"`
 	}
@@ -161,6 +162,7 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 			Total:              it.Total,
 			Serials:            []string{},
 			SaleUnitID:         it.SaleUnitID,
+			PresentationID:     it.PresentationID,
 		}
 		var serials []database.TenantProductSerial
 		if tdb.Where("purchase_item_id = ?", it.ID).Find(&serials).Error == nil {

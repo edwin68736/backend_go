@@ -2130,7 +2130,10 @@ type TenantPurchaseItem struct {
 	UnitCost float64 `gorm:"type:decimal(15,2);not null" json:"unit_cost"`
 	// SaleUnitID: unidad de venta con conversión utilizada en esta línea de compra (ej. "Saco 100
 	// KG"), cuando aplica. nil = línea legacy sin conversión (comportamiento previo, intacto).
-	SaleUnitID         *uint   `gorm:"index" json:"sale_unit_id,omitempty"`
+	SaleUnitID *uint `gorm:"index" json:"sale_unit_id,omitempty"`
+	// PresentationID: presentación/variante comprada (ej. "Talla M") cuando el producto maneja
+	// stock por presentación (product.HasVariants). nil = producto sin variantes.
+	PresentationID     *uint   `gorm:"index" json:"presentation_id,omitempty"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
 	PriceIncludesIgv   bool    `gorm:"default:false" json:"price_includes_igv"`

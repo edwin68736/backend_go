@@ -37,7 +37,10 @@ type PurchaseItemInput struct {
 	// SaleUnitID: unidad de venta con conversión utilizada en esta línea (ej. "Saco 100 KG"),
 	// cuando el producto se compra en una unidad distinta de la base. nil = línea legacy sin
 	// conversión (comportamiento previo, intacto).
-	SaleUnitID         *uint    `json:"sale_unit_id"`
+	SaleUnitID *uint `json:"sale_unit_id"`
+	// PresentationID: presentación/variante que se compra (obligatoria si el producto maneja stock
+	// por presentación). Mutuamente excluyente con SaleUnitID.
+	PresentationID     *uint    `json:"presentation_id"`
 	TaxRate            float64  `json:"tax_rate"`             // referencial; se recalcula con IgvAffectationType
 	IgvAffectationType string   `json:"igv_affectation_type"` // catálogo SUNAT N°07
 	PriceIncludesIgv   bool     `json:"price_includes_igv"`
@@ -100,7 +103,9 @@ func catalogPriceUpdates(item PurchaseItemInput, baseUnitCost float64) (map[stri
 	if baseUnitCost > 0 {
 		updates["purchase_price"] = money.RoundSunat(baseUnitCost)
 	}
-	if item.UpdateSalePrice {
+	// Con presentación, el precio de venta que se actualiza es el de ESA presentación (se hace
+	// aparte, ver Create): el sale_price del producto no se usa para vender variantes.
+	if item.UpdateSalePrice && (item.PresentationID == nil || *item.PresentationID == 0) {
 		updates["sale_price"] = money.RoundSunat(item.NewSalePrice)
 	}
 	if len(updates) == 0 {
@@ -154,6 +159,9 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	if err := validatePurchaseSaleUnits(s.db, input.Items); err != nil {
 		return nil, err
 	}
+	if err := validatePurchasePresentations(s.db, input.Items); err != nil {
+		return nil, err
+	}
 
 	taxCfg := input.TaxConfig
 	if taxCfg.TaxRate == 0 {
@@ -187,6 +195,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			Quantity:           item.Quantity,
 			UnitCost:           item.UnitCost,
 			SaleUnitID:         item.SaleUnitID,
+			PresentationID:     purchasePresentationID(item),
 			TaxRate:            effectiveRate,
 			IgvAffectationType: affType,
 			PriceIncludesIgv:   item.PriceIncludesIgv,
@@ -333,6 +342,14 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 				}
 			}
 
+			if item.UpdateSalePrice && item.PresentationID != nil && *item.PresentationID > 0 {
+				if err := tx.Model(&database.TenantProductPresentation{}).
+					Where("id = ? AND product_id = ?", *item.PresentationID, product.ID).
+					Update("sale_price", money.RoundSunat(item.NewSalePrice)).Error; err != nil {
+					return err
+				}
+			}
+
 			if !product.ManageStock {
 				continue
 			}
@@ -340,6 +357,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			movementPurchaseItemID := purchaseItems[i].ID
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
 				ProductID:        *item.ProductID,
+				PresentationID:   purchasePresentationID(item),
 				BranchID:         input.BranchID,
 				Type:             "in",
 				Quantity:         baseQuantity,
@@ -535,6 +553,7 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 				quantity, unitCost := item.Quantity, item.UnitCost
 				var saleUnitID *uint
 				var saleUnitQuantity, conversionFactor *float64
+				presentationID := item.PresentationID
 				if err := tx.Where("purchase_item_id = ? AND type = ?", item.ID, "in").
 					First(&original).Error; err == nil {
 					quantity = original.Quantity
@@ -542,9 +561,13 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 					saleUnitID = original.SaleUnitID
 					saleUnitQuantity = original.SaleUnitQuantity
 					conversionFactor = original.ConversionFactor
+					if original.PresentationID != nil {
+						presentationID = original.PresentationID
+					}
 				}
 				if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
 					ProductID:        *item.ProductID,
+					PresentationID:   presentationID,
 					BranchID:         p.BranchID,
 					Type:             "out",
 					Quantity:         quantity,
