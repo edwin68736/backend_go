@@ -1049,6 +1049,11 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 		HasVariants:          input.HasVariants,
 		HasModifiers:         input.HasModifiers,
 	}
+	// Un PUT sin lista de presentaciones (editores parciales: restaurante, combos) no debe apagar
+	// has_variants: el producto conserva sus presentaciones y dejaría de pedirlas al vender.
+	if input.Presentations == nil {
+		draft.HasVariants = existing.HasVariants
+	}
 	normalizeProductCatalogFields(draft)
 	if err := s.resolvePreparationAreaFields(draft); err != nil {
 		return nil, err
@@ -1695,6 +1700,12 @@ func (s *ProductService) CreateSaleUnit(productID uint, in SaleUnitInput) (*data
 	var product database.TenantProduct
 	if err := s.db.First(&product, productID).Error; err != nil {
 		return nil, errors.New("producto no encontrado")
+	}
+	// Presentaciones y unidades de venta no se combinan en una línea: con unidades activas el POS
+	// oculta las presentaciones, así que el producto dejaría de ofrecerlas.
+	var presCount int64
+	if err := s.db.Model(&database.TenantProductPresentation{}).Where("product_id = ? AND active = ?", productID, true).Count(&presCount).Error; err == nil && presCount > 0 {
+		return nil, errors.New("este producto tiene presentaciones: no se pueden agregar unidades de venta. Elimina las presentaciones o usa solo unidades de venta")
 	}
 	name, unitCode, err := validateSaleUnitInput(s.db, in, true)
 	if err != nil {

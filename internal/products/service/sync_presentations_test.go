@@ -89,3 +89,41 @@ func TestSyncPresentations_noPermiteQuitarUnaPresentacionConStock(t *testing.T) 
 		t.Error("la presentación sin stock debió eliminarse")
 	}
 }
+
+func TestUpdateWithoutPresentationsKeepsHasVariants(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+	p, _, err := svc.Create(ProductInput{
+		Code: "PV-1", Name: "Pizza", Type: "product", Unit: "NIU", SalePrice: 0, TaxRate: 18, IgvAffectationType: "10", Active: true,
+		HasVariants:   true,
+		Presentations: &[]ProductPresentationInput{{Name: "Personal", SalePrice: 20}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(p.ID, ProductInput{
+		Code: "PV-1", Name: "Pizza", Type: "product", Unit: "NIU", SalePrice: 0, TaxRate: 18, IgvAffectationType: "10", Active: true,
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	var got database.TenantProduct
+	db.First(&got, p.ID)
+	if !got.HasVariants {
+		t.Fatal("has_variants se apagó al editar sin enviar presentaciones")
+	}
+}
+
+func TestCreateSaleUnitRejectedWhenProductHasPresentations(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+	p, _, err := svc.Create(ProductInput{
+		Code: "PV-2", Name: "Pizza", Type: "product", Unit: "NIU", SalePrice: 0, TaxRate: 18, IgvAffectationType: "10", Active: true,
+		Presentations: &[]ProductPresentationInput{{Name: "Personal", SalePrice: 20}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Caja", ConversionFactor: 12}); err == nil {
+		t.Fatal("se esperaba rechazo al combinar unidades de venta con presentaciones")
+	}
+}
