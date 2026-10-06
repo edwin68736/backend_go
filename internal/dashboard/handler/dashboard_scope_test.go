@@ -195,3 +195,44 @@ func TestResolveDashboardUserWithoutIdentityNeverFallsBackToEveryone(t *testing.
 		t.Fatalf("sin identidad debe quedar acotado a un id imposible: %+v", u)
 	}
 }
+
+func TestSumManualExpensesCountsOnlyUnlinkedUnreversedGastos(t *testing.T) {
+	db := scopeTestDB(t, "gastos_scope")
+	for _, q := range []string{
+		`CREATE TABLE tenant_cash_sessions (id INTEGER PRIMARY KEY, branch_id INTEGER, user_id INTEGER)`,
+		`CREATE TABLE tenant_cash_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, cash_session_id INTEGER, type TEXT, category TEXT,
+			amount REAL, sale_id INTEGER, purchase_id INTEGER, reversal_of_id INTEGER, created_at DATETIME)`,
+		`INSERT INTO tenant_cash_sessions VALUES (1,1,10),(2,2,20)`,
+	} {
+		if err := db.Exec(q).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins := func(sess int, typ, cat string, amt float64, sale, purchase, reversal any, at string) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO tenant_cash_movements (cash_session_id, type, category, amount, sale_id, purchase_id, reversal_of_id, created_at)
+			VALUES (?,?,?,?,?,?,?,?)`, sess, typ, cat, amt, sale, purchase, reversal, at).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins(1, "expense", "gasto", 100, nil, nil, nil, "2026-10-02 10:00:00")        // 1: cuenta
+	ins(1, "expense", "Gasto", 50, nil, nil, nil, "2026-10-03 10:00:00")         // 2: cuenta (mayúscula)
+	ins(1, "expense", "gasto", 30, nil, nil, nil, "2026-10-04 10:00:00")         // 3: se revierte (no cuenta)
+	ins(1, "income", "gasto", 30, nil, nil, 3, "2026-10-04 11:00:00")            // 4: reversión de 3
+	ins(1, "expense", "gasto", 70, 99, nil, nil, "2026-10-05 10:00:00")          // 5: ligado a una venta: no
+	ins(1, "expense", "compra", 80, nil, 5, nil, "2026-10-05 10:00:00")          // 6: compra: no
+	ins(1, "expense", "egreso_manual", 40, nil, nil, nil, "2026-10-05 10:00:00") // 7: no es "gasto"
+	ins(2, "expense", "gasto", 25, nil, nil, nil, "2026-10-05 10:00:00")         // 8: otra sucursal/usuario
+	ins(1, "expense", "gasto", 900, nil, nil, nil, "2026-09-15 10:00:00")        // 9: fuera del período
+
+	from, to := day(2026, 10, 1), day(2026, 11, 1)
+	if got := sumManualExpenses(db, from, to, 0, 0, false); got != 175 { // 100+50+25
+		t.Fatalf("todos: %v", got)
+	}
+	if got := sumManualExpenses(db, from, to, 1, 0, false); got != 150 {
+		t.Fatalf("sucursal 1: %v", got)
+	}
+	if got := sumManualExpenses(db, from, to, 0, 20, true); got != 25 {
+		t.Fatalf("usuario 20: %v", got)
+	}
+}

@@ -1932,6 +1932,10 @@ type ProfitDetailSummary struct {
 	DistinctSales int64   `json:"distinct_sales"`
 	TotalSales    float64 `json:"total_sales"`
 	TotalProfit   float64 `json:"total_profit"`
+	// TotalCost: costo de compra de lo vendido (precio de compra × cantidad); TotalSales - TotalCost = TotalProfit.
+	TotalCost float64 `json:"total_cost"`
+	// LinesWithoutCost: líneas sin precio de compra registrado (su utilidad es todo el precio).
+	LinesWithoutCost int64 `json:"lines_without_cost"`
 }
 
 // ProfitDetailParams filtros para el reporte de utilidades (ganancia por línea de venta).
@@ -1940,6 +1944,10 @@ type ProfitDetailParams struct {
 	DateTo     *time.Time
 	BranchID   uint
 	CategoryID uint
+	// ProductID: solo las líneas de ese producto (0 = todos).
+	ProductID uint
+	// UserID: solo las ventas de ese usuario (0 = todos).
+	UserID uint
 	// Q busca por código o nombre de producto (LIKE, case-insensitive).
 	Q string
 }
@@ -1984,6 +1992,12 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 	if qStr := strings.TrimSpace(params.Q); qStr != "" {
 		like := "%" + qStr + "%"
 		q = q.Where("p.code LIKE ? OR p.name LIKE ? OR tenant_sale_items.description LIKE ?", like, like, like)
+	}
+	if params.ProductID > 0 {
+		q = q.Where("tenant_sale_items.product_id = ?", params.ProductID)
+	}
+	if params.UserID > 0 {
+		q = q.Where("tenant_sales.user_id = ?", params.UserID)
 	}
 	q = q.Order("tenant_sales.issue_date ASC, tenant_sale_items.id ASC")
 
@@ -2042,6 +2056,10 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 		}
 		summary.TotalSales += r.SalePrice * r.Quantity
 		summary.TotalProfit += totalProfit
+		summary.TotalCost += r.PurchasePrice * r.Quantity
+		if r.PurchasePrice <= 0 {
+			summary.LinesWithoutCost++
+		}
 		distinctSales[r.SaleID] = struct{}{}
 	}
 	summary.LineItems = int64(len(raw))
