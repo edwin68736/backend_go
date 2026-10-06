@@ -431,6 +431,8 @@ func MigrateCentral() error {
 		&SARolePermission{},
 		&SAUserRoleMigrationBackup{},
 		&SAMigrationLock{},
+		&TenantFiscalDaily{},
+		&TenantFiscalHealth{},
 	)
 }
 

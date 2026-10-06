@@ -185,6 +185,10 @@ func RegisterRoutes(app *fiber.App) {
 	saFiscal.Get("/operations/tenants", middleware.RequireSAPermission("fiscal.view"), fiscalH.OperationsTenantsAPI)
 	saFiscal.Get("/operations/queue", middleware.RequireSAPermission("fiscal.view"), fiscalH.OperationsQueueAPI)
 	saFiscal.Get("/alerts", middleware.RequireSAPermission("fiscal.view"), fiscalH.AlertsAPI)
+	// Resumen por tenant (BD central): emitidos / aceptados / faltan enviar, con filtros de fecha, tipo y RUC.
+	fiscalSummaryH := handler.NewFiscalSummaryHandler()
+	saFiscal.Get("/tenant-summary", middleware.RequireSAPermission("fiscal.view"), fiscalSummaryH.ListAPI)
+	saFiscal.Post("/tenant-summary/:id/refresh", middleware.RequireSAPermission("fiscal.view"), fiscalSummaryH.RefreshAPI)
 	saFiscal.Get("/documents", middleware.RequireSAPermission("fiscal.view"), fiscalH.ListDocumentsAPI)
 	saFiscal.Get("/documents/:uuid/audit-timeline", middleware.RequireSAPermission("fiscal.view"), fiscalH.AuditTimelineAPI)
 	saFiscal.Get("/documents/:uuid/download/:type", middleware.RequireSAPermission("fiscal.view"), fiscalH.DownloadAPI)
