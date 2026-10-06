@@ -70,6 +70,8 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 		TaxAmount       float64                            `json:"tax_amount"`
 		Total           float64                            `json:"total"`
 		Status          string                             `json:"status"`
+		// PaymentMethod: método con el que se pagó al registrar; vacío = compra a crédito.
+		PaymentMethod   string                             `json:"payment_method"`
 		LinkedRetention *billingsvc.LinkedFiscalDocSummary `json:"linked_retention,omitempty"`
 	}
 	purchaseIDs := make([]uint, 0, len(purchases))
@@ -100,6 +102,7 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 			TaxAmount:       p.TaxAmount,
 			Total:           p.Total,
 			Status:          p.Status,
+			PaymentMethod:   p.PaymentMethod,
 			LinkedRetention: linked,
 		})
 	}
@@ -204,6 +207,7 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 			"tax_amount":         p.TaxAmount,
 			"total":              p.Total,
 			"status":             p.Status,
+			"payment_method":     p.PaymentMethod,
 			"notes":              p.Notes,
 			"price_includes_igv": p.PriceIncludesIgv,
 			"items":              itemsWithSerials,
