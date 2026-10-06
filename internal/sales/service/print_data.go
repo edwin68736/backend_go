@@ -68,6 +68,9 @@ type PrintData struct {
 
 	// Pagos
 	Payments []PrintPayment `json:"payments"`
+	// Cotización: métodos de pago de REFERENCIA (cómo piensa pagar el cliente). No son pagos
+	// realizados, por eso van aparte de Payments.
+	ReferencePayments []PrintPayment `json:"reference_payments,omitempty"`
 
 	// Nota de crédito/débito (07/08): documento afectado según SUNAT (misma info que Lycet).
 	AffectedDocSunatCode string `json:"affected_doc_sunat_code,omitempty"` // 01 factura, 03 boleta

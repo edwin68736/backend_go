@@ -155,6 +155,8 @@ func (h *QuotationHandler) CreateAPI(c fiber.Ctx) error {
 		ValidUntil   string                            `json:"valid_until"`
 		Currency     string                            `json:"currency"`
 		ExchangeRate *float64                          `json:"exchange_rate"`
+		// Métodos de pago de referencia: no son un cobro (no tocan caja ni saldos).
+		PaymentMethods []quotationsvc.QuotationPaymentRef `json:"payment_methods"`
 		Notes               string                            `json:"notes"`
 		ShowTermsConditions bool                              `json:"show_terms_conditions"`
 		Items               []quotationsvc.QuotationItemInput `json:"items"`
@@ -179,6 +181,7 @@ func (h *QuotationHandler) CreateAPI(c fiber.Ctx) error {
 		ValidUntil:   quotationsvc.ParseOptionalDateYMD(body.ValidUntil),
 		Currency:     body.Currency,
 		ExchangeRate: body.ExchangeRate,
+		PaymentMethods: body.PaymentMethods,
 		Notes:               body.Notes,
 		ShowTermsConditions: body.ShowTermsConditions,
 		Items:               body.Items,
@@ -210,6 +213,8 @@ func (h *QuotationHandler) UpdateAPI(c fiber.Ctx) error {
 		ValidUntil   string                            `json:"valid_until"`
 		Currency     string                            `json:"currency"`
 		ExchangeRate *float64                          `json:"exchange_rate"`
+		// Métodos de pago de referencia: no son un cobro (no tocan caja ni saldos).
+		PaymentMethods []quotationsvc.QuotationPaymentRef `json:"payment_methods"`
 		Notes               string                            `json:"notes"`
 		ShowTermsConditions bool                              `json:"show_terms_conditions"`
 		Items               []quotationsvc.QuotationItemInput `json:"items"`
@@ -231,6 +236,7 @@ func (h *QuotationHandler) UpdateAPI(c fiber.Ctx) error {
 		ValidUntil:   quotationsvc.ParseOptionalDateYMD(body.ValidUntil),
 		Currency:     body.Currency,
 		ExchangeRate: body.ExchangeRate,
+		PaymentMethods: body.PaymentMethods,
 		Notes:               body.Notes,
 		ShowTermsConditions: body.ShowTermsConditions,
 		Items:               body.Items,

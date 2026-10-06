@@ -1791,6 +1791,9 @@ type TenantQuotation struct {
 	GlobalDiscountAmount float64    `gorm:"type:decimal(15,2);default:0" json:"global_discount_amount"`
 	Currency            string     `gorm:"size:10;default:'PEN'" json:"currency"`
 	ExchangeRate        *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
+	// PaymentMethodsJSON: métodos de pago de REFERENCIA (cómo piensa pagar el cliente), lista JSON de
+	// {method, amount, reference}. No es un cobro: no afecta caja ni saldos (v154).
+	PaymentMethodsJSON  string     `gorm:"type:text" json:"payment_methods_json,omitempty"`
 	Notes               string     `gorm:"type:text" json:"notes"`
 	ShowTermsConditions bool       `gorm:"default:false" json:"show_terms_conditions"`
 	Status              string     `gorm:"size:30;default:'draft';index" json:"status"` // draft | converted

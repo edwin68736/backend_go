@@ -47,6 +47,7 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 		Total:        q.Total,
 		Notes:        strings.TrimSpace(q.Notes),
 		Payments:     []salessvc.PrintPayment{},
+		ReferencePayments: paymentRefsToPrint(q.PaymentMethodsJSON),
 		QRData:       "",
 	}
 

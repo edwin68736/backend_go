@@ -125,6 +125,7 @@ var TenantMigrations = []TenantMigration{
 	V151QuotationDiscountModes{},
 	V152QuotationItemSaleUnitCombo{},
 	V153CompanyShowIgvBreakdownOnSaleNote{},
+	V154QuotationPaymentMethods{},
 }
 
 // ByVersion mapa versión → migración.

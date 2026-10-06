@@ -61,6 +61,8 @@ type CreateQuotationInput struct {
 	ValidUntil          *time.Time
 	Currency            string
 	ExchangeRate        *float64
+	// PaymentMethods: métodos de pago de referencia (no son un cobro: no tocan caja ni saldos).
+	PaymentMethods      []QuotationPaymentRef
 	Notes               string
 	ShowTermsConditions bool
 	Items               []QuotationItemInput
@@ -79,6 +81,8 @@ type UpdateQuotationInput struct {
 	ValidUntil          *time.Time
 	Currency            string
 	ExchangeRate        *float64
+	// PaymentMethods: métodos de pago de referencia (no son un cobro: no tocan caja ni saldos).
+	PaymentMethods      []QuotationPaymentRef
 	Notes               string
 	ShowTermsConditions bool
 	Items               []QuotationItemInput
@@ -145,6 +149,10 @@ func (s *QuotationService) Create(input CreateQuotationInput) (*database.TenantQ
 	if err != nil {
 		return nil, err
 	}
+	paymentRefs, err := normalizePaymentRefs(input.PaymentMethods)
+	if err != nil {
+		return nil, err
+	}
 	calc, err := s.buildQuotation(input.Items, input.GlobalDiscountMode, input.GlobalDiscountValue, taxCfg)
 	if err != nil {
 		return nil, err
@@ -169,6 +177,7 @@ func (s *QuotationService) Create(input CreateQuotationInput) (*database.TenantQ
 		GlobalDiscountAmount: calc.globalAmount,
 		Currency:             currency,
 		ExchangeRate:         exchangeRate,
+		PaymentMethodsJSON:   paymentRefs,
 		Notes:                input.Notes,
 		ShowTermsConditions:  input.ShowTermsConditions,
 		Status:               "draft",
@@ -312,6 +321,10 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 	if err != nil {
 		return nil, err
 	}
+	paymentRefs, err := normalizePaymentRefs(input.PaymentMethods)
+	if err != nil {
+		return nil, err
+	}
 	calc, err := s.buildQuotation(input.Items, input.GlobalDiscountMode, input.GlobalDiscountValue, taxCfg)
 	if err != nil {
 		return nil, err
@@ -337,6 +350,7 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 				"valid_until":            input.ValidUntil,
 				"currency":               currency,
 				"exchange_rate":          exchangeRate,
+				"payment_methods_json":   paymentRefs,
 				"notes":                  input.Notes,
 				"show_terms_conditions":  input.ShowTermsConditions,
 				"subtotal":               money.RoundSunat(calc.subtotal),
