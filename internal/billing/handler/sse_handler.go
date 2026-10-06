@@ -11,6 +11,10 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+// sseKeepaliveInterval cada cuánto se escribe un comentario SSE para mantener viva la conexión
+// (Cloudflare corta conexiones inactivas) y para detectar al cliente que ya se fue. Variable para tests.
+var sseKeepaliveInterval = 25 * time.Second
+
 // BillingEventsSSE GET /api/billing/events — SSE autenticado por tenant.
 func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 	tenant, ok := c.Locals("tenant").(*database.Tenant)
@@ -24,14 +28,23 @@ func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 	c.Set("X-Accel-Buffering", "no")
 
 	ch, unsub := billingevents.Subscribe(tenant.ID)
-	defer unsub()
+	// El contexto se captura AHORA: dentro del stream writer c ya no es seguro (Fiber lo reutiliza
+	// cuando el handler retorna).
+	ctx := c.Context()
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		ctx := c.Context()
-		_, _ = fmt.Fprintf(w, "retry: 3000\n\n")
-		_ = w.Flush()
+		// unsub se ejecuta aquí, cuando el stream REALMENTE termina (cliente desconectado, apagado del
+		// servidor o error de escritura). Antes era un `defer` del handler: corría al retornar este
+		// método —antes de que el writer empezara—, cerraba el canal y el stream moría a los pocos
+		// milisegundos; el navegador reconectaba cada 3 s (retry) y nunca recibía eventos.
+		defer unsub()
 
-		ping := time.NewTicker(25 * time.Second)
+		_, _ = fmt.Fprintf(w, "retry: 3000\n\n")
+		if err := w.Flush(); err != nil {
+			return
+		}
+
+		ping := time.NewTicker(sseKeepaliveInterval)
 		defer ping.Stop()
 
 		for {
