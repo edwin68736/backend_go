@@ -275,7 +275,20 @@ func (s *EcommerceService) PublicProducts(query string, categoryID uint, minPric
 	if err != nil {
 		return items, total, err
 	}
+	ids := make([]uint, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	withUnits := map[uint]bool{}
+	if len(ids) > 0 {
+		var unitProducts []uint
+		s.db.Model(&database.TenantProductSaleUnit{}).Where("product_id IN ? AND active = ?", ids, true).Distinct().Pluck("product_id", &unitProducts)
+		for _, id := range unitProducts {
+			withUnits[id] = true
+		}
+	}
 	for i := range items {
+		items[i].HasSaleUnits = withUnits[items[i].ID]
 		// PurchasePrice (costo/precio de compra) es dato interno del tenant: nunca debe viajar en
 		// esta respuesta pública sin autenticación, sin importar la config de "Mostrar stock".
 		items[i].PurchasePrice = 0
@@ -296,6 +309,13 @@ type OrderItemInput struct {
 	Name      string  `json:"name"`
 	Quantity  float64 `json:"quantity"`
 	UnitPrice float64 `json:"unit_price"`
+	// Elección del cliente (solo IDs: el servidor resuelve nombre y precio, ver order_options.go).
+	PresentationID    *uint  `json:"presentation_id,omitempty"`
+	SaleUnitID        *uint  `json:"sale_unit_id,omitempty"`
+	ModifierOptionIDs []uint `json:"modifier_option_ids,omitempty"`
+	// ModifiersJSON/Detail los arma el servidor al guardar el pedido; se copian a la venta al convertir.
+	ModifiersJSON string `json:"modifiers_json,omitempty"`
+	Detail        string `json:"detail,omitempty"`
 }
 
 type CreateOrderInput struct {
@@ -315,7 +335,14 @@ func (s *EcommerceService) CreateOrder(input CreateOrderInput) (*database.Tenant
 		return nil, fmt.Errorf("el celular del cliente es obligatorio")
 	}
 	total := 0.0
-	for _, it := range input.Items {
+	for i, raw := range input.Items {
+		// El precio lo calcula el servidor a partir de la elección (presentación, unidad, extras):
+		// el cliente de la tienda pública nunca decide cuánto cuesta.
+		it, err := s.resolveOrderItem(raw)
+		if err != nil {
+			return nil, err
+		}
+		input.Items[i] = it
 		// Precio real obligatorio: si no se corrige aquí, el pedido se guarda igual y el error
 		// solo aparece tarde, al convertirlo a venta (SaleService.Create lo rechaza).
 		if !(it.UnitPrice > 0) {

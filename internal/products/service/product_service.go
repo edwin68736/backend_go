@@ -98,6 +98,8 @@ type ProductReportItem struct {
 	// StockByPresentation: solo productos con presentaciones. El total por sucursal
 	// (StockByBranch) suma todas las presentaciones y no dice cuánto hay de cada una.
 	StockByPresentation []PresentationStockRow `json:"stock_by_presentation,omitempty"`
+	// HasSaleUnits: solo lo llena la tienda pública (ecommerce) para saber si hay que elegir unidad.
+	HasSaleUnits bool `json:"has_sale_units,omitempty"`
 }
 
 func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {

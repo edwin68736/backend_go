@@ -147,6 +147,9 @@ func (s *EcommerceService) ConvertToSale(orderID uint, input ConvertInput) (*dat
 		saleItems = append(saleItems, salessvc.SaleItemInput{
 			ProductID:          productID,
 			Code:               code,
+			PresentationID:     it.PresentationID,
+			SaleUnitID:         it.SaleUnitID,
+			ModifiersJSON:      it.ModifiersJSON,
 			Description:        it.Name,
 			Unit:               unit,
 			Quantity:           it.Quantity,

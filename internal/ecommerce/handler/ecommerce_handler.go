@@ -486,15 +486,36 @@ func (h *EcommerceHandler) PublicProductsAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": items, "total": total})
 }
 
+// PublicProductOptionsAPI presentaciones, unidades de venta y extras de un producto de la tienda.
+func (h *EcommerceHandler) PublicProductOptionsAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil || id == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	svc := service.NewEcommerceService(db(c))
+	settings, err := svc.GetSettings()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	opts, err := svc.ProductOptions(uint(id), settings.ShowStock)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(opts)
+}
+
 func (h *EcommerceHandler) CreatePublicOrderAPI(c fiber.Ctx) error {
 	var body struct {
 		CustomerName  string `json:"customer_name"`
 		CustomerPhone string `json:"customer_phone"`
 		Items         []struct {
-			ProductID uint    `json:"product_id"`
-			Name      string  `json:"name"`
-			Quantity  float64 `json:"quantity"`
-			UnitPrice float64 `json:"unit_price"`
+			ProductID         uint    `json:"product_id"`
+			Name              string  `json:"name"`
+			Quantity          float64 `json:"quantity"`
+			UnitPrice         float64 `json:"unit_price"`
+			PresentationID    *uint   `json:"presentation_id"`
+			SaleUnitID        *uint   `json:"sale_unit_id"`
+			ModifierOptionIDs []uint  `json:"modifier_option_ids"`
 		} `json:"items"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
@@ -506,10 +527,13 @@ func (h *EcommerceHandler) CreatePublicOrderAPI(c fiber.Ctx) error {
 			continue
 		}
 		items = append(items, service.OrderItemInput{
-			ProductID: it.ProductID,
-			Name:      it.Name,
-			Quantity:  it.Quantity,
-			UnitPrice: it.UnitPrice,
+			ProductID:         it.ProductID,
+			Name:              it.Name,
+			Quantity:          it.Quantity,
+			UnitPrice:         it.UnitPrice,
+			PresentationID:    it.PresentationID,
+			SaleUnitID:        it.SaleUnitID,
+			ModifierOptionIDs: it.ModifierOptionIDs,
 		})
 	}
 	order, err := service.NewEcommerceService(db(c)).CreateOrder(service.CreateOrderInput{

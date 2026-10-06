@@ -48,5 +48,6 @@ func RegisterPublicRoutes(app fiber.Router) {
 	g.Get("/categories", h.PublicCategoriesAPI)
 	g.Get("/price-bounds", h.PublicPriceBoundsAPI)
 	g.Get("/products", h.PublicProductsAPI)
+	g.Get("/products/:id/options", h.PublicProductOptionsAPI)
 	g.Post("/orders", h.CreatePublicOrderAPI)
 }
