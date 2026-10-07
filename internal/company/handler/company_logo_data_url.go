@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strings"
+
 	"tukifac/pkg/branchlogo"
 	"tukifac/pkg/database"
 )
@@ -17,6 +19,12 @@ func attachLogoDataURL(ruc string, cfg *database.TenantCompanyConfig) {
 	if cfg == nil {
 		return
 	}
+	// Si logo_url YA es un data: URL (logo guardado embebido en la BD) no se repite en logo_data_url:
+	// la respuesta pesaba el doble (283 KB en vez de ~140). Los clientes (frontend_tenant y Tukichef)
+	// ya aceptan un data: en logo_url cuando logo_data_url no viene.
+	if strings.HasPrefix(strings.TrimSpace(cfg.LogoURL), "data:") {
+		return
+	}
 	if dataURL := branchlogo.ResolveCompanyDataURL(ruc, cfg.LogoURL); dataURL != "" {
 		cfg.LogoDataURL = dataURL
 	}
@@ -28,6 +36,9 @@ func attachLogoDataURL(ruc string, cfg *database.TenantCompanyConfig) {
 func attachBranchLogoDataURL(ruc string, b *database.TenantBranch) {
 	if b == nil {
 		return
+	}
+	if strings.HasPrefix(strings.TrimSpace(b.LogoURL), "data:") {
+		return // ya embebido en logo_url: no se duplica (ver attachLogoDataURL)
 	}
 	if dataURL := branchlogo.ResolveBranchDataURL(ruc, b.ID, b.LogoURL); dataURL != "" {
 		b.LogoDataURL = dataURL

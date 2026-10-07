@@ -34,7 +34,8 @@ func (h *CompanyHandler) GetConfigAPI(c fiber.Ctx) error {
 	if ruc, rucErr := tenantstorage.ResolveTenantRUC(c); rucErr == nil {
 		attachLogoDataURL(ruc, cfg)
 	}
-	return c.JSON(cfg)
+	// ETag: la config (con logo) casi nunca cambia y se pide en cada carga de página → 304 en las repetidas.
+	return jsonWithETag(c, cfg)
 }
 
 // PUT /api/company/config
@@ -332,7 +333,7 @@ func (h *CompanyHandler) ListBranchesAPI(c fiber.Ctx) error {
 			attachBranchLogoDataURL(ruc, &branches[i])
 		}
 	}
-	return c.JSON(fiber.Map{"data": branches})
+	return jsonWithETag(c, fiber.Map{"data": branches})
 }
 
 // POST /api/company/branches

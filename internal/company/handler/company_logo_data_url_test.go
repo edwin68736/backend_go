@@ -39,11 +39,16 @@ func TestAttachLogoDataURL(t *testing.T) {
 		}
 	})
 
-	t.Run("config antigua ya embebida se respeta", func(t *testing.T) {
+	// Antes se devolvía el mismo data URL también en logo_data_url (la respuesta pesaba el doble). Ahora el logo
+	// viaja una sola vez, en logo_url; los clientes lo aceptan ahí cuando logo_data_url no viene.
+	t.Run("logo_url ya embebido no se duplica en logo_data_url", func(t *testing.T) {
 		cfg := &database.TenantCompanyConfig{LogoURL: "data:image/png;base64,AAAA"}
 		attachLogoDataURL(ruc, cfg)
-		if cfg.LogoDataURL != "data:image/png;base64,AAAA" {
-			t.Errorf("esperaba devolver el data URL tal cual, got %q", cfg.LogoDataURL)
+		if cfg.LogoDataURL != "" {
+			t.Errorf("no debía duplicarse, got %q", cfg.LogoDataURL)
+		}
+		if cfg.LogoURL != "data:image/png;base64,AAAA" {
+			t.Errorf("logo_url debe conservar el logo embebido, got %q", cfg.LogoURL)
 		}
 	})
 
