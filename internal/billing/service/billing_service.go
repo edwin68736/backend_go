@@ -451,6 +451,13 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 		if orig.BillingStatus != "accepted" {
 			return errors.New("el comprobante debe estar aceptado por SUNAT antes de anularlo con nota de crédito")
 		}
+		// Anular con motivo 01 un anticipo ya deducido dejaría los comprobantes que lo usaron apuntando a
+		// un anticipo inexistente: se bloquea antes de enviar nada a SUNAT.
+		if rc := strings.TrimSpace(reasonCode); rc == "" || rc == "01" {
+			if err := prepaymentsvc.EnsureVoucherVoidable(tx, orig.ID); err != nil {
+				return err
+			}
+		}
 		if orig.ContactID == nil {
 			return errors.New("para nota de crédito electrónica debe asignar un cliente con dirección y ubigeo en la venta original")
 		}

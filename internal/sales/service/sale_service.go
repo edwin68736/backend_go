@@ -2171,10 +2171,16 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		} else {
 			cancelNotes = "ANULADA: " + reason
 		}
-		return tx.Model(&sale).Updates(map[string]interface{}{
+		if err := tx.Model(&sale).Updates(map[string]interface{}{
 			"status": "cancelled",
 			"notes":  cancelNotes,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		// Si la venta era un anticipo, deja de ofrecerse para deducir. El bloqueo por anticipos ya
+		// deducidos se valida antes de emitir la nota de crédito (esta anulación llega cuando SUNAT
+		// ya la aceptó y no puede rechazarse aquí).
+		return prepaymentsvc.NewService(tx).VoidSourceVoucherTx(tx, sale.ID)
 	})
 }
 

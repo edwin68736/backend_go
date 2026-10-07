@@ -94,6 +94,10 @@ func (s *BillingService) VoidRejectedSale(in VoidRejectedInput) error {
 		return fmt.Errorf("la nota de venta %s (de la que nació este comprobante) es a crédito y ya tiene cobros registrados; revierta primero esos cobros desde Cuentas por cobrar", nv.Number)
 	}
 
+	if err := prepaymentsvc.EnsureVoucherVoidable(s.db, in.SaleID); err != nil {
+		return err
+	}
+
 	reasonFull := "Comprobante rechazado por SUNAT. " + reason
 	if err := salesvc.NewSaleService(s.db).Cancel(in.SaleID, in.ActorID, reasonFull); err != nil {
 		return fmt.Errorf("anulando la venta: %w", err)
