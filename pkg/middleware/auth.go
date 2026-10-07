@@ -185,7 +185,8 @@ func TenantAuthAPI() fiber.Handler {
 		} else if tenant != nil {
 			// ERP: estado en tiempo real (provisional, grace, día de vencimiento).
 			view, err := saas.GetTenantView(tenant.ID)
-			if err != nil || !view.CanOperate {
+			reportsRead := err == nil && view.CanViewReports && IsReportsReadPath(method, path)
+			if err != nil || (!view.CanOperate && !reportsRead) {
 				return c.Status(fiber.StatusPaymentRequired).JSON(fiber.Map{
 					"error": "Acceso operativo restringido por suscripción",
 					"code":  "SUBSCRIPTION_REQUIRED",

@@ -20,6 +20,9 @@ const (
 	TenantStatusActive    = "active"
 	TenantStatusSuspended = "suspended"
 	TenantStatusBlocked   = "blocked"
+	// TenantStatusInactive lo pone el administrador desde el panel central ("desactivar empresa"). No es
+	// una suspensión por falta de pago: no hay acceso ni siquiera al portal de pagos.
+	TenantStatusInactive = "inactive"
 )
 
 // Ciclos de facturación.

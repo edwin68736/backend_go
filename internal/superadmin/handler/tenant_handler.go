@@ -229,6 +229,10 @@ func (h *TenantHandler) ToggleStatusAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	// El estado vive en la caché de resolución de tenant (10 min) y en la vista de suscripción: sin
+	// invalidarlas, activar/desactivar una empresa tardaba hasta ese tiempo en aplicarse.
+	saas.InvalidateTenantCache(uint(id))
+
 	saUserID, _ := c.Locals("sa_user_id").(uint)
 	oldStatus := ""
 	if previous != nil {
