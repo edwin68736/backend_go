@@ -32,6 +32,9 @@ func RequestLogger() fiber.Handler {
 			slog.Int("status", status),
 			slog.Int64("latency_ms", time.Since(start).Milliseconds()),
 			slog.String("ip", c.IP()),
+			// IP real del cliente (CF-Connecting-IP solo si el par es Cloudflare): es la que usa el rate limit. "ip"
+			// sigue siendo la del último salto (el edge de Cloudflare) para no cambiar los registros existentes.
+			slog.String("client_ip", ClientIP(c)),
 		}
 
 		if slug, ok := c.Locals("tenant_slug").(string); ok && slug != "" {
