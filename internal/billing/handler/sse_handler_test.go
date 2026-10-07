@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,12 +82,26 @@ func (c *sseClient) waitLine(want string, d time.Duration) bool {
 	}
 }
 
-func setupHub(t *testing.T) {
+func setupHub(t *testing.T) *miniredis.Miniredis {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	billingevents.Init(rdb)
 	t.Cleanup(func() { billingevents.Shutdown(); _ = rdb.Close() })
+	return mr
+}
+
+const tenant1Channel = "tukifac:tenant:1:billing_updates"
+
+func waitRedisSubs(mr *miniredis.Miniredis, ch string, want int, d time.Duration) int {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if mr.PubSubNumSub(ch)[ch] == want {
+			return want
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return mr.PubSubNumSub(ch)[ch]
 }
 
 func waitSubs(want int, d time.Duration) int {
@@ -138,7 +153,7 @@ func TestBillingEventsSSE_StaysOpenAndDeliversEvents(t *testing.T) {
 func TestBillingEventsSSE_UnsubscribesWhenClientLeaves(t *testing.T) {
 	sseKeepaliveInterval = 50 * time.Millisecond
 	defer func() { sseKeepaliveInterval = 25 * time.Second }()
-	setupHub(t)
+	mr := setupHub(t)
 	base := startSSEServer(t)
 
 	cl := openSSE(t, base+"/events/1")
@@ -148,9 +163,16 @@ func TestBillingEventsSSE_UnsubscribesWhenClientLeaves(t *testing.T) {
 	if n := waitSubs(1, 2*time.Second); n != 1 {
 		t.Fatalf("suscripciones = %d, want 1", n)
 	}
+	if n := waitRedisSubs(mr, tenant1Channel, 1, 2*time.Second); n != 1 {
+		t.Fatalf("suscripciones Redis = %d, want 1", n)
+	}
 	_ = cl.resp.Body.Close()
 	if n := waitSubs(0, 3*time.Second); n != 0 {
 		t.Fatalf("tras irse el cliente quedaron %d suscripciones (fuga)", n)
+	}
+	// Sin clientes, la suscripción Redis del tenant también se cancela (no quedan loops abandonados).
+	if n := waitRedisSubs(mr, tenant1Channel, 0, 3*time.Second); n != 0 {
+		t.Fatalf("quedaron %d suscripciones Redis abandonadas", n)
 	}
 }
 
@@ -177,5 +199,52 @@ func TestBillingEventsSSE_TenantIsolationAndFanout(t *testing.T) {
 	}
 	if b.waitLine(`"sale_id":99`, 500*time.Millisecond) {
 		t.Fatal("el tenant 2 recibió un evento del tenant 1 (fuga entre tenants)")
+	}
+}
+
+// El navegador reconectaba cada ~3 s (retry: 3000) porque el servidor cerraba el stream al instante. Aquí la conexión
+// debe seguir ABIERTA más allá de esa ventana, con una sola suscripción y sin que el servidor reciba otra petición.
+func TestBillingEventsSSE_StaysOpenBeyondRetryWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("espera 3.6 s")
+	}
+	sseKeepaliveInterval = 400 * time.Millisecond
+	defer func() { sseKeepaliveInterval = 25 * time.Second }()
+	setupHub(t)
+
+	var hits int32
+	app := fiber.New()
+	app.Get("/events", func(c fiber.Ctx) error {
+		atomic.AddInt32(&hits, 1)
+		c.Locals("tenant", &database.Tenant{ID: 1})
+		return (&BillingHandler{}).BillingEventsSSE(c)
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true}) }()
+	t.Cleanup(func() { _ = app.Shutdown() })
+
+	cl := openSSE(t, "http://"+ln.Addr().String()+"/events")
+	if !cl.waitLine("retry: 3000", 2*time.Second) {
+		t.Fatal("sin preámbulo")
+	}
+	start := time.Now()
+	keepalives := 0
+	for time.Since(start) < 3600*time.Millisecond {
+		if !cl.waitLine(": keepalive", 1500*time.Millisecond) {
+			t.Fatalf("la conexión se cerró a los %v (el navegador reconectaría)", time.Since(start))
+		}
+		keepalives++
+	}
+	if keepalives < 6 {
+		t.Fatalf("pocos keepalives (%d) en 3.6 s", keepalives)
+	}
+	if h := atomic.LoadInt32(&hits); h != 1 {
+		t.Fatalf("el servidor atendió %d peticiones; debía ser 1 (sin reconexiones)", h)
+	}
+	if n := billingevents.ActiveSubscriptions(); n != 1 {
+		t.Fatalf("suscripciones activas = %d, want 1", n)
 	}
 }
