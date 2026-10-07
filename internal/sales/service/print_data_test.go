@@ -77,3 +77,46 @@ func TestBuildPrintData_validUntilEmptyWhenNoDueDate(t *testing.T) {
 		t.Fatalf("valid_until debería quedar vacío sin due_date, got %q", pd.ValidUntil)
 	}
 }
+
+// El campo «Notas» de la nota de venta se guardaba pero nunca llegaba a la representación impresa.
+func TestBuildPrintData_includesSaleNotes(t *testing.T) {
+	db := setupPrintDataTestDB(t)
+	sale := &database.TenantSale{
+		ID: 7, DocType: "NOTA DE VENTA", Series: "NV001", Number: "NV001-00000007",
+		IssueDate: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), Currency: "PEN", Total: 50,
+		Notes: "Entregar en la puerta lateral",
+	}
+	pd, err := BuildPrintData(db, sale, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pd.Notes != "Entregar en la puerta lateral" {
+		t.Fatalf("Notes = %q, want la nota escrita por el usuario", pd.Notes)
+	}
+}
+
+func TestPrintableSaleNotes_quitaElRegistroDeAnulacion(t *testing.T) {
+	cases := map[string]string{
+		"Entregar mañana":                                 "Entregar mañana",
+		"Entregar mañana | ANULADA: error de precio":      "Entregar mañana",
+		"ANULADA: error de precio":                        "",
+		"  ":                                              "",
+		"(Desde cotización #12) | ANULADA: cliente desistió": "(Desde cotización #12)",
+	}
+	for in, want := range cases {
+		if got := printableSaleNotes(in); got != want {
+			t.Errorf("printableSaleNotes(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestPrintsSaleNotes_excluyeNotasYGuias(t *testing.T) {
+	for code, want := range map[string]bool{"00": true, "01": true, "03": true, "07": false, "08": false, "09": false, "31": false, "QT": false} {
+		if got := printsSaleNotes(code, ""); got != want {
+			t.Errorf("printsSaleNotes(%q) = %v, want %v", code, got, want)
+		}
+	}
+	if printsSaleNotes("", "NOTA_CREDITO") {
+		t.Error("una NC (por doc_type) no imprime notas de venta")
+	}
+}

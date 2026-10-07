@@ -364,6 +364,13 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		pd.SunatCode = series.SunatCode
 	}
 
+	// Notas/observaciones que el usuario escribió al registrar la venta (p. ej. el campo «Notas» de la
+	// nota de venta). Antes no viajaban a la representación impresa. Las notas de crédito/débito usan este
+	// campo como motivo (se imprime aparte) y las guías no llevan observaciones comerciales.
+	if printsSaleNotes(pd.SunatCode, sale.DocType) {
+		pd.Notes = printableSaleNotes(sale.Notes)
+	}
+
 	// Cliente
 	if sale.ContactID != nil && *sale.ContactID > 0 {
 		var contact database.TenantContact
@@ -796,6 +803,28 @@ func PopulateCompanyPaymentInfo(db *gorm.DB, company database.TenantCompanyConfi
 		}
 	}
 	return wallet, accounts
+}
+
+// printsSaleNotes true si el comprobante imprime las notas de la venta (nota de venta, factura, boleta).
+func printsSaleNotes(sunatCode, docType string) bool {
+	if isCreditOrDebitNotePrint(sunatCode, docType) {
+		return false
+	}
+	switch strings.TrimSpace(sunatCode) {
+	case "09", "31", "QT":
+		return false
+	}
+	return true
+}
+
+// printableSaleNotes deja solo lo que escribió el usuario: la anulación agrega al final
+// " | ANULADA: motivo" (o "ANULADA: motivo" si no había notas), que es un registro interno.
+func printableSaleNotes(raw string) string {
+	n := strings.TrimSpace(raw)
+	if i := strings.Index(n, "ANULADA:"); i >= 0 {
+		n = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(n[:i]), "|"))
+	}
+	return n
 }
 
 func isCreditOrDebitNotePrint(sunatCode, docType string) bool {
