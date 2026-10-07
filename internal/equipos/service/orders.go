@@ -31,15 +31,16 @@ type OrderItemInput struct {
 
 // ShipmentInput datos del envío que se capturan al armar el pedido (o después, desde Envíos).
 type ShipmentInput struct {
-	CarrierID             *uint  `json:"carrier_id"`
-	GuideNumber           string `json:"guide_number"`
-	DestinationAgency     string `json:"destination_agency"`
-	DestinationDepartment string `json:"destination_department"`
-	DestinationProvince   string `json:"destination_province"`
-	DestinationDistrict   string `json:"destination_district"`
-	DeliveryMode          string `json:"delivery_mode"`           // agencia | oficina | pendiente_recojo
-	ScheduledDispatchDate string `json:"scheduled_dispatch_date"` // AAAA-MM-DD
-	Notes                 string `json:"notes"`
+	CarrierID             *uint    `json:"carrier_id"`
+	GuideNumber           string   `json:"guide_number"`
+	DestinationAgency     string   `json:"destination_agency"`
+	DestinationDepartment string   `json:"destination_department"`
+	DestinationProvince   string   `json:"destination_province"`
+	DestinationDistrict   string   `json:"destination_district"`
+	DeliveryMode          string   `json:"delivery_mode"`           // agencia | oficina | pendiente_recojo
+	ScheduledDispatchDate string   `json:"scheduled_dispatch_date"` // AAAA-MM-DD
+	Notes                 string   `json:"notes"`
+	FreightCost           *float64 `json:"freight_cost"` // nil = no cambia
 }
 
 type OrderInput struct {

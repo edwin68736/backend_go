@@ -64,4 +64,21 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/equipos/payments", p("equipos.payments"), h.CreatePayment)
 	saAPI.Post("/equipos/payments/:id/void", p("equipos.payments"), h.VoidPayment)
 	saAPI.Post("/equipos/payments/:id/allocate", p("equipos.payments"), h.AllocatePayment)
+
+	saAPI.Get("/equipos/returns", p("equipos.view"), h.ListReturns)
+	saAPI.Post("/equipos/returns", p("equipos.returns"), h.CreateReturn)
+	saAPI.Put("/equipos/returns/:id", p("equipos.returns"), h.UpdateReturn)
+	saAPI.Post("/equipos/returns/:id/reship", p("equipos.returns"), h.ReshipReturn)
+
+	saAPI.Get("/equipos/dashboard", p("equipos.view"), h.Dashboard)
+	saAPI.Get("/equipos/alerts", p("equipos.view"), h.Alerts)
+
+	saAPI.Get("/equipos/reports/summary", p("equipos.reports"), h.ReportSummary)
+	saAPI.Get("/equipos/reports/sales", p("equipos.reports"), h.ReportSales)
+	saAPI.Get("/equipos/reports/collections", p("equipos.reports"), h.ReportCollections)
+	saAPI.Get("/equipos/reports/replenishment", p("equipos.reports"), h.ReportReplenishment)
+	saAPI.Get("/equipos/reports/profit", p("equipos.reports"), h.ReportProfit)
+	saAPI.Get("/equipos/periods", p("equipos.reports"), h.ClosedPeriods)
+	saAPI.Post("/equipos/periods/:period/close", p("equipos.settings"), h.ClosePeriod)
+	saAPI.Post("/equipos/periods/:period/reopen", p("equipos.settings"), h.ReopenPeriod)
 }

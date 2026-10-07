@@ -222,9 +222,11 @@ type EquipShipment struct {
 	Status                string     `gorm:"size:16;default:'pendiente_envio';index" json:"status"` // pendiente_envio | en_transito | en_agencia | entregado | retorno
 	IsCurrent             bool       `gorm:"default:true" json:"is_current"`
 	LabelPrintedAt        *time.Time `json:"label_printed_at"`
-	Notes                 string     `gorm:"size:255" json:"notes"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+	// FreightCost costo del flete de este envío (opcional) para la utilidad.
+	FreightCost float64   `gorm:"type:decimal(15,2);default:0" json:"freight_cost"`
+	Notes       string    `gorm:"size:255" json:"notes"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func (EquipShipment) TableName() string { return "equip_shipments" }
@@ -262,10 +264,12 @@ type EquipStockMovement struct {
 	OccurredAt   time.Time `gorm:"not null;index:idx_equip_mov_product_date,priority:2" json:"occurred_at"`
 	MovementType string    `gorm:"size:20;not null;index" json:"movement_type"`
 	Quantity     int       `gorm:"not null" json:"quantity"` // con signo
-	OrderID      *uint     `gorm:"index" json:"order_id"`
-	OrderItemID  *uint     `json:"order_item_id"`
-	ReturnID     *uint     `json:"return_id"`
-	ViaComboID   *uint     `json:"via_combo_id"`
+	// UnitCost costo unitario de compra (solo ingresos; opcional) para el costo promedio y la utilidad.
+	UnitCost    *float64 `gorm:"type:decimal(15,4)" json:"unit_cost"`
+	OrderID     *uint    `gorm:"index" json:"order_id"`
+	OrderItemID *uint    `json:"order_item_id"`
+	ReturnID    *uint    `json:"return_id"`
+	ViaComboID  *uint    `json:"via_combo_id"`
 	// SaleTypeSnapshot tipo de salida del pedido al momento del movimiento (columnas del Stock Maestro).
 	SaleTypeSnapshot string    `gorm:"size:20" json:"sale_type_snapshot"`
 	Note             string    `gorm:"size:255" json:"note"`

@@ -131,6 +131,12 @@ func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in
 	}
 	sh.ScheduledDispatchDate = d
 	sh.Notes = strings.TrimSpace(in.Notes)
+	if in.FreightCost != nil {
+		if *in.FreightCost < 0 {
+			return invalid("el costo del flete no puede ser negativo")
+		}
+		sh.FreightCost = *in.FreightCost
+	}
 	return nil
 }
 

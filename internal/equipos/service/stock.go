@@ -249,6 +249,7 @@ type MovementInput struct {
 	Quantity     int        `json:"quantity"`
 	OccurredAt   *time.Time `json:"occurred_at"`
 	Note         string     `json:"note"`
+	UnitCost     *float64   `json:"unit_cost"` // solo ingresos
 }
 
 // AddMovement registra un ingreso, ajuste, baja o apertura manual con nota obligatoria. Las salidas por pedido y los
@@ -287,8 +288,21 @@ func (s *Service) AddMovement(in MovementInput, userID uint) (*database.EquipSto
 	if at.After(time.Now().Add(24 * time.Hour)) {
 		return nil, invalid("la fecha del movimiento no puede ser futura")
 	}
+	if in.UnitCost != nil {
+		if in.MovementType != database.EquipMoveIngreso {
+			return nil, invalid("el costo unitario solo aplica a ingresos")
+		}
+		if *in.UnitCost < 0 {
+			return nil, invalid("el costo unitario no puede ser negativo")
+		}
+	}
+	if closed, err := s.periodClosed(at); err != nil {
+		return nil, err
+	} else if closed != "" {
+		return nil, invalid("el período %s está cerrado: reábrelo para registrar movimientos en esa fecha", closed)
+	}
 	m := &database.EquipStockMovement{
-		ProductID: p.ID, OccurredAt: at, MovementType: in.MovementType, Quantity: qty, Note: note,
+		ProductID: p.ID, OccurredAt: at, MovementType: in.MovementType, Quantity: qty, Note: note, UnitCost: in.UnitCost,
 	}
 	if userID > 0 {
 		u := userID

@@ -103,6 +103,20 @@ func TestRoutes_requireExactPermission(t *testing.T) {
 		{"POST", "/equipos/payments", "equipos.payments"},
 		{"POST", "/equipos/payments/1/void", "equipos.payments"},
 		{"POST", "/equipos/payments/1/allocate", "equipos.payments"},
+		{"GET", "/equipos/returns", "equipos.view"},
+		{"POST", "/equipos/returns", "equipos.returns"},
+		{"PUT", "/equipos/returns/1", "equipos.returns"},
+		{"POST", "/equipos/returns/1/reship", "equipos.returns"},
+		{"GET", "/equipos/dashboard", "equipos.view"},
+		{"GET", "/equipos/alerts", "equipos.view"},
+		{"GET", "/equipos/reports/summary", "equipos.reports"},
+		{"GET", "/equipos/reports/sales", "equipos.reports"},
+		{"GET", "/equipos/reports/collections", "equipos.reports"},
+		{"GET", "/equipos/reports/replenishment", "equipos.reports"},
+		{"GET", "/equipos/reports/profit", "equipos.reports"},
+		{"GET", "/equipos/periods", "equipos.reports"},
+		{"POST", "/equipos/periods/2026-08/close", "equipos.settings"},
+		{"POST", "/equipos/periods/2026-08/reopen", "equipos.settings"},
 	}
 	wrong := mint([]string{"dashboard.view"})
 	for _, r := range routes {
