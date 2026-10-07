@@ -291,6 +291,10 @@ type SaasSubscription struct {
 	// encadena al fin del período anterior mientras start_date es hoy, así que esa distancia
 	// resulta mayor que los meses realmente contratados y el cobro salía inflado.
 	BilledMonths int `gorm:"default:0" json:"billed_months"`
+	// BonusMonths meses de CORTESÍA que se agregaron a la vigencia sin cobrarse (p. ej. un plan de
+	// 12 meses con 2 de regalo: BilledMonths=12, BonusMonths=2, vigencia de 14 meses). Solo
+	// documenta y muestra el regalo: el cobro sigue saliendo de BilledMonths.
+	BonusMonths int `gorm:"default:0" json:"bonus_months"`
 	// Descuento pactado para esta suscripción: se aplica a cada cobro que genere.
 	// Vive aquí y no en el ciclo porque es parte del acuerdo con el cliente (típicamente
 	// a cambio de contratar varios meses por adelantado).

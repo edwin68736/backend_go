@@ -51,6 +51,9 @@ type CreateTenantInput struct {
 	// suscripción —las gratuitas también, vinculadas al plan gratis—, así que 0 se corrige a 1
 	// en vez de saltarse el alta.
 	SubscriptionMonths int `json:"subscription_months"`
+	// SubscriptionBonusMonths meses de cortesía (gratis) que se suman a la vigencia. Solo con
+	// suscripción de 12 meses; el cobro no cambia (ver saas.ValidateBonusMonths).
+	SubscriptionBonusMonths int `json:"subscription_bonus_months"`
 	// StartDate opcional (YYYY-MM-DD): la empresa se registra hoy pero su suscripción/primer
 	// cobro puede arrancar unos días después. Vacío = arranca hoy (comportamiento de siempre).
 	// Debe ser hoy o una fecha futura — se valida al crear la suscripción.
@@ -119,6 +122,11 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	months := input.SubscriptionMonths
 	if months <= 0 {
 		months = 1
+	}
+	// Se valida antes de crear nada (BD del tenant, usuario admin…): un error aquí no debe dejar una
+	// empresa a medio crear.
+	if err := saas.ValidateBonusMonths(months, input.SubscriptionBonusMonths); err != nil {
+		return nil, err
 	}
 	var startDate *time.Time
 	if sd := strings.TrimSpace(input.StartDate); sd != "" {
@@ -198,8 +206,12 @@ func (s *TenantService) Create(input CreateTenantInput) (tenant *database.Tenant
 	// 5–6. Suscripción + billing cycle (módulos según plan vía syncTenantModulesFromPlanTx).
 	// El descuento lo calcula ProvisionInitialSubscription según el plan y los meses elegidos
 	// (PlanCycleDiscount) — ya no se recibe del formulario.
-	if _, err = saas.ProvisionInitialSubscription(
-		tenant.ID, plan, months, "Suscripción creada al registrar la empresa", startDate,
+	subNotes := "Suscripción creada al registrar la empresa"
+	if input.SubscriptionBonusMonths > 0 {
+		subNotes += fmt.Sprintf(" (%d meses + %d de cortesía)", months, input.SubscriptionBonusMonths)
+	}
+	if _, err = saas.ProvisionInitialSubscriptionWithBonus(
+		tenant.ID, plan, months, input.SubscriptionBonusMonths, subNotes, startDate,
 	); err != nil {
 		return nil, fmt.Errorf("suscripción SaaS: %w", err)
 	}

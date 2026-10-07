@@ -43,6 +43,9 @@ type TenantSubscriptionView struct {
 	// viene del plan, así que un plan mensual contratado por 3 meses seguía diciendo
 	// «Mensual»; este campo permite mostrar el período que de verdad se pagó.
 	ContractedMonths int `json:"contracted_months"`
+	// BonusMonths meses de cortesía incluidos en la vigencia y NO cobrados (ya descontados de
+	// ContractedMonths, que es lo que define el próximo pago).
+	BonusMonths int `json:"bonus_months"`
 }
 
 // ContractedMonths meses completos entre inicio y fin de la suscripción.
@@ -120,6 +123,10 @@ func computeTenantView(tenantID uint) (TenantSubscriptionView, error) {
 	v.StartDate = sub.StartDate.In(lima()).Format(timeRFC3339Lima)
 	v.EndDate = sub.EndDate.In(lima()).Format(timeRFC3339Lima)
 	v.ContractedMonths = ContractedMonths(sub.StartDate, sub.EndDate)
+	if sub.BonusMonths > 0 && v.ContractedMonths-sub.BonusMonths >= 1 {
+		v.ContractedMonths -= sub.BonusMonths
+		v.BonusMonths = sub.BonusMonths
+	}
 
 	now := NowLima()
 	if sub.ProvisionalUntil != nil {

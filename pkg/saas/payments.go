@@ -833,6 +833,13 @@ func revertCycleAfterRejectionTx(tx *gorm.DB, cycleID uint, now time.Time) error
 // facturación que cubre el tramo recién añadido — quien llama (p. ej. ApprovePayment) lo necesita
 // para poder enlazarlo al pago que lo originó; ver comentario en ApprovePayment.
 func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, notes string, startDate *time.Time, discount ...Discount) (*database.SaasSubscription, *database.SaasBillingCycle, error) {
+	return extendSubscriptionBonusTx(tx, tenantID, planID, months, 0, notes, startDate, discount...)
+}
+
+// extendSubscriptionBonusTx igual que extendSubscriptionTx pero con `bonusMonths` de cortesía: la
+// vigencia dura months+bonusMonths, mientras que el cobro (y billed_months) siguen siendo los de
+// `months`. Ver ValidateBonusMonths.
+func extendSubscriptionBonusTx(tx *gorm.DB, tenantID uint, planID uint, months int, bonusMonths int, notes string, startDate *time.Time, discount ...Discount) (*database.SaasSubscription, *database.SaasBillingCycle, error) {
 	var d Discount
 	if len(discount) > 0 {
 		d = discount[0]
@@ -859,7 +866,7 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 	// «históricas» en cada renovación. Una fila nueva solo tiene sentido cuando cambia el
 	// plan, que es cuando de verdad empieza otro contrato.
 	if current, ok := currentSubscriptionForRenewalTx(tx, tenantID); ok && current.PlanID == planID {
-		return renewInPlaceTx(tx, current, &plan, cycle, months, notes, d)
+		return renewInPlaceTx(tx, current, &plan, cycle, months, bonusMonths, notes, d)
 	}
 
 	_ = tx.Model(&database.SaasSubscription{}).
@@ -882,7 +889,7 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 			base = prevDay
 		}
 	}
-	endDay := base.AddDate(0, months, 0)
+	endDay := base.AddDate(0, months+bonusMonths, 0)
 
 	// Con startDate explícito, el inicio real es esa fecha (inicio del día en Lima), no el
 	// instante exacto de este request — así "arranca el 15" no queda con la hora de cuando el
@@ -896,7 +903,7 @@ func extendSubscriptionTx(tx *gorm.DB, tenantID uint, planID uint, months int, n
 		TenantID: tenantID, PlanID: planID, BillingCycle: cycle,
 		StartDate: subStart, EndDate: EndOfDayLima(endDay),
 		Status: database.SaasSubActive, Notes: notes,
-		BilledMonths: months, DiscountType: d.Type, DiscountValue: d.Value,
+		BilledMonths: months, BonusMonths: bonusMonths, DiscountType: d.Type, DiscountValue: d.Value,
 	}
 	if err := tx.Create(sub).Error; err != nil {
 		return nil, nil, err
@@ -1016,6 +1023,7 @@ func renewInPlaceTx(
 	plan *database.SaasPlan,
 	billingCycle string,
 	months int,
+	bonusMonths int,
 	notes string,
 	d Discount,
 ) (*database.SaasSubscription, *database.SaasBillingCycle, error) {
@@ -1033,7 +1041,7 @@ func renewInPlaceTx(
 	}
 
 	periodStart := EndOfDayLima(base)
-	newEnd := EndOfDayLima(base.AddDate(0, months, 0))
+	newEnd := EndOfDayLima(base.AddDate(0, months+bonusMonths, 0))
 
 	if err := tx.Model(sub).Updates(map[string]interface{}{
 		"plan_id":           plan.ID,
@@ -1041,6 +1049,7 @@ func renewInPlaceTx(
 		"end_date":          newEnd,
 		"status":            database.SaasSubActive,
 		"billed_months":     months,
+		"bonus_months":      bonusMonths,
 		"discount_type":     d.Type,
 		"discount_value":    d.Value,
 		"notes":             notes,
@@ -1059,7 +1068,7 @@ func renewInPlaceTx(
 	_ = tx.Model(&database.Tenant{}).Where("id = ?", sub.TenantID).
 		Updates(map[string]interface{}{"plan": plan.Name, "status": database.TenantStatusActive}).Error
 
-	newCycle, err := createCycleForPeriodTx(tx, sub, plan, periodStart, newEnd, months, d)
+	newCycle, err := createCycleForPeriodTx(tx, sub, plan, periodStart, newEnd, months, bonusMonths, d)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ciclo de facturación: %w", err)
 	}
@@ -1081,6 +1090,7 @@ func createCycleForPeriodTx(
 	plan *database.SaasPlan,
 	periodStart, periodEnd time.Time,
 	months int,
+	bonusMonths int,
 	d Discount,
 ) (*database.SaasBillingCycle, error) {
 	var existing database.SaasBillingCycle
@@ -1093,7 +1103,7 @@ func createCycleForPeriodTx(
 	cycle := &database.SaasBillingCycle{
 		TenantID: sub.TenantID, SubscriptionID: sub.ID, PlanID: plan.ID,
 		PeriodStart: periodStart, PeriodEnd: periodEnd, DueDate: periodStart,
-		Amount: amounts.Net, GrossAmount: amounts.Gross, MonthsCovered: amounts.Months,
+		Amount: amounts.Net, GrossAmount: amounts.Gross, MonthsCovered: amounts.Months, BonusMonths: bonusMonths,
 		DiscountType: amounts.Discount.Type, DiscountValue: amounts.Discount.Value,
 		ReconnectionFee: cfg.ReconnectionFee, Currency: "PEN",
 		Status: database.SaasInvoicePending,
@@ -1257,6 +1267,33 @@ func ExtendSubscription(tenantID uint, planID uint, months int, notes string, st
 	return sub, nil
 }
 
+// ExtendSubscriptionWithBonus como ExtendSubscription pero agregando `bonusMonths` de cortesía a la
+// vigencia (sin cobrarlos). Valida la combinación meses/cortesía.
+func ExtendSubscriptionWithBonus(tenantID uint, planID uint, months int, bonusMonths int, notes string, startDate *time.Time, discount ...Discount) (*database.SaasSubscription, error) {
+	if err := ValidateBonusMonths(months, bonusMonths); err != nil {
+		return nil, err
+	}
+	var d Discount
+	if len(discount) > 0 {
+		d = discount[0]
+	}
+	norm, err := NormalizeDiscount(d)
+	if err != nil {
+		return nil, err
+	}
+	var sub *database.SaasSubscription
+	err = database.CentralDB.Transaction(func(tx *gorm.DB) error {
+		s, _, err := extendSubscriptionBonusTx(tx, tenantID, planID, months, bonusMonths, notes, startDate, norm)
+		sub = s
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	InvalidateTenantCache(tenantID)
+	return sub, nil
+}
+
 // syncTenantModulesFromPlanTx materializa los módulos del plan en el tenant. Preserva las
 // CORTESÍAS (source='manual'): solo apaga los módulos heredados del plan (source='plan') y
 // reactiva los del plan. Un módulo manual que no está en el plan queda activo.
@@ -1339,7 +1376,7 @@ func ensureBillingCycleTx(tx *gorm.DB, sub *database.SaasSubscription) (*databas
 		// Prepago: la deuda vence al INICIO del período (se paga por adelantado), igual que la
 		// vía manual (IssueRenewalInvoice). Antes vencía al final (postpago), incoherente.
 		PeriodStart: sub.StartDate, PeriodEnd: sub.EndDate, DueDate: sub.StartDate,
-		Amount: amounts.Net, GrossAmount: amounts.Gross, MonthsCovered: amounts.Months,
+		Amount: amounts.Net, GrossAmount: amounts.Gross, MonthsCovered: amounts.Months, BonusMonths: sub.BonusMonths,
 		DiscountType: amounts.Discount.Type, DiscountValue: amounts.Discount.Value,
 		ReconnectionFee: cfg.ReconnectionFee, Currency: "PEN",
 		Status: database.SaasInvoicePending,
