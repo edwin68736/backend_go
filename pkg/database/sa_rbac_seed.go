@@ -101,6 +101,24 @@ var SACentralPermissionCatalog = []saPermissionDef{
 	{Module: "ajustes", Action: "manage", Label: "Editar ajustes del sistema"},
 
 	{Module: "system", Action: "view_audit", Label: "Ver bitácora de auditoría (pantalla futura)"},
+
+	// Módulo «Gestión de Equipos» (pedidos, envíos, cobros y stock de equipos POS).
+	{Module: "equipos", Action: "view", Label: "Ver el módulo de equipos (catálogo, pedidos y envíos)"},
+	{Module: "equipos", Action: "create", Label: "Crear pedidos de equipos"},
+	{Module: "equipos", Action: "update", Label: "Editar pedidos de equipos"},
+	{Module: "equipos", Action: "cancel", Label: "Anular pedidos de equipos"},
+	{Module: "equipos", Action: "validate", Label: "Validar o observar pedidos (encargada)"},
+	{Module: "equipos", Action: "payments", Label: "Registrar y anular cobros de equipos"},
+	{Module: "equipos", Action: "payments_view", Label: "Ver historial de pagos y estados de cuenta de clientes"},
+	{Module: "equipos", Action: "shipments", Label: "Gestionar envíos (guía, despacho, llegada, recojo)"},
+	{Module: "equipos", Action: "returns", Label: "Gestionar retornos de equipos"},
+	{Module: "equipos", Action: "stock_view", Label: "Ver stock de equipos y su kardex"},
+	{Module: "equipos", Action: "stock_adjust", Label: "Registrar ingresos, ajustes y bajas de stock"},
+	{Module: "equipos", Action: "catalog", Label: "Administrar catálogo de equipos y combos"},
+	{Module: "equipos", Action: "carriers", Label: "Administrar transportistas"},
+	{Module: "equipos", Action: "reports", Label: "Ver reportes de equipos"},
+	{Module: "equipos", Action: "import", Label: "Importar el Excel de control de equipos"},
+	{Module: "equipos", Action: "settings", Label: "Configurar el módulo de equipos"},
 }
 
 // saDefaultRoleDef describe un rol inicial y sus permisos ("module.action") al momento de crearse.

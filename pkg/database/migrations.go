@@ -437,6 +437,22 @@ func MigrateCentral() error {
 		&SAMigrationLock{},
 		&TenantFiscalDaily{},
 		&TenantFiscalHealth{},
+		// Módulo «Gestión de Equipos» (exclusivo del dueño, solo BD central).
+		&EquipProduct{},
+		&EquipCombo{},
+		&EquipComboItem{},
+		&EquipCustomer{},
+		&EquipOrder{},
+		&EquipOrderItem{},
+		&EquipPayment{},
+		&EquipPaymentAllocation{},
+		&EquipCarrier{},
+		&EquipShipment{},
+		&EquipReturn{},
+		&EquipStockMovement{},
+		&EquipStockPeriod{},
+		&EquipSettings{},
+		&EquipImportBatch{},
 	)
 }
 
