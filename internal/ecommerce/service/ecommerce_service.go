@@ -217,8 +217,9 @@ func (s *EcommerceService) ReorderSliders(orderedIDs []uint) error {
 // ── Catálogo público ─────────────────────────────────────────────────
 
 type PublicCategory struct {
-	ID   uint   `json:"id"`
-	Name string `json:"name"`
+	ID       uint   `json:"id"`
+	Name     string `json:"name"`
+	ImageURL string `json:"image_url"`
 }
 
 // PriceBounds min/max de precio entre los productos publicados en el Catálogo Digital. Se
@@ -240,13 +241,39 @@ func (s *EcommerceService) PriceBounds() (float64, float64, error) {
 func (s *EcommerceService) PublicCategories() ([]PublicCategory, error) {
 	var rows []PublicCategory
 	err := s.db.Table("tenant_categories c").
-		Select("DISTINCT c.id, c.name").
+		Select("DISTINCT c.id, c.name, c.image_url, c.sort_order").
 		Joins("JOIN tenant_products p ON p.category_id = c.id").
 		Where("p.show_in_digital_catalog = ? AND p.active = ? AND p.deleted_at IS NULL", true, true).
 		Where("c.deleted_at IS NULL").
-		Order("c.name ASC").
+		Order("c.sort_order ASC, c.name ASC").
 		Scan(&rows).Error
 	return rows, err
+}
+
+// PublicProductGallery imágenes de un producto publicado en el Catálogo Digital: la principal primero y
+// después las de la galería, en orden. Un producto no publicado o inactivo no existe para el público.
+func (s *EcommerceService) PublicProductGallery(productID uint) ([]string, error) {
+	var p database.TenantProduct
+	if err := s.db.Select("id", "image_url").
+		Where("id = ? AND show_in_digital_catalog = ? AND active = ?", productID, true, true).
+		First(&p).Error; err != nil {
+		return nil, errors.New("producto no encontrado")
+	}
+	urls := make([]string, 0, 1+database.MaxProductGalleryImages)
+	if u := strings.TrimSpace(p.ImageURL); u != "" {
+		urls = append(urls, u)
+	}
+	var extra []string
+	if err := s.db.Model(&database.TenantProductImage{}).Where("product_id = ?", productID).
+		Order("sort_order ASC, id ASC").Pluck("url", &extra).Error; err != nil {
+		return nil, err
+	}
+	for _, u := range extra {
+		if u = strings.TrimSpace(u); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	return urls, nil
 }
 
 // PublicProducts reusa ProductService.ListReport (ya trae stock_total/stock_by_branch) filtrando

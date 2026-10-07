@@ -72,6 +72,13 @@ func RegisterRoutes(api fiber.Router) {
 	api.Patch("/products/:id/toggle", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.ToggleAPI)
 	api.Delete("/products/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.DeleteAPI)
 	api.Post("/products/:id/image", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.UploadImageAPI)
+	// Galería de imágenes adicionales (Catálogo Digital) e imagen de categoría.
+	api.Get("/products/:id/gallery", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.GalleryListAPI)
+	api.Post("/products/:id/gallery", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.GalleryUploadAPI)
+	api.Delete("/products/:id/gallery/:imageId", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.GalleryDeleteAPI)
+	api.Post("/products/:id/gallery/:imageId/main", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.GalleryPromoteAPI)
+	api.Post("/categories/:id/image", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.CategoryUploadImageAPI)
+	api.Delete("/categories/:id/image", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.CategoryDeleteImageAPI)
 	// Unidades de venta (TenantProductSaleUnit): exclusivas de Tukifac, mismo permiso que el resto
 	// de la escritura de catálogo — sin puente restaurantperm (Tukichef no las administra).
 	api.Get("/products/:id/sale-units", middleware.RequireModule("products"), middleware.RequirePermission("products.view"), h.SaleUnitListAPI)

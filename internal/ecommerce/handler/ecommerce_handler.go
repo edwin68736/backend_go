@@ -504,6 +504,18 @@ func (h *EcommerceHandler) PublicProductOptionsAPI(c fiber.Ctx) error {
 	return c.JSON(opts)
 }
 
+func (h *EcommerceHandler) PublicProductGalleryAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil || id == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
+	}
+	urls, err := service.NewEcommerceService(db(c)).PublicProductGallery(uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"images": urls})
+}
+
 func (h *EcommerceHandler) CreatePublicOrderAPI(c fiber.Ctx) error {
 	var body struct {
 		CustomerName  string `json:"customer_name"`

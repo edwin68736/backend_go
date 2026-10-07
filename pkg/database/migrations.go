@@ -954,10 +954,12 @@ type TenantCategory struct {
 	Description string         `gorm:"size:255" json:"description"`
 	ParentID    *uint          `gorm:"index" json:"parent_id"`
 	SortOrder   int            `gorm:"default:0;index" json:"sort_order"`
-	Active      bool           `gorm:"default:true" json:"active"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	// ImageURL imagen de la categoría (se muestra en la tienda virtual).
+	ImageURL  string         `gorm:"size:255" json:"image_url"`
+	Active    bool           `gorm:"default:true" json:"active"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // TenantBrand marca de producto (mismo rol que TenantCategory, sin jerarquía).
