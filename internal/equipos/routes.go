@@ -35,4 +35,33 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/equipos/import/preview", p("equipos.import"), h.ImportPreview)
 	saAPI.Post("/equipos/import/commit", p("equipos.import"), h.ImportCommit)
 	saAPI.Get("/equipos/import/batches", p("equipos.import"), h.ImportBatches)
+
+	saAPI.Get("/equipos/customers", p("equipos.view"), h.ListCustomers)
+	saAPI.Post("/equipos/customers", p("equipos.create"), h.CreateCustomer)
+	saAPI.Put("/equipos/customers/:id", p("equipos.create"), h.UpdateCustomer)
+	saAPI.Get("/equipos/customers/:id/account", p("equipos.payments_view"), h.CustomerAccount)
+	saAPI.Get("/equipos/customers/:id/open-balances", p("equipos.payments_view"), h.OpenBalances)
+
+	saAPI.Get("/equipos/orders", p("equipos.view"), h.ListOrders)
+	saAPI.Post("/equipos/orders", p("equipos.create"), h.CreateOrder)
+	saAPI.Get("/equipos/orders/:id", p("equipos.view"), h.GetOrder)
+	saAPI.Put("/equipos/orders/:id", p("equipos.update"), h.UpdateOrder)
+	saAPI.Post("/equipos/orders/:id/confirm", p("equipos.create"), h.ConfirmOrder)
+	saAPI.Post("/equipos/orders/:id/cancel", p("equipos.cancel"), h.CancelOrder)
+	saAPI.Post("/equipos/orders/:id/validate", p("equipos.validate"), h.ValidateOrder)
+	saAPI.Post("/equipos/orders/:id/observe", p("equipos.validate"), h.ObserveOrder)
+	saAPI.Post("/equipos/orders/:id/no-payment", p("equipos.payments"), h.SetNoPayment)
+
+	saAPI.Get("/equipos/shipments", p("equipos.view"), h.ListShipments)
+	saAPI.Put("/equipos/orders/:id/shipment", p("equipos.shipments"), h.UpdateShipment)
+	saAPI.Post("/equipos/orders/:id/dispatch", p("equipos.shipments"), handler.DispatchOrder)
+	saAPI.Post("/equipos/orders/:id/arrived", p("equipos.shipments"), handler.ArrivedOrder)
+	saAPI.Post("/equipos/orders/:id/picked-up", p("equipos.shipments"), handler.PickedUpOrder)
+	saAPI.Post("/equipos/orders/:id/label-printed", p("equipos.shipments"), h.LabelPrinted)
+
+	saAPI.Get("/equipos/payments", p("equipos.payments_view"), h.ListPayments)
+	saAPI.Get("/equipos/payments/:id", p("equipos.payments_view"), h.GetPayment)
+	saAPI.Post("/equipos/payments", p("equipos.payments"), h.CreatePayment)
+	saAPI.Post("/equipos/payments/:id/void", p("equipos.payments"), h.VoidPayment)
+	saAPI.Post("/equipos/payments/:id/allocate", p("equipos.payments"), h.AllocatePayment)
 }
