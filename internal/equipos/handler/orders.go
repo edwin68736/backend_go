@@ -23,7 +23,8 @@ func badBody(c fiber.Ctx) error {
 
 func (h *Handler) ListCustomers(c fiber.Ctx) error {
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	rows, err := svc().ListCustomers(c.Query("q"), limit)
+	page, _ := strconv.Atoi(c.Query("page"))
+	rows, total, err := svc().ListCustomersPaged(c.Query("q"), page, limit)
 	if err != nil {
 		return fail(c, err)
 	}
@@ -32,7 +33,7 @@ func (h *Handler) ListCustomers(c fiber.Ctx) error {
 			rows[i].Balance, rows[i].Credit = 0, 0
 		}
 	}
-	return c.JSON(fiber.Map{"data": rows})
+	return c.JSON(fiber.Map{"data": rows, "total": total, "page": max(page, 1), "per_page": limit})
 }
 
 func (h *Handler) CreateCustomer(c fiber.Ctx) error {
@@ -154,6 +155,9 @@ func (h *Handler) UpdateOrder(c fiber.Ctx) error {
 	if !ok {
 		return nil
 	}
+	if svc().OrderStatus(id) == "registrado" && !requirePin(c) {
+		return nil
+	}
 	var body struct {
 		service.OrderInput
 		AllowNegative bool   `json:"allow_negative"`
@@ -203,6 +207,9 @@ func (h *Handler) CancelOrder(c fiber.Ctx) error {
 	if !ok {
 		return nil
 	}
+	if !requirePin(c) {
+		return nil
+	}
 	var b notesBody
 	_ = c.Bind().JSON(&b)
 	v, err := svc().CancelOrder(id, b.Reason, userID(c))
@@ -249,6 +256,9 @@ func (h *Handler) ObserveOrder(c fiber.Ctx) error {
 func (h *Handler) SetNoPayment(c fiber.Ctx) error {
 	id, ok := idParam(c, "id")
 	if !ok {
+		return nil
+	}
+	if !requirePin(c) {
 		return nil
 	}
 	var b struct {
@@ -376,6 +386,9 @@ func (h *Handler) CreatePayment(c fiber.Ctx) error {
 func (h *Handler) VoidPayment(c fiber.Ctx) error {
 	id, ok := idParam(c, "id")
 	if !ok {
+		return nil
+	}
+	if !requirePin(c) {
 		return nil
 	}
 	var b notesBody

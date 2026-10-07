@@ -295,13 +295,15 @@ func (EquipStockPeriod) TableName() string { return "equip_stock_periods" }
 
 // EquipSettings fila única (id=1).
 type EquipSettings struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	DefaultCarrierID *uint     `json:"default_carrier_id"`
-	StockManager     string    `gorm:"size:100" json:"stock_manager"` // responsable de stock (hoy «Rosymar»)
-	AlertYellowDays  int       `gorm:"default:5" json:"alert_yellow_days"`
-	AlertRedDays     int       `gorm:"default:12" json:"alert_red_days"`
-	NextOrderNumber  int       `gorm:"default:1" json:"next_order_number"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               uint   `gorm:"primaryKey" json:"id"`
+	DefaultCarrierID *uint  `json:"default_carrier_id"`
+	StockManager     string `gorm:"size:100" json:"stock_manager"` // responsable de stock (hoy «Rosymar»)
+	AlertYellowDays  int    `gorm:"default:5" json:"alert_yellow_days"`
+	AlertRedDays     int    `gorm:"default:12" json:"alert_red_days"`
+	NextOrderNumber  int    `gorm:"default:1" json:"next_order_number"`
+	// SecurityPinHash PIN (bcrypt) que se pide antes de editar, anular o revertir; nunca se expone en JSON.
+	SecurityPinHash string    `gorm:"size:100" json:"-"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 func (EquipSettings) TableName() string { return "equip_settings" }

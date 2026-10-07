@@ -79,7 +79,7 @@ func Setup(app *fiber.App) {
 	app.Use(cors.New(cors.Config{
 		AllowOriginsFunc: corsMatcher.Allow,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Tenant-Slug"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Tenant-Slug", "X-Security-Pin"},
 		AllowCredentials: true,
 		MaxAge:           3600,
 	}))

@@ -179,7 +179,8 @@ func (h *Handler) GetSettings(c fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err)
 	}
-	return c.JSON(fiber.Map{"data": st})
+	hasPin, _ := svc().HasSecurityPin()
+	return c.JSON(fiber.Map{"data": st, "has_security_pin": hasPin})
 }
 
 func (h *Handler) UpdateSettings(c fiber.Ctx) error {
@@ -226,6 +227,9 @@ func (h *Handler) AddMovement(c fiber.Ctx) error {
 	var in service.MovementInput
 	if err := c.Bind().JSON(&in); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	if (in.MovementType == "ajuste" || in.MovementType == "baja") && !requirePin(c) {
+		return nil
 	}
 	m, err := svc().AddMovement(in, userID(c))
 	if err != nil {

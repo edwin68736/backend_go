@@ -139,6 +139,9 @@ func (h *Handler) ClosedPeriods(c fiber.Ctx) error {
 }
 
 func (h *Handler) ClosePeriod(c fiber.Ctx) error {
+	if !requirePin(c) {
+		return nil
+	}
 	period := c.Params("period")
 	v, err := svc().ClosePeriod(period, userID(c))
 	if err != nil {
@@ -149,6 +152,9 @@ func (h *Handler) ClosePeriod(c fiber.Ctx) error {
 }
 
 func (h *Handler) ReopenPeriod(c fiber.Ctx) error {
+	if !requirePin(c) {
+		return nil
+	}
 	period := c.Params("period")
 	if err := svc().ReopenPeriod(period); err != nil {
 		return fail(c, err)

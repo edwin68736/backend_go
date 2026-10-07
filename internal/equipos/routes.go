@@ -27,6 +27,8 @@ func RegisterRoutes(saAPI fiber.Router) {
 
 	saAPI.Get("/equipos/settings", p("equipos.view"), h.GetSettings)
 	saAPI.Put("/equipos/settings", p("equipos.settings"), h.UpdateSettings)
+	saAPI.Post("/equipos/settings/pin", p("equipos.settings"), h.SetSecurityPin)
+	saAPI.Get("/equipos/lookup/:type", p("equipos.create"), h.Lookup)
 
 	saAPI.Get("/equipos/stock", p("equipos.stock_view"), h.StockReport)
 	saAPI.Get("/equipos/stock/:productId/movements", p("equipos.stock_view"), h.ProductMovements)

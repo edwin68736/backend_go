@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"tukifac/pkg/database"
+
+	"gorm.io/gorm"
 )
 
 // CustomerInput datos editables de un cliente.
@@ -66,19 +68,33 @@ type CustomerRow struct {
 	Credit  float64 `json:"credit"`  // saldo a favor
 }
 
-// ListCustomers busca por nombre, documento o teléfono.
+// ListCustomers busca por nombre, documento o teléfono (sin paginar: para buscadores).
 func (s *Service) ListCustomers(q string, limit int) ([]CustomerRow, error) {
+	rows, _, err := s.ListCustomersPaged(q, 1, limit)
+	return rows, err
+}
+
+// ListCustomersPaged lista clientes con paginación y total.
+func (s *Service) ListCustomersPaged(q string, page, limit int) ([]CustomerRow, int64, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
+	}
+	if page < 1 {
+		page = 1
 	}
 	tx := s.db.Model(&database.EquipCustomer{})
 	if q = strings.TrimSpace(q); q != "" {
 		like := "%" + strings.ToLower(q) + "%"
 		tx = tx.Where("LOWER(name) LIKE ? OR doc_number LIKE ? OR contact_dni LIKE ? OR phone LIKE ?", like, "%"+q+"%", "%"+q+"%", "%"+q+"%")
 	}
+	tx = tx.Session(&gorm.Session{})
+	var total int64
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 	var rows []database.EquipCustomer
-	if err := tx.Order("name ASC").Limit(limit).Find(&rows).Error; err != nil {
-		return nil, err
+	if err := tx.Order("name ASC").Offset((page - 1) * limit).Limit(limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
 	}
 	out := make([]CustomerRow, 0, len(rows))
 	ids := make([]uint, 0, len(rows))
@@ -87,7 +103,7 @@ func (s *Service) ListCustomers(q string, limit int) ([]CustomerRow, error) {
 		ids = append(ids, c.ID)
 	}
 	if len(ids) == 0 {
-		return out, nil
+		return out, total, nil
 	}
 	type agg struct {
 		CustomerID uint
@@ -98,7 +114,7 @@ func (s *Service) ListCustomers(q string, limit int) ([]CustomerRow, error) {
 	if err := s.db.Model(&database.EquipOrder{}).
 		Select("customer_id, COUNT(*) AS n, COALESCE(SUM(balance_amount), 0) AS balance").
 		Where("customer_id IN ? AND status <> ?", ids, "anulado").Group("customer_id").Scan(&orders).Error; err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	type cred struct {
 		CustomerID uint
@@ -108,7 +124,7 @@ func (s *Service) ListCustomers(q string, limit int) ([]CustomerRow, error) {
 	if err := s.db.Model(&database.EquipPayment{}).
 		Select("customer_id, COALESCE(SUM(unallocated_amount), 0) AS credit").
 		Where("customer_id IN ? AND status = ?", ids, "vigente").Group("customer_id").Scan(&credits).Error; err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	byID := map[uint]*CustomerRow{}
 	for i := range out {
@@ -124,7 +140,7 @@ func (s *Service) ListCustomers(q string, limit int) ([]CustomerRow, error) {
 			r.Credit = round2(c.Credit)
 		}
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func (s *Service) CreateCustomer(in CustomerInput) (*database.EquipCustomer, error) {
