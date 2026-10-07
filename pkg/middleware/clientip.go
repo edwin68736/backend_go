@@ -87,5 +87,13 @@ func normalizeRateLimitIP(ip net.IP) string {
 
 // ClientIP IP real del cliente para rate limit y registros: ver clientIPFrom.
 func ClientIP(c fiber.Ctx) string {
-	return clientIPFrom(lastIPOfChain(c.IP()), c.Get("CF-Connecting-IP"))
+	peer := lastIPOfChain(c.IP())
+	if peer == "" {
+		// Con ProxyHeader configurado y un par de confianza SIN cabecera X-Forwarded-For, Fiber devuelve "": se usa la
+		// dirección real de la conexión para no agrupar a todos esos clientes bajo una clave vacía.
+		if ip := c.RequestCtx().RemoteIP(); ip != nil {
+			peer = ip.String()
+		}
+	}
+	return clientIPFrom(peer, c.Get("CF-Connecting-IP"))
 }
