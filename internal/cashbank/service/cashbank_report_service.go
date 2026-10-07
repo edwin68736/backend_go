@@ -1871,11 +1871,16 @@ type SessionProductSoldRow struct {
 	ProductID   *uint   `json:"product_id"`
 	Code        string  `json:"code"`
 	Description string  `json:"description"`
+	Unit        string  `json:"unit"`
 	Quantity    float64 `json:"quantity"`
 	Total       float64 `json:"total"`
 }
 
-// GetSessionProductsReport agrega ítems vendidos vinculados a una sesión de caja.
+// GetSessionProductsReport agrega los ítems vendidos en una sesión de caja, sin importar el método de
+// pago (efectivo, tarjeta, transferencia, billeteras o crédito): toda venta queda vinculada a la sesión
+// de quien la registró. Excluye ventas anuladas/borrador, notas de crédito/débito y el comprobante emitido
+// desde una nota de venta (la nota ya cuenta los mismos ítems). Se agrupa por producto y unidad para no
+// sumar cantidades de unidades distintas (p. ej. UND y CAJA).
 func (s *CashBankService) GetSessionProductsReport(sessionID uint) ([]SessionProductSoldRow, error) {
 	var session database.TenantCashSession
 	if err := s.db.First(&session, sessionID).Error; err != nil {
@@ -1886,12 +1891,12 @@ func (s *CashBankService) GetSessionProductsReport(sessionID uint) ([]SessionPro
 	}
 	var rows []SessionProductSoldRow
 	err := s.db.Table("tenant_sale_items").
-		Select(`tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description,
+		Select(`tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description, tenant_sale_items.unit,
 			SUM(tenant_sale_items.quantity) AS quantity, SUM(tenant_sale_items.total) AS total`).
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id").
-		Scopes(salescope.ScopeCommercial("tenant_sales")).
+		Scopes(salescope.ScopeCommercialNoNotes("tenant_sales")).
 		Where("tenant_sales.cash_session_id = ? AND tenant_sales.status NOT IN ?", sessionID, []string{"cancelled", "draft"}).
-		Group("tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description").
+		Group("tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description, tenant_sale_items.unit").
 		Order("tenant_sale_items.description ASC").
 		Scan(&rows).Error
 	return rows, err
