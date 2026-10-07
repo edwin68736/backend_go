@@ -69,7 +69,7 @@ func (s *Service) GetOrder(id uint) (*OrderView, error) {
 	} else if !found {
 		return nil, invalid("pedido no encontrado")
 	}
-	v := &OrderView{EquipOrder: o}
+	v := &OrderView{EquipOrder: o, Payments: []PaymentLine{}}
 
 	var items []database.EquipOrderItem
 	if err := s.db.Where("order_id = ?", id).Order("line_no ASC, id ASC").Find(&items).Error; err != nil {
