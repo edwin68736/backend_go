@@ -17,6 +17,7 @@ import (
 	"tukifac/internal/contacts"
 	"tukifac/internal/dashboard"
 	"tukifac/internal/ecommerce"
+	"tukifac/internal/rum"
 	"tukifac/internal/fiscal"
 	"tukifac/internal/fleet"
 	"tukifac/internal/inventory"
@@ -177,6 +178,7 @@ func Setup(app *fiber.App) {
 
 	// Catálogo Digital: tienda pública (sin JWT, con tenant + módulo + suscripción activa)
 	ecommerce.RegisterPublicRoutes(app.Group("/api"))
+	rum.RegisterPublicRoutes(app.Group("/api")) // telemetría de rendimiento del navegador (sin datos personales)
 
 	// Utilidades de desarrollo
 	if config.AppConfig.IsDev() {
