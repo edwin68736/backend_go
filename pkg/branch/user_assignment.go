@@ -14,7 +14,9 @@ func UserBranchesReady(db *gorm.DB) bool {
 	if db == nil {
 		return false
 	}
-	return db.Migrator().HasTable(&database.TenantUserBranch{})
+	return database.CachedSchemaProbe(db, "tenant_user_branches", func() bool {
+		return db.Migrator().HasTable(&database.TenantUserBranch{})
+	})
 }
 
 // GetUserAssignedBranchIDs sucursales asignadas al usuario (activas).

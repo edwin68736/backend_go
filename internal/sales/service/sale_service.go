@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/config"
 	cashbanksvc "tukifac/internal/cashbank/service"
 	detraccionsvc "tukifac/internal/detraccion"
 	salecontext "tukifac/internal/fiscal/salecontext"
@@ -1182,6 +1184,28 @@ type SaleListParams struct {
 	CommercialReport bool
 	Limit            int // 0 = sin límite
 	Offset          int
+	// SkipSummary no calcula los totales (summary queda en cero). Las pantallas que solo muestran
+	// filas (p. ej. Ventas) no los usan; calcularlos cuesta ~8 sentencias sobre todo el filtro.
+	SkipSummary bool
+}
+
+// ErrSaleListTimeout el listado/totales excedieron el tiempo máximo permitido para un reporte.
+var ErrSaleListTimeout = errors.New("el reporte tardó demasiado: acota el rango de fechas o los filtros e intenta de nuevo")
+
+// saleListTimeout tope de una llamada a List. Las consultas llevan este contexto para que un
+// reporte pesado no retenga indefinidamente una de las pocas conexiones del tenant (login y el
+// resto de requests esperan la misma conexión). La exportación completa (sin paginar) tiene más margen.
+func saleListTimeout(export bool) time.Duration {
+	if config.AppConfig == nil {
+		if export {
+			return 45 * time.Second
+		}
+		return 15 * time.Second
+	}
+	if export {
+		return config.AppConfig.DBBillingTimeout
+	}
+	return config.AppConfig.DBReportTimeout
 }
 
 // SaleListSummary totales sobre todas las ventas que cumplen los filtros (no solo la página).
@@ -1206,8 +1230,16 @@ type SaleListSummary struct {
 	} `json:"payment_totals"`
 }
 
-func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64, SaleListSummary, error) {
-	var sales []database.TenantSale
+func (s *SaleService) List(params SaleListParams) (sales []database.TenantSale, total int64, summary SaleListSummary, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), saleListTimeout(params.Limit == 0))
+	defer cancel()
+	s = &SaleService{db: s.db.WithContext(ctx)}
+	defer func() {
+		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = ErrSaleListTimeout
+		}
+	}()
+
 	q := s.db.Model(&database.TenantSale{})
 	useDistinct := false
 	if params.CommercialReport {
@@ -1217,7 +1249,7 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 		if params.CommercialReport {
 			// Tipo efectivo = el del comprobante hijo si la venta es una NV convertida, y si no
 			// el de su propia serie (mismo criterio que el gráfico por tipo del dashboard).
-			q = q.Where(effectiveSunatCodeSQL+" IN ?", params.SunatCodes)
+			q = joinEffectiveSunatCode(q).Where(effectiveSunatCodeExpr+" IN ?", params.SunatCodes)
 		} else {
 			q = q.Joins("JOIN tenant_document_series ON tenant_document_series.id = tenant_sales.series_id").
 				Where("tenant_document_series.sunat_code IN ?", params.SunatCodes)
@@ -1320,12 +1352,14 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 		q = q.Where("tenant_sales.issue_date <= ?", params.DateTo)
 	}
 
-	summary, sumErr := s.saleListSummary(q.Session(&gorm.Session{}), useDistinct)
-	if sumErr != nil {
-		return nil, 0, SaleListSummary{}, sumErr
+	if !params.SkipSummary {
+		var sumErr error
+		summary, sumErr = s.saleListSummary(q.Session(&gorm.Session{}), useDistinct)
+		if sumErr != nil {
+			return nil, 0, SaleListSummary{}, sumErr
+		}
 	}
 
-	var total int64
 	if params.Limit > 0 {
 		countQ := q
 		if useDistinct {
@@ -1339,7 +1373,7 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 	if useDistinct {
 		q = q.Distinct("tenant_sales.*")
 	}
-	err := q.Order("tenant_sales.issue_date DESC, tenant_sales.id DESC").Find(&sales).Error
+	err = q.Order("tenant_sales.issue_date DESC, tenant_sales.id DESC").Find(&sales).Error
 	if err != nil {
 		return sales, total, summary, err
 	}
@@ -1441,13 +1475,29 @@ func (s *SaleService) List(params SaleListParams) ([]database.TenantSale, int64,
 	return sales, total, summary, nil
 }
 
-// effectiveSunatCodeSQL código SUNAT efectivo de una venta (subconsulta correlacionada sobre
-// tenant_sales): el de su comprobante electrónico hijo si es una nota de venta convertida, y si no
-// el de su propia serie. Equivale al COALESCE(fe.doc_type, tenant_sales.doc_type) del dashboard.
-const effectiveSunatCodeSQL = "COALESCE(" +
-	"(SELECT fds.sunat_code FROM tenant_sales fe JOIN tenant_document_series fds ON fds.id = fe.series_id " +
-	"WHERE fe.issued_from_nota_sale_id = tenant_sales.id AND fe.deleted_at IS NULL ORDER BY fe.id LIMIT 1), " +
-	"(SELECT ds.sunat_code FROM tenant_document_series ds WHERE ds.id = tenant_sales.series_id))"
+// effectiveSunatCodeExpr código SUNAT efectivo de una venta: el de su comprobante electrónico hijo
+// si es una nota de venta convertida, y si no el de su propia serie. Equivale al
+// COALESCE(fe.doc_type, tenant_sales.doc_type) del dashboard. Requiere joinEffectiveSunatCode.
+const effectiveSunatCodeExpr = "COALESCE(eff_fds.sunat_code, eff_ds.sunat_code)"
+
+// joinEffectiveSunatCode agrega los JOIN que resuelven effectiveSunatCodeExpr.
+//
+// Antes esto era una subconsulta correlacionada sobre tenant_sales evaluada por cada venta. El
+// índice de issued_from_nota_sale_id tiene cardinalidad 1 en los tenants sin conversiones (todo
+// NULL), así que MySQL la resolvía con un recorrido completo de la tabla por fila: O(n²). Un tenant
+// con ~30 mil ventas tardaba más de 10 minutos por sentencia y agotaba su pool de conexiones
+// (incidente 2026-10-09, gylconcesioneseirl). Aquí los hijos se agrupan UNA vez (índice en rango
+// issued_from_nota_sale_id > 0) y se unen por hash: costo lineal. El hijo elegido es el de menor
+// id, igual que el ORDER BY fe.id LIMIT 1 anterior.
+func joinEffectiveSunatCode(q *gorm.DB) *gorm.DB {
+	return q.
+		Joins("LEFT JOIN (SELECT issued_from_nota_sale_id AS parent_id, MIN(id) AS child_id FROM tenant_sales " +
+			"WHERE issued_from_nota_sale_id > 0 AND deleted_at IS NULL GROUP BY issued_from_nota_sale_id) eff_ch " +
+			"ON eff_ch.parent_id = tenant_sales.id").
+		Joins("LEFT JOIN tenant_sales eff_fe ON eff_fe.id = eff_ch.child_id").
+		Joins("LEFT JOIN tenant_document_series eff_fds ON eff_fds.id = eff_fe.series_id").
+		Joins("LEFT JOIN tenant_document_series eff_ds ON eff_ds.id = tenant_sales.series_id")
+}
 
 // saleListSummary agrega montos sobre el mismo conjunto filtrado que List (sin paginar).
 func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSummary, error) {

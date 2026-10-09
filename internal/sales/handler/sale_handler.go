@@ -18,11 +18,20 @@ import (
 	"tukifac/pkg/database"
 	emailpkg "tukifac/pkg/email"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/reportgate"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/tax"
+	"tukifac/pkg/tenantctx"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
+)
+
+// saleListGate limita los listados/reportes de ventas simultáneos por tenant. Con el pool de 3
+// conexiones de producción, 2 deja siempre una libre para login y el middleware de sesión.
+var (
+	saleListGate     = reportgate.New(2)
+	saleListGateWait = 8 * time.Second
 )
 
 type SaleHandler struct{}
@@ -402,6 +411,21 @@ func (h *SaleHandler) VoidRejectedAPI(c fiber.Ctx) error {
 
 // GET /api/sales?q=&from=&to=&doc_type=&billing_status=&sunat_code=00|01,03&contact_id=
 func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
+	// Un tenant no puede tener más de 2 listados/reportes simultáneos: su pool tiene pocas
+	// conexiones y el login/middleware comparten la misma (ver pkg/reportgate).
+	gateKey := "?"
+	if t, ok := tenantctx.Tenant(c); ok && t != nil {
+		gateKey = t.Slug
+	}
+	release, ok := saleListGate.Acquire(gateKey, saleListGateWait)
+	if !ok {
+		c.Set("Retry-After", "5")
+		return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+			"error": "Hay otros reportes de ventas en curso. Espera unos segundos e intenta de nuevo.",
+		})
+	}
+	defer release()
+
 	svc := service.NewSaleService(db(c))
 	branchID := resolveSalesReportBranch(c)
 	contactID, _ := strconv.ParseUint(c.Query("contact_id"), 10, 32)
@@ -462,8 +486,13 @@ func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 		params.Limit = perPage
 		params.Offset = (page - 1) * perPage
 	}
+	// summary=0: la pantalla solo muestra filas y no necesita los totales (evita ~8 sentencias).
+	params.SkipSummary = c.Query("summary") == "0"
 	sales, total, summary, err := svc.List(params)
 	if err != nil {
+		if errors.Is(err, service.ErrSaleListTimeout) {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	saleIDs := make([]uint, 0, len(sales))
