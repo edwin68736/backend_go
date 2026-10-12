@@ -107,7 +107,8 @@ type EquipOrder struct {
 	CustomerName      string           `gorm:"size:200" json:"customer_name"`
 	CustomerDocType   string           `gorm:"size:10" json:"customer_doc_type"`
 	CustomerDocNumber string           `gorm:"size:20" json:"customer_doc_number"`
-	ContactDNI        string           `gorm:"size:20" json:"contact_dni"`
+	ContactDNI        string           `gorm:"size:20" json:"contact_dni"`   // quien recoge, si no es el cliente
+	ContactName       string           `gorm:"size:200" json:"contact_name"` // nombre de quien recoge (destinatario del rótulo)
 	CustomerPhone     string           `gorm:"size:50" json:"customer_phone"`
 	BillingDocType    string           `gorm:"size:12;default:'ninguno'" json:"billing_doc_type"` // boleta | factura | ninguno
 	TotalAmount       float64          `gorm:"type:decimal(15,2);default:0" json:"total_amount"`
@@ -184,35 +185,41 @@ func (EquipPaymentAllocation) TableName() string { return "equip_payment_allocat
 
 // EquipCarrier transportista (Shalom, Olva…): sus días de despacho y plazo de recojo son propios.
 type EquipCarrier struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	Code           string    `gorm:"size:30;not null;uniqueIndex" json:"code"`
-	Name           string    `gorm:"size:100;not null" json:"name"`
-	DispatchDays   string    `gorm:"size:20" json:"dispatch_days"` // días de la semana 0=dom..6=sáb, separados por coma: "1,3,5"
-	PickupDays     int       `gorm:"default:15" json:"pickup_days"`
-	GuideLabel     string    `gorm:"size:60;default:'N° de guía'" json:"guide_label"`
-	GuideFormat    string    `gorm:"size:120" json:"guide_format"`          // expresión regular opcional para validar la guía
-	TrackingURLTpl string    `gorm:"size:255" json:"tracking_url_template"` // con {guia}
-	LabelTemplate  string    `gorm:"size:60" json:"label_template"`
-	IsDefault      bool      `gorm:"default:false" json:"is_default"`
-	Active         bool      `gorm:"default:true" json:"active"`
-	SortOrder      int       `gorm:"default:0" json:"sort_order"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             uint   `gorm:"primaryKey" json:"id"`
+	Code           string `gorm:"size:30;not null;uniqueIndex" json:"code"`
+	Name           string `gorm:"size:100;not null" json:"name"`
+	DispatchDays   string `gorm:"size:20" json:"dispatch_days"` // días de la semana 0=dom..6=sáb, separados por coma: "1,3,5"
+	PickupDays     int    `gorm:"default:15" json:"pickup_days"`
+	GuideLabel     string `gorm:"size:60;default:'N° de guía'" json:"guide_label"`
+	GuideFormat    string `gorm:"size:120" json:"guide_format"`          // expresión regular opcional para validar la guía
+	TrackingURLTpl string `gorm:"size:255" json:"tracking_url_template"` // con {guia}
+	LabelTemplate  string `gorm:"size:60" json:"label_template"`
+	IsDefault      bool   `gorm:"default:false" json:"is_default"`
+	// DefaultOriginAgencyID agencia donde se entrega el paquete (origen que se propone en cada envío).
+	DefaultOriginAgencyID *uint `gorm:"index" json:"default_origin_agency_id"`
+	AgencyCount           int   `gorm:"-" json:"agency_count"` // agencias activas cargadas (calculado)
+	Active                bool      `gorm:"default:true" json:"active"`
+	SortOrder             int       `gorm:"default:0" json:"sort_order"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 func (EquipCarrier) TableName() string { return "equip_carriers" }
 
 // EquipShipment envío de un pedido (un reenvío tras un retorno crea otro).
 type EquipShipment struct {
-	ID                    uint       `gorm:"primaryKey" json:"id"`
-	OrderID               uint       `gorm:"not null;index" json:"order_id"`
-	CarrierID             *uint      `gorm:"index" json:"carrier_id"`
-	GuideNumber           string     `gorm:"size:40;index" json:"guide_number"`
-	DestinationAgency     string     `gorm:"size:150" json:"destination_agency"`
-	DestinationDepartment string     `gorm:"size:80" json:"destination_department"`
-	DestinationProvince   string     `gorm:"size:80" json:"destination_province"`
-	DestinationDistrict   string     `gorm:"size:80" json:"destination_district"`
-	Ubigeo                string     `gorm:"size:6" json:"ubigeo"`
+	ID                    uint   `gorm:"primaryKey" json:"id"`
+	OrderID               uint   `gorm:"not null;index" json:"order_id"`
+	CarrierID             *uint  `gorm:"index" json:"carrier_id"`
+	GuideNumber           string `gorm:"size:40;index" json:"guide_number"`
+	DestinationAgency     string `gorm:"size:150" json:"destination_agency"`
+	DestinationDepartment string `gorm:"size:80" json:"destination_department"`
+	DestinationProvince   string `gorm:"size:80" json:"destination_province"`
+	DestinationDistrict   string `gorm:"size:80" json:"destination_district"`
+	Ubigeo                string `gorm:"size:6" json:"ubigeo"`
+	// Agencias del catálogo del transportista (opcionales; los textos de arriba son la copia que se imprime).
+	OriginAgencyID        *uint      `gorm:"index" json:"origin_agency_id"`
+	DestinationAgencyID   *uint      `gorm:"index" json:"destination_agency_id"`
 	DeliveryMode          string     `gorm:"size:20;default:'agencia'" json:"delivery_mode"` // agencia | oficina | pendiente_recojo
 	ScheduledDispatchDate *time.Time `gorm:"type:date" json:"scheduled_dispatch_date"`
 	DispatchedAt          *time.Time `json:"dispatched_at"`
@@ -324,3 +331,30 @@ type EquipImportBatch struct {
 }
 
 func (EquipImportBatch) TableName() string { return "equip_import_batches" }
+
+// EquipCarrierAgency agencia (sucursal) de un transportista. La ubicación es opcional: el Excel de Shalom solo
+// trae código y nombre, así que se completa por cruce con el ubigeo (LocationStatus) o a mano.
+type EquipCarrierAgency struct {
+	ID         uint   `gorm:"primaryKey" json:"id"`
+	CarrierID  uint   `gorm:"not null;index;uniqueIndex:ux_equip_agency_name,priority:1" json:"carrier_id"`
+	Code       string `gorm:"size:30" json:"code"` // código del transportista (ej. el N° de agencia de Shalom)
+	Name       string `gorm:"size:150;not null;uniqueIndex:ux_equip_agency_name,priority:2" json:"name"`
+	Department string `gorm:"size:80;index" json:"department"`
+	Province   string `gorm:"size:80" json:"province"`
+	District   string `gorm:"size:80" json:"district"`
+	Ubigeo     string `gorm:"size:6" json:"ubigeo"`
+	Address    string `gorm:"size:255" json:"address"`
+	// LocationStatus: confirmada (manual o coincidencia exacta) | sugerida (coincidencia parcial, por revisar) | pendiente (sin ubicación).
+	LocationStatus string    `gorm:"size:12;default:'pendiente';index" json:"location_status"`
+	Active         bool      `gorm:"default:true" json:"active"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (EquipCarrierAgency) TableName() string { return "equip_carrier_agencies" }
+
+const (
+	AgencyLocConfirmed = "confirmada"
+	AgencyLocSuggested = "sugerida"
+	AgencyLocPending   = "pendiente"
+)

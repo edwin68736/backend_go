@@ -34,6 +34,8 @@ type ShipmentInput struct {
 	CarrierID             *uint    `json:"carrier_id"`
 	GuideNumber           string   `json:"guide_number"`
 	DestinationAgency     string   `json:"destination_agency"`
+	OriginAgencyID        *uint    `json:"origin_agency_id"`
+	DestinationAgencyID   *uint    `json:"destination_agency_id"`
 	DestinationDepartment string   `json:"destination_department"`
 	DestinationProvince   string   `json:"destination_province"`
 	DestinationDistrict   string   `json:"destination_district"`
@@ -49,8 +51,9 @@ type OrderInput struct {
 	CustomerDocType   string           `json:"customer_doc_type"`
 	CustomerDocNumber string           `json:"customer_doc_number"`
 	ContactDNI        string           `json:"contact_dni"`
+	ContactName       string           `json:"contact_name"`
 	CustomerPhone     string           `json:"customer_phone"`
-	SaveCustomer      bool             `json:"save_customer"` // crea el cliente si el documento no existe
+	SaveCustomer     bool             `json:"save_customer"` // crea el cliente si el documento no existe
 	SaleType          string           `json:"sale_type"`
 	OrderDate         string           `json:"order_date"` // AAAA-MM-DD; vacío = hoy
 	BillingDocType    string           `json:"billing_doc_type"`
@@ -248,6 +251,17 @@ func sumItems(items []database.EquipOrderItem) float64 {
 
 // resolveCustomer fija el cliente y la copia (snapshot) del pedido.
 func (s *Service) resolveCustomer(tx *gorm.DB, in OrderInput, o *database.EquipOrder) error {
+	// Quien recoge es dato del pedido (no del cliente): vacío = recoge el mismo cliente.
+	in.ContactDNI = strings.TrimSpace(in.ContactDNI)
+	in.ContactName = collapse(in.ContactName)
+	if in.ContactDNI != "" && (!onlyDigits(in.ContactDNI) || len(in.ContactDNI) != 8) {
+		return invalid("el DNI de quien recoge debe tener 8 dígitos")
+	}
+	if in.ContactDNI == "" && in.ContactName == "" {
+		o.ContactDNI, o.ContactName = "", ""
+	} else {
+		o.ContactDNI, o.ContactName = in.ContactDNI, in.ContactName
+	}
 	if in.CustomerID != nil {
 		var c database.EquipCustomer
 		if found, err := findOne(tx, &c, "id = ?", *in.CustomerID); err != nil {
@@ -256,7 +270,7 @@ func (s *Service) resolveCustomer(tx *gorm.DB, in OrderInput, o *database.EquipO
 			return invalid("el cliente no existe")
 		}
 		id := c.ID
-		o.CustomerID, o.CustomerName, o.CustomerDocType, o.ContactDNI, o.CustomerPhone = &id, c.Name, c.DocType, c.ContactDNI, c.Phone
+		o.CustomerID, o.CustomerName, o.CustomerDocType, o.CustomerPhone = &id, c.Name, c.DocType, c.Phone
 		o.CustomerDocNumber = ""
 		if c.DocNumber != nil {
 			o.CustomerDocNumber = *c.DocNumber
@@ -266,7 +280,7 @@ func (s *Service) resolveCustomer(tx *gorm.DB, in OrderInput, o *database.EquipO
 	name := collapse(in.CustomerName)
 	docType := strings.ToUpper(strings.TrimSpace(in.CustomerDocType))
 	if strings.TrimSpace(in.CustomerDocNumber) == "" || docType == "" || docType == "SIN_DOC" {
-		o.CustomerID, o.CustomerName, o.CustomerDocType, o.CustomerDocNumber, o.ContactDNI = nil, name, "SIN_DOC", "", ""
+		o.CustomerID, o.CustomerName, o.CustomerDocType, o.CustomerDocNumber = nil, name, "SIN_DOC", ""
 		if o.CustomerName == "" {
 			o.CustomerName = "Clientes varios"
 		}
@@ -281,11 +295,8 @@ func (s *Service) resolveCustomer(tx *gorm.DB, in OrderInput, o *database.EquipO
 	if name == "" {
 		return invalid("el nombre del cliente es obligatorio")
 	}
-	if in.ContactDNI = strings.TrimSpace(in.ContactDNI); in.ContactDNI != "" && (!onlyDigits(in.ContactDNI) || len(in.ContactDNI) != 8) {
-		return invalid("el DNI de contacto debe tener 8 dígitos")
-	}
 	phone, kind, _ := classifyPhone(in.CustomerPhone)
-	o.CustomerName, o.CustomerDocType, o.CustomerDocNumber, o.ContactDNI, o.CustomerPhone = name, docType, num, in.ContactDNI, phone
+	o.CustomerName, o.CustomerDocType, o.CustomerDocNumber, o.CustomerPhone = name, docType, num, phone
 	if !in.SaveCustomer {
 		o.CustomerID = nil
 		return nil

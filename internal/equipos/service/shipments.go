@@ -117,6 +117,9 @@ func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in
 		dep = name
 	}
 	sh.DestinationDepartment, sh.DestinationProvince, sh.DestinationDistrict = dep, collapse(in.DestinationProvince), collapse(in.DestinationDistrict)
+	if err := s.applyAgencies(tx, sh, in); err != nil {
+		return err
+	}
 	switch strings.TrimSpace(in.DeliveryMode) {
 	case "", "agencia":
 		sh.DeliveryMode = "agencia"
@@ -387,6 +390,7 @@ func alertFor(sh *database.EquipShipment, yellow, red int, today time.Time) (sin
 type ShipmentView struct {
 	database.EquipShipment
 	CarrierName       string `json:"carrier_name"`
+	OriginAgencyName  string `json:"origin_agency_name"`
 	CarrierCode       string `json:"carrier_code"`
 	GuideLabel        string `json:"guide_label"`
 	TrackingURL       string `json:"tracking_url"`
@@ -399,6 +403,7 @@ type ShipmentView struct {
 
 func (s *Service) shipmentView(tx *gorm.DB, sh database.EquipShipment, st *database.EquipSettings) ShipmentView {
 	v := ShipmentView{EquipShipment: sh}
+	v.OriginAgencyName = s.agencyName(tx, sh.OriginAgencyID)
 	if c, _ := s.carrierByIDTx(tx, sh.CarrierID); c != nil {
 		v.CarrierName, v.CarrierCode, v.GuideLabel, v.DispatchDays = c.Name, c.Code, c.GuideLabel, c.DispatchDays
 		if c.TrackingURLTpl != "" && sh.GuideNumber != "" {

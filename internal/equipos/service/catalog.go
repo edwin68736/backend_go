@@ -36,6 +36,30 @@ type ProductWithStock struct {
 	database.EquipProduct
 	Stock     int    `json:"stock"`
 	Semaphore string `json:"semaphore"`
+	// LastPrice último precio unitario cobrado en un pedido vigente (0 si nunca se vendió): sugerencia
+	// de precio cuando el producto no tiene precio de referencia.
+	LastPrice float64 `json:"last_price"`
+}
+
+// lastSalePrices devuelve, por producto, el precio unitario de su línea más reciente (sin obsequios ni anulados).
+func (s *Service) lastSalePrices() (map[uint]float64, error) {
+	var rows []struct {
+		ProductID uint
+		UnitPrice float64
+	}
+	err := s.db.Raw(`SELECT i.product_id, i.unit_price FROM equip_order_items i
+		JOIN (SELECT MAX(i2.id) AS mid FROM equip_order_items i2
+			JOIN equip_orders o ON o.id = i2.order_id
+			WHERE o.status <> 'anulado' AND i2.is_courtesy = 0 AND i2.unit_price > 0 AND i2.product_id IS NOT NULL
+			GROUP BY i2.product_id) m ON m.mid = i.id`).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint]float64, len(rows))
+	for _, r := range rows {
+		out[r.ProductID] = r.UnitPrice
+	}
+	return out, nil
 }
 
 func (in *ProductInput) normalize() error {
@@ -90,10 +114,14 @@ func (s *Service) ListProducts(q, kind string, includeInactive bool) ([]ProductW
 	if err != nil {
 		return nil, err
 	}
+	last, err := s.lastSalePrices()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]ProductWithStock, 0, len(rows))
 	for _, p := range rows {
 		cur := stock[p.ID]
-		out = append(out, ProductWithStock{EquipProduct: p, Stock: cur, Semaphore: semaphore(cur, p.YellowThreshold, p.GreenThreshold)})
+		out = append(out, ProductWithStock{EquipProduct: p, Stock: cur, Semaphore: semaphore(cur, p.YellowThreshold, p.GreenThreshold), LastPrice: last[p.ID]})
 	}
 	return out, nil
 }
@@ -361,6 +389,7 @@ type CarrierInput struct {
 	IsDefault      bool   `json:"is_default"`
 	Active         *bool  `json:"active"`
 	SortOrder      int    `json:"sort_order"`
+	DefaultOriginAgencyID *uint `json:"default_origin_agency_id"`
 }
 
 var carrierCodeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,28}$`)
@@ -434,8 +463,24 @@ func (s *Service) ListCarriers(includeInactive bool) ([]database.EquipCarrier, e
 	if !includeInactive {
 		tx = tx.Where("active = ?", true)
 	}
-	err := tx.Order("sort_order ASC, name ASC").Find(&rows).Error
-	return rows, err
+	if err := tx.Order("sort_order ASC, name ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	var counts []struct {
+		CarrierID uint
+		N         int
+	}
+	if err := s.db.Model(&database.EquipCarrierAgency{}).Select("carrier_id, COUNT(*) AS n").Where("active = ?", true).Group("carrier_id").Scan(&counts).Error; err != nil {
+		return nil, err
+	}
+	byCarrier := make(map[uint]int, len(counts))
+	for _, c := range counts {
+		byCarrier[c.CarrierID] = c.N
+	}
+	for i := range rows {
+		rows[i].AgencyCount = byCarrier[rows[i].ID]
+	}
+	return rows, nil
 }
 
 func (s *Service) CreateCarrier(in CarrierInput) (*database.EquipCarrier, error) {
@@ -498,6 +543,10 @@ func (s *Service) UpdateCarrier(id uint, in CarrierInput) (*database.EquipCarrie
 		c.Code, c.Name, c.DispatchDays, c.PickupDays = in.Code, in.Name, in.DispatchDays, in.PickupDays
 		c.GuideLabel, c.GuideFormat, c.TrackingURLTpl, c.LabelTemplate = in.GuideLabel, in.GuideFormat, in.TrackingURLTpl, in.LabelTemplate
 		c.SortOrder, c.IsDefault = in.SortOrder, in.IsDefault
+		if err := s.checkOriginAgency(tx, c.ID, in.DefaultOriginAgencyID); err != nil {
+			return err
+		}
+		c.DefaultOriginAgencyID = in.DefaultOriginAgencyID
 		if in.Active != nil {
 			c.Active = *in.Active
 		}

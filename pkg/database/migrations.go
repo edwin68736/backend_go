@@ -447,6 +447,7 @@ func MigrateCentral() error {
 		&EquipPayment{},
 		&EquipPaymentAllocation{},
 		&EquipCarrier{},
+		&EquipCarrierAgency{},
 		&EquipShipment{},
 		&EquipReturn{},
 		&EquipStockMovement{},

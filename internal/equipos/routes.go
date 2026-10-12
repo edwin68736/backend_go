@@ -24,6 +24,10 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Get("/equipos/carriers", p("equipos.view"), h.ListCarriers)
 	saAPI.Post("/equipos/carriers", p("equipos.carriers"), h.CreateCarrier)
 	saAPI.Put("/equipos/carriers/:id", p("equipos.carriers"), h.UpdateCarrier)
+	saAPI.Get("/equipos/carriers/:id/agencies", p("equipos.view"), h.ListAgencies)
+	saAPI.Post("/equipos/carriers/:id/agencies", p("equipos.carriers"), h.CreateAgency)
+	saAPI.Post("/equipos/carriers/:id/agencies/import", p("equipos.carriers"), h.ImportAgencies)
+	saAPI.Put("/equipos/agencies/:id", p("equipos.carriers"), h.UpdateAgency)
 
 	saAPI.Get("/equipos/settings", p("equipos.view"), h.GetSettings)
 	saAPI.Put("/equipos/settings", p("equipos.settings"), h.UpdateSettings)
