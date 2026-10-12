@@ -284,7 +284,8 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 		base = base.Where("LOWER(sh.destination_department) = ?", strings.ToLower(dep))
 	}
 
-	res := &OrderListResult{Page: f.Page, PerPage: f.PerPage}
+	// Rows vacío (no nil): un nil se serializa como null y el panel fallaba al leer rows.length.
+	res := &OrderListResult{Page: f.Page, PerPage: f.PerPage, Rows: []OrderRow{}}
 	if err := base.Session(&gorm.Session{}).Count(&res.Total).Error; err != nil {
 		return nil, err
 	}
