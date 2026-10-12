@@ -434,15 +434,13 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		}
 	}
 
-	// Sucursal (nombre/dirección propios). La dirección del emisor en el PDF es la de la empresa
-	// (editable en registro de ventas); no se pisa con la de la sucursal.
+	// Sucursal (nombre/dirección propios). Igual que el logo: si la sucursal tiene dirección, esa es la
+	// del emisor en el comprobante; si no, queda la de la empresa (ajustes) como respaldo.
 	var branch database.TenantBranch
 	if db.First(&branch, sale.BranchID).Error == nil {
 		pd.Branch = PrintBranch{Name: branch.Name, Address: branch.Address}
-		if strings.TrimSpace(pd.Company.Address) == "" {
-			if addr := strings.TrimSpace(branch.Address); addr != "" {
-				pd.Company.Address = addr
-			}
+		if addr := strings.TrimSpace(branch.Address); addr != "" {
+			pd.Company.Address = addr
 		}
 		pd.Company.LogoURL = branchlogo.ResolveURL(branch.LogoURL, pd.Company.LogoURL)
 		// Embebido como data: URL — sin esto el frontend necesita un fetch en vivo a /uploads/*

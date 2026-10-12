@@ -95,6 +95,45 @@ func TestBuildPrintData_includesSaleNotes(t *testing.T) {
 	}
 }
 
+// La dirección del emisor sigue la misma regla que el logo: la de la sucursal si la tiene; si no, la de la
+// empresa (ajustes) como respaldo.
+func TestBuildPrintData_issuerAddressBranchFirstThenCompany(t *testing.T) {
+	db := setupPrintDataTestDB(t)
+	if err := db.AutoMigrate(&database.TenantCompanyConfig{}, &database.TenantBranch{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantCompanyConfig{RUC: "20000000001", BusinessName: "ACME SAC", Address: "Av. Central 100 (empresa)"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	withAddr := database.TenantBranch{Name: "Sucursal Norte", Address: "Jr. Norte 45 (sucursal)", Active: true}
+	noAddr := database.TenantBranch{Name: "Sucursal Sur", Address: "  ", Active: true}
+	if err := db.Create(&withAddr).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&noAddr).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	build := func(branchID uint) string {
+		sale := &database.TenantSale{
+			ID: 1, BranchID: branchID, DocType: "03", Series: "B001", Number: "B001-1",
+			IssueDate: time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC), Currency: "PEN", Total: 10,
+		}
+		pd, err := BuildPrintData(db, sale, nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pd.Company.Address
+	}
+
+	if got := build(withAddr.ID); got != "Jr. Norte 45 (sucursal)" {
+		t.Fatalf("sucursal con dirección: got %q, want la de la sucursal", got)
+	}
+	if got := build(noAddr.ID); got != "Av. Central 100 (empresa)" {
+		t.Fatalf("sucursal sin dirección: got %q, want la de la empresa como respaldo", got)
+	}
+}
+
 func TestPrintableSaleNotes_quitaElRegistroDeAnulacion(t *testing.T) {
 	cases := map[string]string{
 		"Entregar mañana":                                 "Entregar mañana",
