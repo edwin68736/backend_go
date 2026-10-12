@@ -503,10 +503,27 @@ func MigrateModuleKeySaasToMemberships() error {
 // fuente de verdad de implemented/requires/category; name/description/icon los edita el superadmin.
 type moduleCodeMeta struct {
 	Key         string
+	// Name, Description e Icon solo se usan al CREAR el módulo en BD (después los edita el superadmin).
+	Name        string
+	Description string
+	Icon        string
 	Implemented bool
 	Requires    string // CSV de keys de las que depende (no se fusionan, se venden aparte)
 	Category    string
 	SortOrder   int
+}
+
+// Módulos que separan subfunciones de `billing` (antes iban incluidas en él).
+const (
+	ModuleDespatch     = "despatch"      // guías de remisión + flota (transportistas, conductores, vehículos)
+	ModuleAdvancedDocs = "advanced_docs" // retenciones, percepciones y reversiones
+)
+
+func moduleDisplayName(m moduleCodeMeta) string {
+	if m.Name != "" {
+		return m.Name
+	}
+	return m.Key
 }
 
 // moduleCodeCatalog: todos los módulos conocidos por el código. Los implemented=false se ocultan
@@ -519,20 +536,23 @@ var moduleCodeCatalog = []moduleCodeMeta{
 	{Key: "purchases", Implemented: true, Requires: "products,cashbank", Category: "core", SortOrder: 5},
 	{Key: "contacts", Implemented: true, Requires: "", Category: "core", SortOrder: 6},
 	{Key: "billing", Implemented: true, Requires: "", Category: "core", SortOrder: 7},
-	{Key: "restaurant", Implemented: true, Requires: "cashbank", Category: "vertical", SortOrder: 8},
-	{Key: "memberships", Implemented: true, Requires: "sales,cashbank", Category: "vertical", SortOrder: 9},
-	{Key: "ecommerce", Implemented: true, Requires: "products,sales", Category: "vertical", SortOrder: 10},
+	{Key: "restaurant", Implemented: true, Requires: "cashbank", Category: "vertical", SortOrder: 10},
+	{Key: "memberships", Implemented: true, Requires: "sales,cashbank", Category: "vertical", SortOrder: 11},
+	{Key: "ecommerce", Implemented: true, Requires: "products,sales", Category: "vertical", SortOrder: 12},
 	// No implementados (ocultos al tenant hasta que exista el código):
-	{Key: "hotel", Implemented: false, Category: "vertical", SortOrder: 11},
-	{Key: "clinic", Implemented: false, Category: "vertical", SortOrder: 12},
-	{Key: "transport", Implemented: false, Category: "vertical", SortOrder: 13},
-	{Key: "manufacturing", Implemented: false, Category: "vertical", SortOrder: 14},
-	{Key: "hr", Implemented: false, Category: "avanzado", SortOrder: 15},
-	{Key: "accounting", Implemented: false, Category: "avanzado", SortOrder: 16},
-	{Key: "bi", Implemented: false, Category: "avanzado", SortOrder: 17},
-	{Key: "fixedassets", Implemented: false, Category: "avanzado", SortOrder: 18},
-	{Key: "documents", Implemented: false, Category: "avanzado", SortOrder: 19},
-	{Key: "support", Implemented: false, Category: "avanzado", SortOrder: 20},
+	{Key: "hotel", Implemented: false, Category: "vertical", SortOrder: 13},
+	{Key: "clinic", Implemented: false, Category: "vertical", SortOrder: 14},
+	{Key: "transport", Implemented: false, Category: "vertical", SortOrder: 15},
+	{Key: "manufacturing", Implemented: false, Category: "vertical", SortOrder: 16},
+	{Key: "hr", Implemented: false, Category: "avanzado", SortOrder: 17},
+	{Key: "accounting", Implemented: false, Category: "avanzado", SortOrder: 18},
+	{Key: "bi", Implemented: false, Category: "avanzado", SortOrder: 19},
+	{Key: "fixedassets", Implemented: false, Category: "avanzado", SortOrder: 20},
+	{Key: "documents", Implemented: false, Category: "avanzado", SortOrder: 21},
+	{Key: "support", Implemented: false, Category: "avanzado", SortOrder: 22},
+	// Subfunciones de facturación que se venden aparte (dependen de `billing`).
+	{Key: ModuleDespatch, Name: "Guías de remisión y flota", Description: "Guías de remisión remitente y transportista, con transportistas, conductores y vehículos", Icon: "truck", Implemented: true, Requires: "billing", Category: "avanzado", SortOrder: 8},
+	{Key: ModuleAdvancedDocs, Name: "Documentos avanzados SUNAT", Description: "Retenciones, percepciones y reversiones", Icon: "file-text", Implemented: true, Requires: "billing", Category: "avanzado", SortOrder: 9},
 }
 
 // ImplementedModuleKeys: set de módulos usables (implementados). Fuente para filtrar lo que ve
@@ -590,8 +610,8 @@ func SyncModuleCodeMetadata() error {
 		err := CentralDB.Where("`key` = ?", m.Key).First(&existing).Error
 		if err == gorm.ErrRecordNotFound {
 			if e := CentralDB.Create(&SaasModule{
-				Key: m.Key, Name: m.Key, Implemented: m.Implemented,
-				Requires: m.Requires, Category: m.Category, SortOrder: m.SortOrder, Active: true,
+				Key: m.Key, Name: moduleDisplayName(m), Description: m.Description, Icon: m.Icon,
+				Implemented: m.Implemented, Requires: m.Requires, Category: m.Category, SortOrder: m.SortOrder, Active: true,
 			}).Error; e != nil {
 				return e
 			}
@@ -2693,3 +2713,42 @@ func SeedTenant(db *gorm.DB, adminEmail, adminPassword, companyName, ruc, addres
 }
 
 // SeedPaymentMethodsIfEmpty y SeedPaymentMethodsCatalog están en payment_method_seed.go.
+
+// MigrateSplitDespatchModules separa de `billing` los módulos `despatch` (guías de remisión y flota) y
+// `advanced_docs` (retenciones, percepciones, reversiones). Hasta ahora todo eso iba incluido en facturación,
+// así que se otorgan a cada plan y a cada tenant que YA tiene facturación: nadie pierde acceso el día del
+// despliegue. Después el superadmin desmarca los módulos en los planes que no los ofrecen.
+//
+// Se ejecuta una sola vez: la señal es que la fila del módulo `despatch` aún no existe en saas_modules (la crea
+// SyncModuleCodeMetadata justo después). Si se vuelve a ejecutar antes de eso solo repite inserciones ignoradas.
+func MigrateSplitDespatchModules() error {
+	if CentralDB == nil {
+		return nil
+	}
+	var done int64
+	CentralDB.Model(&SaasModule{}).Where("`key` = ?", ModuleDespatch).Count(&done)
+	if done > 0 {
+		return nil
+	}
+	return CentralDB.Transaction(func(tx *gorm.DB) error {
+		for _, key := range []string{ModuleDespatch, ModuleAdvancedDocs} {
+			if err := tx.Exec(`
+				INSERT INTO saas_plan_modules (plan_id, module_key, created_at)
+				SELECT pm.plan_id, ?, NOW() FROM saas_plan_modules pm
+				WHERE pm.module_key = 'billing'
+				  AND NOT EXISTS (SELECT 1 FROM saas_plan_modules x WHERE x.plan_id = pm.plan_id AND x.module_key = ?)
+			`, key, key).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(`
+				INSERT INTO tenant_modules (tenant_id, module_key, enabled, source, config_json, created_at, updated_at)
+				SELECT tm.tenant_id, ?, 1, tm.source, '{}', NOW(), NOW() FROM tenant_modules tm
+				WHERE tm.module_key = 'billing' AND tm.enabled = 1
+				  AND NOT EXISTS (SELECT 1 FROM tenant_modules x WHERE x.tenant_id = tm.tenant_id AND x.module_key = ?)
+			`, key, key).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
