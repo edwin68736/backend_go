@@ -402,7 +402,15 @@ func (s *ProductService) loadMinPresentationPrices(productIDs []uint) map[uint]f
 
 // ProductListItemFrom devuelve un ítem de listado con category_name para un solo producto.
 func (s *ProductService) ProductListItemFrom(p database.TenantProduct) ProductListItem {
-	items := s.attachCategoryNames([]database.TenantProduct{p}, 0)
+	return s.ProductListItemForBranch(p, 0)
+}
+
+// ProductListItemForBranch igual que ProductListItemFrom pero resolviendo el precio por sucursal
+// (TenantProductBranchPrice) cuando branchID > 0 — lo que necesita cualquier flujo de VENTA que trae
+// un solo producto (p. ej. el escáner de código de barras), para que coincida con el precio que
+// muestra el listado de productos de esa misma sucursal. branchID=0 = precio base.
+func (s *ProductService) ProductListItemForBranch(p database.TenantProduct, branchID uint) ProductListItem {
+	items := s.attachCategoryNames([]database.TenantProduct{p}, branchID)
 	if len(items) == 0 {
 		return ProductListItem{TenantProduct: p}
 	}

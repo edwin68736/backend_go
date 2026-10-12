@@ -678,7 +678,8 @@ func (h *ProductHandler) LookupByCodeAPI(c fiber.Ctx) error {
 	if msg, denied := h.productBranchDenied(c, p); denied {
 		return c.Status(403).JSON(fiber.Map{"error": msg})
 	}
-	return c.JSON(fiber.Map{"data": svc.ProductListItemFrom(*p)})
+	// Con el precio de la sucursal activa: es una consulta de venta (escáner), no la edición del producto.
+	return c.JSON(fiber.Map{"data": svc.ProductListItemForBranch(*p, branchID)})
 }
 
 // GetAPI devuelve un producto por ID con modifier_group_ids (para edición y panel avanzado).
