@@ -176,6 +176,9 @@ type ImportStockCols struct {
 }
 
 type importPlan struct {
+	// periodMonth: mes (1-12) cuando el libro dice solo «OCTUBRE» sin año; el año se infiere de las fechas
+	// del libro en analyze.
+	periodMonth  int
 	Period       string
 	PeriodStart  time.Time
 	StockManager string
@@ -339,6 +342,11 @@ func (p *importPlan) parseStock(rows [][]any) {
 		for c := range rows[i] {
 			if per, ok := parsePeriod(cellStr(rows[i], c)); ok && p.Period == "" {
 				p.Period = per
+			}
+			if p.periodMonth == 0 {
+				if mo, ok := parseMonthOnly(cellStr(rows[i], c)); ok {
+					p.periodMonth = mo
+				}
 			}
 			if foldText(cellStr(rows[i], c)) == "responsable:" {
 				for n := c + 1; n < len(rows[i]); n++ {
@@ -733,29 +741,87 @@ func (p *importPlan) parseReturns(rows [][]any) {
 			if tok == "" {
 				continue
 			}
-			qty := 1
-			name := tok
-			if m := returnQtyRe.FindStringSubmatch(tok); m != nil {
-				if m[1] != "" {
-					fmt.Sscanf(m[1], "%d", &qty)
-					name = m[2]
-				} else {
-					fmt.Sscanf(m[4], "%d", &qty)
-					name = m[3]
+			for _, ri := range p.resolveReturnToken(tok) {
+				if ri.pr == nil {
+					p.add(SevWarning, "retorno_producto", sheetReturns, i+1, 0, "Retorno %d: no se reconoció el equipo %q", num, ri.name)
+					continue
 				}
+				if ri.assumed {
+					p.add(SevInfo, "producto_asumido", sheetReturns, i+1, 0, "Retorno %d: «%s» se tomó como %q", num, ri.name, ri.pr.Code)
+				}
+				ret.Items = append(ret.Items, planItem{Type: "producto", Code: ri.pr.Code, Quantity: float64(ri.qty)})
 			}
-			pr, assumed := p.matchProduct(name)
-			if pr == nil {
-				p.add(SevWarning, "retorno_producto", sheetReturns, i+1, 0, "Retorno %d: no se reconoció el equipo %q", num, name)
-				continue
-			}
-			if assumed {
-				p.add(SevInfo, "producto_asumido", sheetReturns, i+1, 0, "Retorno %d: «%s» se tomó como %q", num, name, pr.Code)
-			}
-			ret.Items = append(ret.Items, planItem{Type: "producto", Code: pr.Code, Quantity: float64(qty)})
 		}
 		p.Returns = append(p.Returns, ret)
 	}
+}
+
+type returnItemGuess struct {
+	name    string
+	qty     int
+	pr      *planProduct
+	assumed bool
+}
+
+var returnLeadQtyRe = regexp.MustCompile(`^(\d+)\s*([A-Za-z].*)$`)
+var returnGluedQtyWordRe = regexp.MustCompile(`^\d+[A-Za-z]`)
+
+// guessReturnItem interpreta un fragmento como «cantidad + equipo»: «2x PRINT», «PRINT x2», o «2etiq50*30» (cantidad pegada).
+func (p *importPlan) guessReturnItem(tok string) returnItemGuess {
+	qty, name := 1, tok
+	if m := returnQtyRe.FindStringSubmatch(tok); m != nil {
+		if m[1] != "" {
+			fmt.Sscanf(m[1], "%d", &qty)
+			name = m[2]
+		} else {
+			fmt.Sscanf(m[4], "%d", &qty)
+			name = m[3]
+		}
+	}
+	pr, assumed := p.matchProduct(name)
+	if pr == nil {
+		// «2etiq50*30»: la cantidad va pegada al nombre.
+		if m := returnLeadQtyRe.FindStringSubmatch(tok); m != nil {
+			q := 1
+			fmt.Sscanf(m[1], "%d", &q)
+			if pr2, as2 := p.matchProduct(m[2]); pr2 != nil {
+				return returnItemGuess{name: m[2], qty: q, pr: pr2, assumed: as2}
+			}
+		}
+	}
+	return returnItemGuess{name: name, qty: qty, pr: pr, assumed: assumed}
+}
+
+// resolveReturnToken reconoce uno o varios equipos en un fragmento del detalle de un retorno. Si el fragmento
+// entero no se reconoce y trae varias palabras («H-Q300 2etiq50*30», sin coma entre los equipos), lo parte donde
+// empieza una cantidad pegada a un nombre y reconoce cada parte.
+func (p *importPlan) resolveReturnToken(tok string) []returnItemGuess {
+	whole := p.guessReturnItem(tok)
+	if whole.pr != nil {
+		return []returnItemGuess{whole}
+	}
+	fields := strings.Fields(tok)
+	if len(fields) < 2 {
+		return []returnItemGuess{whole}
+	}
+	var pieces []string
+	cur := []string{}
+	for _, f := range fields {
+		if len(cur) > 0 && returnGluedQtyWordRe.MatchString(f) {
+			pieces = append(pieces, strings.Join(cur, " "))
+			cur = nil
+		}
+		cur = append(cur, f)
+	}
+	pieces = append(pieces, strings.Join(cur, " "))
+	if len(pieces) < 2 {
+		return []returnItemGuess{whole}
+	}
+	out := make([]returnItemGuess, 0, len(pieces))
+	for _, piece := range pieces {
+		out = append(out, p.guessReturnItem(piece))
+	}
+	return out
 }
 
 // ── Movimientos y conciliación ─────────────────────────────────────────────
@@ -825,6 +891,34 @@ func (p *importPlan) buildMovements() {
 				Quantity: int(math.Round(it.Quantity)), ReturnNo: ret.Number,
 				Note: "Retorno " + fmt.Sprint(ret.Number) + " en buen estado",
 			})
+		}
+	}
+}
+
+// explainReingresos agrega un aviso por cada producto cuyo Stock Maestro cuenta más reingresos de los que el
+// sistema puede respaldar: la columna «Reingresos» del libro es manual, y el sistema solo suma retornos en
+// estado «Recibido» y en buen estado. Es la causa más común de un descuadre de 1-2 unidades.
+func (p *importPlan) explainReingresos(rows []ImportReconRow) {
+	for _, r := range rows {
+		if r.Match || r.Excel.Reentries <= r.System.Reentries {
+			continue
+		}
+		for _, ret := range p.Returns {
+			if ret.Status == "recibido" && ret.Condition == "buen_estado" {
+				continue
+			}
+			for _, it := range ret.Items {
+				if key(it.Code) != key(r.Code) {
+					continue
+				}
+				why := "está en estado «" + strings.ReplaceAll(ret.Status, "_", " ") + "», no «Recibido»"
+				if ret.Status == "recibido" {
+					why = "está marcado como no apto (equipo dañado)"
+				}
+				p.add(SevWarning, "reingreso_sin_recibir", sheetReturns, ret.Row, 0,
+					"El Stock Maestro cuenta %d reingreso(s) de «%s», pero el retorno %d %s y el sistema solo suma retornos Recibidos en buen estado. Si el equipo ya llegó, cambia su estado a «Recibido» en la hoja Retornos; si no, pon 0 en Reingresos del Stock Maestro",
+					r.Excel.Reentries, r.Code, ret.Number, why)
+			}
 		}
 	}
 }
@@ -942,6 +1036,14 @@ func analyze(payload ImportPayload) *importPlan {
 
 	// Período: del Stock Maestro; si no, del primer despacho.
 	detail := p.parseDetail(sheets[sheetDetail])
+	// El libro dice solo «OCTUBRE» (sin año): se toma el año de las fechas de los pedidos y retornos.
+	if p.Period == "" && p.periodMonth > 0 {
+		year := inferPeriodYear(p.periodMonth, sheets[sheetOrders], sheets[sheetReturns])
+		p.Period = fmt.Sprintf("%04d-%02d", year, p.periodMonth)
+		p.add(SevWarning, "periodo_sin_anio", sheetStock, 0, 0,
+			"El mes de control dice solo el mes, sin año: se tomó %s según las fechas del libro. Escribe el año (ej. «%s %d») para evitar confusiones",
+			p.Period, strings.ToUpper(monthLabel(p.periodMonth)), year)
+	}
 	if p.Period == "" {
 		p.add(SevError, "sin_periodo", sheetStock, 0, 0, "No se pudo determinar el mes de control (ej. «AGOSTO 2026») en el Stock Maestro")
 	} else if start, _, err := periodBounds(p.Period); err == nil {

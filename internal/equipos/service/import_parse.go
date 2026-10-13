@@ -375,6 +375,54 @@ func parsePeriod(s string) (string, bool) {
 	return fmt.Sprintf("%s-%02d", m[2], monthNames[m[1]]), true
 }
 
+var monthOnlyRe = regexp.MustCompile(`^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|setiembre|septiembre|octubre|noviembre|diciembre)\.?$`)
+
+// parseMonthOnly «OCTUBRE» → 10 (celda con SOLO el mes, sin año).
+func parseMonthOnly(s string) (int, bool) {
+	m := monthOnlyRe.FindStringSubmatch(foldText(s))
+	if m == nil {
+		return 0, false
+	}
+	return monthNames[m[1]], true
+}
+
+var monthLabels = [...]string{"", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "setiembre", "octubre", "noviembre", "diciembre"}
+
+func monthLabel(m int) string {
+	if m < 1 || m > 12 {
+		return ""
+	}
+	return monthLabels[m]
+}
+
+// inferPeriodYear año de un libro cuyo mes de control no trae año: el año más frecuente entre las fechas del
+// libro (Control de Envíos y Retornos) que caen en ese mes; si no hay ninguna, el año en curso (Lima).
+func inferPeriodYear(month int, sheets ...[][]any) int {
+	count := map[int]int{}
+	for _, rows := range sheets {
+		for _, r := range rows {
+			for c := range r {
+				if t := cellTime(r, c); t.Date != nil {
+					y := t.Date.Year()
+					if y >= 2020 && y <= 2100 && int(t.Date.Month()) == month {
+						count[y]++
+					}
+				}
+			}
+		}
+	}
+	best, bestN := 0, 0
+	for y, n := range count {
+		if n > bestN || (n == bestN && y > best) {
+			best, bestN = y, n
+		}
+	}
+	if best == 0 {
+		return time.Now().In(limaLoc()).Year()
+	}
+	return best
+}
+
 // ── Productos ──────────────────────────────────────────────────────────────
 
 // inferKind tipo de producto por su nombre (se corrige luego en pantalla).

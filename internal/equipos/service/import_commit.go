@@ -145,6 +145,7 @@ func (s *Service) buildPreview(plan *importPlan) (*ImportPreview, error) {
 	pv.Counts.Orders, pv.Counts.Returns, pv.Counts.Movements = len(plan.Orders), len(plan.Returns), len(plan.Movements)
 
 	pv.Reconciliation, pv.ReconOK = plan.reconcile()
+	plan.explainReingresos(pv.Reconciliation)
 
 	// Hallazgos: errores primero, luego advertencias e información; se cuentan todos pero se listan los más relevantes.
 	for _, i := range plan.Issues {

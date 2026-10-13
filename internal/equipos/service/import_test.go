@@ -303,3 +303,61 @@ func TestParseHelpers(t *testing.T) {
 		t.Errorf("fecha: %+v", pt)
 	}
 }
+
+// El libro dice solo «OCTUBRE» (sin año): el año se toma de las fechas del libro, con un aviso, en vez de bloquear.
+func TestImportPreview_mesDeControlSinAnioSeInfiereDeLasFechas(t *testing.T) {
+	p := miniWorkbook(t)
+	for _, r := range p.Sheets[sheetStock] {
+		if len(r) > 2 && r[2] == "AGOSTO 2026" {
+			r[2] = "AGOSTO"
+		}
+	}
+	pv, err := New(setupEquiposDB(t)).ImportPreview(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pv.Period != "2026-08" {
+		t.Fatalf("período = %q, want 2026-08 (año inferido de los pedidos de agosto 2026)", pv.Period)
+	}
+	if pv.CodeCounts["sin_periodo"] != 0 || pv.CodeCounts["periodo_sin_anio"] != 1 {
+		t.Fatalf("debe avisar y no bloquear: %v", pv.CodeCounts)
+	}
+	if !pv.CanCommit {
+		t.Fatalf("debe poder importarse: %v", pv.BlockedBy)
+	}
+}
+
+func TestParseMonthOnly(t *testing.T) {
+	for in, want := range map[string]int{"OCTUBRE": 10, " Setiembre ": 9, "agosto.": 8} {
+		if got, ok := parseMonthOnly(in); !ok || got != want {
+			t.Errorf("parseMonthOnly(%q) = %d,%v want %d", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "AGOSTO 2026", "Ingresar stock al inicio del mes", "Mes de Control:"} {
+		if _, ok := parseMonthOnly(in); ok {
+			t.Errorf("parseMonthOnly(%q) no debería reconocerse como solo-mes", in)
+		}
+	}
+}
+
+// «H-Q300 2etiq50*30»: dos equipos sin separador (cantidad pegada al nombre) en el detalle de un retorno.
+func TestImportPreview_retornoConEquiposSinSeparadorYReingresoSinRecibir(t *testing.T) {
+	p := miniWorkbook(t)
+	// Retorno 1 en camino con dos equipos pegados; el Stock Maestro ya cuenta el reingreso a mano.
+	ret := p.Sheets[sheetReturns][2]
+	ret[4] = "print-a    2roll"
+	ret[8] = "En camino"
+	pv, err := New(setupEquiposDB(t)).ImportPreview(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pv.CodeCounts["retorno_producto"] != 0 {
+		t.Fatalf("debe reconocer ambos equipos: %v", pv.CodeCounts)
+	}
+	if pv.CodeCounts["reingreso_sin_recibir"] == 0 {
+		t.Fatalf("debe explicar que el Excel cuenta reingresos de un retorno no recibido: %v", pv.CodeCounts)
+	}
+	if pv.ReconOK {
+		t.Fatal("el Stock Maestro cuenta un reingreso que el sistema no puede respaldar: no debe conciliar")
+	}
+}
