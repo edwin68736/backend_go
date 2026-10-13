@@ -21,7 +21,8 @@ type Filter struct {
 	Q           string   // nombre o slug, parcial
 	OnlyPending bool     // solo tenants con algo por enviar (pending + error)
 	StaleOnly   bool     // solo tenants con un pendiente de + días (sin importar el rango)
-	Sort        string   // to_send (def), emitted, accepted, name, oldest, scanned
+	Sort        string   // to_send (def), emitted, accepted, sent, rejected, name, ruc, oldest, last_issue, scanned
+	Dir         string   // asc | desc; vacío = la natural de la columna
 	Page        int
 	PerPage     int
 }
@@ -231,7 +232,7 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 		}
 	}
 
-	sortRows(rows, f.Sort)
+	sortRows(rows, f.Sort, f.Dir)
 
 	total := len(rows)
 	start := (f.Page - 1) * f.PerPage
@@ -249,46 +250,105 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 	return Result{Items: items, Total: total, Page: f.Page, PerPage: f.PerPage, Totals: totals, OldestScan: oldestScan}, nil
 }
 
-func sortRows(rows []*Row, key string) {
-	less := map[string]func(a, b *Row) bool{
-		"emitted":  func(a, b *Row) bool { return a.Emitted > b.Emitted },
-		"accepted": func(a, b *Row) bool { return a.Accepted > b.Accepted },
-		"name":     func(a, b *Row) bool { return strings.ToLower(a.Name) < strings.ToLower(b.Name) },
-		"oldest": func(a, b *Row) bool {
-			switch {
-			case a.OldestOpenAt == nil:
-				return false
-			case b.OldestOpenAt == nil:
-				return true
-			}
-			return a.OldestOpenAt.Before(*b.OldestOpenAt)
-		},
-		"scanned": func(a, b *Row) bool {
-			switch {
-			case a.ScannedAt == nil:
-				return true
-			case b.ScannedAt == nil:
-				return false
-			}
-			return a.ScannedAt.Before(*b.ScannedAt)
-		},
+// Claves de orden aceptadas por Filter.Sort y su dirección por defecto. `desc` = de mayor a menor.
+var sortDefaultDesc = map[string]bool{
+	"to_send": true, "emitted": true, "accepted": true, "sent": true, "rejected": true,
+	"last_issue": true,
+	// Texto y fechas: "name"/"ruc" de A a Z; "oldest" el pendiente más viejo primero; "scanned" el
+	// verificado hace más tiempo primero.
+	"name": false, "ruc": false, "oldest": false, "scanned": false,
+}
+
+func cmpInt(a, b int) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
 	}
-	byToSend := func(a, b *Row) bool {
-		if a.ToSend != b.ToSend {
-			return a.ToSend > b.ToSend
+	return 0
+}
+
+// cmpTimePtr compara fechas opcionales de menor a mayor. nilFirst decide dónde cae "sin dato".
+func cmpTimePtr(a, b *time.Time, nilFirst bool) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		if nilFirst {
+			return -1
 		}
-		return a.OpenToSend > b.OpenToSend
+		return 1
+	case b == nil:
+		if nilFirst {
+			return 1
+		}
+		return -1
+	case a.Before(*b):
+		return -1
+	case b.Before(*a):
+		return 1
 	}
-	cmp := byToSend
-	if f, ok := less[key]; ok {
-		cmp = f
+	return 0
+}
+
+// sortRows ordena la tabla por `key` (to_send por defecto) en la dirección `dir` ("asc" | "desc"; vacío o
+// inválido = la natural de la columna, ver sortDefaultDesc). Los valores numéricos van de menor a mayor en
+// "asc". En las columnas de fecha un tenant sin dato (sin pendientes, sin comprobantes) queda siempre al
+// final, salvo "scanned", donde "nunca verificado" es lo más atrasado y va primero en su orden natural.
+func sortRows(rows []*Row, key, dir string) {
+	if _, ok := sortDefaultDesc[key]; !ok {
+		key = "to_send"
+	}
+	desc := sortDefaultDesc[key]
+	switch strings.ToLower(strings.TrimSpace(dir)) {
+	case "asc":
+		desc = false
+	case "desc":
+		desc = true
+	}
+	mul := 1
+	if desc {
+		mul = -1
+	}
+
+	// primary devuelve <0, 0, >0 con el orden ascendente natural de la columna.
+	primary := func(a, b *Row) int {
+		switch key {
+		case "emitted":
+			return mul * cmpInt(a.Emitted, b.Emitted)
+		case "accepted":
+			return mul * cmpInt(a.Accepted, b.Accepted)
+		case "sent":
+			return mul * cmpInt(a.Sent, b.Sent)
+		case "rejected":
+			return mul * cmpInt(a.Rejected, b.Rejected)
+		case "name":
+			return mul * strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
+		case "ruc":
+			return mul * strings.Compare(a.RUC, b.RUC)
+		case "oldest", "last_issue":
+			ta, tb := a.OldestOpenAt, b.OldestOpenAt
+			if key == "last_issue" {
+				ta, tb = a.LastIssueAt, b.LastIssueAt
+			}
+			// Sin dato siempre al final, sea cual sea la dirección.
+			if ta == nil || tb == nil {
+				return cmpTimePtr(ta, tb, false)
+			}
+			return mul * cmpTimePtr(ta, tb, false)
+		case "scanned":
+			return mul * cmpTimePtr(a.ScannedAt, b.ScannedAt, true)
+		default: // to_send
+			if c := cmpInt(a.ToSend, b.ToSend); c != 0 {
+				return mul * c
+			}
+			return mul * cmpInt(a.OpenToSend, b.OpenToSend)
+		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		if cmp(rows[i], rows[j]) {
-			return true
-		}
-		if cmp(rows[j], rows[i]) {
-			return false
+		if c := primary(rows[i], rows[j]); c != 0 {
+			return c < 0
 		}
 		return strings.ToLower(rows[i].Name) < strings.ToLower(rows[j].Name)
 	})

@@ -40,7 +40,8 @@ func validDay(s string) bool {
 
 // GET /api/superadmin/fiscal/tenant-summary
 // Query: from, to (YYYY-MM-DD, día de emisión), doc_type (coma o repetido: 01,03,07,08,09,31),
-// ruc, q, only_pending, sort (to_send|emitted|accepted|name|oldest|scanned), page, per_page.
+// ruc, q, only_pending, sort (to_send|emitted|accepted|sent|rejected|name|ruc|oldest|last_issue|scanned),
+// dir (asc|desc; vacío = el natural de la columna), page, per_page.
 func (h *FiscalSummaryHandler) ListAPI(c fiber.Ctx) error {
 	from, to := strings.TrimSpace(c.Query("from")), strings.TrimSpace(c.Query("to"))
 	if !validDay(from) || !validDay(to) {
@@ -78,7 +79,7 @@ func (h *FiscalSummaryHandler) ListAPI(c fiber.Ctx) error {
 	res, err := summary.Summarize(database.CentralDB, summary.Filter{
 		From: from, To: to, DocTypes: docTypes,
 		RUC: c.Query("ruc"), Q: c.Query("q"), OnlyPending: only, StaleOnly: stale,
-		Sort: c.Query("sort"), Page: page, PerPage: perPage,
+		Sort: c.Query("sort"), Dir: c.Query("dir"), Page: page, PerPage: perPage,
 	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "No se pudo leer el resumen fiscal"})
