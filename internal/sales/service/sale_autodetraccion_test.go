@@ -5,6 +5,7 @@ import (
 	"time"
 
 	detraccionsvc "tukifac/internal/detraccion"
+	"tukifac/internal/fiscal/salecontext"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/taxpayment"
@@ -142,4 +143,81 @@ func TestCreateDetraccionNormal_sigueIgualSinAutodetraccion(t *testing.T) {
 	if got := installmentSum(t, svc, sale.ID); got != 1920 {
 		t.Errorf("cuotas normales = %v, want 1920 (neto)", got)
 	}
+}
+
+// Con autodetracción el backend sigue validando todo lo de una detracción normal.
+func TestCreateAutodetraccion_siguenLasValidaciones(t *testing.T) {
+	setup := func(t *testing.T) (*SaleService, uint, uint) {
+		db := setup1004TestDB(t)
+		if err := db.AutoMigrate(&database.TenantSaleCreditInstallment{}); err != nil {
+			t.Fatal(err)
+		}
+		return NewSaleService(db), seedContactConRUC(t, db), seedSeries(t, db, "Factura", "01", "F001")
+	}
+
+	t.Run("bajo el mínimo de detracción no aplica y se rechaza", func(t *testing.T) {
+		svc, contactID, seriesID := setup(t)
+		in := autodetraccionInput(contactID, seriesID, true)
+		in.Items[0].UnitPrice = 500 // <= S/ 700
+		if _, err := svc.Create(in); err == nil {
+			t.Fatal("debe rechazar: la detracción no supera el mínimo")
+		}
+	})
+
+	t.Run("sin bien/servicio de detracción se rechaza", func(t *testing.T) {
+		svc, contactID, seriesID := setup(t)
+		in := autodetraccionInput(contactID, seriesID, true)
+		in.Detraccion.GoodCode = ""
+		if _, err := svc.Create(in); err == nil {
+			t.Fatal("debe exigir el bien o servicio")
+		}
+	})
+
+	t.Run("solo factura: boleta con detracción se rechaza", func(t *testing.T) {
+		svc, contactID, _ := setup(t)
+		in := autodetraccionInput(contactID, seedSeries(t, svc.db, "Boleta", "03", "B001"), true)
+		in.DocType = "03"
+		if _, err := svc.Create(in); err == nil {
+			t.Fatal("la detracción solo aplica a facturas")
+		}
+	})
+
+	t.Run("las cuotas deben sumar el total (no el neto)", func(t *testing.T) {
+		svc, contactID, seriesID := setup(t)
+		in := autodetraccionInput(contactID, seriesID, true)
+		in.CreditInstallments = []CreditInstallmentInput{ // suman el neto 1920, no el total 2000
+			{DueDate: in.CreditInstallments[0].DueDate, Amount: 960}, {DueDate: in.CreditInstallments[2].DueDate, Amount: 960},
+		}
+		if _, err := svc.Create(in); err == nil {
+			t.Fatal("con autodetracción las cuotas deben sumar el total 2000")
+		}
+	})
+
+	t.Run("al contado con autodetracción los pagos deben cubrir el total", func(t *testing.T) {
+		svc, contactID, seriesID := setup(t)
+		in := autodetraccionInput(contactID, seriesID, true)
+		in.PaymentConditionCode, in.CreditInstallments, in.DueDate = "cash", nil, nil
+		in.Payments = []PaymentInput{{Method: "cash", Amount: 1920}} // solo el neto
+		if _, err := svc.Create(in); err == nil {
+			t.Fatal("al contado con autodetracción se debe pagar el total, no solo el neto")
+		}
+		in.Payments = []PaymentInput{{Method: "cash", Amount: 2000}}
+		sale, err := svc.Create(in)
+		if err != nil {
+			t.Fatalf("al contado pagando el total debe guardar: %v", err)
+		}
+		if sale.Status != "paid" {
+			t.Errorf("status = %q, want paid", sale.Status)
+		}
+	})
+
+	t.Run("no se puede combinar con retención de IGV", func(t *testing.T) {
+		svc, contactID, seriesID := setup(t)
+		in := autodetraccionInput(contactID, seriesID, true)
+		yes := true
+		in.FiscalContext = &salecontext.FiscalContextInput{HasIgvRetention: &yes}
+		if _, err := svc.Create(in); err == nil {
+			t.Fatal("no se puede combinar detracción con retención de IGV")
+		}
+	})
 }
