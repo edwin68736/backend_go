@@ -346,12 +346,21 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 
 	var creditRows []database.TenantSaleCreditInstallment
 	if db.Where("sale_id = ?", sale.ID).Order("installment_no ASC").Find(&creditRows).Error == nil && len(creditRows) > 0 {
+		// Autodetracción: el comprobante impreso muestra las cuotas FISCALES (netas), las mismas que viajan a
+		// SUNAT, aunque internamente se cobren por el total. Sin autodetracción no cambia nada.
+		printAmounts := make([]float64, len(creditRows))
+		for i, row := range creditRows {
+			printAmounts[i] = row.Amount
+		}
+		if selfDet := detraccionsvc.NewService(db).SelfDetractionAmount(sale.ID); selfDet > 0 {
+			printAmounts = detraccionsvc.NetInstallmentAmounts(printAmounts, selfDet)
+		}
 		pd.CreditInstallments = make([]PrintCreditInstallment, len(creditRows))
 		for i, row := range creditRows {
 			pd.CreditInstallments[i] = PrintCreditInstallment{
 				InstallmentNo: row.InstallmentNo,
 				DueDate:       row.DueDate.Format("02/01/2006"),
-				Amount:        row.Amount,
+				Amount:        printAmounts[i],
 				Currency:      row.Currency,
 				Status:        row.Status,
 			}

@@ -557,7 +557,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 		if len(payments) > 0 || input.DueDate != nil {
 			var credit bool
-			payments, credit, err = PrepareDetractionSalePaymentsAllowCredit(payments, total, eval)
+			if input.Detraccion != nil && input.Detraccion.SelfDetraction {
+				payments, credit, err = PrepareSelfDetractionSalePayments(payments, total, eval)
+			} else {
+				payments, credit, err = PrepareDetractionSalePaymentsAllowCredit(payments, total, eval)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -601,7 +605,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 	salePayable := total
 	if salecurrency.IsDetraccion(opCode) && total > 0 {
-		if eval, derr := s.evaluateDetractionForCreate(input, &series, total, saleItems, contact); derr == nil && eval.Applicable {
+		// Autodetracción: el cliente paga el TOTAL (neto + detracción); si no, solo el neto.
+		selfDetraction := input.Detraccion != nil && input.Detraccion.SelfDetraction
+		if eval, derr := s.evaluateDetractionForCreate(input, &series, total, saleItems, contact); derr == nil && eval.Applicable && !selfDetraction {
 			salePayable = eval.NetPayablePEN
 		}
 	}

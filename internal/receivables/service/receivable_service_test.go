@@ -194,3 +194,27 @@ func detractionEval1180(t *testing.T) sunatdet.CalcResult {
 	}
 	return res
 }
+
+// Autodetracción: el cliente paga el TOTAL al proveedor; no hay SPOT pendiente de confirmar y la BN no se confirma.
+func TestSaleBalance_autodetraccionCobraElTotalSinSpotPendiente(t *testing.T) {
+	sale := database.TenantSale{Total: 2000}
+	det := &database.TenantSaleDetraccion{
+		InvoiceTotalPen: 2000, NetPayablePen: 1760, DetractionAmountPen: 240, BnConfirmationStatus: "self_pending",
+	}
+	target, paid, due, spotAmount, spotPending, status := SaleBalance(sale, det, nil)
+	if target != 2000 || paid != 0 || due != 2000 {
+		t.Errorf("objetivo/pagado/saldo = %v/%v/%v, want 2000/0/2000", target, paid, due)
+	}
+	if spotAmount != 0 || spotPending != 0 {
+		t.Errorf("sin SPOT: amount %v pending %v", spotAmount, spotPending)
+	}
+	if status != "self_pending" {
+		t.Errorf("estado = %q", status)
+	}
+	// Detracción normal: sin cambios.
+	norm := &database.TenantSaleDetraccion{InvoiceTotalPen: 2000, NetPayablePen: 1760, DetractionAmountPen: 240, BnConfirmationStatus: "pending"}
+	target, _, due, spotAmount, spotPending, _ = SaleBalance(sale, norm, nil)
+	if target != 1760 || due != 1760 || spotAmount != 240 || spotPending != 240 {
+		t.Errorf("normal: target %v due %v spot %v/%v, want 1760/1760/240/240", target, due, spotAmount, spotPending)
+	}
+}

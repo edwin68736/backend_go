@@ -9,6 +9,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
 	sunatdet "tukifac/pkg/sunat/detraccion"
+	"tukifac/pkg/taxpayment"
 
 	"gorm.io/gorm"
 )
@@ -47,6 +48,11 @@ type SaleInput struct {
 	// Detalle del viaje (obligatorio en 1004) — ver comentario en
 	// database.TenantSaleDetraccion.TripDetail. Solo referencia interna, no viaja a SUNAT.
 	TripDetail string `json:"trip_detail,omitempty"`
+	// SelfDetraction: autodetracción — el cliente paga el TOTAL al proveedor y este deposita la detracción en su
+	// propia cuenta BN. Solo cambia el cobro interno (cuotas y saldo por el total, sin pago "Detracción BN"); el
+	// XML, el PDF fiscal y el facturador reciben la detracción y las cuotas netas de siempre. Se guarda como
+	// bn_confirmation_status = taxpayment.BnStatusSelfPending (sin columna nueva ni migración).
+	SelfDetraction bool `json:"self_detraction,omitempty"`
 }
 
 // PersistInput datos completos para guardar detracción.
@@ -165,6 +171,9 @@ func (s *Service) Persist(in PersistInput) (*database.TenantSaleDetraccion, erro
 	}
 	if in.Detraccion != nil {
 		row.PayConstancyNumber = strings.TrimSpace(in.Detraccion.PayConstancyNumber)
+		if in.Detraccion.SelfDetraction {
+			row.BnConfirmationStatus = taxpayment.BnStatusSelfPending
+		}
 	}
 	if op == sunatdet.OpDetraccionTransporte && in.Detraccion != nil {
 		row.MtcRegistro = strings.TrimSpace(in.Detraccion.MtcRegistro)
@@ -193,6 +202,17 @@ func (s *Service) Persist(in PersistInput) (*database.TenantSaleDetraccion, erro
 		return nil, err
 	}
 	return &row, nil
+}
+
+// SelfDetractionAmount devuelve el monto de detracción de una venta con AUTODETRACCIÓN, o 0 si la venta no la
+// tiene (sin detracción o detracción normal). Lo usan el payload a SUNAT y el PDF para presentar las cuotas
+// FISCALES (netas) aunque internamente se cobren por el total.
+func (s *Service) SelfDetractionAmount(saleID uint) float64 {
+	row, err := s.LoadBySaleID(saleID)
+	if err != nil || row == nil || !taxpayment.IsSelfDetractionStatus(row.BnConfirmationStatus) {
+		return 0
+	}
+	return row.DetractionAmountPen
 }
 
 // LoadBySaleID carga detracción de una venta.

@@ -351,6 +351,9 @@ func (s *ReceivableService) ConfirmBN(saleID uint, in ConfirmBNInput) (*database
 	if err := s.db.First(&det, "sale_id = ?", saleID).Error; err != nil {
 		return nil, errors.New("la venta no tiene detracción registrada")
 	}
+	if taxpayment.IsSelfDetractionStatus(det.BnConfirmationStatus) {
+		return nil, errors.New("esta venta es de autodetracción: el cliente no deposita en el BN, por lo que no hay acreditación que confirmar")
+	}
 	if det.BnConfirmationStatus == BnStatusConfirmed {
 		return nil, errors.New("la detracción BN ya fue confirmada")
 	}

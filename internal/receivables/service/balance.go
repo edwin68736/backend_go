@@ -31,7 +31,15 @@ func SaleBalance(sale database.TenantSale, det *database.TenantSaleDetraccion, p
 	directTarget, directPaid, directDue, spotAmount, spotPending float64,
 	bnStatus string,
 ) {
-	if det != nil {
+	if det != nil && taxpayment.IsSelfDetractionStatus(det.BnConfirmationStatus) {
+		// Autodetracción: el cliente paga el TOTAL de la factura al proveedor (que deposita la detracción en
+		// su propia cuenta BN), así que no hay SPOT que el cliente deba acreditar ni confirmar en el BN.
+		directTarget = det.InvoiceTotalPen
+		if directTarget <= 0 {
+			directTarget = sale.Total
+		}
+		bnStatus = taxpayment.BnStatusSelfPending
+	} else if det != nil {
 		directTarget = det.NetPayablePen
 		spotAmount = det.DetractionAmountPen
 		bnStatus = det.BnConfirmationStatus
