@@ -361,3 +361,34 @@ func TestImportPreview_retornoConEquiposSinSeparadorYReingresoSinRecibir(t *test
 		t.Fatal("el Stock Maestro cuenta un reingreso que el sistema no puede respaldar: no debe conciliar")
 	}
 }
+
+// Regresión: sin la fila de subencabezado (Independiente / Promo TK) tras el encabezado del Stock Maestro, el
+// primer producto del libro se perdía con su stock inicial y la conciliación no lo notaba.
+func TestImportPreview_stockMaestroSinSubencabezadoNoPierdeElPrimerProducto(t *testing.T) {
+	p := miniWorkbook(t)
+	var kept [][]any
+	for _, r := range p.Sheets[sheetStock] {
+		if len(r) > 3 && r[3] == "Independiente" && r[0] == nil { // la fila de subencabezado
+			continue
+		}
+		kept = append(kept, r)
+	}
+	if len(kept) != len(p.Sheets[sheetStock])-1 {
+		t.Fatal("el libro de prueba debía tener una fila de subencabezado")
+	}
+	p.Sheets[sheetStock] = kept
+
+	pv, err := New(setupEquiposDB(t)).ImportPreview(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pv.Reconciliation) != 2 {
+		t.Fatalf("deben conciliarse los 2 productos del Stock Maestro, hubo %d: %+v", len(pv.Reconciliation), pv.Reconciliation)
+	}
+	if pv.Reconciliation[0].Code != "PRINT-A" || pv.Reconciliation[0].Excel.Opening != 20 {
+		t.Fatalf("el primer producto debe leerse con su stock inicial: %+v", pv.Reconciliation[0])
+	}
+	if !pv.ReconOK {
+		t.Fatalf("debe conciliar: %+v", pv.Reconciliation)
+	}
+}

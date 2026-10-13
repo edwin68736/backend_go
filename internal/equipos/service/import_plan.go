@@ -362,7 +362,14 @@ func (p *importPlan) parseStock(rows [][]any) {
 		p.add(SevError, "sin_stock", sheetStock, 0, 0, "No se encontró la tabla del Stock Maestro: no se puede conciliar el stock")
 		return
 	}
-	for i := header + 2; i < len(rows); i++ {
+	// Algunos libros traen una fila de subencabezado (Independiente / Promo TK) entre el encabezado y los
+	// productos; otros no. Se salta solo si existe: antes se saltaba siempre y el primer producto del libro
+	// (con su stock inicial) quedaba fuera de la importación sin ningún aviso.
+	start := header + 1
+	for start < len(rows) && start <= header+2 && !onlyDigits(cellStr(rows[start], 0)) && collapse(cellStr(rows[start], 1)) == "" {
+		start++
+	}
+	for i := start; i < len(rows); i++ {
 		r := rows[i]
 		name := collapse(cellStr(r, 1))
 		if name == "" || !onlyDigits(cellStr(r, 0)) {
