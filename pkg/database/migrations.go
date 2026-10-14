@@ -1114,7 +1114,10 @@ type TenantEcommerceSettings struct {
 	CategoryStyle string `gorm:"size:20;default:'circles'" json:"category_style"`
 	// Muestra "Agotado" en la tienda pública cuando manage_stock y stock_total<=0. Si es false, el
 	// stock (incluido stock_by_branch) no se envía en la respuesta pública de productos.
-	ShowStock bool      `gorm:"column:show_stock;default:true" json:"show_stock"`
+	ShowStock bool `gorm:"column:show_stock;default:true" json:"show_stock"`
+	// HeroStyle: 'split' (texto + botón a la izquierda, imagen a la derecha) | 'image' (solo la
+	// imagen completa a todo el ancho, sin textos, botón ni degradado encima).
+	HeroStyle string    `gorm:"column:hero_style;size:20;default:'split'" json:"hero_style"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

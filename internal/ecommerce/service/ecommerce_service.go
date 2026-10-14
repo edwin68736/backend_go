@@ -65,6 +65,7 @@ type UpdateSettingsInput struct {
 	CardStyle      *string
 	CategoryStyle  *string
 	ShowStock      *bool
+	HeroStyle      *string
 }
 
 func (s *EcommerceService) UpdateSettings(input UpdateSettingsInput) (*database.TenantEcommerceSettings, error) {
@@ -111,6 +112,13 @@ func (s *EcommerceService) UpdateSettings(input UpdateSettingsInput) (*database.
 	}
 	if input.ShowStock != nil {
 		upd["show_stock"] = *input.ShowStock
+	}
+	if input.HeroStyle != nil {
+		v := strings.TrimSpace(*input.HeroStyle)
+		if v != "split" && v != "image" {
+			return nil, fmt.Errorf("hero_style inválido: %q", v)
+		}
+		upd["hero_style"] = v
 	}
 	if len(upd) > 0 {
 		if err := s.db.Model(&database.TenantEcommerceSettings{}).Where("id = ?", 1).Updates(upd).Error; err != nil {
