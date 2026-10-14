@@ -12,7 +12,7 @@ Guía operativa para producción multi-tenant (database-per-tenant). Basada en e
 | Registry central | Tabla `tenant_schema_versions` en BD `tukifac_saas` |
 | Historial por tenant | Tabla `tenant_migration_history` |
 | Deploy HTTP | **No** migra tenants; solo pool de conexiones |
-| Deploy CI/VPS | `migrate-central` antes del restart; fleet = cron aparte |
+| Deploy CI/VPS | `migrate-central` + `migrate-fleet` (todos los tenants) antes del restart; el cron queda de red de seguridad y para backfills |
 
 **No confundir:** `CodeTargetVersion()` / `target_version` aplican al **schema DDL** (`tenantmigrations`). Los **backfills** tienen su propio registry y versión independiente.
 
@@ -21,8 +21,10 @@ Guía operativa para producción multi-tenant (database-per-tenant). Basada en e
 ## Arquitectura
 
 ```
-Deploy (CI o deploy.sh)
-  └─ ./tukifac-api migrate-central   → BD central (sin migrar en entrypoint del contenedor)
+Deploy (CI o deploy.sh), con la imagen nueva y ANTES del restart
+  ├─ ./tukifac-api migrate-central   → BD central (sin migrar en entrypoint del contenedor)
+  └─ ./tukifac-api migrate-fleet --limit=100000 --active-only=false
+                                     → DDL de todos los tenants (bajo el mismo flock del cron)
 
 Cron cada 5 min (migrate-fleet.sh → migrate-fleet-cron)
   ├─ migrate-bump-target            → target_version = tenantmigrations.MaxVersion() en central
@@ -153,23 +155,32 @@ Orden recomendado tras desplegar el binario con Migration v2:
 
 ```bash
 cd /opt/tukifac
-bash deploy/scripts/deploy.sh          # pull → migrate-central → restart → health
+bash deploy/scripts/deploy.sh          # pull → migrate-central → migrate-fleet → restart → health
 bash deploy/scripts/migrate-init.sh    # solo la primera vez
 bash deploy/scripts/migrate-fleet.sh   # manual o vía cron
 ```
 
-El script `deploy.sh` actualizado:
+El script `deploy.sh`:
 
 1. `docker compose pull`
 2. `docker compose run --rm backend-go ./tukifac-api migrate-central` (**antes** del restart, imagen nueva)
-3. `docker compose up -d --force-recreate backend-go`
-4. Health check
+3. `flock -w 900 /tmp/tukifac-migrate-fleet.lock docker compose run --rm backend-go ./tukifac-api migrate-fleet --limit=100000 --workers=8 --active-only=false` — todos los tenants, **antes** del restart. Si falla, aborta sin reiniciar (`ALLOW_FLEET_FAILURES=1` para desplegar igual).
+4. `docker compose up -d --force-recreate backend-go`
+5. Health check
 
-**No** ejecuta `migrate-fleet` en el deploy (puede tardar horas con miles de tenants).
+**Por qué el fleet va en el deploy:** antes se dejaba al cron (100 tenants cada ~10 min). Mientras tanto el código nuevo ya corría contra tenants sin la columna nueva, con `Unknown column` y sin poder vender: v160 tardó 1 h en llegar a 657 tenants (08-oct-2026, 01:20→02:20). Con ADD COLUMN el fleet completo tarda minutos, y en ese tiempo el contenedor viejo sigue atendiendo.
 
 ### CI/CD (GitHub Actions)
 
-El workflow `.github/workflows/deploy-production.yml`: `pull` → `migrate-central` → `restart` → health. El entrypoint del contenedor **no** migra.
+El workflow `.github/workflows/deploy-production.yml` hace lo mismo: `pull` → `migrate-central` → `migrate-fleet` → `restart` → health. Tiene el input `allow_fleet_failures` y `command_timeout: 30m`. El entrypoint del contenedor **no** migra.
+
+### Regla: migraciones de tenant solo aditivas
+
+Durante el deploy, el binario **viejo** atiende tenants que ya tienen el esquema **nuevo**. Por eso una migración de tenant debe ser compatible con el código anterior:
+
+- Solo agregar tablas, columnas o índices. Toda columna nueva debe ser `NULL` o tener `DEFAULT`, porque el código viejo no la incluye en sus INSERT.
+- No renombrar ni eliminar columnas, ni cambiar su tipo, en el mismo deploy que el código que deja de usarlas. Primero se despliega el código que ya no las usa y, en un deploy posterior, la migración que las quita.
+- Índices sobre tablas grandes (`tenant_sales`, `tenant_sale_items`, …): revisar que el ALTER no bloquee escrituras.
 
 ---
 
@@ -314,7 +325,7 @@ Throughput orientativo: ~2000–4000 tenants/hora (depende de DDL y tamaño de B
 | `FAILED: (registry)` en logs antiguos | Cron buscaba backfill = schema target (ej. V43 sin backfill) | Actualizar binario con fix; cron usa backfills registrados |
 | `FAILED: <slug>` | Error real en tenant | Panel Fleet → Retry; revisar `last_error` |
 | Exit 0 sin output | `flock` — otra instancia del script activa | Normal |
-| Target bajo tras deploy | Deploy solo corre `migrate-central` | Esperar cron o ejecutar `migrate-bump-target` + `migrate-fleet` manual |
+| Target bajo tras deploy | Deploy con `SKIP_MIGRATE=1`, o `migrate-fleet` falló con `ALLOW_FLEET_FAILURES=1` | Esperar cron o ejecutar `migrate-bump-target` + `migrate-fleet` manual |
 
 ---
 

@@ -14,7 +14,7 @@ Archivos de despliegue en el VPS (`/opt/tukifac/`):
 ```bash
 cd /opt/tukifac
 
-# Deploy completo (migrate-central → restart → health; sin migrate en entrypoint)
+# Deploy completo (migrate-central → migrate-fleet → restart → health; sin migrate en entrypoint)
 bash deploy/scripts/deploy.sh
 
 # Primera vez con Migration v2 (baseline V30 + target V31)
@@ -32,9 +32,9 @@ bash deploy/scripts/rollback.sh
 
 ## Migraciones SaaS (importante)
 
-**El deploy ya no migra todos los tenants.** Solo BD central.
+**El deploy migra la BD central y el esquema de todos los tenants ANTES del restart**, con la imagen nueva. Así el código nuevo nunca corre contra un tenant sin migrar.
 
-Los tenants se migran en background con `migrate-fleet-cron` (cron recomendado).
+El cron `migrate-fleet-cron` sigue activo: cubre tenants nuevos o fallidos y corre los backfills.
 
 - **Schema DDL:** `tenantmigrations` registry → `target_version` = `MaxVersion()` del binario.
 - **Backfills datos:** registry aparte (`tenantbackfills`, hoy V31/V32). El cron itera solo backfills registrados, **no** el schema target.
