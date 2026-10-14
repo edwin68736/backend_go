@@ -9,6 +9,7 @@ import (
 
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/productbranch"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
 
@@ -44,6 +45,9 @@ type BulkImportItem struct {
 	CatalogType        string   `json:"type"` // product | service (solo catálogo tenant)
 	// ExpiryDate: nil = no cambiar vencimiento en update; "" = sin vencimiento; YYYY-MM-DD = con vencimiento.
 	ExpiryDate *string `json:"expiry_date"`
+	// BranchNames: columna "sucursales" — nombres separados por coma. nil/vacío = no cambiar (un
+	// producto nuevo queda en todas); "todas" = todas las sucursales. Ver pkg/productbranch.
+	BranchNames *string `json:"branch_names"`
 }
 
 type BulkImportFail struct {
@@ -117,6 +121,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 	result := &BulkImportResult{Failed: make([]BulkImportFail, 0)}
 	catCache := make(map[string]uint)
 	brandCache := make(map[string]uint)
+	var branchNameCache map[string]uint // nombre normalizado → id; se carga al primer uso
 	codesProcessedInBatch := make(map[string]struct{})
 
 	for i := 0; i < len(items); i++ {
@@ -285,6 +290,14 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			input.ImageURL = existing.ImageURL
 		}
 
+		branchIDs, setBranches, branchErr := s.resolveImportBranches(item.BranchNames, &branchNameCache)
+		if branchErr != nil {
+			result.Failed = append(result.Failed, BulkImportFail{
+				Row: item.RowNumber, Name: item.Name, Error: branchErr.Error(),
+			})
+			continue
+		}
+
 		var productID uint
 		isNewProduct := !hasExisting
 		err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -306,6 +319,13 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 					return err
 				}
 				productID = p.ID
+			}
+			// Antes del stock: si la sucursal del import no está entre las indicadas, la entrada de
+			// stock la agrega (misma regla que compras/transferencias).
+			if setBranches {
+				if err := productbranch.Set(tx, productID, branchIDs); err != nil {
+					return err
+				}
 			}
 			if item.InitialStock > 0 && manageStock && opts.BranchID > 0 {
 				if isNewProduct {
@@ -466,4 +486,42 @@ func generateImportEAN13(usedCodes map[string]struct{}, _ map[string]int) string
 		return code
 	}
 	return fmt.Sprintf("%012d", time.Now().UnixNano()%1_000_000_000_000)
+}
+
+// resolveImportBranches interpreta la columna "sucursales" del import. Devuelve set=false cuando
+// no hay que tocar la asignación (columna ausente o vacía); ids vacío con set=true = "todas".
+func (s *ProductService) resolveImportBranches(raw *string, cache *map[string]uint) (ids []uint, set bool, err error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil, false, nil
+	}
+	val := strings.TrimSpace(*raw)
+	if norm := strings.ToLower(val); norm == "todas" || norm == "todas las sucursales" || norm == "*" {
+		return []uint{}, true, nil
+	}
+	if *cache == nil {
+		var branches []database.TenantBranch
+		if err := s.db.Select("id", "name").Find(&branches).Error; err != nil {
+			return nil, false, err
+		}
+		m := make(map[string]uint, len(branches))
+		for _, b := range branches {
+			m[strings.ToLower(strings.TrimSpace(b.Name))] = b.ID
+		}
+		*cache = m
+	}
+	for _, part := range strings.Split(val, ",") {
+		name := strings.ToLower(strings.TrimSpace(part))
+		if name == "" {
+			continue
+		}
+		id, ok := (*cache)[name]
+		if !ok {
+			return nil, false, fmt.Errorf("sucursal «%s» no existe", strings.TrimSpace(part))
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, false, nil
+	}
+	return ids, true, nil
 }

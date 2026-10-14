@@ -63,6 +63,11 @@ func RegisterRoutes(api fiber.Router) {
 		middleware.RequirePermission("products.edit"),
 		h.BulkUpdateCatalogAPI,
 	)
+	api.Patch("/products/bulk-branches",
+		middleware.RequireModule("products"),
+		middleware.RequirePermission("products.edit"),
+		h.BulkBranchesAPI,
+	)
 	api.Patch("/products/bulk-update-prices",
 		middleware.RequireModule("products"),
 		middleware.RequirePermission("products.edit"),

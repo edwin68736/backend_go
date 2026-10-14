@@ -10,6 +10,7 @@ import (
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/modifierkind"
 	"tukifac/pkg/money"
+	"tukifac/pkg/productbranch"
 	"tukifac/pkg/saleunit"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
@@ -168,7 +169,14 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 			// cada local, no de dónde hay stock físico. branch_id vacío/0 sigue significando
 			// "disponible en todas las sucursales" (comercio general que no asigna productos
 			// por sucursal).
-			q = q.Where(p+"branch_id IS NULL OR "+p+"branch_id = 0 OR "+p+"branch_id = ?", bid)
+			// Con asignación explícita (tenant_product_branches) manda ella; sin asignación, el
+			// branch_id único de siempre.
+			legacy := `(` + p + `branch_id IS NULL OR ` + p + `branch_id = 0 OR ` + p + `branch_id = ?)`
+			if productbranch.Ready(s.db) {
+				q = q.Where(productbranch.ListFilterSQL("tenant_products.id", legacy), bid, bid)
+			} else {
+				q = q.Where(legacy, bid)
+			}
 		} else {
 			// Fuera de la carta (Movimientos, Kardex, Transferencias, POS de venta general):
 			// NO se exige branch_id propio — importa si el producto gestiona stock o tiene
@@ -180,13 +188,20 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 			// Productos con variantes: el stock vive en tenant_product_presentation_stocks, no en
 			// tenant_product_stocks — sin este OR, un producto con variantes nunca tiene fila en
 			// la tabla vieja y quedaría invisible en cualquier listado filtrado por sucursal.
-			q = q.Where(`(`+p+`manage_stock = ? OR EXISTS (
+			// Asignación explícita por sucursal (tenant_product_branches, ver pkg/productbranch):
+			// si el producto la tiene, manda ella (controle stock o no); si no, la regla anterior.
+			legacy := `(` + p + `manage_stock = ? OR EXISTS (
 				SELECT 1 FROM tenant_product_stocks s WHERE s.product_id = tenant_products.id AND s.branch_id = ?
 			) OR EXISTS (
 				SELECT 1 FROM tenant_product_presentation_stocks ps
 				JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL
 				WHERE pr.product_id = tenant_products.id AND ps.branch_id = ?
-			))`, false, bid, bid)
+			))`
+			if productbranch.Ready(s.db) {
+				q = q.Where(productbranch.ListFilterSQL("tenant_products.id", legacy), bid, false, bid, bid)
+			} else {
+				q = q.Where(legacy, false, bid, bid)
+			}
 		}
 	}
 	if params.StockLessThan != nil {

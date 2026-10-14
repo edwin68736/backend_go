@@ -16,6 +16,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/imageprocess"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/productbranch"
 	"tukifac/pkg/saas"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
@@ -206,12 +207,17 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		} `json:"presentations"`
 		ComboGroups  []comboGroupBody `json:"combo_groups"`
 		InitialStock float64          `json:"initial_stock"`
+		// BranchIDs: sucursales donde se vende. Vacío = todas (ver pkg/productbranch).
+		BranchIDs []uint `json:"branch_ids"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
 	if body.Name == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "El nombre del producto es requerido"})
+	}
+	if err := productbranch.ValidateBranchIDs(db(c), body.BranchIDs); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	// Cuota de productos del plan (los servicios no cuentan; ver CheckCreateQuota).
 	if body.Type != "service" && middleware.EnforceCreateQuota(c, db(c), saas.QuotaProducts) {
@@ -299,6 +305,12 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	p, presResults, err := service.NewProductService(db(c)).Create(input)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if len(body.BranchIDs) > 0 {
+		if err := productbranch.Set(db(c), p.ID, body.BranchIDs); err != nil {
+			_ = service.NewProductService(db(c)).Delete(p.ID)
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	if body.IsRestaurant && berr == nil && branchID > 0 {
 		inv := invsvc.NewInventoryService(db(c))
@@ -404,9 +416,16 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		} `json:"presentations"`
 		// nil = no tocar el combo; [] = deja de ser combo.
 		ComboGroups *[]comboGroupBody `json:"combo_groups"`
+		// nil = no tocar las sucursales; [] = disponible en todas (ver pkg/productbranch).
+		BranchIDs *[]uint `json:"branch_ids"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
+	}
+	if body.BranchIDs != nil {
+		if err := productbranch.ValidateBranchIDs(db(c), *body.BranchIDs); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	svc := service.NewProductService(db(c))
 	existing, err := svc.GetByID(uint(id))
@@ -495,6 +514,11 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	presResults, err := svc.Update(uint(id), input)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if body.BranchIDs != nil {
+		if err := productbranch.Set(db(c), uint(id), *body.BranchIDs); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	branchIDForStock, branchErr := branch.ResolveWriteBranchID(c, 0)
 	if body.IsRestaurant || existing.IsRestaurant {
@@ -699,11 +723,18 @@ func (h *ProductHandler) GetAPI(c fiber.Ctx) error {
 	modIds := svc.GetProductModifierGroupIDs(p.ID)
 	presentations, _ := svc.ListProductPresentations(p.ID)
 	comboGroups, _ := svc.ListComboGroups(p.ID)
+	branchIDs, _ := productbranch.BranchIDs(db(c), []uint{p.ID})
+	assigned := branchIDs[p.ID]
+	if assigned == nil {
+		assigned = []uint{}
+	}
 	resp := fiber.Map{
 		"data":               p,
 		"modifier_group_ids": modIds,
 		"presentations":      presentations,
 		"combo_groups":       comboGroups,
+		// [] = disponible en todas las sucursales.
+		"branch_ids": assigned,
 	}
 	if p.HasCombo {
 		// Referencia para mostrar el ahorro frente al precio fijo del combo.

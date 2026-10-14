@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/productbranch"
 
 	"gorm.io/gorm"
 )
@@ -187,6 +188,15 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	}
 	if err := tx.Create(&movement).Error; err != nil {
 		return err
+	}
+
+	// Entra stock a una sucursal donde el producto no está asignado (y sí lo está a otras):
+	// se asigna, si no ese stock quedaría invisible en la sucursal que lo recibió. Un producto
+	// sin asignación (= todas) no se toca. Ver pkg/productbranch.
+	if input.Type == "in" || input.Type == "adjustment_in" || (input.Type == "adjustment" && newBalance > 0) {
+		if err := productbranch.AssignIfRestricted(tx, input.ProductID, input.BranchID); err != nil {
+			return err
+		}
 	}
 
 	if byPresentation {

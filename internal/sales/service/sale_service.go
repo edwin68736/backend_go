@@ -22,6 +22,7 @@ import (
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/money"
 	"tukifac/pkg/paymentcondition"
+	"tukifac/pkg/productbranch"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/salescope"
@@ -231,6 +232,20 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		return nil, err
 	} else if existing != nil {
 		return existing, ErrIdempotentReplay
+	}
+
+	// Productos asignados a sucursales (tenant_product_branches): no se venden fuera de ellas.
+	// Sin asignación = todas, así que lo existente no cambia. Al emitir desde una NV ya se validó
+	// al registrar la NV.
+	if input.IssuedFromNotaSaleID == nil || *input.IssuedFromNotaSaleID == 0 {
+		for _, item := range input.Items {
+			if item.ProductID == nil {
+				continue
+			}
+			if err := productbranch.EnsureAvailable(s.db, *item.ProductID, input.BranchID, item.Description); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Combos/promociones: fija el precio del grupo y añade las salidas de almacén de sus
