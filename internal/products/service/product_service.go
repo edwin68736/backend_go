@@ -1246,7 +1246,9 @@ func (s *ProductService) syncPresentations(productID uint, inputs []ProductPrese
 					name = e.Name
 				}
 			}
-			return nil, fmt.Errorf("no se puede quitar la presentación «%s»: todavía tiene %.0f en stock. Ajuste su stock a 0 antes de quitarla",
+			// %g y no %.0f: con unidades fraccionarias (2.5 kg) %.0f mostraba "2" y el mensaje no
+			// cuadraba con lo que el tenant ve en Stock.
+			return nil, fmt.Errorf("no se puede quitar la presentación «%s»: todavía tiene %g en stock. Ajuste su stock a 0 (Inventario → Ajustar stock) o transfiéralo antes de quitarla",
 				name, withStock[0].Qty)
 		}
 	}
