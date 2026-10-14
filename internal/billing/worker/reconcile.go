@@ -19,11 +19,13 @@ type reconcileSaleRow struct {
 
 // ReconcileTenantPending sincroniza ventas stale contra facturador SSOT (fallback webhook).
 func ReconcileTenantPending(tenant database.Tenant) (synced int) {
-	db, err := database.GetTenantDB(tenant.DBName)
+	// Background: este barrido corre cada 7 min sobre todos los tenants activos; por el LRU de 200 pools
+	// abría y desalojaba ~600 pools por pasada, expulsando a los tenants que sí están operando.
+	db, release, err := database.GetTenantDBBackground(tenant.DBName)
 	if err != nil {
 		return 0
 	}
-	defer database.ReleaseTenantDB(tenant.DBName)
+	defer release()
 
 	cutoff := time.Now().Add(-reconcileMinAge)
 	var rows []reconcileSaleRow

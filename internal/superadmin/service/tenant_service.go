@@ -692,13 +692,13 @@ func (s *TenantService) CleanupAbandonedQuickSalesFleet() (cleaned int64, failed
 	var tenants []database.Tenant
 	s.db.Where("status = ?", "active").Find(&tenants)
 	for _, t := range tenants {
-		tdb, err := database.GetTenantDB(t.DBName)
+		tdb, release, err := database.GetTenantDBBackground(t.DBName)
 		if err != nil {
 			failed = append(failed, t.Slug)
 			continue
 		}
 		n, err := restaurantsvc.New(tdb).CleanupAbandonedQuickSales()
-		database.ReleaseTenantDB(t.DBName)
+		release()
 		if err != nil {
 			failed = append(failed, t.Slug)
 			continue
