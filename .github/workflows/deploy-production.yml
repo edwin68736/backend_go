@@ -116,7 +116,7 @@ jobs:
               echo "Running migrate-fleet (all tenants, before restart)..."
               if ! flock -w 900 /tmp/tukifac-migrate-fleet.lock \
                 docker compose -f docker-compose.production.yml run --rm --no-deps backend-go \
-                ./tukifac-api migrate-fleet --limit=100000 --workers=8 --active-only=false; then
+                ./tukifac-api migrate-fleet --limit=100000 --workers=8 --active-only=false --skip-drift-scan; then
                 if [ "${{ inputs.allow_fleet_failures }}" = "true" ]; then
                   echo "migrate-fleet con fallos — allow_fleet_failures=true, se continúa"
                 else

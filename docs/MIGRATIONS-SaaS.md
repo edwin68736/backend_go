@@ -164,7 +164,7 @@ El script `deploy.sh`:
 
 1. `docker compose pull`
 2. `docker compose run --rm backend-go ./tukifac-api migrate-central` (**antes** del restart, imagen nueva)
-3. `flock -w 900 /tmp/tukifac-migrate-fleet.lock docker compose run --rm backend-go ./tukifac-api migrate-fleet --limit=100000 --workers=8 --active-only=false` — todos los tenants, **antes** del restart. Si falla, aborta sin reiniciar (`ALLOW_FLEET_FAILURES=1` para desplegar igual).
+3. `flock -w 900 /tmp/tukifac-migrate-fleet.lock docker compose run --rm backend-go ./tukifac-api migrate-fleet --limit=100000 --workers=8 --active-only=false --skip-drift-scan` — todos los tenants pendientes, **antes** del restart. `--skip-drift-scan` es imprescindible: el escaneo de deriva abre la BD de cada tenant en serie (~2 s c/u) y con 673 tenants tardaba más de 20 min aunque no hubiera nada que migrar (deploy del 17-oct-2026). El cron lo sigue haciendo con su límite normal. Si falla, aborta sin reiniciar (`ALLOW_FLEET_FAILURES=1` para desplegar igual).
 4. `docker compose up -d --force-recreate backend-go`
 5. Health check
 

@@ -79,7 +79,7 @@ if [[ "${SKIP_MIGRATE}" != "1" ]]; then
   echo "==> Migración de todos los tenants (ANTES del restart, imagen nueva)"
   if ! flock -w 900 "${MIGRATE_LOCKFILE:-/tmp/tukifac-migrate-fleet.lock}" \
     docker compose -f "${COMPOSE_FILE}" run --rm --no-deps backend-go \
-    ./tukifac-api migrate-fleet --limit=100000 --workers=8 --active-only=false; then
+    ./tukifac-api migrate-fleet --limit=100000 --workers=8 --active-only=false --skip-drift-scan; then
     if [[ "${ALLOW_FLEET_FAILURES:-0}" == "1" ]]; then
       echo "    migrate-fleet con fallos — ALLOW_FLEET_FAILURES=1, se continúa"
     else
