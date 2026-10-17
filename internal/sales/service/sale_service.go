@@ -550,6 +550,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 	}
 
+	var retentionAmount float64
+	if !salecurrency.IsDetraccion(opCode) && total > 0 {
+		var contactSnap *salecontext.ContactSnapshot
+		if contact != nil {
+			contactSnap = salecontext.ContactFromModel(contact)
+		}
+		retentionAmount = igvRetentionAmountForPayments(input.FiscalContext, sunatCode, contactSnap, total, currency, exchangeRate)
+	}
+
 	isCreditSale := false
 	if emitFromNV && total > 0 && len(payments) > 0 {
 		var sumPayments float64
@@ -592,12 +601,14 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			}
 			sumPayments += p.Amount
 		}
-		if !money.PaidCoversTotal(sumPayments, total) {
+		// Con retención IGV el cliente paga solo el neto (total − retención).
+		payTarget := total - retentionAmount
+		if !money.PaidCoversTotal(sumPayments, payTarget) {
 			if input.DueDate == nil {
 				return nil, fmt.Errorf(
 					"la suma de pagos (%.2f) no cubre el total (%.2f)",
 					money.RoundDisplay(sumPayments),
-					money.RoundDisplay(total),
+					money.RoundDisplay(payTarget),
 				)
 			}
 			isCreditSale = true
@@ -618,7 +629,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		isCreditSale = false
 	}
 
-	salePayable := total
+	salePayable := total - retentionAmount
 	if salecurrency.IsDetraccion(opCode) && total > 0 {
 		// Autodetracción: el cliente paga el TOTAL (neto + detracción); si no, solo el neto.
 		selfDetraction := input.Detraccion != nil && input.Detraccion.SelfDetraction
