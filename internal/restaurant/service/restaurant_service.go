@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -1104,9 +1105,24 @@ type BillInput struct {
 	// mande el cliente en ese caso se ignora, para que el cierre de mesa no dependa de que el
 	// cliente cuente bien lo que queda.
 	ComandaIDs []uint
+	// ComandaSplits: dividir cuenta con cantidades parciales — igual que ComandaIDs pero cada
+	// entrada indica cuántas unidades de esa comanda van en este cobro (Quantity <= 0 o >= la
+	// cantidad pendiente = la línea completa). Se combina con ComandaIDs (que equivale a la línea
+	// completa). Una comanda cobrada parcialmente se parte: la fila original conserva el resto
+	// pendiente y se inserta una fila hermana ya facturada con las unidades cobradas.
+	ComandaSplits []ComandaSplit
 	// IdempotencyKey: clave por intento de cobro (ver internal/sales/service/sale_idempotency.go).
 	IdempotencyKey string
 }
+
+// ComandaSplit: unidades de una comanda que entran en un cobro parcial (dividir cuenta).
+type ComandaSplit struct {
+	ComandaID uint    `json:"comanda_id"`
+	Quantity  float64 `json:"quantity"`
+}
+
+// comandaQtyEpsilon: tolerancia para comparar cantidades (columna decimal(15,3)).
+const comandaQtyEpsilon = 0.0005
 
 type PaymentInput struct {
 	Method    string  `json:"method"`
@@ -1182,24 +1198,57 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	}
 
 	var comandas []database.TenantComanda
-	splitBilling := len(input.ComandaIDs) > 0
+	splitBilling := len(input.ComandaIDs) > 0 || len(input.ComandaSplits) > 0
+	// partialQty: comanda → unidades cobradas cuando es menos que la línea completa.
+	partialQty := make(map[uint]float64)
 	if !splitBilling {
 		// Camino clásico: todo lo pendiente, respeta el CloseSession que mandó el caller (POS de
 		// venta directa, cierre normal de mesa).
 		comandas = allPending
 	} else {
-		wanted := make(map[uint]bool, len(input.ComandaIDs))
-		for _, id := range input.ComandaIDs {
+		// wantedQty: unidades pedidas por comanda; 0 = línea completa.
+		wanted := make(map[uint]bool, len(input.ComandaIDs)+len(input.ComandaSplits))
+		wantedQty := make(map[uint]float64, len(input.ComandaSplits))
+		wantedIDs := make([]uint, 0, len(input.ComandaIDs)+len(input.ComandaSplits))
+		addWanted := func(id uint, qty float64) error {
+			if wanted[id] {
+				// La misma comanda no puede venir dos veces: el reparto sería ambiguo.
+				return fmt.Errorf("la comanda %d viene repetida en la selección", id)
+			}
 			wanted[id] = true
+			wantedQty[id] = qty
+			wantedIDs = append(wantedIDs, id)
+			return nil
 		}
-		found := make(map[uint]bool, len(input.ComandaIDs))
-		for _, c := range allPending {
-			if wanted[c.ID] {
-				comandas = append(comandas, c)
-				found[c.ID] = true
+		for _, id := range input.ComandaIDs {
+			if err := addWanted(id, 0); err != nil {
+				return nil, err
 			}
 		}
-		for _, id := range input.ComandaIDs {
+		for _, sp := range input.ComandaSplits {
+			if sp.Quantity < 0 {
+				return nil, fmt.Errorf("cantidad inválida para la comanda %d", sp.ComandaID)
+			}
+			if err := addWanted(sp.ComandaID, sp.Quantity); err != nil {
+				return nil, err
+			}
+		}
+		found := make(map[uint]bool, len(wantedIDs))
+		for _, c := range allPending {
+			if !wanted[c.ID] {
+				continue
+			}
+			found[c.ID] = true
+			q := wantedQty[c.ID]
+			if q > comandaQtyEpsilon && q < c.Quantity-comandaQtyEpsilon && strings.TrimSpace(c.ComboParentKey) == "" {
+				partialQty[c.ID] = math.Round(q*1000) / 1000
+				c.Quantity = partialQty[c.ID]
+			} else if q > c.Quantity+comandaQtyEpsilon {
+				return nil, fmt.Errorf("la comanda %d tiene %.3g unidades pendientes, no se pueden cobrar %.3g", c.ID, c.Quantity, q)
+			}
+			comandas = append(comandas, c)
+		}
+		for _, id := range wantedIDs {
 			if !found[id] {
 				return nil, fmt.Errorf("la comanda %d no existe, ya fue cancelada o ya fue facturada", id)
 			}
@@ -1226,7 +1275,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		// El cierre de mesa depende de si esto cubre TODO lo pendiente, no de lo que mande el
 		// cliente — evita que la mesa quede "abierta" con todo ya cobrado, o "cerrada" con algo
 		// pendiente, por un desfase de conteo en el frontend.
-		input.CloseSession = len(comandas) == len(allPending)
+		input.CloseSession = len(comandas) == len(allPending) && len(partialQty) == 0
 	}
 
 	resolvedCash, err := s.resolveCashSessionForSale(sess.BranchID, input.UserID, input.EmployeeType, input.CashSessionID, input.Payments)
@@ -1558,7 +1607,34 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			// parciales); billed_at, no status — status sigue siendo 100% de cocina.
 			billedIDs := make([]uint, 0, len(comandas))
 			for _, c := range comandas {
-				billedIDs = append(billedIDs, c.ID)
+				billedQty, partial := partialQty[c.ID]
+				if !partial {
+					billedIDs = append(billedIDs, c.ID)
+					continue
+				}
+				// Cobro parcial de una línea: la fila original conserva el resto pendiente
+				// (cocina, impresión y estado intactos) y las unidades cobradas pasan a una
+				// fila hermana ya facturada. Se relee la cantidad vigente dentro de la
+				// transacción para no dejar la fila original en ≤ 0 ante una carrera.
+				var orig database.TenantComanda
+				if err := tx.First(&orig, c.ID).Error; err != nil {
+					return err
+				}
+				remaining := math.Round((orig.Quantity-billedQty)*1000) / 1000
+				if orig.BilledAt != nil || orig.CancelledAt != nil || remaining <= 0 {
+					return fmt.Errorf("la comanda %d cambió mientras se cobraba; recarga la mesa", c.ID)
+				}
+				sibling := orig
+				sibling.ID = 0
+				sibling.Quantity = billedQty
+				sibling.BilledAt = &now
+				if err := tx.Create(&sibling).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&database.TenantComanda{}).Where("id = ?", orig.ID).
+					Update("quantity", remaining).Error; err != nil {
+					return err
+				}
 			}
 			if len(billedIDs) > 0 {
 				tx.Model(&database.TenantComanda{}).Where("id IN ?", billedIDs).

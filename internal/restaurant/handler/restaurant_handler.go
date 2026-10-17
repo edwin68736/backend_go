@@ -537,6 +537,8 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		// ComandaIDs: dividir cuenta — factura solo estas comandas (deben estar pendientes en la
 		// sesión). Vacío = cobra todo lo pendiente (comportamiento clásico).
 		ComandaIDs []uint `json:"comanda_ids"`
+		// ComandaSplits: igual que ComandaIDs pero con cantidad parcial por línea.
+		ComandaSplits []service.ComandaSplit `json:"comanda_splits"`
 		// IdempotencyKey: UUID por intento de cobro; el reintento devuelve la venta ya creada.
 		IdempotencyKey string `json:"idempotency_key"`
 	}
@@ -588,6 +590,7 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		DiscountValue:   body.DiscountValue,
 		CentralTenantID: centralTenantID,
 		ComandaIDs:      body.ComandaIDs,
+		ComandaSplits:   body.ComandaSplits,
 		IdempotencyKey:  body.IdempotencyKey,
 	}, taxCfg)
 	return respondRestaurantSale(c, dbc, sale, err, body.Payments)
