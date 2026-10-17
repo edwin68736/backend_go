@@ -134,6 +134,7 @@ var TenantMigrations = []TenantMigration{
 	V160CatalogImages{},
 	V161EcommerceHeroStyle{},
 	V162ProductBranches{},
+	V163DetraccionTransportUbigeo{},
 }
 
 // ByVersion mapa versión → migración.

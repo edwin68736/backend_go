@@ -1769,9 +1769,19 @@ type TenantSaleDetraccion struct {
 	// para la factura); aquí queda como referencia interna — se imprime en el comprobante, pero NO
 	// se envía a SUNAT (el payload del facturador no tiene un nodo equivalente para factura/boleta,
 	// solo para guía de remisión, un documento distinto). Ver internal/detraccion/service.go.
-	TripDetail string    `gorm:"size:500" json:"trip_detail,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	TripDetail string `gorm:"size:500" json:"trip_detail,omitempty"`
+	// Ubigeo (cat. 13, 6 dígitos) y dirección detallada del origen/destino, y valores referenciales (PEN)
+	// de la carga efectiva y útil nominal (migración v163, NULL en filas anteriores). SUNAT los exige en
+	// el XML de 1004 (cac:InvoiceLine/cac:Delivery, errores 3116-3126); TripDetail también viaja
+	// (cac:Despatch/cbc:Instructions). PuntoOrigen/PuntoDestino quedan como etiqueta legible.
+	OriginUbigeo             string    `gorm:"size:6" json:"origin_ubigeo,omitempty"`
+	OriginAddress            string    `gorm:"size:200" json:"origin_address,omitempty"`
+	DestinationUbigeo        string    `gorm:"size:6" json:"destination_ubigeo,omitempty"`
+	DestinationAddress       string    `gorm:"size:200" json:"destination_address,omitempty"`
+	ValorRefCargaEfectivaPen *float64  `gorm:"type:decimal(15,2)" json:"valor_ref_carga_efectiva_pen,omitempty"`
+	ValorRefCargaUtilPen     *float64  `gorm:"type:decimal(15,2)" json:"valor_ref_carga_util_pen,omitempty"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 func (TenantSaleDetraccion) TableName() string { return "tenant_sale_detraccion" }

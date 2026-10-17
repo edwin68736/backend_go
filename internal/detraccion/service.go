@@ -48,6 +48,15 @@ type SaleInput struct {
 	// Detalle del viaje (obligatorio en 1004) — ver comentario en
 	// database.TenantSaleDetraccion.TripDetail. Solo referencia interna, no viaja a SUNAT.
 	TripDetail string `json:"trip_detail,omitempty"`
+	// Ubigeo (cat. 13, 6 dígitos) y dirección detallada del origen y del destino, y valores
+	// referenciales (PEN) de la carga efectiva y de la carga útil nominal. SUNAT los exige en el XML
+	// de 1004 (errores 3116-3126) — ver validateTransporteFields y ApplyToInvoicePayload.
+	OriginUbigeo             string  `json:"origin_ubigeo,omitempty"`
+	OriginAddress            string  `json:"origin_address,omitempty"`
+	DestinationUbigeo        string  `json:"destination_ubigeo,omitempty"`
+	DestinationAddress       string  `json:"destination_address,omitempty"`
+	ValorRefCargaEfectivaPen float64 `json:"valor_ref_carga_efectiva_pen,omitempty"`
+	ValorRefCargaUtilPen     float64 `json:"valor_ref_carga_util_pen,omitempty"`
 	// SelfDetraction: autodetracción — el cliente paga el TOTAL al proveedor y este deposita la detracción en su
 	// propia cuenta BN. Solo cambia el cobro interno (cuotas y saldo por el total, sin pago "Detracción BN"); el
 	// XML, el PDF fiscal y el facturador reciben la detracción y las cuotas netas de siempre. Se guarda como
@@ -111,33 +120,61 @@ func (s *Service) evaluate(in PersistInput) (sunatdet.CalcResult, error) {
 	})
 }
 
-// validateTransporteFields exige, para 1004, solo origen y destino: lo mínimo para identificar el
-// servicio. Todo lo demás queda OPCIONAL a propósito:
-//   - Carga efectiva, carga útil, detalle del viaje, registro MTC y configuración vehicular: el
-//     manual técnico oficial de SUNAT (Guía de Elaboración de Documentos XML Factura Electrónica
-//     UBL 2.1) marca cac:AdditionalItemProperty — el nodo que aloja estos datos (Catálogo N° 55)
-//     — con cardinalidad "0..n" (ninguno es obligatorio a nivel de esquema), y el propio caso
-//     práctico oficial de SUNAT tampoco exige "Detalle del viaje" (que además nunca viaja al
-//     comprobante, ver TripDetail).
-//   - Valor referencial: el Art. 4 de la R.S. 073-2006-SUNAT exige detraer sobre el mayor entre el
-//     importe de la operación y el valor referencial, pero calcularlo requiere la tabla oficial
-//     del MTC (tarifa por TM según ruta, D.S. 020-2021-MTC), que este sistema no tiene integrada.
-//     La propia norma contempla el caso: "cuando no existan valores referenciales [determinables],
-//     el depósito se aplica solo sobre el importe de la operación" (ver
-//     orientacion.sunat.gob.pe/detracciones-en-el-transporte-de-bienes-por-via-terrestre). Por
-//     decisión de negocio, ese es el único comportamiento: aunque el usuario ingrese un valor
-//     referencial, NO se usa para calcular la detracción (ver evaluate, que deliberadamente no lo
-//     envía a sunatdet.Evaluate) — es una captura manual sin tabla que la respalde, y no debe poder
-//     inflar la detracción por encima de lo realmente vendido. Solo queda como dato informativo
-//     para imprimir en el comprobante.
+// validateTransporteFields exige, para 1004, lo que SUNAT valida en el XML (Anexo 1 de la R.S.
+// 123-2022 y catálogo de errores, "Detracciones - Servicio de transporte de carga"):
+//   - 3116/3118: ubigeo (cat. 13, 6 dígitos) del punto de origen y del destino.
+//   - 3117/3119: dirección detallada del origen y del destino.
+//   - 3120: detalle del viaje.
+//   - 3121-3126: UN valor referencial del servicio de transporte, UNO sobre la carga efectiva y UNO
+//     sobre la carga útil nominal, en PEN.
+//
+// Opcionales: registro MTC, configuración vehicular y las TM de carga efectiva/útil (ya no son los
+// valores referenciales). El valor referencial NUNCA participa en el cálculo de la detracción
+// (decisión de negocio, ver evaluate): es captura manual sin la tabla oficial del MTC (D.S.
+// 020-2021-MTC) y no debe inflar la detracción por encima de lo realmente vendido; solo viaja al XML y
+// se imprime. Se juntan todos los faltantes en un solo mensaje para que el usuario los corrija de una vez.
 func validateTransporteFields(in *SaleInput) error {
-	if strings.TrimSpace(in.PuntoOrigen) == "" {
-		return errors.New("el punto de origen es obligatorio para detracción por transporte de carga")
+	var missing []string
+	checkPoint := func(label, ubigeo, address string) {
+		u := strings.TrimSpace(ubigeo)
+		if !isUbigeo(u) {
+			missing = append(missing, "ubigeo del punto de "+label+" (6 dígitos)")
+		}
+		if strings.TrimSpace(address) == "" {
+			missing = append(missing, "dirección detallada del punto de "+label)
+		}
 	}
-	if strings.TrimSpace(in.PuntoDestino) == "" {
-		return errors.New("el punto de destino es obligatorio para detracción por transporte de carga")
+	checkPoint("origen", in.OriginUbigeo, in.OriginAddress)
+	checkPoint("destino", in.DestinationUbigeo, in.DestinationAddress)
+	if strings.TrimSpace(in.TripDetail) == "" {
+		missing = append(missing, "detalle del viaje")
+	}
+	if in.ValorReferencialPen <= 0 {
+		missing = append(missing, "valor referencial del servicio de transporte")
+	}
+	if in.ValorRefCargaEfectivaPen <= 0 {
+		missing = append(missing, "valor referencial sobre la carga efectiva")
+	}
+	if in.ValorRefCargaUtilPen <= 0 {
+		missing = append(missing, "valor referencial sobre la carga útil nominal")
+	}
+	if len(missing) > 0 {
+		return errors.New("detracción por transporte de carga: falta " + strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// isUbigeo indica si s tiene el formato del catálogo 13 de SUNAT: exactamente 6 dígitos.
+func isUbigeo(s string) bool {
+	if len(s) != 6 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Persist evalúa y guarda tenant_sale_detraccion cuando operation_type = 1001 o 1004.
@@ -197,6 +234,26 @@ func (s *Service) Persist(in PersistInput) (*database.TenantSaleDetraccion, erro
 			row.CargaUtilTm = &cu
 		}
 		row.TripDetail = strings.TrimSpace(in.Detraccion.TripDetail)
+		row.OriginUbigeo = strings.TrimSpace(in.Detraccion.OriginUbigeo)
+		row.OriginAddress = strings.TrimSpace(in.Detraccion.OriginAddress)
+		row.DestinationUbigeo = strings.TrimSpace(in.Detraccion.DestinationUbigeo)
+		row.DestinationAddress = strings.TrimSpace(in.Detraccion.DestinationAddress)
+		// PuntoOrigen/PuntoDestino son la etiqueta legible (la que se imprime); si el cliente no la
+		// mandó, se arma con la dirección detallada.
+		if row.PuntoOrigen == "" {
+			row.PuntoOrigen = row.OriginAddress
+		}
+		if row.PuntoDestino == "" {
+			row.PuntoDestino = row.DestinationAddress
+		}
+		if in.Detraccion.ValorRefCargaEfectivaPen > 0 {
+			v := in.Detraccion.ValorRefCargaEfectivaPen
+			row.ValorRefCargaEfectivaPen = &v
+		}
+		if in.Detraccion.ValorRefCargaUtilPen > 0 {
+			v := in.Detraccion.ValorRefCargaUtilPen
+			row.ValorRefCargaUtilPen = &v
+		}
 	}
 	if err := s.db.Save(&row).Error; err != nil {
 		return nil, err
@@ -254,6 +311,14 @@ func ApplyToInvoicePayload(payload *facturador.InvoicePayload, row *database.Ten
 		for i := range payload.Details {
 			payload.Details[i].Atributos = attrs
 		}
+		// Nodos cac:InvoiceLine/cac:Delivery (origen, destino, viaje, valores referenciales): SUNAT los
+		// quiere una sola vez, así que van en la primera línea. El facturador los convierte a XML.
+		if delivery := transporteDeliveryAttributes(row); len(delivery) > 0 && len(payload.Details) > 0 {
+			first := make([]facturador.DetailAttribute, 0, len(attrs)+len(delivery))
+			first = append(first, attrs...)
+			first = append(first, delivery...)
+			payload.Details[0].Atributos = first
+		}
 		return
 	}
 	facturador.AppendSUNATLegend2006(&payload.Legends)
@@ -276,12 +341,19 @@ func transporteAttributes(row *database.TenantSaleDetraccion) []facturador.Detai
 	all := []facturador.DetailAttribute{
 		{Code: "3006", Name: "Detracciones: Transporte Bienes vía terrestre – Numero Registro MTC", Value: row.MtcRegistro},
 		{Code: "3007", Name: "Detracciones: Transporte Bienes vía terrestre – Configuración Vehicular", Value: row.ConfiguracionVehicular},
-		{Code: "3008", Name: "Detracciones: Transporte Bienes vía terrestre – Punto de Origen", Value: row.PuntoOrigen},
-		{Code: "3009", Name: "Detracciones: Transporte Bienes vía terrestre – Punto Destino", Value: row.PuntoDestino},
-		{Code: "3010", Name: "Detracciones: Transporte Bienes – Valor Referencial Preliminar por Viaje", Value: f2(row.ValorReferencialPen)},
-		{Code: "3013", Name: "Detracciones: Transporte Bienes – Carga Efectiva en TM por Vehículo", Value: f2(row.CargaEfectivaTm)},
-		{Code: "3014", Name: "Detracciones: Transporte Bienes – Carga Útil en TM del Vehículo en Viaje", Value: f2(row.CargaUtilTm)},
 	}
+	if !hasTransportDelivery(row) {
+		// Fila anterior a la v163 (solo texto libre, sin ubigeo): se mantiene el envío de siempre.
+		all = append(all,
+			facturador.DetailAttribute{Code: "3008", Name: "Detracciones: Transporte Bienes vía terrestre – Punto de Origen", Value: row.PuntoOrigen},
+			facturador.DetailAttribute{Code: "3009", Name: "Detracciones: Transporte Bienes vía terrestre – Punto Destino", Value: row.PuntoDestino},
+			facturador.DetailAttribute{Code: "3010", Name: "Detracciones: Transporte Bienes – Valor Referencial Preliminar por Viaje", Value: f2(row.ValorReferencialPen)},
+		)
+	}
+	all = append(all,
+		facturador.DetailAttribute{Code: "3013", Name: "Detracciones: Transporte Bienes – Carga Efectiva en TM por Vehículo", Value: f2(row.CargaEfectivaTm)},
+		facturador.DetailAttribute{Code: "3014", Name: "Detracciones: Transporte Bienes – Carga Útil en TM del Vehículo en Viaje", Value: f2(row.CargaUtilTm)},
+	)
 	attrs := make([]facturador.DetailAttribute, 0, len(all))
 	for _, a := range all {
 		if strings.TrimSpace(a.Value) == "" {
@@ -290,4 +362,51 @@ func transporteAttributes(row *database.TenantSaleDetraccion) []facturador.Detai
 		attrs = append(attrs, a)
 	}
 	return attrs
+}
+
+// hasTransportDelivery indica si la fila trae los datos que SUNAT exige en cac:Delivery (v163):
+// ubigeo y dirección de origen y destino. Las filas anteriores solo tienen texto libre.
+func hasTransportDelivery(row *database.TenantSaleDetraccion) bool {
+	return isUbigeo(row.OriginUbigeo) && isUbigeo(row.DestinationUbigeo) &&
+		strings.TrimSpace(row.OriginAddress) != "" && strings.TrimSpace(row.DestinationAddress) != ""
+}
+
+// Códigos reservados que el facturador (App\Xml\Transporte1004) convierte en cac:Delivery. NO son
+// códigos del catálogo 55: el facturador los retira de los AdditionalItemProperty.
+const (
+	attrOrigUbigeo  = "T1004_ORIG_UBIGEO"
+	attrOrigDir     = "T1004_ORIG_DIR"
+	attrDestUbigeo  = "T1004_DEST_UBIGEO"
+	attrDestDir     = "T1004_DEST_DIR"
+	attrViaje       = "T1004_VIAJE"
+	attrVRServicio  = "T1004_VR_SERVICIO"
+	attrVRCargaEfec = "T1004_VR_CARGA_EFECTIVA"
+	attrVRCargaUtil = "T1004_VR_CARGA_UTIL"
+)
+
+// transporteDeliveryAttributes arma los datos de cac:InvoiceLine/cac:Delivery de 1004 (SUNAT, Anexo 1
+// de la R.S. 123-2022, campos 113-118): origen -> Despatch/DespatchAddress, destino ->
+// DeliveryLocation/Address, detalle del viaje -> Despatch/Instructions y valores referenciales ->
+// DeliveryTerms 01/02/03. Vacío si la fila no los tiene completos (filas anteriores a la v163).
+func transporteDeliveryAttributes(row *database.TenantSaleDetraccion) []facturador.DetailAttribute {
+	if !hasTransportDelivery(row) {
+		return nil
+	}
+	f2 := func(v *float64) string {
+		if v == nil {
+			return "0.00"
+		}
+		return strconv.FormatFloat(*v, 'f', 2, 64)
+	}
+	trip := strings.TrimSpace(row.TripDetail)
+	return []facturador.DetailAttribute{
+		{Code: attrOrigUbigeo, Name: "Origen ubigeo", Value: strings.TrimSpace(row.OriginUbigeo)},
+		{Code: attrOrigDir, Name: "Origen dirección", Value: strings.TrimSpace(row.OriginAddress)},
+		{Code: attrDestUbigeo, Name: "Destino ubigeo", Value: strings.TrimSpace(row.DestinationUbigeo)},
+		{Code: attrDestDir, Name: "Destino dirección", Value: strings.TrimSpace(row.DestinationAddress)},
+		{Code: attrViaje, Name: "Detalle del viaje", Value: trip},
+		{Code: attrVRServicio, Name: "Valor referencial servicio de transporte", Value: f2(row.ValorReferencialPen)},
+		{Code: attrVRCargaEfec, Name: "Valor referencial carga efectiva", Value: f2(row.ValorRefCargaEfectivaPen)},
+		{Code: attrVRCargaUtil, Name: "Valor referencial carga útil nominal", Value: f2(row.ValorRefCargaUtilPen)},
+	}
 }
