@@ -277,3 +277,52 @@ func TestSaleService_List_ChangeAmount_PerSale(t *testing.T) {
 		t.Errorf("change_amount de la venta exacta = %.2f, se esperaba 0", byID[exact.ID].ChangeAmount)
 	}
 }
+
+// Reporte del usuario: "todo sale en soles". Las ventas en USD se sumaban con las de PEN en un
+// solo número (sum_total) y los totales por método tampoco distinguían moneda. by_currency y la
+// moneda en payment_totals las separan; sum_* plano conserva el comportamiento legado.
+func TestSaleService_List_Summary_SeparaMonedas(t *testing.T) {
+	db := setupSaleListSummaryDB(t)
+	now := time.Now()
+	rate := 3.75
+	for _, s := range []database.TenantSale{
+		{Number: "F001-1", DocType: "FACTURA", BranchID: 1, UserID: 1, IssueDate: now, Subtotal: 100, TaxAmount: 18, Total: 118, Status: "paid", PaymentMethod: "cash", Currency: "PEN"},
+		{Number: "F001-2", DocType: "FACTURA", BranchID: 1, UserID: 1, IssueDate: now, Subtotal: 84.75, TaxAmount: 15.25, Total: 100, Status: "paid", PaymentMethod: "cash", Currency: "USD", ExchangeRate: &rate},
+		{Number: "F001-3", DocType: "FACTURA", BranchID: 1, UserID: 1, IssueDate: now, Subtotal: 42.37, TaxAmount: 7.63, Total: 50, Status: "cancelled", PaymentMethod: "cash", Currency: "USD", ExchangeRate: &rate},
+		{Number: "B001-1", DocType: "BOLETA", BranchID: 1, UserID: 1, IssueDate: now, Subtotal: 10, TaxAmount: 1.8, Total: 11.8, Status: "paid", PaymentMethod: "cash"},
+	} {
+		s := s
+		if err := db.Create(&s).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, summary, err := NewSaleService(db).List(SaleListParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if summary.SumActive != 229.8 { // legado: PEN + USD mezclados
+		t.Errorf("sum_active plano = %.2f (legado mezclado), se esperaba 229.80", summary.SumActive)
+	}
+	by := map[string]SaleListCurrencySummary{}
+	for _, c := range summary.ByCurrency {
+		by[c.Currency] = c
+	}
+	if len(by) != 2 {
+		t.Fatalf("by_currency = %+v, se esperaban PEN y USD", summary.ByCurrency)
+	}
+	if got := by["PEN"]; got.SumActive != 129.8 || got.CountActive != 2 || got.SumCancelled != 0 {
+		t.Errorf("PEN = %+v, se esperaba sum_active 129.80 y 2 ventas (la sin moneda cuenta como PEN)", got)
+	}
+	if got := by["USD"]; got.SumActive != 100 || got.SumCancelled != 50 || got.CountActive != 1 || got.CountCancelled != 1 {
+		t.Errorf("USD = %+v, se esperaba sum_active 100, sum_cancelled 50", got)
+	}
+	cash := map[string]float64{}
+	for _, pt := range summary.PaymentTotals {
+		if pt.Method == "cash" {
+			cash[pt.Currency] = pt.Total
+		}
+	}
+	if cash["PEN"] != 129.8 || cash["USD"] != 100 {
+		t.Errorf("payment_totals[cash] por moneda = %+v, se esperaba PEN 129.80 y USD 100", cash)
+	}
+}

@@ -1256,11 +1256,35 @@ type SaleListSummary struct {
 	// Vuelto total entregado en las ventas del filtro (ver enrichSalesWithChangeAmount): suma de
 	// pagos directos por encima del importe cobrable de cada venta, nunca negativo por venta.
 	SumChangeAmount float64 `json:"sum_change_amount"`
-	PaymentTotals   []struct {
-		Method string  `json:"method"`
-		Total  float64 `json:"total"`
-	} `json:"payment_totals"`
+	// PaymentTotals: monto por método y MONEDA (una entrada por método+moneda; los montos de
+	// monedas distintas nunca se suman entre sí). La detracción SPOT va siempre en PEN.
+	PaymentTotals []SaleListPaymentTotal `json:"payment_totals"`
+	// ByCurrency: los mismos totales de cabecera (sum_*, count_*, vuelto) separados por moneda.
+	// Los campos sum_* planos de arriba suman todas las monedas tal cual (comportamiento legado,
+	// correcto solo si todo el filtro es una sola moneda): quien muestre importes debe usar este.
+	ByCurrency []SaleListCurrencySummary `json:"by_currency"`
 }
+
+type SaleListPaymentTotal struct {
+	Method   string  `json:"method"`
+	Currency string  `json:"currency"`
+	Total    float64 `json:"total"`
+}
+
+type SaleListCurrencySummary struct {
+	Currency        string  `json:"currency"`
+	SumTotal        float64 `json:"sum_total"`
+	SumSubtotal     float64 `json:"sum_subtotal"`
+	SumTax          float64 `json:"sum_tax"`
+	SumCancelled    float64 `json:"sum_cancelled"`
+	SumActive       float64 `json:"sum_active"`
+	CountCancelled  int64   `json:"count_cancelled"`
+	CountActive     int64   `json:"count_active"`
+	SumChangeAmount float64 `json:"sum_change_amount"`
+}
+
+// saleCurrencySQL normaliza la moneda de cabecera: vacío = PEN (ventas antiguas sin moneda).
+const saleCurrencySQL = "UPPER(COALESCE(NULLIF(TRIM(tenant_sales.currency), ''), 'PEN'))"
 
 func (s *SaleService) List(params SaleListParams) (sales []database.TenantSale, total int64, summary SaleListSummary, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), saleListTimeout(params.Limit == 0))
@@ -1587,6 +1611,35 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	out.CountCancelled = row.CountCancelled
 	out.CountActive = row.CountActive
 
+	type curAggRow struct {
+		Currency       string  `gorm:"column:currency"`
+		SumTotal       float64 `gorm:"column:sum_total"`
+		SumSubtotal    float64 `gorm:"column:sum_subtotal"`
+		SumTax         float64 `gorm:"column:sum_tax"`
+		SumCancelled   float64 `gorm:"column:sum_cancelled"`
+		SumActive      float64 `gorm:"column:sum_active"`
+		CountCancelled int64   `gorm:"column:count_cancelled"`
+		CountActive    int64   `gorm:"column:count_active"`
+	}
+	var curRows []curAggRow
+	if err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+		Where("tenant_sales.id IN (?)", idSub).
+		Select(saleCurrencySQL + ` AS currency,
+			COALESCE(SUM(` + netTotal + `), 0) AS sum_total,
+			COALESCE(SUM(` + netSubtotal + `), 0) AS sum_subtotal,
+			COALESCE(SUM(` + netTax + `), 0) AS sum_tax,
+			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' THEN tenant_sales.total ELSE 0 END), 0) AS sum_cancelled,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN ` + netTotal + ` ELSE 0 END), 0) AS sum_active,
+			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_cancelled,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_active`).
+		Group(saleCurrencySQL).
+		Order("currency ASC").
+		Scan(&curRows).Error; err != nil {
+		return out, err
+	}
+	changeByCurrency := map[string]float64{}
+	currencyOfSale := map[uint]string{}
+
 	type detAggRow struct {
 		SumDetraccion   float64 `gorm:"column:sum_detraccion"`
 		SumNetPayable   float64 `gorm:"column:sum_net_payable"`
@@ -1612,10 +1665,12 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 
 	// Totales por método: si hay filas en tenant_sale_pagos, usar montos por línea; si no, el campo cabecera payment_method.
 	type payRow struct {
-		Method string  `gorm:"column:method"`
-		Total  float64 `gorm:"column:total"`
+		Method   string  `gorm:"column:method"`
+		Currency string  `gorm:"column:currency"`
+		Total    float64 `gorm:"column:total"`
 	}
-	byMethod := make(map[string]float64)
+	type methodCur struct{ method, currency string }
+	byMethod := make(map[methodCur]float64)
 	var spotTotal float64
 
 	// Los montos por línea se acotan al total de la venta con AllocateSalePaymentReportAmounts —
@@ -1626,12 +1681,13 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	// alguien pagaba con un billete mayor al total (incidente reportado 2026-09-15, SEDE KEIKO:
 	// "Efectivo" S/139.20 vs. "Total no anuladas" S/122.00 del mismo filtro).
 	type saleTotalRow struct {
-		ID    uint    `gorm:"column:id"`
-		Total float64 `gorm:"column:total"`
+		ID       uint    `gorm:"column:id"`
+		Total    float64 `gorm:"column:total"`
+		Currency string  `gorm:"column:currency"`
 	}
 	var saleTotals []saleTotalRow
 	if err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
-		Select(`tenant_sales.id AS id, `+netTotal+` AS total`).
+		Select(`tenant_sales.id AS id, `+netTotal+` AS total, `+saleCurrencySQL+` AS currency`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
 		Scan(&saleTotals).Error; err != nil {
@@ -1640,6 +1696,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	saleTotalByID := make(map[uint]float64, len(saleTotals))
 	for _, st := range saleTotals {
 		saleTotalByID[st.ID] = st.Total
+		currencyOfSale[st.ID] = st.Currency
 	}
 
 	type paymentLineRow struct {
@@ -1664,7 +1721,14 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		paymentsBySale[p.SaleID] = append(paymentsBySale[p.SaleID], p)
 		methodByPaymentID[p.ID] = p.Method
 	}
-	addToMethod := func(method string, amount float64) {
+	// currencyOf: moneda de la venta de un pago (sin dato = PEN).
+	currencyOf := func(saleID uint) string {
+		if c := currencyOfSale[saleID]; c != "" {
+			return c
+		}
+		return "PEN"
+	}
+	addToMethod := func(saleID uint, method string, amount float64) {
 		if taxpayment.IsDetractionCode(method) {
 			spotTotal += amount
 			return
@@ -1673,7 +1737,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		if m == "" {
 			m = "sin_definir"
 		}
-		byMethod[m] += amount
+		byMethod[methodCur{m, currencyOf(saleID)}] += amount
 	}
 	for saleID, rows := range paymentsBySale {
 		saleTotal, ok := saleTotalByID[saleID]
@@ -1681,7 +1745,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 			// No debería pasar (idSub ya excluye cancelled/otras sucursales), pero si ocurre no
 			// hay total contra el cual acotar: se conserva el monto tal cual, como antes.
 			for _, r := range rows {
-				addToMethod(r.Method, r.Amount)
+				addToMethod(saleID, r.Method, r.Amount)
 			}
 			continue
 		}
@@ -1695,7 +1759,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 			lines = append(lines, money.SalePaymentLine{ID: r.ID, Amount: r.Amount, IsCash: money.IsCashMethod(r.Method)})
 		}
 		for id, amt := range money.AllocateSalePaymentReportAmounts(saleTotal, lines) {
-			addToMethod(methodByPaymentID[id], amt)
+			addToMethod(saleID, methodByPaymentID[id], amt)
 		}
 	}
 
@@ -1735,16 +1799,18 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		if !ok {
 			payable = saleTotalByID[saleID]
 		}
-		out.SumChangeAmount += money.CalcPaymentChange(directSum, payable)
+		chg := money.CalcPaymentChange(directSum, payable)
+		out.SumChangeAmount += chg
+		changeByCurrency[currencyOf(saleID)] += chg
 	}
 
 	var fromHeader []payRow
 	err = salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
-		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, COALESCE(SUM(`+netTotal+`), 0) AS total`).
+		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, `+saleCurrencySQL+` AS currency, COALESCE(SUM(`+netTotal+`), 0) AS total`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
 		Where("NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = tenant_sales.id)").
-		Group(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir')))`).
+		Group(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))), ` + saleCurrencySQL).
 		Scan(&fromHeader).Error
 	if err != nil {
 		return out, err
@@ -1754,33 +1820,38 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		if m == "" {
 			m = "sin_definir"
 		}
-		byMethod[m] += p.Total
+		byMethod[methodCur{m, p.Currency}] += p.Total
 	}
 
-	type kv struct {
-		method string
-		total  float64
+	pairs := make([]SaleListPaymentTotal, 0, len(byMethod))
+	for k, t := range byMethod {
+		pairs = append(pairs, SaleListPaymentTotal{Method: k.method, Currency: k.currency, Total: t})
 	}
-	pairs := make([]kv, 0, len(byMethod))
-	for m, t := range byMethod {
-		pairs = append(pairs, kv{m, t})
-	}
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i].total > pairs[j].total })
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].Total != pairs[j].Total {
+			return pairs[i].Total > pairs[j].Total
+		}
+		if pairs[i].Method != pairs[j].Method {
+			return pairs[i].Method < pairs[j].Method
+		}
+		return pairs[i].Currency < pairs[j].Currency
+	})
 	if len(pairs) > 12 {
 		pairs = pairs[:12]
 	}
-	for _, p := range pairs {
-		out.PaymentTotals = append(out.PaymentTotals, struct {
-			Method string  `json:"method"`
-			Total  float64 `json:"total"`
-		}{Method: p.method, Total: p.total})
-	}
+	out.PaymentTotals = append(out.PaymentTotals, pairs...)
 	if spotTotal > 0 {
 		out.SpotTotal = spotTotal
-		out.PaymentTotals = append(out.PaymentTotals, struct {
-			Method string  `json:"method"`
-			Total  float64 `json:"total"`
-		}{Method: taxpayment.CodeDetraccionBN, Total: spotTotal})
+		// La detracción SPOT existe solo en facturas en PEN.
+		out.PaymentTotals = append(out.PaymentTotals, SaleListPaymentTotal{Method: taxpayment.CodeDetraccionBN, Currency: "PEN", Total: spotTotal})
+	}
+	out.ByCurrency = make([]SaleListCurrencySummary, 0, len(curRows))
+	for _, c := range curRows {
+		out.ByCurrency = append(out.ByCurrency, SaleListCurrencySummary{
+			Currency: c.Currency, SumTotal: c.SumTotal, SumSubtotal: c.SumSubtotal, SumTax: c.SumTax,
+			SumCancelled: c.SumCancelled, SumActive: c.SumActive, CountCancelled: c.CountCancelled,
+			CountActive: c.CountActive, SumChangeAmount: changeByCurrency[c.Currency],
+		})
 	}
 	return out, nil
 }
