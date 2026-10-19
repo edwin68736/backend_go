@@ -1,6 +1,6 @@
 # Propuesta: dos diseños de PDF A4 y selector por tenant
 
-Fecha del análisis: 19-oct-2026. Estado: **solo análisis y propuesta, no se tocó código ni producción** (consulta a la BD en solo lectura con `claude_ro`).
+Fecha del análisis: 19-oct-2026. Estado: **solo análisis y propuesta, no se tocó código ni producción** (consulta a la BD en solo lectura con un usuario de solo lectura).
 
 ---
 
@@ -309,4 +309,4 @@ Pruebas automáticas: normalizador de slug (Go y TS), registro/despacho con slug
 - Historia: `git log` / `git show --stat 07909ee` en `frontend_tenant`; archivo anterior con `git show 07909ee^:src/utils/receiptPdfA4.ts`.
 - Búsqueda de PDF en backend: sin librería PDF en `go.mod`, sin `gofpdf/maroto/wkhtml/chromedp` en el código Go; `internal/sales/service/email_receipt.go` solo decodifica `pdf_base64`.
 - Facturador: `templates/pdf/invoice.html.twig`, `Report/FiscalHtmlReport.php`, `Service/Fiscal/FiscalDocumentPdfResolver.php`, `FiscalEmailProcessor.php`.
-- Producción (solo lectura, `claude_ro`): conteo de `tukifac_saas.tenants` por estado/rubro y búsqueda en `information_schema.columns` de `logo_size_a4` y de posibles columnas `pdf_a4_design|a4_design|receipt_design` en `saas_tenant_%`. No se modificó nada.
+- Producción (solo lectura): conteo de `tukifac_saas.tenants` por estado/rubro y búsqueda en `information_schema.columns` de `logo_size_a4` y de posibles columnas `pdf_a4_design|a4_design|receipt_design` en `saas_tenant_%`. No se modificó nada.
