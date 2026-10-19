@@ -26,25 +26,29 @@ func NewReceivableService(db *gorm.DB) *ReceivableService {
 }
 
 type ListFilter struct {
-	BranchID      uint
-	ContactID     uint
-	Status        string // open | overdue | bn_pending | all
-	Search        string
-	BnStatus      string
-	Page          int
-	PageSize      int
+	BranchID  uint
+	ContactID uint
+	Status    string // open | overdue | bn_pending | all
+	Search    string
+	BnStatus  string
+	Page      int
+	PageSize  int
 }
 
 type ReceivableRow struct {
-	SaleID                  uint             `json:"sale_id"`
-	SaleNumber              string           `json:"sale_number"`
-	DocType                 string           `json:"doc_type"`
-	IssueDate               time.Time        `json:"issue_date"`
-	DueDate                 *time.Time       `json:"due_date,omitempty"`
-	ContactID               uint             `json:"contact_id"`
-	ContactName             string           `json:"contact_name"`
-	ContactDocNumber        string           `json:"contact_doc_number"`
-	Total                   float64          `json:"total"`
+	SaleID           uint       `json:"sale_id"`
+	SaleNumber       string     `json:"sale_number"`
+	DocType          string     `json:"doc_type"`
+	IssueDate        time.Time  `json:"issue_date"`
+	DueDate          *time.Time `json:"due_date,omitempty"`
+	ContactID        uint       `json:"contact_id"`
+	ContactName      string     `json:"contact_name"`
+	ContactDocNumber string     `json:"contact_doc_number"`
+	Total            float64    `json:"total"`
+	// Currency/ExchangeRate: moneda del comprobante (PEN | USD). Total, DirectTarget, DirectPaid y
+	// DirectDue están en ESA moneda; la detracción SPOT siempre en soles (exige factura en PEN).
+	Currency                string           `json:"currency"`
+	ExchangeRate            *float64         `json:"exchange_rate,omitempty"`
 	Status                  string           `json:"status"`
 	PaymentConditionCode    string           `json:"payment_condition_code"`
 	HasDetraccion           bool             `json:"has_detraccion"`
@@ -61,7 +65,18 @@ type ReceivableRow struct {
 	NextInstallmentDue      *time.Time       `json:"next_installment_due,omitempty"`
 }
 
+// CurrencySummary es el saldo directo pendiente de una moneda: los saldos de monedas distintas
+// no se suman entre sí (Summary.TotalDirectDue sí las mezcla; este es el desglose correcto).
+type CurrencySummary struct {
+	Currency     string  `json:"currency"`
+	DirectDue    float64 `json:"direct_due"`
+	CountOpen    int64   `json:"count_open"`
+	CountOverdue int64   `json:"count_overdue"`
+}
+
 type Summary struct {
+	ByCurrency []CurrencySummary `json:"by_currency"`
+	// TotalDirectDue suma los saldos de TODAS las monedas tal cual (legado): usar ByCurrency.
 	TotalDirectDue   float64 `json:"total_direct_due"`
 	TotalSpotPending float64 `json:"total_spot_pending"`
 	CountOpen        int64   `json:"count_open"`
@@ -70,10 +85,10 @@ type Summary struct {
 }
 
 type CollectPaymentInput struct {
-	Payments             []salessvc.PaymentInput `json:"payments"`
-	CashSessionID        *uint                   `json:"cash_session_id,omitempty"`
-	PreferInstallmentID  uint                    `json:"prefer_installment_id,omitempty"`
-	UserID               uint                    `json:"-"`
+	Payments            []salessvc.PaymentInput `json:"payments"`
+	CashSessionID       *uint                   `json:"cash_session_id,omitempty"`
+	PreferInstallmentID uint                    `json:"prefer_installment_id,omitempty"`
+	UserID              uint                    `json:"-"`
 }
 
 type ConfirmBNInput struct {
@@ -200,8 +215,21 @@ func (s *ReceivableService) Summary(branchID uint) (*Summary, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &Summary{}
+	out := &Summary{ByCurrency: []CurrencySummary{}}
+	byCur := map[string]*CurrencySummary{}
+	var order []string
 	for _, r := range rows {
+		cs := byCur[r.Currency]
+		if cs == nil {
+			cs = &CurrencySummary{Currency: r.Currency}
+			byCur[r.Currency] = cs
+			order = append(order, r.Currency)
+		}
+		cs.DirectDue += r.DirectDue
+		cs.CountOpen++
+		if r.IsOverdue && r.DirectDue > 0 {
+			cs.CountOverdue++
+		}
 		out.TotalDirectDue += r.DirectDue
 		out.TotalSpotPending += r.SpotPending
 		out.CountOpen++
@@ -211,6 +239,11 @@ func (s *ReceivableService) Summary(branchID uint) (*Summary, error) {
 		if r.SpotPending > 0 && r.BnConfirmationStatus == BnStatusPending {
 			out.CountBnPending++
 		}
+	}
+	for _, c := range order {
+		cs := byCur[c]
+		cs.DirectDue = money.RoundDisplay(cs.DirectDue)
+		out.ByCurrency = append(out.ByCurrency, *cs)
 	}
 	out.TotalDirectDue = money.RoundDisplay(out.TotalDirectDue)
 	out.TotalSpotPending = money.RoundDisplay(out.TotalSpotPending)
@@ -568,6 +601,8 @@ func (s *ReceivableService) buildRow(
 		ContactName:          name,
 		ContactDocNumber:     docNum,
 		Total:                sale.Total,
+		Currency:             saleCurrencyOrPEN(sale.Currency),
+		ExchangeRate:         sale.ExchangeRate,
 		Status:               sale.Status,
 		PaymentConditionCode: payCond,
 		HasDetraccion:        det != nil,
@@ -588,6 +623,14 @@ func (s *ReceivableService) buildRow(
 		InstallmentsPending: countPendingInstallments(instRows),
 		NextInstallmentDue:  nextDue,
 	}
+}
+
+func saleCurrencyOrPEN(c string) string {
+	c = strings.ToUpper(strings.TrimSpace(c))
+	if c == "" {
+		return "PEN"
+	}
+	return c
 }
 
 func contactIDVal(id *uint) uint {

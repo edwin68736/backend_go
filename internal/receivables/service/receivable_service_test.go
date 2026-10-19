@@ -218,3 +218,50 @@ func TestSaleBalance_autodetraccionCobraElTotalSinSpotPendiente(t *testing.T) {
 		t.Errorf("normal: target %v due %v spot %v/%v, want 1760/1760/240/240", target, due, spotAmount, spotPending)
 	}
 }
+
+func TestReceivableService_ListAndSummary_SeparaMonedas(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:recv_currency?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&database.TenantSale{}, &database.TenantSaleDetraccion{},
+		&database.TenantSalePayment{}, &database.TenantSaleCreditInstallment{}, &database.TenantContact{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	rate := 3.75
+	for _, s := range []database.TenantSale{
+		{Number: "F001-1", DocType: "FACTURA", Status: "credit", Total: 100, Currency: "PEN"},
+		{Number: "F001-2", DocType: "FACTURA", Status: "credit", Total: 200, Currency: "USD", ExchangeRate: &rate},
+		{Number: "F001-3", DocType: "FACTURA", Status: "credit", Total: 50, Currency: ""},
+	} {
+		s := s
+		if err := db.Create(&s).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewReceivableService(db)
+	rows, _, err := svc.List(ListFilter{Status: "all", Page: 1, PageSize: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur := map[string]string{}
+	for _, r := range rows {
+		cur[r.SaleNumber] = r.Currency
+	}
+	if cur["F001-1"] != "PEN" || cur["F001-2"] != "USD" || cur["F001-3"] != "PEN" {
+		t.Fatalf("monedas por fila: %+v", cur)
+	}
+	sum, err := svc.Summary(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, c := range sum.ByCurrency {
+		got[c.Currency] = c.DirectDue
+	}
+	if len(got) != 2 || got["PEN"] != 150 || got["USD"] != 200 {
+		t.Fatalf("by_currency = %+v, quería PEN=150 y USD=200 sin mezclar", sum.ByCurrency)
+	}
+}
