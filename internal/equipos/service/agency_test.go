@@ -90,6 +90,9 @@ func TestListOrdersAgencyView(t *testing.T) {
 	if res.Rows[0].ID != ids[1] || *res.Rows[0].DaysInAgency != 15 || res.Rows[0].AgencyLevel != "critico" || res.Rows[0].AgencyLabel != "Retornar ya" {
 		t.Errorf("primero el de más días: %+v", res.Rows[0])
 	}
+	if r0 := res.Rows[0]; r0.TotalAmount != 100 || r0.BalanceAmount != 100 || r0.PaymentStatus != "pendiente" {
+		t.Errorf("total, saldo y pago en la fila: %+v", r0)
+	}
 	if res.Rows[1].AgencyLevel != "verde" || *res.Rows[1].DaysLeft != 12 {
 		t.Errorf("segundo: %+v", res.Rows[1])
 	}
