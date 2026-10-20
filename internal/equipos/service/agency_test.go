@@ -101,3 +101,53 @@ func TestListOrdersAgencyView(t *testing.T) {
 		t.Errorf("sin fecha al final y sin contador: %+v", all.Rows)
 	}
 }
+
+func TestAgencyViewAllOrderAndSingleDeadline(t *testing.T) {
+	f := newFixture(t)
+	arrivedDays := func(id uint, days int) {
+		d := todayNoon().AddDate(0, 0, -days)
+		f.s.db.Model(&database.EquipShipment{}).Where("order_id = ?", id).Update("arrived_at", d)
+	}
+	a5 := f.shipped(t, 1, 100)  // en agencia, 5 días
+	a15 := f.shipped(t, 1, 100) // en agencia, 15 días
+	nodate := f.shipped(t, 1, 100)
+	arrivedDays(a5.ID, 5)
+	arrivedDays(a15.ID, 15)
+	f.s.db.Model(&database.EquipShipment{}).Where("order_id = ?", nodate.ID).Update("arrived_at", nil)
+	picked := f.shipped(t, 1, 100)
+	if _, err := f.s.MarkPickedUp(picked.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	pending := f.confirmed(t, 1, 100)
+
+	res, err := f.s.ListOrders(OrderFilter{Status: "registrado", Sort: "agency_days"})
+	if err != nil || len(res.Rows) != 5 {
+		t.Fatalf("lista: %v %+v", err, res)
+	}
+	want := []uint{a15.ID, a5.ID, nodate.ID, pending.ID, picked.ID}
+	for i, w := range want {
+		if res.Rows[i].ID != w {
+			t.Fatalf("orden en %d: got %d want %d", i, res.Rows[i].ID, w)
+		}
+	}
+	// El Panel dice «vencido» el mismo día 15 que el semáforo.
+	al, err := f.s.Alerts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range al {
+		if a.OrderID == a15.ID && a.Kind == "agencia_vencido" {
+			found = true
+		}
+		if a.OrderID == a5.ID && a.Kind == "agencia_vencido" {
+			t.Error("a los 5 días no debe estar vencido")
+		}
+	}
+	if !found {
+		t.Errorf("alerta del día 15: %+v", al)
+	}
+	if !agencyExpired(func() *int { d := 15; return &d }()) || agencyExpired(func() *int { d := 14; return &d }()) || agencyExpired(nil) {
+		t.Error("agencyExpired en el límite")
+	}
+}

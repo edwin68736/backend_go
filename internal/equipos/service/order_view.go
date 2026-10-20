@@ -343,8 +343,8 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 	res.SumTotal, res.SumBalance = round2(sm.T), round2(sm.B)
 
 	orderBy := "o.order_number DESC"
-	if f.Sort == "agency_days" { // llegada más antigua = más días; sin fecha al final
-		orderBy = "CASE WHEN sh.arrived_at IS NULL THEN 1 ELSE 0 END, sh.arrived_at ASC, o.order_number DESC"
+	if f.Sort == "agency_days" { // en agencia con llegada (más días primero), en agencia sin fecha, pendientes/en tránsito, entregados y retornos
+		orderBy = "CASE WHEN sh.status = 'en_agencia' AND sh.arrived_at IS NOT NULL THEN 0 WHEN sh.status = 'en_agencia' THEN 1 WHEN sh.status IN ('entregado', 'retorno') THEN 3 ELSE 2 END, CASE WHEN sh.status = 'en_agencia' THEN sh.arrived_at END ASC, o.order_number DESC"
 	}
 	if err := base.Session(&gorm.Session{}).
 		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, sh.arrived_at, COALESCE(sh.destination_agency, '') AS destination_agency, o.created_by, COALESCE(cu.name, '') AS created_by_name").

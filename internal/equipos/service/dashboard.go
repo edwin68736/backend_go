@@ -112,13 +112,16 @@ func (s *Service) Dashboard(period string, withStock bool) (*Dashboard, error) {
 			}
 		case "en_agencia":
 			d.InAgency++
-			switch r.Alert {
-			case "amarillo":
-				d.AgencyYellow++
-			case "rojo":
-				d.AgencyRed++
-			case "vencido":
+			// El plazo de retorno es único (AgencyReturnDays); el del transportista solo gobierna el recojo.
+			if agencyExpired(r.DaysSinceArrival) {
 				d.AgencyExpired++
+			} else {
+				switch r.Alert {
+				case "amarillo":
+					d.AgencyYellow++
+				case "rojo", "vencido":
+					d.AgencyRed++
+				}
 			}
 		}
 	}
@@ -194,10 +197,12 @@ func (s *Service) Alerts() ([]AlertItem, error) {
 			if r.DaysSinceArrival != nil {
 				since = *r.DaysSinceArrival
 			}
+			if agencyExpired(r.DaysSinceArrival) {
+				add(r, "agencia_vencido", "alta", fmt.Sprintf("%d días en agencia: corresponde el retorno", since), since)
+				break
+			}
 			switch r.Alert {
-			case "vencido":
-				add(r, "agencia_vencido", "alta", "Venció el plazo de recojo: gestionar el retorno", since)
-			case "rojo":
+			case "rojo", "vencido":
 				add(r, "agencia_rojo", "alta", fmt.Sprintf("%d días en agencia: recordar al cliente que recoja", since), since)
 			case "amarillo":
 				add(r, "agencia_amarillo", "media", fmt.Sprintf("%d días en agencia", since), since)

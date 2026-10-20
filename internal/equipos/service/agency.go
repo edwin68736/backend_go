@@ -59,3 +59,8 @@ func arrivalDate(raw string) (time.Time, error) {
 	}
 	return *d, nil
 }
+
+// agencyExpired indica si el paquete ya cumplió el plazo único de retorno (mismo día que el semáforo «crítico»).
+func agencyExpired(daysSinceArrival *int) bool {
+	return daysSinceArrival != nil && *daysSinceArrival >= AgencyReturnDays
+}
