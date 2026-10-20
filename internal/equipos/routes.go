@@ -50,6 +50,8 @@ func RegisterRoutes(saAPI fiber.Router) {
 
 	saAPI.Get("/equipos/orders", p("equipos.view"), h.ListOrders)
 	saAPI.Get("/equipos/orders/users", p("equipos.view"), h.OrderUsers)
+	saAPI.Get("/equipos/orders/assignable-users", middleware.RequireSuperAdminOnly(), h.AssignableUsers)
+	saAPI.Patch("/equipos/orders/:id/creator", middleware.RequireSuperAdminOnly(), h.AssignOrderCreator)
 	saAPI.Post("/equipos/orders", p("equipos.create"), h.CreateOrder)
 	saAPI.Get("/equipos/orders/:id", p("equipos.view"), h.GetOrder)
 	saAPI.Put("/equipos/orders/:id", p("equipos.update"), h.UpdateOrder)

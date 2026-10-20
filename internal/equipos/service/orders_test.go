@@ -427,3 +427,44 @@ func TestListOrdersFilterByCreator(t *testing.T) {
 		t.Errorf("opciones del filtro: %v %+v", err, us)
 	}
 }
+
+func TestAssignOrderCreator(t *testing.T) {
+	f := newFixture(t)
+	for _, u := range []database.SuperAdminUser{{ID: 1, Name: "Ana", Email: "a@example.com", Active: true}, {ID: 2, Name: "Beto", Email: "b@example.com", Active: true}, {ID: 3, Name: "Inactivo", Email: "c@example.com"}} {
+		u.Password = "x"
+		if err := f.s.db.Create(&u).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// El campo Active del tercero debe quedar en false (default:true de GORM lo pisa con cero).
+	f.s.db.Model(&database.SuperAdminUser{}).Where("id = 3").Update("active", false)
+	r, _ := f.s.CreateOrder(f.input(1, 100), 0)
+	id := r.Order.ID
+
+	if _, err := f.s.AssignOrderCreator(id, 99); !IsValidation(err) {
+		t.Errorf("usuario inexistente: %v", err)
+	}
+	if _, err := f.s.AssignOrderCreator(id, 3); !IsValidation(err) {
+		t.Errorf("usuario inactivo: %v", err)
+	}
+	if _, err := f.s.AssignOrderCreator(9999, 1); !errors.Is(err, ErrOrderNotFound) {
+		t.Errorf("pedido inexistente: %v", err)
+	}
+	if name, err := f.s.AssignOrderCreator(id, 1); err != nil || name != "Ana" {
+		t.Fatalf("asignar: %q %v", name, err)
+	}
+	if _, err := f.s.AssignOrderCreator(id, 1); err != nil {
+		t.Errorf("idempotente: %v", err)
+	}
+	if _, err := f.s.AssignOrderCreator(id, 2); !errors.Is(err, ErrOrderHasOwner) {
+		t.Errorf("reasignar debe fallar: %v", err)
+	}
+	v, _ := f.s.GetOrder(id)
+	if v.CreatedBy == nil || *v.CreatedBy != 1 || v.CreatedByName != "Ana" {
+		t.Errorf("quedó: %+v", v.EquipOrder.CreatedBy)
+	}
+	us, err := f.s.ActiveUsers()
+	if err != nil || len(us) != 2 {
+		t.Errorf("usuarios activos: %v %+v", err, us)
+	}
+}

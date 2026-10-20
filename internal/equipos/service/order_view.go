@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -353,4 +354,54 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// Errores tipados del reparto de pedidos sin usuario (el handler los traduce a 404 y 409).
+var (
+	ErrOrderNotFound = errors.New("pedido no encontrado")
+	ErrOrderHasOwner = errors.New("el pedido ya tiene un usuario registrado; no se puede reasignar")
+)
+
+// ActiveUsers todos los usuarios activos del panel (solo id y nombre) para asignar pedidos sin usuario.
+func (s *Service) ActiveUsers() ([]OrderUserOption, error) {
+	out := []OrderUserOption{}
+	err := s.db.Table("super_admin_users").Select("id, name").Where("active = ?", true).Order("name ASC, id ASC").Scan(&out).Error
+	return out, err
+}
+
+// AssignOrderCreator asigna usuario a un pedido que no tiene. Solo funciona con created_by nulo;
+// repetir la misma asignación es idempotente y con otro usuario devuelve ErrOrderHasOwner.
+// Devuelve el nombre del usuario asignado.
+func (s *Service) AssignOrderCreator(orderID, userID uint) (string, error) {
+	var u struct {
+		Name   string
+		Active bool
+	}
+	res := s.db.Table("super_admin_users").Select("name, active").Where("id = ?", userID).Limit(1).Scan(&u)
+	if res.Error != nil {
+		return "", res.Error
+	}
+	if res.RowsAffected == 0 {
+		return "", invalid("el usuario no existe")
+	}
+	if !u.Active {
+		return "", invalid("el usuario está inactivo")
+	}
+	upd := s.db.Model(&database.EquipOrder{}).Where("id = ? AND created_by IS NULL", orderID).Update("created_by", userID)
+	if upd.Error != nil {
+		return "", upd.Error
+	}
+	if upd.RowsAffected == 1 {
+		return u.Name, nil
+	}
+	var o database.EquipOrder
+	if found, err := findOne(s.db, &o, "id = ?", orderID); err != nil {
+		return "", err
+	} else if !found {
+		return "", ErrOrderNotFound
+	}
+	if o.CreatedBy != nil && *o.CreatedBy == userID {
+		return u.Name, nil
+	}
+	return "", ErrOrderHasOwner
 }

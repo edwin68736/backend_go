@@ -430,3 +430,37 @@ func (h *Handler) AllocatePayment(c fiber.Ctx) error {
 	audit(c, "equip_payment_allocated", "equip_payment", id, b)
 	return c.JSON(fiber.Map{"data": v})
 }
+
+// AssignableUsers usuarios activos del panel que se pueden asignar a un pedido sin usuario (solo superadmin).
+func (h *Handler) AssignableUsers(c fiber.Ctx) error {
+	us, err := svc().ActiveUsers()
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"data": us})
+}
+
+// AssignOrderCreator PATCH /equipos/orders/:id/creator {user_id}: solo superadmin y solo pedidos sin usuario.
+func (h *Handler) AssignOrderCreator(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	var in struct {
+		UserID uint `json:"user_id"`
+	}
+	if err := c.Bind().JSON(&in); err != nil || in.UserID == 0 {
+		return badBody(c)
+	}
+	name, err := svc().AssignOrderCreator(id, in.UserID)
+	switch {
+	case errors.Is(err, service.ErrOrderNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	case errors.Is(err, service.ErrOrderHasOwner):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+	case err != nil:
+		return fail(c, err)
+	}
+	audit(c, "equip_order_creator_assigned", "equip_order", id, fiber.Map{"assigned_user_id": in.UserID, "assigned_user_name": name})
+	return c.JSON(fiber.Map{"data": fiber.Map{"created_by": in.UserID, "created_by_name": name}})
+}
