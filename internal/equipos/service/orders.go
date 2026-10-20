@@ -508,15 +508,9 @@ func (s *Service) UpdateOrder(id uint, in OrderInput, confirm ConfirmInput, user
 		if o.Status == "registrado" && len(items) == 0 {
 			return invalid("un pedido confirmado necesita al menos un ítem")
 		}
-		prevCustomer := o.CustomerID
+		// El cliente y quien recoge se pueden corregir aunque el pedido ya tenga cobros aplicados.
 		if err := s.resolveCustomer(tx, in, o); err != nil {
 			return err
-		}
-		// Con cobros aplicados el cliente no puede cambiar por detrás de ellos.
-		var alloc int64
-		tx.Model(&database.EquipPaymentAllocation{}).Where("order_id = ?", o.ID).Count(&alloc)
-		if alloc > 0 && !sameUint(prevCustomer, o.CustomerID) {
-			return invalid("el pedido tiene cobros aplicados: no se puede cambiar el cliente")
 		}
 		o.SaleType, o.BillingDocType, o.Notes = saleType, billing, strings.TrimSpace(in.Notes)
 		if date != nil {

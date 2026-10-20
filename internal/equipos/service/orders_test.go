@@ -468,3 +468,20 @@ func TestAssignOrderCreator(t *testing.T) {
 		t.Errorf("usuarios activos: %v %+v", err, us)
 	}
 }
+
+func TestUpdateOrderCustomerAndContactWithPayments(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	if _, err := f.s.CreatePayment(PaymentInput{CustomerID: o.CustomerID, Amount: 40, Method: "yape", Moment: "anticipado", AutoAllocate: true}, 1); err != nil {
+		t.Fatal(err)
+	}
+	in := f.input(1, 100)
+	in.CustomerName, in.CustomerDocNumber, in.ContactName, in.ContactDNI = "María López", "87654321", "Pedro Ruiz", "11223344"
+	r, err := f.s.UpdateOrder(o.ID, in, ConfirmInput{}, 1)
+	if err != nil {
+		t.Fatalf("editar cliente con cobros: %v", err)
+	}
+	if r.Order.CustomerName != "María López" || r.Order.ContactName != "Pedro Ruiz" || r.Order.PaidAmount != 40 {
+		t.Errorf("quedó: %+v", r.Order.EquipOrder)
+	}
+}
