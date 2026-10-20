@@ -47,12 +47,13 @@ type TimelineEvent struct {
 // OrderView pedido completo para la pantalla.
 type OrderView struct {
 	database.EquipOrder
-	Items    []OrderItemView         `json:"items"`
-	Customer *database.EquipCustomer `json:"customer"`
-	Payments []PaymentLine           `json:"payments"`
-	Shipment *ShipmentView           `json:"shipment"`
-	Packing  []PackingLine           `json:"packing"`
-	Timeline []TimelineEvent         `json:"timeline"`
+	Items         []OrderItemView         `json:"items"`
+	Customer      *database.EquipCustomer `json:"customer"`
+	CreatedByName string                  `json:"created_by_name"`
+	Payments      []PaymentLine           `json:"payments"`
+	Shipment      *ShipmentView           `json:"shipment"`
+	Packing       []PackingLine           `json:"packing"`
+	Timeline      []TimelineEvent         `json:"timeline"`
 }
 
 func invoiceText(p database.EquipPayment) string {
@@ -70,6 +71,13 @@ func (s *Service) GetOrder(id uint) (*OrderView, error) {
 		return nil, invalid("pedido no encontrado")
 	}
 	v := &OrderView{EquipOrder: o, Payments: []PaymentLine{}}
+	if o.CreatedBy != nil {
+		var name string
+		if err := s.db.Table("super_admin_users").Select("name").Where("id = ?", *o.CreatedBy).Scan(&name).Error; err != nil {
+			return nil, err
+		}
+		v.CreatedByName = name
+	}
 
 	var items []database.EquipOrderItem
 	if err := s.db.Where("order_id = ?", id).Order("line_no ASC, id ASC").Find(&items).Error; err != nil {
@@ -213,7 +221,25 @@ type OrderFilter struct {
 	ShipmentStatus   string
 	CarrierID        uint
 	Department       string
+	CreatedBy        uint // usuario del panel que registró el pedido
+	NoCreator        bool // solo pedidos sin usuario registrado (antiguos o importados sin dato)
 	Page, PerPage    int
+}
+
+// OrderUserOption usuario que ha registrado al menos un pedido (opciones del filtro «Usuario»).
+type OrderUserOption struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
+
+// OrderUsers lista, sin datos sensibles, a los usuarios que registraron pedidos.
+func (s *Service) OrderUsers() ([]OrderUserOption, error) {
+	out := []OrderUserOption{}
+	err := s.db.Table("super_admin_users u").
+		Select("u.id, u.name").
+		Where("u.id IN (?)", s.db.Table("equip_orders").Select("DISTINCT created_by").Where("created_by IS NOT NULL")).
+		Order("u.name ASC, u.id ASC").Scan(&out).Error
+	return out, err
 }
 
 type OrderRow struct {
@@ -236,6 +262,8 @@ type OrderRow struct {
 	GuideNumber      string    `json:"guide_number"`
 	Department       string    `json:"department"`
 	Summary          string    `json:"summary"`
+	CreatedBy        *uint     `json:"created_by"`
+	CreatedByName    string    `json:"created_by_name"`
 }
 
 type OrderListResult struct {
@@ -256,7 +284,13 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 	}
 	base := s.db.Table("equip_orders o").
 		Joins("LEFT JOIN equip_shipments sh ON sh.order_id = o.id AND sh.is_current = ?", true).
-		Joins("LEFT JOIN equip_carriers c ON c.id = sh.carrier_id")
+		Joins("LEFT JOIN equip_carriers c ON c.id = sh.carrier_id").
+		Joins("LEFT JOIN super_admin_users cu ON cu.id = o.created_by")
+	if f.CreatedBy > 0 {
+		base = base.Where("o.created_by = ?", f.CreatedBy)
+	} else if f.NoCreator {
+		base = base.Where("o.created_by IS NULL")
+	}
 	if q := strings.TrimSpace(f.Q); q != "" {
 		like := "%" + strings.ToLower(q) + "%"
 		base = base.Where("LOWER(o.customer_name) LIKE ? OR o.customer_doc_number LIKE ? OR o.customer_phone LIKE ? OR sh.guide_number LIKE ? OR CAST(o.order_number AS CHAR) = ?",
@@ -297,7 +331,7 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 	res.SumTotal, res.SumBalance = round2(sm.T), round2(sm.B)
 
 	if err := base.Session(&gorm.Session{}).
-		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department").
+		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, o.created_by, COALESCE(cu.name, '') AS created_by_name").
 		Order("o.order_number DESC").Limit(f.PerPage).Offset((f.Page - 1) * f.PerPage).Scan(&res.Rows).Error; err != nil {
 		return nil, err
 	}

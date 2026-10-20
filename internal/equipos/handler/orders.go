@@ -112,7 +112,9 @@ func (h *Handler) ListOrders(c fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page"))
 	per, _ := strconv.Atoi(c.Query("per_page"))
 	carrier, _ := strconv.ParseUint(c.Query("carrier_id"), 10, 32)
+	creator, _ := strconv.ParseUint(c.Query("created_by"), 10, 32)
 	res, err := svc().ListOrders(service.OrderFilter{
+		CreatedBy: uint(creator), NoCreator: c.Query("created_by") == "none",
 		Q: c.Query("q"), From: c.Query("from"), To: c.Query("to"), SaleType: c.Query("sale_type"), PaymentStatus: c.Query("payment_status"),
 		ValidationStatus: c.Query("validation_status"), Status: c.Query("status"), ShipmentStatus: c.Query("shipment_status"),
 		CarrierID: uint(carrier), Department: c.Query("department"), Page: page, PerPage: per,
@@ -121,6 +123,15 @@ func (h *Handler) ListOrders(c fiber.Ctx) error {
 		return fail(c, err)
 	}
 	return c.JSON(fiber.Map{"data": res})
+}
+
+// OrderUsers opciones del filtro «Usuario» de la lista de pedidos.
+func (h *Handler) OrderUsers(c fiber.Ctx) error {
+	us, err := svc().OrderUsers()
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"data": us})
 }
 
 func (h *Handler) GetOrder(c fiber.Ctx) error {

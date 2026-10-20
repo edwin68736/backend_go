@@ -386,3 +386,44 @@ func TestSetNoPaymentAndListFilters(t *testing.T) {
 		t.Fatalf("clientes: %v %+v", err, rows)
 	}
 }
+
+func TestListOrdersFilterByCreator(t *testing.T) {
+	f := newFixture(t)
+	for _, u := range []database.SuperAdminUser{{ID: 1, Name: "Ana", Email: "a@example.com"}, {ID: 2, Name: "Beto", Email: "b@example.com"}, {ID: 3, Name: "Sin pedidos", Email: "c@example.com"}} {
+		u.Password = "x"
+		if err := f.s.db.Create(&u).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, uid := range []uint{1, 1, 2} {
+		if _, err := f.s.CreateOrder(f.input(1, 100), uid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.s.CreateOrder(f.input(1, 100), 0); err != nil { // sin usuario
+		t.Fatal(err)
+	}
+	res, err := f.s.ListOrders(OrderFilter{CreatedBy: 1})
+	if err != nil || res.Total != 2 || len(res.Rows) != 2 || res.Rows[0].CreatedByName != "Ana" {
+		t.Fatalf("filtro por usuario: %v %+v", err, res)
+	}
+	res, _ = f.s.ListOrders(OrderFilter{CreatedBy: 1, Page: 2, PerPage: 1})
+	if res.Total != 2 || len(res.Rows) != 1 {
+		t.Errorf("paginación con filtro: %+v", res)
+	}
+	res, _ = f.s.ListOrders(OrderFilter{CreatedBy: 2, Status: "registrado"})
+	if res.Total != 0 {
+		t.Errorf("combinado con otro filtro: %+v", res)
+	}
+	res, _ = f.s.ListOrders(OrderFilter{NoCreator: true})
+	if res.Total != 1 || res.Rows[0].CreatedBy != nil || res.Rows[0].CreatedByName != "" {
+		t.Errorf("sin usuario: %+v", res)
+	}
+	if res, _ = f.s.ListOrders(OrderFilter{}); res.Total != 4 {
+		t.Errorf("sin filtro: %+v", res)
+	}
+	us, err := f.s.OrderUsers()
+	if err != nil || len(us) != 2 || us[0].Name != "Ana" || us[1].Name != "Beto" {
+		t.Errorf("opciones del filtro: %v %+v", err, us)
+	}
+}

@@ -49,6 +49,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Get("/equipos/customers/:id/open-balances", p("equipos.payments_view"), h.OpenBalances)
 
 	saAPI.Get("/equipos/orders", p("equipos.view"), h.ListOrders)
+	saAPI.Get("/equipos/orders/users", p("equipos.view"), h.OrderUsers)
 	saAPI.Post("/equipos/orders", p("equipos.create"), h.CreateOrder)
 	saAPI.Get("/equipos/orders/:id", p("equipos.view"), h.GetOrder)
 	saAPI.Put("/equipos/orders/:id", p("equipos.update"), h.UpdateOrder)
