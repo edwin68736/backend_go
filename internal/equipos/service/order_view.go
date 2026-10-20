@@ -1,8 +1,8 @@
 package service
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -221,6 +221,8 @@ type OrderFilter struct {
 	Status           string
 	ShipmentStatus   string
 	CarrierID        uint
+	Agency           string // "con_llegada": en agencia y con fecha de llegada
+	Sort             string // "agency_days": más días en agencia primero
 	Department       string
 	CreatedBy        uint // usuario del panel que registró el pedido
 	NoCreator        bool // solo pedidos sin usuario registrado (antiguos o importados sin dato)
@@ -244,27 +246,33 @@ func (s *Service) OrderUsers() ([]OrderUserOption, error) {
 }
 
 type OrderRow struct {
-	ID               uint      `json:"id"`
-	OrderNumber      int       `json:"order_number"`
-	SaleType         string    `json:"sale_type"`
-	OrderDate        time.Time `json:"order_date"`
-	CustomerName     string    `json:"customer_name"`
-	CustomerDocType  string    `json:"customer_doc_type"`
-	CustomerDoc      string    `json:"customer_doc_number"`
-	TotalAmount      float64   `json:"total_amount"`
-	PaidAmount       float64   `json:"paid_amount"`
-	BalanceAmount    float64   `json:"balance_amount"`
-	PaymentStatus    string    `json:"payment_status"`
-	ValidationStatus string    `json:"validation_status"`
-	Status           string    `json:"status"`
-	IsGift           bool      `json:"is_gift"`
-	ShipmentStatus   string    `json:"shipment_status"`
-	CarrierName      string    `json:"carrier_name"`
-	GuideNumber      string    `json:"guide_number"`
-	Department       string    `json:"department"`
-	Summary          string    `json:"summary"`
-	CreatedBy        *uint     `json:"created_by"`
-	CreatedByName    string    `json:"created_by_name"`
+	ID                uint       `json:"id"`
+	OrderNumber       int        `json:"order_number"`
+	SaleType          string     `json:"sale_type"`
+	OrderDate         time.Time  `json:"order_date"`
+	CustomerName      string     `json:"customer_name"`
+	CustomerDocType   string     `json:"customer_doc_type"`
+	CustomerDoc       string     `json:"customer_doc_number"`
+	TotalAmount       float64    `json:"total_amount"`
+	PaidAmount        float64    `json:"paid_amount"`
+	BalanceAmount     float64    `json:"balance_amount"`
+	PaymentStatus     string     `json:"payment_status"`
+	ValidationStatus  string     `json:"validation_status"`
+	Status            string     `json:"status"`
+	IsGift            bool       `json:"is_gift"`
+	ShipmentStatus    string     `json:"shipment_status"`
+	CarrierName       string     `json:"carrier_name"`
+	GuideNumber       string     `json:"guide_number"`
+	Department        string     `json:"department"`
+	Summary           string     `json:"summary"`
+	ArrivedAt         *time.Time `json:"arrived_at"`
+	DaysInAgency      *int       `json:"days_in_agency"`
+	DaysLeft          *int       `json:"days_left"`
+	AgencyLevel       string     `json:"agency_level"` // verde | amarillo | rojo | critico | sin_fecha | ""
+	AgencyLabel       string     `json:"agency_label"`
+	DestinationAgency string     `json:"destination_agency"`
+	CreatedBy         *uint      `json:"created_by"`
+	CreatedByName     string     `json:"created_by_name"`
 }
 
 type OrderListResult struct {
@@ -315,6 +323,9 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 	if f.CarrierID > 0 {
 		base = base.Where("sh.carrier_id = ?", f.CarrierID)
 	}
+	if f.Agency == "con_llegada" {
+		base = base.Where("sh.status = ? AND sh.arrived_at IS NOT NULL", "en_agencia")
+	}
 	if dep := strings.TrimSpace(f.Department); dep != "" {
 		base = base.Where("LOWER(sh.destination_department) = ?", strings.ToLower(dep))
 	}
@@ -331,10 +342,29 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 	}
 	res.SumTotal, res.SumBalance = round2(sm.T), round2(sm.B)
 
+	orderBy := "o.order_number DESC"
+	if f.Sort == "agency_days" { // llegada más antigua = más días; sin fecha al final
+		orderBy = "CASE WHEN sh.arrived_at IS NULL THEN 1 ELSE 0 END, sh.arrived_at ASC, o.order_number DESC"
+	}
 	if err := base.Session(&gorm.Session{}).
-		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, o.created_by, COALESCE(cu.name, '') AS created_by_name").
-		Order("o.order_number DESC").Limit(f.PerPage).Offset((f.Page - 1) * f.PerPage).Scan(&res.Rows).Error; err != nil {
+		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, sh.arrived_at, COALESCE(sh.destination_agency, '') AS destination_agency, o.created_by, COALESCE(cu.name, '') AS created_by_name").
+		Order(orderBy).
+		Limit(f.PerPage).Offset((f.Page - 1) * f.PerPage).Scan(&res.Rows).Error; err != nil {
 		return nil, err
+	}
+	today := todayNoon()
+	for i := range res.Rows {
+		r := &res.Rows[i]
+		if r.ShipmentStatus != "en_agencia" {
+			continue
+		}
+		if r.ArrivedAt == nil {
+			r.AgencyLevel, r.AgencyLabel = "sin_fecha", "Sin fecha de llegada"
+			continue
+		}
+		d := daysInAgency(*r.ArrivedAt, today)
+		level, label, left := agencyReturnStatus(d)
+		r.DaysInAgency, r.DaysLeft, r.AgencyLevel, r.AgencyLabel = &d, &left, level, label
 	}
 	if len(res.Rows) > 0 {
 		ids := make([]uint, len(res.Rows))

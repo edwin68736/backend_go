@@ -302,7 +302,7 @@ func (s *Service) MarkArrived(orderID uint, date string) (*OrderResult, error) {
 		if sh.Status != "en_transito" {
 			return nil, invalid("solo un envío en tránsito puede llegar a la agencia (estado: %s)", shipmentStatusLabel(sh.Status))
 		}
-		d, err := actionDate(date)
+		d, err := arrivalDate(date)
 		if err != nil {
 			return nil, err
 		}
@@ -363,10 +363,7 @@ func alertFor(sh *database.EquipShipment, yellow, red int, today time.Time) (sin
 	if sh.Status != "en_agencia" || sh.ArrivedAt == nil {
 		return nil, nil, ""
 	}
-	d := int(today.Sub(noonLima(*sh.ArrivedAt)).Hours() / 24)
-	if d < 0 {
-		d = 0
-	}
+	d := daysInAgency(*sh.ArrivedAt, today)
 	since = &d
 	if sh.PickupDeadline != nil {
 		l := int(noonLima(*sh.PickupDeadline).Sub(today).Hours() / 24)

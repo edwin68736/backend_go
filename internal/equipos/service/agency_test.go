@@ -1,0 +1,100 @@
+package service
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"tukifac/pkg/database"
+)
+
+func TestAgencyReturnStatusBoundaries(t *testing.T) {
+	cases := []struct {
+		days  int
+		level string
+		label string
+		left  int
+	}{
+		{0, "verde", "Faltan 15 días", 15}, {7, "verde", "Faltan 8 días", 8}, {8, "amarillo", "Faltan 7 días", 7},
+		{11, "amarillo", "Faltan 4 días", 4}, {12, "rojo", "Faltan 3 días", 3}, {14, "rojo", "Falta 1 día", 1},
+		{15, "critico", "Retornar ya", 0}, {30, "critico", "Retornar ya", 0},
+	}
+	for _, c := range cases {
+		level, label, left := agencyReturnStatus(c.days)
+		if level != c.level || label != c.label || left != c.left {
+			t.Errorf("%d días: %s %q %d, want %s %q %d", c.days, level, label, left, c.level, c.label, c.left)
+		}
+	}
+}
+
+func TestDaysInAgencyUsesLimaCalendarDays(t *testing.T) {
+	lima := limaLoc()
+	arrived := time.Date(2026, 10, 1, 23, 30, 0, 0, lima) // 04:30 UTC del día 2
+	today := time.Date(2026, 10, 3, 0, 10, 0, 0, lima)
+	if d := daysInAgency(arrived, today); d != 2 {
+		t.Errorf("días calendario en Lima: %d, want 2", d)
+	}
+	if d := daysInAgency(today, arrived); d != 0 {
+		t.Errorf("nunca negativo: %d", d)
+	}
+}
+
+func TestMarkArrivedDateRules(t *testing.T) {
+	f := newFixture(t)
+	mk := func() uint {
+		o := f.confirmed(t, 1, 100)
+		if _, err := f.s.ValidateOrder(o.ID, "", 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.UpdateShipment(o.ID, ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "G1", DestinationDepartment: "Cusco", DeliveryMode: "agencia"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.DispatchOrder(o.ID, ""); err != nil {
+			t.Fatal(err)
+		}
+		return o.ID
+	}
+	id := mk()
+	tomorrow := todayNoon().AddDate(0, 0, 1).Format("2006-01-02")
+	if _, err := f.s.MarkArrived(id, tomorrow); err == nil || !strings.Contains(err.Error(), "futura") {
+		t.Errorf("fecha futura: %v", err)
+	}
+	r, err := f.s.MarkArrived(id, "")
+	if err != nil || r.Order.Shipment.ArrivedAt == nil || r.Order.Shipment.ArrivedAt.In(limaLoc()).Format("2006-01-02") != todayNoon().Format("2006-01-02") {
+		t.Fatalf("por defecto hoy en Lima: %v %+v", err, r)
+	}
+}
+
+func TestListOrdersAgencyView(t *testing.T) {
+	f := newFixture(t)
+	ids := []uint{}
+	for i := 0; i < 3; i++ {
+		o := f.shipped(t, 1, 100)
+		ids = append(ids, o.ID)
+	}
+	arrive := func(id uint, daysAgo int) {
+		d := todayNoon().AddDate(0, 0, -daysAgo)
+		if err := f.s.db.Model(&database.EquipShipment{}).Where("order_id = ?", id).Update("arrived_at", d).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	arrive(ids[0], 3)
+	arrive(ids[1], 15)
+	// ids[2]: en agencia pero sin fecha de llegada (dato antiguo)
+	f.s.db.Model(&database.EquipShipment{}).Where("order_id = ?", ids[2]).Update("arrived_at", nil)
+
+	res, err := f.s.ListOrders(OrderFilter{ShipmentStatus: "en_agencia", Agency: "con_llegada", Sort: "agency_days"})
+	if err != nil || res.Total != 2 || len(res.Rows) != 2 {
+		t.Fatalf("con llegada: %v %+v", err, res)
+	}
+	if res.Rows[0].ID != ids[1] || *res.Rows[0].DaysInAgency != 15 || res.Rows[0].AgencyLevel != "critico" || res.Rows[0].AgencyLabel != "Retornar ya" {
+		t.Errorf("primero el de más días: %+v", res.Rows[0])
+	}
+	if res.Rows[1].AgencyLevel != "verde" || *res.Rows[1].DaysLeft != 12 {
+		t.Errorf("segundo: %+v", res.Rows[1])
+	}
+	all, _ := f.s.ListOrders(OrderFilter{ShipmentStatus: "en_agencia", Sort: "agency_days"})
+	if all.Total != 3 || all.Rows[2].ID != ids[2] || all.Rows[2].AgencyLevel != "sin_fecha" || all.Rows[2].DaysInAgency != nil {
+		t.Errorf("sin fecha al final y sin contador: %+v", all.Rows)
+	}
+}

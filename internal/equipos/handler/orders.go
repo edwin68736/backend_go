@@ -112,9 +112,10 @@ func (h *Handler) ListOrders(c fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page"))
 	per, _ := strconv.Atoi(c.Query("per_page"))
 	carrier, _ := strconv.ParseUint(c.Query("carrier_id"), 10, 32)
+	agency, sortBy := c.Query("agency"), c.Query("sort")
 	creator, _ := strconv.ParseUint(c.Query("created_by"), 10, 32)
 	res, err := svc().ListOrders(service.OrderFilter{
-		CreatedBy: uint(creator), NoCreator: c.Query("created_by") == "none",
+		CreatedBy: uint(creator), NoCreator: c.Query("created_by") == "none", Agency: agency, Sort: sortBy,
 		Q: c.Query("q"), From: c.Query("from"), To: c.Query("to"), SaleType: c.Query("sale_type"), PaymentStatus: c.Query("payment_status"),
 		ValidationStatus: c.Query("validation_status"), Status: c.Query("status"), ShipmentStatus: c.Query("shipment_status"),
 		CarrierID: uint(carrier), Department: c.Query("department"), Page: page, PerPage: per,
@@ -341,8 +342,7 @@ func shipmentAction(name string, fn func(*service.Service, uint, string) (*servi
 
 var (
 	DispatchOrder = shipmentAction("equip_shipment_dispatched", (*service.Service).DispatchOrder)
-	ArrivedOrder  = shipmentAction("equip_shipment_arrived", (*service.Service).MarkArrived)
-	PickedUpOrder = shipmentAction("equip_shipment_picked_up", (*service.Service).MarkPickedUp)
+		PickedUpOrder = shipmentAction("equip_shipment_picked_up", (*service.Service).MarkPickedUp)
 )
 
 func (h *Handler) LabelPrinted(c fiber.Ctx) error {
@@ -463,4 +463,28 @@ func (h *Handler) AssignOrderCreator(c fiber.Ctx) error {
 	}
 	audit(c, "equip_order_creator_assigned", "equip_order", id, fiber.Map{"assigned_user_id": in.UserID, "assigned_user_name": name})
 	return c.JSON(fiber.Map{"data": fiber.Map{"created_by": in.UserID, "created_by_name": name}})
+}
+
+// ArrivedOrder POST /equipos/orders/:id/arrived {date}: llegada a la agencia. Sin PIN (solo equipos.shipments);
+// la fecha por defecto es hoy en Lima, no puede ser futura y queda en la auditoría ya resuelta.
+func ArrivedOrder(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	var body struct {
+		Date string `json:"date"`
+	}
+	_ = c.Bind().JSON(&body)
+	res, err := svc().MarkArrived(id, body.Date)
+	if err != nil {
+		return fail(c, err)
+	}
+	arrived := ""
+	if res.Order != nil && res.Order.Shipment != nil && res.Order.Shipment.ArrivedAt != nil {
+		arrived = res.Order.Shipment.ArrivedAt.Format("2006-01-02")
+	}
+	audit(c, "equip_shipment_arrived", "equip_order", id, fiber.Map{"arrived_date": arrived, "requested_date": body.Date})
+	trimOrder(c, res.Order)
+	return c.JSON(fiber.Map{"data": res.Order, "warnings": res.Warnings})
 }
