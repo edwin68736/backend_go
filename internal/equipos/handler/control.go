@@ -19,6 +19,9 @@ func (h *Handler) ListReturns(c fiber.Ctx) error {
 }
 
 func (h *Handler) CreateReturn(c fiber.Ctx) error {
+	if !requirePin(c) { // mismo mecanismo que anular pedido: cabecera X-Security-Pin
+		return nil
+	}
 	var in service.ReturnInput
 	if err := c.Bind().JSON(&in); err != nil {
 		return badBody(c)
@@ -27,7 +30,7 @@ func (h *Handler) CreateReturn(c fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err)
 	}
-	audit(c, "equip_return_created", "equip_return", v.ID, in)
+	audit(c, "equip_return_created", "equip_return", v.ID, fiber.Map{"input": in, "pin_verified": true})
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": v})
 }
 

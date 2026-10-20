@@ -152,6 +152,11 @@ func (s *Service) CreateReturn(in ReturnInput, userID uint) (*ReturnView, error)
 			}
 			items = append(items, ReturnItem{ProductID: pid, Code: p.Code, Quantity: q})
 		}
+		for pid, q := range sold { // sin retornos parciales por ahora: se devuelve el pedido completo
+			if want[pid] != q {
+				return invalid("el retorno parcial aún no está disponible: se devuelve el pedido completo")
+			}
+		}
 		if len(items) == 0 {
 			return invalid("el retorno no tiene productos")
 		}
