@@ -196,7 +196,19 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 				SELECT 1 FROM tenant_product_presentation_stocks ps
 				JOIN tenant_product_presentations pr ON pr.id = ps.presentation_id AND pr.deleted_at IS NULL
 				WHERE pr.product_id = tenant_products.id AND ps.branch_id = ?
+			) OR (
+				NOT EXISTS (SELECT 1 FROM tenant_product_stocks s0 WHERE s0.product_id = tenant_products.id)
+				AND NOT EXISTS (
+					SELECT 1 FROM tenant_product_presentation_stocks ps0
+					JOIN tenant_product_presentations pr0 ON pr0.id = ps0.presentation_id AND pr0.deleted_at IS NULL
+					WHERE pr0.product_id = tenant_products.id
+				)
 			))`
+			// Último OR = producto "sin vincular": sin ninguna fila de stock (ni de presentaciones)
+			// en NINGUNA sucursal. No pertenece a una en particular, así que se ve en todas con
+			// stock 0 (vender o transferir sigue exigiendo stock). La fila de stock deja de ser
+			// criterio de visibilidad mientras no exista; antes, activar manage_stock sin crearla
+			// dejaba el producto activo pero invisible.
 			if productbranch.Ready(s.db) {
 				q = q.Where(productbranch.ListFilterSQL("tenant_products.id", legacy), bid, false, bid, bid)
 			} else {

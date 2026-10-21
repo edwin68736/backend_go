@@ -212,3 +212,47 @@ func TestBulkUpdateCatalog_ManageStockCreatesStockRow(t *testing.T) {
 		t.Fatalf("A no debe verse en la sucursal 2 (sin stock allí): %v", got)
 	}
 }
+
+// Producto con control de stock y SIN ninguna fila de stock (activado por una vía que no la creó)
+// se ve en todas las sucursales; uno vinculado solo a otra sucursal sigue sin verse (regla previa);
+// uno asignado explícitamente a otra sucursal queda oculto aunque no tenga filas.
+func TestProductBranchList_UnlinkedStockProductVisible(t *testing.T) {
+	db := setupProductBranchTestDB(t, true)
+	createBranchTestProduct(t, db, "SIN-FILA", true)
+	linked := createBranchTestProduct(t, db, "SOLO-NORTE-STOCK", true)
+	if err := db.Create(&database.TenantProductStock{ProductID: linked, BranchID: 2}).Error; err != nil {
+		t.Fatal(err)
+	}
+	assigned := createBranchTestProduct(t, db, "ASIGNADO-NORTE", true)
+	if err := productbranch.Set(db, assigned, []uint{2}); err != nil {
+		t.Fatal(err)
+	}
+	g1 := listCodesInBranch(t, db, 1)
+	if !g1["SIN-FILA"] || g1["SOLO-NORTE-STOCK"] || g1["ASIGNADO-NORTE"] {
+		t.Fatalf("sucursal 1: %v", g1)
+	}
+	g2 := listCodesInBranch(t, db, 2)
+	if !g2["SIN-FILA"] || !g2["SOLO-NORTE-STOCK"] || !g2["ASIGNADO-NORTE"] {
+		t.Fatalf("sucursal 2: %v", g2)
+	}
+}
+
+// Producto con variantes: el stock por presentación en otra sucursal lo ata a ella; sin ninguna
+// fila de presentaciones se considera sin vincular.
+func TestProductBranchList_UnlinkedVariantsProduct(t *testing.T) {
+	db := setupProductBranchTestDB(t, true)
+	free := createBranchTestProduct(t, db, "VAR-LIBRE", true)
+	tied := createBranchTestProduct(t, db, "VAR-NORTE", true)
+	pr := database.TenantProductPresentation{ProductID: tied, Name: "Rojo"}
+	if err := db.Create(&pr).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantProductPresentationStock{PresentationID: pr.ID, BranchID: 2}).Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = free
+	g1 := listCodesInBranch(t, db, 1)
+	if !g1["VAR-LIBRE"] || g1["VAR-NORTE"] {
+		t.Fatalf("sucursal 1: %v", g1)
+	}
+}
