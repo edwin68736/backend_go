@@ -151,3 +151,55 @@ func TestAgencyViewAllOrderAndSingleDeadline(t *testing.T) {
 		t.Error("agencyExpired en el límite")
 	}
 }
+
+func TestUpdateShippingData(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	cost := 12.5
+	r, ch, err := f.s.UpdateShippingData(o.ID, ShippingDataInput{GuideNumber: " G-123 ", FreightCost: &cost, ScheduledDispatchDate: "2026-10-30"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh := r.Order.Shipment
+	if sh == nil || sh.GuideNumber != "G-123" || sh.FreightCost != 12.5 || sh.ScheduledDispatchDate == nil || sh.Status != "pendiente_envio" || ch.GuideAfter != "G-123" {
+		t.Fatalf("guardado (se crea el envío si no existía): %+v %+v", sh, ch)
+	}
+	// Lo demás del envío no cambia.
+	if r.Order.TotalAmount != 100 || r.Order.BalanceAmount != 100 {
+		t.Errorf("el pedido no debe cambiar: %+v", r.Order.EquipOrder)
+	}
+	// Vaciar guía y fecha las quita; flete nil no cambia.
+	r, _, err = f.s.UpdateShippingData(o.ID, ShippingDataInput{})
+	if err != nil || r.Order.Shipment.GuideNumber != "" || r.Order.Shipment.ScheduledDispatchDate != nil || r.Order.Shipment.FreightCost != 12.5 {
+		t.Fatalf("limpiar: %v %+v", err, r.Order.Shipment)
+	}
+	bad := -1.0
+	frac := 1.234
+	for name, in := range map[string]ShippingDataInput{
+		"flete negativo":   {FreightCost: &bad},
+		"flete 3 decimales": {FreightCost: &frac},
+		"guía inválida":    {GuideNumber: "<script>"},
+		"guía larga":       {GuideNumber: strings.Repeat("A", 41)},
+		"fecha inválida":   {ScheduledDispatchDate: "31/12/2026"},
+	} {
+		if _, _, err := f.s.UpdateShippingData(o.ID, in); !IsValidation(err) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Envío entregado: cerrado.
+	sh2 := f.shipped(t, 1, 100)
+	if _, err := f.s.MarkPickedUp(sh2.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.s.UpdateShippingData(sh2.ID, ShippingDataInput{GuideNumber: "X1"}); err == nil || !strings.Contains(err.Error(), "no se puede modificar") {
+		t.Errorf("envío entregado: %v", err)
+	}
+	// Pedido anulado.
+	an := f.confirmed(t, 1, 100)
+	if _, err := f.s.CancelOrder(an.ID, "prueba", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.s.UpdateShippingData(an.ID, ShippingDataInput{GuideNumber: "X1"}); err == nil || !strings.Contains(err.Error(), "anulado") {
+		t.Errorf("pedido anulado: %v", err)
+	}
+}

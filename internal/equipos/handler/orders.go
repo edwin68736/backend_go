@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -342,7 +344,7 @@ func shipmentAction(name string, fn func(*service.Service, uint, string) (*servi
 
 var (
 	DispatchOrder = shipmentAction("equip_shipment_dispatched", (*service.Service).DispatchOrder)
-		PickedUpOrder = shipmentAction("equip_shipment_picked_up", (*service.Service).MarkPickedUp)
+	PickedUpOrder = shipmentAction("equip_shipment_picked_up", (*service.Service).MarkPickedUp)
 )
 
 func (h *Handler) LabelPrinted(c fiber.Ctx) error {
@@ -485,6 +487,32 @@ func ArrivedOrder(c fiber.Ctx) error {
 		arrived = res.Order.Shipment.ArrivedAt.Format("2006-01-02")
 	}
 	audit(c, "equip_shipment_arrived", "equip_order", id, fiber.Map{"arrived_date": arrived, "requested_date": body.Date})
+	trimOrder(c, res.Order)
+	return c.JSON(fiber.Map{"data": res.Order, "warnings": res.Warnings})
+}
+
+// UpdateShippingData PATCH /equipos/orders/:id/shipping-data: solo guía, flete y despacho programado (equipos.shipments).
+// Sin PIN: no cambia pedido, cobros ni totales. Rechaza cualquier otro campo.
+func (h *Handler) UpdateShippingData(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	var in service.ShippingDataInput
+	dec := json.NewDecoder(bytes.NewReader(c.Body()))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "solo se admiten guide_number, freight_cost y scheduled_dispatch_date"})
+	}
+	res, ch, err := svc().UpdateShippingData(id, in)
+	if err != nil {
+		return fail(c, err)
+	}
+	audit(c, "equip_shipping_data_updated", "equip_order", id, fiber.Map{
+		"guide":                   fiber.Map{"from": ch.GuideBefore, "to": ch.GuideAfter},
+		"freight_cost":            fiber.Map{"from": ch.FreightBefore, "to": ch.FreightAft},
+		"scheduled_dispatch_date": fiber.Map{"from": ch.DateBefore, "to": ch.DateAfter},
+	})
 	trimOrder(c, res.Order)
 	return c.JSON(fiber.Map{"data": res.Order, "warnings": res.Warnings})
 }

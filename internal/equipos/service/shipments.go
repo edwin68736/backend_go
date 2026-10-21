@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -527,4 +528,102 @@ func (s *Service) ListShipments(f ShipmentFilter) ([]ShipmentRow, error) {
 		})
 	}
 	return rows, nil
+}
+
+// ShippingDataInput los únicos tres datos que edita el modal rápido de «Agencia» en Pedidos.
+type ShippingDataInput struct {
+	GuideNumber           string   `json:"guide_number"`            // vacío = quitar la guía
+	FreightCost           *float64 `json:"freight_cost"`            // nil = no cambia; máx. 2 decimales
+	ScheduledDispatchDate string   `json:"scheduled_dispatch_date"` // AAAA-MM-DD; vacío = quitar la fecha
+}
+
+// ShippingDataChange valores antes y después (para la auditoría).
+type ShippingDataChange struct {
+	GuideBefore, GuideAfter   string
+	FreightBefore, FreightAft float64
+	DateBefore, DateAfter     string
+}
+
+var guideCharsRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ./_-]*$`)
+
+// UpdateShippingData actualiza solo guía, flete y despacho programado del envío vigente, sin tocar lo demás.
+// Pedido anulado o envío entregado/en retorno no se edita. Si el pedido aún no tiene envío, se crea uno pendiente
+// (igual que al guardar el pedido). Aplica la validación de formato de guía del transportista.
+func (s *Service) UpdateShippingData(orderID uint, in ShippingDataInput) (*OrderResult, *ShippingDataChange, error) {
+	var warnings []string
+	ch := &ShippingDataChange{}
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		o, err := s.loadOrderForUpdate(tx, orderID)
+		if err != nil {
+			return err
+		}
+		if o.Status == "anulado" {
+			return invalid("el pedido está anulado")
+		}
+		guide := strings.TrimSpace(in.GuideNumber)
+		if len(guide) > 40 || (guide != "" && !guideCharsRe.MatchString(guide)) {
+			return invalid("la guía solo admite letras, números y - . / _ (máximo 40 caracteres)")
+		}
+		if in.FreightCost != nil {
+			f := *in.FreightCost
+			if f < 0 || f > 100000 || math.Abs(f*100-math.Round(f*100)) > 1e-6 {
+				return invalid("el costo del flete debe ser un monto entre 0 y 100000 con máximo 2 decimales")
+			}
+		}
+		date, err := parseDateOnly(in.ScheduledDispatchDate)
+		if err != nil {
+			return err
+		}
+		var sh database.EquipShipment
+		found, err := findOne(tx, &sh, "order_id = ? AND is_current = ?", orderID, true)
+		if err != nil {
+			return err
+		}
+		if !found {
+			sh = database.EquipShipment{OrderID: orderID, Status: "pendiente_envio", IsCurrent: true, DeliveryMode: "agencia"}
+			if err := s.applyShipmentInput(tx, &sh, nil); err != nil {
+				return err
+			}
+		} else if sh.Status == "entregado" || sh.Status == "retorno" {
+			return invalid("el envío ya está %s: no se puede modificar", shipmentStatusLabel(sh.Status))
+		}
+		if guide != "" {
+			if c, err := s.carrierByIDTx(tx, sh.CarrierID); err != nil {
+				return err
+			} else if c != nil && c.GuideFormat != "" {
+				if re, err := regexp.Compile(c.GuideFormat); err == nil && !re.MatchString(guide) {
+					return invalid("el %s no tiene el formato de %s", strings.ToLower(c.GuideLabel), c.Name)
+				}
+			}
+		}
+		ch.GuideBefore, ch.FreightBefore = sh.GuideNumber, sh.FreightCost
+		if sh.ScheduledDispatchDate != nil {
+			ch.DateBefore = sh.ScheduledDispatchDate.Format("2006-01-02")
+		}
+		sh.GuideNumber, sh.ScheduledDispatchDate = guide, date
+		if in.FreightCost != nil {
+			sh.FreightCost = *in.FreightCost
+		}
+		ch.GuideAfter, ch.FreightAft = sh.GuideNumber, sh.FreightCost
+		if date != nil {
+			ch.DateAfter = date.Format("2006-01-02")
+		}
+		if err := tx.Save(&sh).Error; err != nil {
+			return err
+		}
+		if sh.Status == "pendiente_envio" {
+			if msg := s.dispatchDayWarning(tx, &sh); msg != "" {
+				warnings = append(warnings, msg)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	v, err := s.GetOrder(orderID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &OrderResult{Order: v, Warnings: warnings}, ch, nil
 }
