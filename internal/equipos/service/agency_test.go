@@ -203,3 +203,20 @@ func TestUpdateShippingData(t *testing.T) {
 		t.Errorf("pedido anulado: %v", err)
 	}
 }
+
+func TestListOrdersRowCarriesShippingData(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	cost := 7.0
+	if _, _, err := f.s.UpdateShippingData(o.ID, ShippingDataInput{GuideNumber: "G9", FreightCost: &cost, ScheduledDispatchDate: "2026-11-03"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.s.ListOrders(OrderFilter{})
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatal(err, res)
+	}
+	r := res.Rows[0]
+	if r.GuideNumber != "G9" || r.FreightCost != 7 || r.ScheduledDispatchDate == nil {
+		t.Errorf("fila: %+v", r)
+	}
+}
