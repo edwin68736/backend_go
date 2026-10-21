@@ -2786,12 +2786,54 @@ func (s *ProductService) BulkUpdateCatalog(input BulkUpdateCatalogInput) (*BulkA
 		return nil, errors.New("se requiere al menos un campo para actualizar")
 	}
 
-	res := s.db.Model(&database.TenantProduct{}).
-		Where("id IN ?", input.ProductIDs).
-		Updates(updates)
+	var rowsAffected int64
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&database.TenantProduct{}).
+			Where("id IN ?", input.ProductIDs).
+			Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		rowsAffected = res.RowsAffected
+		// Al activar el control de stock hay que crear la fila de stock en la sucursal activa: el
+		// listado filtrado por sucursal exige "manage_stock = false OR fila de stock" (ver
+		// buildListQuery). Sin la fila los productos quedan activos pero invisibles en Productos.
+		// Caso real: 43 productos del tenant grupovillanova, 21-oct-2026.
+		if input.ManageStock != nil && *input.ManageStock && input.BranchID > 0 {
+			return linkProductsToBranchStock(tx, input.ProductIDs, input.BranchID)
+		}
+		return nil
+	})
 
 	return &BulkActionResult{
 		Success: 1,
-		Updated: int(res.RowsAffected),
-	}, res.Error
+		Updated: int(rowsAffected),
+	}, err
+}
+
+// linkProductsToBranchStock crea la fila de stock (cantidad 0) en branchID para los productos que
+// aún no la tienen. No toca las filas existentes.
+func linkProductsToBranchStock(tx *gorm.DB, productIDs []uint, branchID uint) error {
+	var have []uint
+	if err := tx.Model(&database.TenantProductStock{}).
+		Where("branch_id = ? AND product_id IN ?", branchID, productIDs).
+		Pluck("product_id", &have).Error; err != nil {
+		return err
+	}
+	seen := make(map[uint]struct{}, len(have)+len(productIDs))
+	for _, id := range have {
+		seen[id] = struct{}{}
+	}
+	var rows []database.TenantProductStock
+	for _, id := range productIDs {
+		if _, ok := seen[id]; ok || id == 0 {
+			continue
+		}
+		seen[id] = struct{}{}
+		rows = append(rows, database.TenantProductStock{ProductID: id, BranchID: branchID})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return tx.Create(&rows).Error
 }

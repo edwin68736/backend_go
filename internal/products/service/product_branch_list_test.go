@@ -179,3 +179,36 @@ func TestResolveImportBranches(t *testing.T) {
 		t.Fatal("una sucursal inexistente debe fallar la fila")
 	}
 }
+
+// Activar el control de stock en bloque debe crear la fila de stock en la sucursal activa; si no,
+// el producto queda activo pero invisible en el listado filtrado por sucursal.
+func TestBulkUpdateCatalog_ManageStockCreatesStockRow(t *testing.T) {
+	db := setupProductBranchTestDB(t, true)
+	a := createBranchTestProduct(t, db, "A", false)
+	b := createBranchTestProduct(t, db, "B", false)
+	if err := db.Create(&database.TenantProductStock{ProductID: b, BranchID: 1, Quantity: 5}).Error; err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	svc := NewProductService(db)
+	if _, err := svc.BulkUpdateCatalog(BulkUpdateCatalogInput{ProductIDs: []uint{a, b}, ManageStock: &yes, BranchID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got := listCodesInBranch(t, db, 1)
+	if !got["A"] || !got["B"] {
+		t.Fatalf("A y B deben verse en la sucursal 1, got %v", got)
+	}
+	var qty float64
+	db.Model(&database.TenantProductStock{}).Where("product_id = ? AND branch_id = 1", b).Select("quantity").Scan(&qty)
+	if qty != 5 {
+		t.Fatalf("no debe pisar el stock existente: %v", qty)
+	}
+	var n int64
+	db.Model(&database.TenantProductStock{}).Where("product_id = ?", a).Count(&n)
+	if n != 1 {
+		t.Fatalf("filas de A: %d", n)
+	}
+	if got := listCodesInBranch(t, db, 2); got["A"] {
+		t.Fatalf("A no debe verse en la sucursal 2 (sin stock allí): %v", got)
+	}
+}
