@@ -7,7 +7,6 @@ import (
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
-	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -112,11 +111,11 @@ func (h *UserHandler) CreateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if middleware.EnforceCreateQuota(c, tenantDB(c), saas.QuotaUsers) {
-		return nil
-	}
-	u, err := service.NewUserService(tenantDB(c)).Create(input)
+	u, err := service.NewUserService(tenantDB(c)).WithTenant(middleware.TenantIDFromClaims(c)).Create(input)
 	if err != nil {
+		if middleware.RespondQuotaError(c, err) {
+			return nil
+		}
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": fiber.Map{
@@ -135,7 +134,10 @@ func (h *UserHandler) UpdateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if err := service.NewUserService(tenantDB(c)).Update(uint(id), input); err != nil {
+	if err := service.NewUserService(tenantDB(c)).WithTenant(middleware.TenantIDFromClaims(c)).Update(uint(id), input); err != nil {
+		if middleware.RespondQuotaError(c, err) {
+			return nil
+		}
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
@@ -159,7 +161,10 @@ func (h *UserHandler) ToggleAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
-	if err := service.NewUserService(tenantDB(c)).ToggleActive(uint(id)); err != nil {
+	if err := service.NewUserService(tenantDB(c)).WithTenant(middleware.TenantIDFromClaims(c)).ToggleActive(uint(id)); err != nil {
+		if middleware.RespondQuotaError(c, err) {
+			return nil
+		}
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

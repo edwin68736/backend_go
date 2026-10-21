@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"tukifac/internal/restaurant/staff"
+	"tukifac/pkg/middleware"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -46,13 +47,16 @@ func (h *RestaurantHandler) CreateStaffUser(c fiber.Ctx) error {
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
-	item, err := staff.New(db(c)).CreateStaffUser(staff.CreateStaffUserInput{
+	item, err := staff.New(db(c)).WithTenant(middleware.TenantIDFromClaims(c)).CreateStaffUser(staff.CreateStaffUserInput{
 		Name: body.Name, Email: body.Email, Phone: body.Phone,
 		EmployeeType: body.EmployeeType, Pin: body.Pin,
 		StaffCode: body.StaffCode, DisplayName: body.DisplayName,
 		BranchIDs: body.BranchIDs,
 	})
 	if err != nil {
+		if middleware.RespondQuotaError(c, err) {
+			return nil
+		}
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(201).JSON(fiber.Map{"success": true, "data": item})

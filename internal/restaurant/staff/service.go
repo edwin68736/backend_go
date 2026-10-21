@@ -11,6 +11,7 @@ import (
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/restaurantperm"
+	"tukifac/pkg/saas"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -24,10 +25,18 @@ var ErrTenantOwnerRoleLocked = errors.New("no se puede cambiar el rol del usuari
 
 type Service struct {
 	db *gorm.DB
+	// tenantID activa el tope de usuarios del plan al crear usuarios operativos (ver
+	// saas.ReserveUserSeat). 0 = sin validar.
+	tenantID uint
 }
 
 func New(db *gorm.DB) *Service {
 	return &Service{db: db}
+}
+
+// WithTenant devuelve el servicio validando el límite de usuarios del plan de ese tenant.
+func (s *Service) WithTenant(tenantID uint) *Service {
+	return &Service{db: s.db, tenantID: tenantID}
 }
 
 func (s *Service) GetPermCacheVersion() (uint, error) {
@@ -289,6 +298,10 @@ func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem
 
 	var createdUserID uint
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Los usuarios operativos de Tukichef también ocupan un cupo de usuarios del plan.
+		if err := saas.ReserveUserSeat(tx, s.tenantID); err != nil {
+			return err
+		}
 		txSvc := &Service{db: tx}
 		user := &database.TenantUser{
 			RoleID:          roleID,

@@ -79,7 +79,7 @@ func (h *SessionHandler) GetModules(c fiber.Ctx) error {
 
 	// Uso actual en la BD del tenant (seats activos / productos vivos).
 	var usersUsed, branchesUsed, productsUsed int64
-	tdb.Model(&database.TenantUser{}).Where("active = ?", true).Count(&usersUsed)
+	usersUsed = saas.CountSeatUsers(tdb)
 	tdb.Model(&database.TenantBranch{}).Where("active = ?", true).Count(&branchesUsed)
 	tdb.Model(&database.TenantProduct{}).Count(&productsUsed)
 

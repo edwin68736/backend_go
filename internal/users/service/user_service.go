@@ -6,16 +6,39 @@ import (
 
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/saas"
 
 	"gorm.io/gorm"
 )
 
 type UserService struct {
 	db *gorm.DB
+	// tenantID activa el tope de usuarios del plan en altas y reactivaciones (ver
+	// saas.ReserveUserSeat). 0 = sin validar (uso interno/tests).
+	tenantID uint
 }
 
 func NewUserService(db *gorm.DB) *UserService {
 	return &UserService{db: db}
+}
+
+// WithTenant devuelve el servicio validando el límite de usuarios del plan de ese tenant.
+func (s *UserService) WithTenant(tenantID uint) *UserService {
+	return &UserService{db: s.db, tenantID: tenantID}
+}
+
+// inSeatTx ejecuta fn en una transacción que ya reservó un cupo de usuario del plan. Si no hay
+// tenant configurado o el tope no aplica, fn corre directamente sobre la conexión del servicio.
+func (s *UserService) inSeatTx(fn func(tx *UserService) error) error {
+	if s.tenantID == 0 {
+		return fn(s)
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := saas.ReserveUserSeat(tx, s.tenantID); err != nil {
+			return err
+		}
+		return fn(&UserService{db: tx})
+	})
 }
 
 type UserListParams struct {
@@ -60,6 +83,21 @@ type CreateUserInput struct {
 }
 
 func (s *UserService) Create(input CreateUserInput) (*database.TenantUser, error) {
+	// Se valida siempre, también con active=false: el tag `default:true` de TenantUser hace que GORM
+	// inserte activo a un bool en cero, así que "crear inactivo" no es una vía para saltarse el tope.
+	var created *database.TenantUser
+	err := s.inSeatTx(func(tx *UserService) error {
+		u, err := tx.create(input)
+		created = u
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+func (s *UserService) create(input CreateUserInput) (*database.TenantUser, error) {
 	if input.Name == "" || input.Email == "" || input.Password == "" {
 		return nil, errors.New("nombre, email y contraseña son requeridos")
 	}
@@ -135,6 +173,18 @@ func (s *UserService) Update(id uint, input UpdateUserInput) error {
 	if err != nil {
 		return errors.New("usuario no encontrado")
 	}
+	if input.Active && !user.Active {
+		// Reactivar ocupa un cupo del plan igual que un alta nueva.
+		return s.inSeatTx(func(tx *UserService) error { return tx.update(id, input) })
+	}
+	return s.update(id, input)
+}
+
+func (s *UserService) update(id uint, input UpdateUserInput) error {
+	user, err := s.GetByID(id)
+	if err != nil {
+		return errors.New("usuario no encontrado")
+	}
 
 	if input.RoleID > 0 && input.RoleID != user.RoleID {
 		locked, err := s.TenantRoleEditLocked(id, user.RoleID)
@@ -204,6 +254,18 @@ func (s *UserService) Delete(id uint) error {
 }
 
 func (s *UserService) ToggleActive(id uint) error {
+	var user database.TenantUser
+	if err := s.db.First(&user, id).Error; err != nil {
+		return err
+	}
+	if !user.Active {
+		// Reactivar ocupa un cupo del plan igual que un alta nueva.
+		return s.inSeatTx(func(tx *UserService) error { return tx.toggleActive(id) })
+	}
+	return s.toggleActive(id)
+}
+
+func (s *UserService) toggleActive(id uint) error {
 	var user database.TenantUser
 	if err := s.db.First(&user, id).Error; err != nil {
 		return err
