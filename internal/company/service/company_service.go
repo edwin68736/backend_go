@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/receiptdesign"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
 
@@ -49,6 +50,7 @@ func (s *CompanyService) GetConfig() (*database.TenantCompanyConfig, error) {
 	}
 	cfg.LogoSizeTicket = normalizeLogoSize(cfg.LogoSizeTicket)
 	cfg.LogoSizeA4 = normalizeLogoSize(cfg.LogoSizeA4)
+	cfg.PdfA4Design = receiptdesign.NormalizeA4(cfg.PdfA4Design)
 	return &cfg, nil
 }
 
@@ -70,6 +72,7 @@ type CompanyConfigPatch struct {
 	ShowIgvBreakdownOnSaleNote     *bool    `json:"show_igv_breakdown_on_sale_note"`
 	LogoSizeTicket                 *string  `json:"logo_size_ticket"`
 	LogoSizeA4                     *string  `json:"logo_size_a4"`
+	PdfA4Design                    *string  `json:"pdf_a4_design"`
 	DetractionBNAccount            *string  `json:"detraction_bn_account"`
 	DetractionDefaultPaymentMethod *string  `json:"detraction_default_payment_method"`
 	ColorTheme                     *string  `json:"color_theme"`
@@ -131,6 +134,9 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 	}
 	if patch.LogoSizeA4 != nil {
 		updates["logo_size_a4"] = normalizeLogoSize(*patch.LogoSizeA4)
+	}
+	if patch.PdfA4Design != nil {
+		updates["pdf_a4_design"] = receiptdesign.NormalizeA4(*patch.PdfA4Design)
 	}
 	if patch.DetractionBNAccount != nil {
 		updates["detraction_bn_account"] = strings.TrimSpace(*patch.DetractionBNAccount)

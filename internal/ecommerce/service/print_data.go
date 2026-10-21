@@ -7,6 +7,7 @@ import (
 
 	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/receiptdesign"
 	"tukifac/pkg/datespe"
 	"tukifac/pkg/numeroletras"
 
@@ -64,6 +65,9 @@ func BuildPrintDataForOrder(db *gorm.DB, orderID uint) (*salessvc.PrintData, err
 			LogoURL:         company.LogoURL,
 			AdditionalNotes: strings.TrimSpace(company.AdditionalNotes),
 			ShowIgvBreakdownOnSaleNote: company.ShowIgvBreakdownOnSaleNote,
+			LogoSizeTicket:             salessvc.NormalizePrintLogoSize(company.LogoSizeTicket),
+			LogoSizeA4:                 salessvc.NormalizePrintLogoSize(company.LogoSizeA4),
+			PdfA4Design:                receiptdesign.NormalizeA4(company.PdfA4Design),
 		}
 	}
 

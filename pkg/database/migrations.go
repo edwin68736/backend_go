@@ -912,6 +912,9 @@ type TenantCompanyConfig struct {
 	// Valores: pequeno | mediano | grande.
 	LogoSizeTicket string `gorm:"size:10;default:'mediano'" json:"logo_size_ticket"`
 	LogoSizeA4     string `gorm:"size:10;default:'mediano'" json:"logo_size_a4"`
+	// Diseño del PDF A4 de comprobantes (slug: modern | classic | …). Es solo presentación: lo dibuja el
+	// frontend. Default 'modern' = el diseño vigente; ver pkg/receiptdesign y la migración v164.
+	PdfA4Design string `gorm:"size:30;not null;default:'modern'" json:"pdf_a4_design"`
 	// QR de pago Yape/Plin en comprobantes locales (PDF ticket / A4)
 	WalletProvider     string `gorm:"size:20" json:"wallet_provider"` // yape | plin
 	WalletPhone        string `gorm:"size:30" json:"wallet_phone"`

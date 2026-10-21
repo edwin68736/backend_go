@@ -11,6 +11,7 @@ import (
 	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/pkg/branchlogo"
 	"tukifac/pkg/database"
+	"tukifac/pkg/receiptdesign"
 	"tukifac/pkg/datespe"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/money"
@@ -242,6 +243,8 @@ type PrintCompany struct {
 	// Tamaño de logo por formato (todos los comprobantes): pequeno | mediano | grande.
 	LogoSizeTicket string `json:"logo_size_ticket"`
 	LogoSizeA4     string `json:"logo_size_a4"`
+	// Diseño del PDF A4 (slug elegido por el tenant). Solo presentación; lo resuelve el frontend.
+	PdfA4Design string `json:"pdf_a4_design,omitempty"`
 }
 
 type PrintBankAccount struct {
@@ -418,6 +421,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			ShowIgvBreakdownOnSaleNote: company.ShowIgvBreakdownOnSaleNote,
 			LogoSizeTicket:             normalizePrintLogoSize(company.LogoSizeTicket),
 			LogoSizeA4:                 normalizePrintLogoSize(company.LogoSizeA4),
+			PdfA4Design:                receiptdesign.NormalizeA4(company.PdfA4Design),
 		}
 		pd.PaymentWallet, pd.BankAccounts = PopulateCompanyPaymentInfo(db, company)
 	}
@@ -728,6 +732,10 @@ func (p *PrintData) buildQRData() string {
 
 // normalizePrintLogoSize: cualquier valor fuera de las 3 opciones soportadas cae a "mediano"
 // (el tamaño base de los renderers de ticket/A4/ESC-POS).
+// NormalizePrintLogoSize es normalizePrintLogoSize para los otros constructores de PrintCompany
+// (cotizaciones, pedidos web).
+func NormalizePrintLogoSize(raw string) string { return normalizePrintLogoSize(raw) }
+
 func normalizePrintLogoSize(raw string) string {
 	switch strings.TrimSpace(raw) {
 	case "pequeno", "grande":

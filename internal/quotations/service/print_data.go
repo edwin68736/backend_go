@@ -6,6 +6,7 @@ import (
 	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/branchlogo"
 	"tukifac/pkg/database"
+	"tukifac/pkg/receiptdesign"
 	"tukifac/pkg/datespe"
 	"tukifac/pkg/money"
 	"tukifac/pkg/tax"
@@ -94,6 +95,10 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 			// Subtotal, descuentos e IGV y solo mostraba el total.
 			ShowIgvBreakdown: taxregime.For(company.TaxpayerRegime).ShowIgvBreakdown,
 			ShowIgvBreakdownOnSaleNote: company.ShowIgvBreakdownOnSaleNote,
+			// Antes faltaban: el A4 de la cotización ignoraba el tamaño de logo del tenant.
+			LogoSizeTicket: salessvc.NormalizePrintLogoSize(company.LogoSizeTicket),
+			LogoSizeA4:     salessvc.NormalizePrintLogoSize(company.LogoSizeA4),
+			PdfA4Design:    receiptdesign.NormalizeA4(company.PdfA4Design),
 		}
 		// Wallet Yape/Plin y cuentas bancarias — mismo criterio que un comprobante de venta
 		// (BuildPrintData), para que la cotización también los muestre cuando estén configurados.
