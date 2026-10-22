@@ -169,3 +169,24 @@ func TestSaleList_SinReporte_ConservaElComprobanteHijo(t *testing.T) {
 		t.Errorf("filas = %v, want las dos boletas (hijo %d y directa %d)", got, f.boletaHijo, f.boletaDirecta)
 	}
 }
+
+// Listado crudo (Facturación de Tukichef) filtrado por tipo 01,03: las filas incluyen el
+// comprobante hijo de la conversión, así que las tarjetas deben contarlo (100 + 50 = 150) y
+// coincidir con la suma de las filas, en vez de dejarlo fuera.
+func TestSaleList_RawBoletaListing_TotalCoincideConLasFilas(t *testing.T) {
+	f := setupCommercialReportDB(t)
+	rows, _, sum, err := NewSaleService(f.db).List(SaleListParams{SunatCodes: []string{"03"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rowsTotal float64
+	for _, r := range rows {
+		rowsTotal += r.Total
+	}
+	if rowsTotal != 150 || sum.SumActive != rowsTotal {
+		t.Errorf("filas = %.2f, sum_active = %.2f; ambos deben ser 150", rowsTotal, sum.SumActive)
+	}
+	if sum.CountActive != int64(len(rows)) {
+		t.Errorf("count_active = %d, filas = %d", sum.CountActive, len(rows))
+	}
+}

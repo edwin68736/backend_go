@@ -1410,7 +1410,7 @@ func (s *SaleService) List(params SaleListParams) (sales []database.TenantSale, 
 
 	if !params.SkipSummary {
 		var sumErr error
-		summary, sumErr = s.saleListSummary(q.Session(&gorm.Session{}), useDistinct)
+		summary, sumErr = s.saleListSummary(q.Session(&gorm.Session{}), useDistinct, len(params.SunatCodes) > 0 && !params.CommercialReport)
 		if sumErr != nil {
 			return nil, 0, SaleListSummary{}, sumErr
 		}
@@ -1556,8 +1556,23 @@ func joinEffectiveSunatCode(q *gorm.DB) *gorm.DB {
 }
 
 // saleListSummary agrega montos sobre el mismo conjunto filtrado que List (sin paginar).
-func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSummary, error) {
+func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments bool) (SaleListSummary, error) {
 	var out SaleListSummary
+	// Un listado crudo filtrado por tipo de comprobante (Facturación de Tukichef: 01,03) muestra los
+	// comprobantes hijo de una conversión NV→FE como filas propias, y su nota de venta padre queda
+	// fuera por el filtro de tipo. Excluir los hijos del total dejaba esas ventas sin contar en
+	// ninguna parte: las filas y las tarjetas dejaban de coincidir (S/ 501 vs S/ 112, 2026-10).
+	type scopeFns struct {
+		sales func(*gorm.DB) *gorm.DB
+		alias func(string) func(*gorm.DB) *gorm.DB
+	}
+	sc := scopeFns{sales: salescope.CommercialSales, alias: salescope.ScopeCommercial}
+	if rowsAreDocuments {
+		sc = scopeFns{
+			sales: func(db *gorm.DB) *gorm.DB { return db },
+			alias: func(string) func(*gorm.DB) *gorm.DB { return func(db *gorm.DB) *gorm.DB { return db } },
+		}
+	}
 	idSub := q.Select("tenant_sales.id")
 	if useDistinct {
 		idSub = idSub.Distinct("tenant_sales.id")
@@ -1588,7 +1603,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	const netSubtotal = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.subtotal END)"
 	const netTax = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.tax_amount END)"
 	var row aggRow
-	err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+	err := sc.sales(s.db.Model(&database.TenantSale{})).
 		Where("tenant_sales.id IN (?)", idSub).
 		Select(`
 			COALESCE(SUM(` + netTotal + `), 0) AS sum_total,
@@ -1622,7 +1637,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		CountActive    int64   `gorm:"column:count_active"`
 	}
 	var curRows []curAggRow
-	if err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+	if err := sc.sales(s.db.Model(&database.TenantSale{})).
 		Where("tenant_sales.id IN (?)", idSub).
 		Select(saleCurrencySQL + ` AS currency,
 			COALESCE(SUM(` + netTotal + `), 0) AS sum_total,
@@ -1653,7 +1668,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 			COUNT(*) AS count_detraccion
 		`).
 		Joins("JOIN tenant_sales ts ON ts.id = d.sale_id").
-		Scopes(salescope.ScopeCommercial("ts")).
+		Scopes(sc.alias("ts")).
 		Where("ts.id IN (?)", idSub).
 		Where("ts.status != ?", "cancelled").
 		Scan(&detRow).Error; err != nil {
@@ -1686,7 +1701,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 		Currency string  `gorm:"column:currency"`
 	}
 	var saleTotals []saleTotalRow
-	if err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+	if err := sc.sales(s.db.Model(&database.TenantSale{})).
 		Select(`tenant_sales.id AS id, `+netTotal+` AS total, `+saleCurrencySQL+` AS currency`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
@@ -1709,7 +1724,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	if err := s.db.Table("tenant_sale_payments tsp").
 		Select("tsp.id AS id, tsp.sale_id AS sale_id, LOWER(TRIM(tsp.method)) AS method, tsp.amount AS amount").
 		Joins("JOIN tenant_sales ts ON ts.id = tsp.sale_id").
-		Scopes(salescope.ScopeCommercial("ts")).
+		Scopes(sc.alias("ts")).
 		Where("ts.id IN (?)", idSub).
 		Where("ts.status != ?", "cancelled").
 		Scan(&paymentRows).Error; err != nil {
@@ -1775,7 +1790,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	if err := s.db.Table("tenant_sale_detraccion d").
 		Select("d.sale_id AS sale_id, d.net_payable_pen AS net_payable_pen").
 		Joins("JOIN tenant_sales ts ON ts.id = d.sale_id").
-		Scopes(salescope.ScopeCommercial("ts")).
+		Scopes(sc.alias("ts")).
 		Where("ts.id IN (?)", idSub).
 		Where("ts.status != ?", "cancelled").
 		Scan(&netPayableRows).Error; err != nil {
@@ -1805,7 +1820,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct bool) (SaleListSum
 	}
 
 	var fromHeader []payRow
-	err = salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+	err = sc.sales(s.db.Model(&database.TenantSale{})).
 		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, `+saleCurrencySQL+` AS currency, COALESCE(SUM(`+netTotal+`), 0) AS total`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
@@ -2337,21 +2352,6 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 	})
 }
 
-func parseIssueDateForSale(issueYMD string, fallback time.Time) time.Time {
-	s := strings.TrimSpace(issueYMD)
-	if s == "" {
-		return fallback
-	}
-	loc, err := time.LoadLocation("America/Lima")
-	if err != nil || loc == nil {
-		loc = time.Local
-	}
-	if t, err := time.ParseInLocation("2006-01-02", s, loc); err == nil {
-		return time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, loc)
-	}
-	return fallback
-}
-
 // GetPayments devuelve los pagos registrados de una venta.
 func (s *SaleService) GetPayments(saleID uint) ([]database.TenantSalePayment, error) {
 	var rows []database.TenantSalePayment
@@ -2504,7 +2504,10 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		}
 		pays = []PaymentInput{{Method: method, Amount: nota.Total}}
 	}
-	issueAt := parseIssueDateForSale(issueYMD, nota.IssueDate)
+	issueAt, dateErr := resolveElectronicIssueDate(issueYMD, nota.IssueDate, time.Now())
+	if dateErr != nil {
+		return nil, dateErr
+	}
 	nvRef := strings.TrimSpace(nota.Series) + "-" + strings.TrimSpace(nota.Number)
 	notes := strings.TrimSpace(nota.Notes)
 	if notes != "" {
