@@ -1609,8 +1609,15 @@ type CreateDespatchInput struct {
 	SourceSaleID *uint                     `json:"source_sale_id,omitempty"`
 	Destinatario DespatchDestinatarioInput `json:"destinatario"`
 	Remitente    DespatchDestinatarioInput `json:"remitente,omitempty"`
-	Envio        DespatchEnvioInput        `json:"envio"`
-	Details      []DespatchDetailInput     `json:"details"`
+	// Tercero: la otra parte cuando no es el destinatario. En compra (02) es el proveedor
+	// (SellerSupplierParty); el destinatario es la propia empresa.
+	Tercero     *DespatchDestinatarioInput `json:"tercero,omitempty"`
+	Observacion string                     `json:"observacion,omitempty"`
+	// DocsRelacionados documentos relacionados manuales (catálogo 61), p. ej. la GRE remitente
+	// en una guía transportista. Se suman al de la venta de origen.
+	DocsRelacionados []DespatchRelatedDocInput `json:"docs_relacionados,omitempty"`
+	Envio            DespatchEnvioInput        `json:"envio"`
+	Details          []DespatchDetailInput     `json:"details"`
 }
 
 type DespatchDestinatarioInput struct {
@@ -1645,6 +1652,34 @@ type DespatchEnvioInput struct {
 	ChoferLicencia          string  `json:"chofer_licencia,omitempty"`
 	ChoferNombres           string  `json:"chofer_nombres,omitempty"`
 	ChoferApellidos         string  `json:"chofer_apellidos,omitempty"`
+	// Indicadores y datos opcionales GRE 2022.
+	IndM1L                  bool `json:"ind_m1l,omitempty"`
+	IndRetornoEnvases       bool `json:"ind_retorno_envases,omitempty"`
+	IndRetornoVehiculoVacio bool `json:"ind_retorno_vehiculo_vacio,omitempty"`
+	IndTransbordo           bool `json:"ind_transbordo,omitempty"`
+	// PagaFleteRemitente (GRE transportista): el remitente paga el flete.
+	PagaFleteRemitente bool                   `json:"paga_flete_remitente,omitempty"`
+	ChoferSecundario   *DespatchChoferInput   `json:"chofer_secundario,omitempty"`
+	VehiculoSecundario *DespatchVehiculoInput `json:"vehiculo_secundario,omitempty"`
+}
+
+type DespatchChoferInput struct {
+	TipoDoc   string `json:"tipo_doc"`
+	Doc       string `json:"doc"`
+	Licencia  string `json:"licencia"`
+	Nombres   string `json:"nombres"`
+	Apellidos string `json:"apellidos"`
+}
+
+type DespatchVehiculoInput struct {
+	Placa   string `json:"placa"`
+	HabCert string `json:"hab_cert"`
+}
+
+type DespatchRelatedDocInput struct {
+	Tipo   string `json:"tipo"`
+	Nro    string `json:"nro"`
+	Emisor string `json:"emisor,omitempty"`
 }
 
 type DespatchDetailInput struct {
@@ -1759,6 +1794,11 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 	if sunatCode != "09" && sunatCode != "31" {
 		return nil, errors.New("Debe configurar una serie para Guía de Remisión Remitente (09) o Guía de Remisión Transportista (31) en Empresa → Series")
 	}
+	if err := normalizeDespatchMotivo(&input, sunatCode); err != nil {
+		return nil, err
+	}
+	applyDespatchMotivoParties(&input, sunatCode, companyCfg.RUC, companyCfg.BusinessName, companyAddr.Direccion, companyAddr.Ubigueo)
+	s.applyDespatchBranchDefaults(&input, sunatCode, companyCfg)
 	if err := validateDespatchInput(input, sunatCode); err != nil {
 		return nil, err
 	}
@@ -1787,9 +1827,14 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 	if llegadaUbi == "" {
 		return nil, fmt.Errorf("ubigeo de llegada es obligatorio")
 	}
-	destAddr, errDest := s.buildInvoiceAddressFromUbigeo(input.Destinatario.Ubigeo, input.Destinatario.Address)
-	if errDest != nil {
-		return nil, fmt.Errorf("destinatario: %w", errDest)
+	// Dirección del destinatario: opcional (SUNAT no la exige). Solo se arma si vino completa.
+	var destAddrPtr *facturador.InvoiceAddress
+	if strings.TrimSpace(input.Destinatario.Ubigeo) != "" && strings.TrimSpace(input.Destinatario.Address) != "" {
+		destAddr, errDest := s.buildInvoiceAddressFromUbigeo(input.Destinatario.Ubigeo, input.Destinatario.Address)
+		if errDest != nil {
+			return nil, fmt.Errorf("destinatario: %w", errDest)
+		}
+		destAddrPtr = &destAddr
 	}
 	partidaDir := strings.TrimSpace(input.Envio.PartidaDireccion)
 	if partidaDir == "" {
@@ -1841,6 +1886,14 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 	}
 	input.Envio.FecTraslado = fecTraslado
 	input.Envio.FecEntregaTransportista = fecEntrega
+	if despatchMotivo(input.Envio) == greMotivoTrasladoLocal && sunatCode == "09" {
+		// SUNAT pide el establecimiento anexo en ambos extremos del traslado entre locales.
+		partida.Ruc, partida.CodLocal = companyCfg.RUC, greCodLocalPrincipal
+		llegada.Ruc, llegada.CodLocal = companyCfg.RUC, greCodLocalPrincipal
+	}
+	if len([]rune(strings.TrimSpace(input.Observacion))) > greObservacionMax {
+		return nil, fmt.Errorf("las observaciones no pueden pasar de %d caracteres", greObservacionMax)
+	}
 	shipment := buildDespatchShipment(input, sunatCode, fechaEmision, companyCfg.RUC, companyCfg.BusinessName, partida, llegada)
 	details := make([]facturador.DespatchDetail, len(input.Details))
 	for i, d := range input.Details {
@@ -1856,7 +1909,8 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		Correlativo:  correlativoStr,
 		FechaEmision: fechaEmision,
 		Company:      facturador.InvoiceCompany{RUC: companyCfg.RUC, RazonSocial: companyCfg.BusinessName, NombreComercial: nombreComercial, Address: companyAddr},
-		Destinatario: facturador.InvoiceClient{TipoDoc: input.Destinatario.TipoDoc, NumDoc: input.Destinatario.NumDoc, RznSocial: input.Destinatario.RznSocial, Address: &destAddr},
+		Destinatario: facturador.InvoiceClient{TipoDoc: input.Destinatario.TipoDoc, NumDoc: input.Destinatario.NumDoc, RznSocial: input.Destinatario.RznSocial, Address: destAddrPtr},
+		Observacion:  strings.TrimSpace(input.Observacion),
 		Envio:        shipment,
 		Details:      details,
 	}
@@ -1873,11 +1927,17 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 			Address:   &remAddr,
 		}
 	}
+	if sunatCode == "09" && input.Tercero != nil && strings.TrimSpace(input.Tercero.NumDoc) != "" {
+		tTipo, tNum := normalizeGrePartyDoc(input.Tercero.TipoDoc, input.Tercero.NumDoc)
+		payload.Tercero = &facturador.InvoiceClient{TipoDoc: tTipo, NumDoc: tNum, RznSocial: strings.TrimSpace(input.Tercero.RznSocial)}
+	}
 	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
 		if addDoc := s.despatchAddDocFromSale(*input.SourceSaleID, companyCfg.RUC); addDoc != nil {
-			payload.AddDocs = []facturador.DespatchAdditionalDoc{*addDoc}
+			payload.AddDocs = append(payload.AddDocs, *addDoc)
 		}
 	}
+	manualDocs, _ := buildDespatchRelatedDocs(input.DocsRelacionados)
+	payload.AddDocs = append(payload.AddDocs, manualDocs...)
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("serializar payload guía: %w", err)
@@ -1889,7 +1949,11 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 	// Destinatario → TenantContact real, tanto si la guía nace de una venta como si se emite de
 	// forma independiente: sin esto sale.ContactID quedaba siempre NULL y el PDF del panel caía
 	// al "Cliente genérico" (ver resolveOrCreateDespatchContact).
-	contactID, err := s.resolveOrCreateDespatchContact(input.Destinatario)
+	contactParty, contactType := input.Destinatario, "customer"
+	if sunatCode == "09" && despatchMotivo(input.Envio) == greMotivoCompra && input.Tercero != nil {
+		contactParty, contactType = *input.Tercero, "supplier"
+	}
+	contactID, err := s.resolveOrCreateDespatchContact(contactParty, contactType, companyCfg.RUC)
 	if err != nil {
 		return nil, fmt.Errorf("resolver contacto destinatario: %w", err)
 	}

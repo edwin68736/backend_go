@@ -550,6 +550,19 @@ func (h *BillingHandler) CreateDespatchAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "async": true, "message": "Guía encolada para emisión SUNAT", "despatch": rec})
 }
 
+func (h *BillingHandler) LastDespatchTransportAPI(c fiber.Ctx) error {
+	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	return c.JSON(billingSvc(c).GetLastDespatchTransport(uint(branchID), strings.TrimSpace(c.Query("tipo"))))
+}
+
+func (h *BillingHandler) LookupDespatchAPI(c fiber.Ctx) error {
+	res, err := billingSvc(c).LookupOwnDespatch(c.Query("number"))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res)
+}
+
 func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {

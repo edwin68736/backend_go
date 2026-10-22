@@ -945,6 +945,10 @@ type DespatchDirection struct {
 	Provincia    string `json:"provincia,omitempty"`
 	Distrito     string `json:"distrito,omitempty"`
 	Direccion    string `json:"direccion"`
+	// Ruc y CodLocal identifican el establecimiento anexo (AddressTypeCode). SUNAT los pide en
+	// el traslado entre establecimientos (motivo 04); en los demás motivos no se emiten.
+	Ruc      string `json:"ruc,omitempty"`
+	CodLocal string `json:"codLocal,omitempty"`
 }
 
 // DespatchTransportist datos del transportista.
@@ -953,9 +957,9 @@ type DespatchTransportist struct {
 	NumDoc        string `json:"numDoc"`
 	RznSocial     string `json:"rznSocial"`
 	NroMtc        string `json:"nroMtc,omitempty"`
-	Placa         string `json:"placa"`
-	ChoferTipoDoc string `json:"choferTipoDoc"`
-	ChoferDoc     string `json:"choferDoc"`
+	Placa         string `json:"placa,omitempty"`
+	ChoferTipoDoc string `json:"choferTipoDoc,omitempty"`
+	ChoferDoc     string `json:"choferDoc,omitempty"`
 }
 
 // DespatchShipment datos del traslado (Greenter Shipment / GRE 2022).
@@ -983,6 +987,8 @@ type DespatchVehicle struct {
 	NroCirculacion  string `json:"nroCirculacion,omitempty"`
 	NroAutorizacion string `json:"nroAutorizacion,omitempty"`
 	CodEmisor       string `json:"codEmisor,omitempty"`
+	// Secundarios: semirremolque u otros vehículos adicionales de la misma guía.
+	Secundarios []DespatchVehicle `json:"secundarios,omitempty"`
 }
 
 // DespatchDriver conductor GRE.

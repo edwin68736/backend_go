@@ -65,6 +65,8 @@ func RegisterRoutes(api fiber.Router) {
 	api.Get("/billing/invoice-status", mod, send, h.ConsultInvoiceStatusAPI)
 	// Guías de remisión
 	api.Get("/billing/despatches", mod, despatchMod, despatch, h.ListDespatchesAPI)
+	api.Get("/billing/despatches/last-transport", mod, despatchMod, despatch, h.LastDespatchTransportAPI)
+	api.Get("/billing/despatches/lookup", mod, despatchMod, despatch, h.LookupDespatchAPI)
 	api.Post("/billing/despatches", mod, despatchMod, despatch, h.CreateDespatchAPI)
 	api.Get("/billing/despatches/:id/status", mod, despatchMod, despatch, h.GetDespatchStatusAPI)
 	// Documentos avanzados: retención, percepción, reversión
