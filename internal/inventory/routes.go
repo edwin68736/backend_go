@@ -40,7 +40,10 @@ func RegisterRoutes(api fiber.Router) {
 	api.Post("/inventory/documents/:id/confirm", mod, confirmDoc, h.DocumentConfirmAPI)
 	api.Post("/inventory/documents/:id/void", mod, voidDoc, h.DocumentVoidAPI)
 	api.Get("/inventory/stock-summary", mod, loadRest, viewOrRestaurant, h.StockSummaryAPI)
-	api.Get("/inventory/stock/:productId", mod, loadRest, viewOrRestaurant, h.StockAPI)
+	// stock/:productId es libre (solo exige el módulo): el botón «Ver stock» de las tarjetas del POS
+	// y del selector de productos lo usa cualquier vendedor, sin necesitar inventory.view. Solo
+	// devuelve cantidades por sucursal, sin costos.
+	api.Get("/inventory/stock/:productId", mod, h.StockAPI)
 	api.Get("/inventory/movements", mod, loadRest, viewOrRestaurant, h.MovementsAPI)
 	api.Get("/inventory/transfers", mod, view, h.TransfersListAPI)
 	api.Post("/inventory/transfer", mod, transfer, h.TransferAPI)
