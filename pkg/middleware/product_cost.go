@@ -15,8 +15,14 @@ import (
 // sobrescriba (ver internal/products/handler).
 const PermProductsViewCost = "products.view_cost"
 
-// PermPOSViewStock permite usar «Ver stock por sucursal» desde las tarjetas del POS.
-const PermPOSViewStock = "pos.view_stock"
+// Permisos de la VISTA Punto de venta: uno por botón de información rápida de las tarjetas de
+// producto. Son independientes de los de las vistas de Productos/Inventario (products.view_cost,
+// inventory.*): quien administra productos puede no querer que el POS muestre el costo, y al revés.
+const (
+	PermPOSViewStock  = "pos.view_stock"  // «Ver stock por sucursal»
+	PermPOSViewCost   = "pos.view_cost"   // «Costo» (se sirve por GET /products/:id/cost, no por la lista)
+	PermPOSViewPrices = "pos.view_prices" // «Precios»
+)
 
 // CanViewProductCost indica si el usuario puede ver/editar el costo de los productos: permiso
 // products.view_cost (que products.manage implica), o gestión de catálogo del restaurante

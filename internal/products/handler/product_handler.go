@@ -1713,3 +1713,21 @@ func updateCostFromBody(c fiber.Ctx, sent, current float64) float64 {
 	}
 	return sent
 }
+
+// CostAPI GET /api/products/:id/cost — costo actual para el botón «Costo» del POS. La clave es
+// "cost" (no "purchase_price") a propósito: StripProductCost pone en 0 purchase_price en toda
+// respuesta de quien no tiene products.view_cost, y aquí el permiso que manda es pos.view_cost.
+func (h *ProductHandler) CostAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	p, err := service.NewProductService(db(c)).GetByID(uint(id))
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
+	}
+	if msg, denied := h.productBranchDenied(c, p); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg})
+	}
+	return c.JSON(fiber.Map{"data": fiber.Map{"id": p.ID, "cost": p.PurchasePrice}})
+}

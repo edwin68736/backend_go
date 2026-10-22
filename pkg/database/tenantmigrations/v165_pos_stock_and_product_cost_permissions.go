@@ -12,6 +12,8 @@ import (
 //   - pos.view_stock: botón «Ver stock» (GET /inventory/stock/:productId). Se reparte a TODOS los
 //     roles existentes para que nadie lo pierda el día del deploy (antes el endpoint exigía
 //     inventory.view o, desde el commit anterior, nada); el dueño puede quitárselo a un rol después.
+//   - pos.view_prices y pos.view_cost: botones «Precios» y «Costo» de la misma vista; view_prices va a
+//     todos los roles y view_cost a quienes reciben products.view_cost (mismo criterio).
 //   - products.view_cost: ver y editar el costo (purchase_price). Sin él el servidor omite el costo
 //     de las respuestas y no deja que una edición lo sobrescriba. Se reparte solo a quien ya lo
 //     manejaba: Administrador, roles que crean/editan/eliminan/gestionan productos, roles con
@@ -31,7 +33,17 @@ func (V165POSStockAndProductCostPermissions) Up(db *gorm.DB) error {
 		return nil
 	}
 
-	var stockPerm, costPerm database.TenantPermission
+	var stockPerm, costPerm, posCostPerm, posPricesPerm database.TenantPermission
+	if err := db.Where(database.TenantPermission{Module: "pos", Action: "view_cost"}).
+		Attrs(database.TenantPermission{Label: "Ver costo del producto en el punto de venta"}).
+		FirstOrCreate(&posCostPerm).Error; err != nil {
+		return err
+	}
+	if err := db.Where(database.TenantPermission{Module: "pos", Action: "view_prices"}).
+		Attrs(database.TenantPermission{Label: "Ver precios del producto en el punto de venta"}).
+		FirstOrCreate(&posPricesPerm).Error; err != nil {
+		return err
+	}
 	if err := db.Where(database.TenantPermission{Module: "pos", Action: "view_stock"}).
 		Attrs(database.TenantPermission{Label: "Ver stock por sucursal en el punto de venta"}).
 		FirstOrCreate(&stockPerm).Error; err != nil {
@@ -49,8 +61,10 @@ func (V165POSStockAndProductCostPermissions) Up(db *gorm.DB) error {
 	}
 
 	for _, role := range roles {
-		if err := grantIfMissing(db, role.ID, stockPerm.ID); err != nil {
-			return err
+		for _, id := range []uint{stockPerm.ID, posPricesPerm.ID} {
+			if err := grantIfMissing(db, role.ID, id); err != nil {
+				return err
+			}
 		}
 
 		manages, err := v165RoleHandlesCost(db, role)
@@ -58,8 +72,10 @@ func (V165POSStockAndProductCostPermissions) Up(db *gorm.DB) error {
 			return err
 		}
 		if manages {
-			if err := grantIfMissing(db, role.ID, costPerm.ID); err != nil {
-				return err
+			for _, id := range []uint{costPerm.ID, posCostPerm.ID} {
+				if err := grantIfMissing(db, role.ID, id); err != nil {
+					return err
+				}
 			}
 		}
 	}

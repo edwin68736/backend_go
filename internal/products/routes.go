@@ -33,6 +33,10 @@ func RegisterRoutes(api fiber.Router) {
 		middleware.RequireProductsViewOrRestaurantCatalog(),
 		h.ProductSerialsAPI,
 	)
+	// Costo para el botón «Costo» del POS: permiso propio de esa vista (pos.view_cost), sin depender
+	// de products.view_cost. Va aparte de la lista porque la lista omite el costo a quien no tiene
+	// products.view_cost (StripProductCost).
+	api.Get("/products/:id/cost", middleware.RequireModule("products"), middleware.RequirePermission(middleware.PermPOSViewCost), h.CostAPI)
 	api.Get("/products/:id",
 		middleware.RequireModule("products"),
 		middleware.LoadRestaurantPermissions(),

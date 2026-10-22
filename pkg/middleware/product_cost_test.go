@@ -97,7 +97,7 @@ func TestRequireStockViewAccess(t *testing.T) {
 		want   int
 	}{
 		{"con pos.view_stock", &TenantClaims{Permissions: []string{"pos.view_stock"}}, nil, fiber.StatusOK},
-		{"inventory.manage lo implica", &TenantClaims{Permissions: []string{"inventory.manage"}}, nil, fiber.StatusOK},
+		{"inventory.manage no lo da (vistas separadas)", &TenantClaims{Permissions: []string{"inventory.manage"}}, nil, fiber.StatusForbidden},
 		{"inventory.view a secas no lo da", &TenantClaims{Permissions: []string{"inventory.view"}}, nil, fiber.StatusForbidden},
 		{"sin permisos", &TenantClaims{Permissions: []string{"sales.pos"}}, nil, fiber.StatusForbidden},
 		{"POS de PIN (puente)", &TenantClaims{}, []string{restaurantperm.POSUse}, fiber.StatusOK},
@@ -115,6 +115,9 @@ func TestProductsManageSigueImplicandoElCosto(t *testing.T) {
 	}
 	if !tenantHasPermission([]string{"inventory.manage"}, "inventory.view") {
 		t.Fatal("inventory.manage debe seguir implicando inventory.view")
+	}
+	if tenantHasPermission([]string{"products.view_cost"}, PermPOSViewCost) || tenantHasPermission([]string{"pos.view_cost"}, PermProductsViewCost) {
+		t.Fatal("el costo del POS y el de Productos son permisos independientes")
 	}
 	if tenantHasPermission([]string{"products.view", "products.edit"}, PermProductsViewCost) {
 		t.Fatal("editar productos no debe dar el costo")

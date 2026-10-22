@@ -45,19 +45,24 @@ func TestV165_StockToEveryoneCostToThoseWhoHandleIt(t *testing.T) {
 		}
 	}
 	for _, r := range []database.TenantRole{admin, editor, compras, ingresos} {
-		if !v132HasGrant(t, db, r.ID, "products", "view_cost") {
-			t.Errorf("%s debe recibir products.view_cost", r.Name)
+		if !v132HasGrant(t, db, r.ID, "products", "view_cost") || !v132HasGrant(t, db, r.ID, "pos", "view_cost") {
+			t.Errorf("%s debe recibir products.view_cost y pos.view_cost", r.Name)
+		}
+	}
+	for _, r := range []database.TenantRole{admin, cajero, editor, compras, vacio, ingresos, soloInv} {
+		if !v132HasGrant(t, db, r.ID, "pos", "view_prices") {
+			t.Errorf("%s debe recibir pos.view_prices", r.Name)
 		}
 	}
 	for _, r := range []database.TenantRole{cajero, vacio, soloInv} {
-		if v132HasGrant(t, db, r.ID, "products", "view_cost") {
-			t.Errorf("%s no debe recibir products.view_cost", r.Name)
+		if v132HasGrant(t, db, r.ID, "products", "view_cost") || v132HasGrant(t, db, r.ID, "pos", "view_cost") {
+			t.Errorf("%s no debe recibir costo", r.Name)
 		}
 	}
 
 	var n int64
 	db.Model(&database.TenantRolePermission{}).Where("role_id = ?", admin.ID).Count(&n)
-	if n != 2 {
-		t.Errorf("sin duplicados: admin debería tener 2 filas, tiene %d", n)
+	if n != 4 {
+		t.Errorf("sin duplicados: admin debería tener 4 filas, tiene %d", n)
 	}
 }

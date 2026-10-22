@@ -50,7 +50,7 @@ func RequireInventoryAdjustAccess() fiber.Handler {
 }
 
 // RequireStockViewAccess protege «Ver stock por sucursal» (GET /inventory/stock/:productId) de las
-// tarjetas del POS: permiso propio pos.view_stock — que inventory.manage también concede — o el
+// tarjetas del POS: permiso propio de la vista POS (pos.view_stock, sin vínculo con inventory.*) o el
 // mismo puente de restaurante que RequireInventoryViewAccess, porque Tukichef / el POS de PIN
 // consulta este endpoint. No exige inventory.view: un vendedor ve el stock sin ver el inventario.
 func RequireStockViewAccess() fiber.Handler {
