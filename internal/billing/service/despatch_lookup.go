@@ -48,18 +48,24 @@ func (s *BillingService) GetLastDespatchTransport(branchID uint, tipoDoc string)
 		if !hasVeh && !hasDriver && !hasCarrier {
 			continue
 		}
-		out.Found = true
-		out.ModTraslado = p.Envio.ModTraslado
-		if hasVeh {
+		// Cada dato se toma de la guía más reciente que lo declaró: una guía con transporte público
+		// (sin conductor ni vehículo propios) no debe borrar el último conductor y vehículo usados.
+		if !out.Found {
+			out.Found = true
+			out.ModTraslado = p.Envio.ModTraslado
+		}
+		if hasVeh && out.Placa == "" {
 			out.Placa = p.Envio.Vehiculo.Placa
 		}
-		if hasDriver {
+		if hasDriver && out.DriverDoc == "" {
 			out.DriverDoc = p.Envio.Choferes[0].NroDoc
 		}
-		if hasCarrier {
+		if hasCarrier && out.CarrierDoc == "" {
 			out.CarrierDoc = p.Envio.Transportista.NumDoc
 		}
-		return out
+		if out.Placa != "" && out.DriverDoc != "" && out.CarrierDoc != "" {
+			break
+		}
 	}
 	return out
 }

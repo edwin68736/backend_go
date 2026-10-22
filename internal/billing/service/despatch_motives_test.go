@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"tukifac/pkg/database"
 	"tukifac/pkg/facturador"
 )
 
@@ -244,5 +245,26 @@ func TestRelatedDocs_Manuales(t *testing.T) {
 	docs, _ := buildDespatchRelatedDocs([]DespatchRelatedDocInput{{Tipo: "09", Nro: " t001-23 ", Emisor: "20555555555"}, {Nro: ""}})
 	if len(docs) != 1 || docs[0].Nro != "T001-23" || docs[0].TipoDesc != "Guía de Remisión Remitente" {
 		t.Fatalf("docs: %+v", docs)
+	}
+}
+
+// El último conductor y vehículo usados no se pierden porque la guía más reciente haya sido de
+// transporte público (sin conductor ni vehículo propios).
+func TestLastDespatchTransport_CadaDatoDeLaGuiaMasRecienteQueLoDeclaro(t *testing.T) {
+	db := setupDespatchListDB(t)
+	svc := &BillingService{db: db}
+	privada := `{"tipoDoc":"09","envio":{"modTraslado":"02","vehiculo":{"placa":"ABC123"},"choferes":[{"nroDoc":"44556677"}]}}`
+	publica := `{"tipoDoc":"09","envio":{"modTraslado":"01","transportista":{"numDoc":"20100070970"}}}`
+	for _, p := range []string{privada, publica} {
+		if err := db.Create(&database.TenantDespatch{BranchID: 1, SeriesID: 1, Series: "T001", PayloadJSON: p}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := svc.GetLastDespatchTransport(1, "09")
+	if !got.Found || got.Placa != "ABC123" || got.DriverDoc != "44556677" || got.CarrierDoc != "20100070970" {
+		t.Fatalf("got %+v", got)
+	}
+	if got.ModTraslado != "01" {
+		t.Fatalf("la modalidad es la de la guía más reciente: %q", got.ModTraslado)
 	}
 }
