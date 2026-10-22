@@ -51,6 +51,10 @@ func tenantPermissionImplied(set map[string]struct{}, required string) bool {
 				return true
 			}
 		}
+	case PermPOSViewStock:
+		if _, ok := set["inventory.manage"]; ok {
+			return true
+		}
 	case "sales.create":
 		if _, ok := set["sales.pos"]; ok {
 			return true

@@ -249,7 +249,7 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		Unit:                 body.Unit,
 		UnitID:               body.UnitID,
 		SalePrice:            body.SalePrice,
-		PurchasePrice:        body.PurchasePrice,
+		PurchasePrice:        createCostFromBody(c, body.PurchasePrice),
 		TaxRate:              taxCfg.EffectiveRate(igvType),
 		IgvAffectationType:   igvType,
 		PriceIncludesIgv:     body.PriceIncludesIgv,
@@ -454,7 +454,7 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		Unit:                 body.Unit,
 		UnitID:               body.UnitID,
 		SalePrice:            body.SalePrice,
-		PurchasePrice:        body.PurchasePrice,
+		PurchasePrice:        updateCostFromBody(c, body.PurchasePrice, existing.PurchasePrice),
 		TaxRate:              taxCfg.EffectiveRate(igvType),
 		IgvAffectationType:   igvType,
 		PriceIncludesIgv:     body.PriceIncludesIgv,
@@ -1695,4 +1695,21 @@ func (h *ProductHandler) NextCodeAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"code": code})
+}
+
+// createCostFromBody / updateCostFromBody: quien no tiene products.view_cost no ve el costo (el
+// servidor se lo omite en las respuestas), así que su formulario lo manda en 0. Ese 0 no es una
+// decisión suya: al crear se guarda 0 y al editar se conserva el costo real, para no pisarlo.
+func createCostFromBody(c fiber.Ctx, sent float64) float64 {
+	if !middleware.CanViewProductCost(c) {
+		return 0
+	}
+	return sent
+}
+
+func updateCostFromBody(c fiber.Ctx, sent, current float64) float64 {
+	if !middleware.CanViewProductCost(c) {
+		return current
+	}
+	return sent
 }

@@ -3,6 +3,7 @@ package handler
 import (
 	"tukifac/internal/products/service"
 	"tukifac/pkg/branch"
+	"tukifac/pkg/middleware"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -19,6 +20,11 @@ func (h *ProductHandler) BulkImportRestaurantAPI(c fiber.Ctx) error {
 	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
 	if err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	if !middleware.CanViewProductCost(c) {
+		for i := range body.Items {
+			body.Items[i].PurchasePrice = nil // sin permiso de costo no se importa ni se pisa el costo
+		}
 	}
 	uid, _ := c.Locals("user_id").(uint)
 	res, err := service.NewProductService(db(c)).BulkImportRestaurant(body.Items, branchID, uid)
@@ -40,6 +46,11 @@ func (h *ProductHandler) BulkImportCatalogAPI(c fiber.Ctx) error {
 	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
 	if err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	if !middleware.CanViewProductCost(c) {
+		for i := range body.Items {
+			body.Items[i].PurchasePrice = nil // sin permiso de costo no se importa ni se pisa el costo
+		}
 	}
 	uid, _ := c.Locals("user_id").(uint)
 	res, err := service.NewProductService(db(c)).BulkImportCatalog(body.Items, branchID, uid)
@@ -67,13 +78,14 @@ func (h *ProductHandler) BulkUpdatePricesAPI(c fiber.Ctx) error {
 	if _, err := branch.ResolveWriteBranchID(c, body.BranchID); err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
 	}
+	canCost := middleware.CanViewProductCost(c)
 	rows := make([]service.BulkPriceUpdateRow, 0, len(body.Rows))
 	for _, r := range body.Rows {
 		rows = append(rows, service.BulkPriceUpdateRow{
 			RowNumber:     r.RowNumber,
 			Code:          r.Code,
 			SalePrice:     r.SalePrice,
-			PurchasePrice: r.PurchasePrice,
+			PurchasePrice: costIfAllowed(canCost, r.PurchasePrice),
 		})
 	}
 	res, err := service.NewProductService(db(c)).BulkUpdatePrices(rows)
@@ -81,4 +93,11 @@ func (h *ProductHandler) BulkUpdatePricesAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true, "data": res})
+}
+
+func costIfAllowed(allowed bool, v *float64) *float64 {
+	if !allowed {
+		return nil
+	}
+	return v
 }

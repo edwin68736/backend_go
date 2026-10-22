@@ -208,7 +208,7 @@ func Setup(app *fiber.App) {
 	// Se usa un prefijo /api/t/ internamente pero los módulos solo ven su ruta relativa.
 	// El middleware TenantAuthAPI se aplica SOLO a las rutas registradas en este grupo,
 	// no a las rutas públicas (/api/superadmin/login, /api/login) ya registradas arriba.
-	tenantAPI := app.Group("/api", middleware.TenantAuthAPI(), middleware.ValidateTenantBinding(), middleware.SubscriptionGate(), middleware.BranchContextMiddleware())
+	tenantAPI := app.Group("/api", middleware.TenantAuthAPI(), middleware.ValidateTenantBinding(), middleware.SubscriptionGate(), middleware.BranchContextMiddleware(), middleware.StripProductCost())
 
 	sessionH := authHandler.NewSessionHandler()
 	tenantAPI.Get("/session/context", sessionH.GetContext)
