@@ -12,6 +12,8 @@ func TestV165_StockToEveryoneCostToThoseWhoHandleIt(t *testing.T) {
 	productsEdit := v132CreatePerm(t, db, "products", "edit")
 	purchasesView := v132CreatePerm(t, db, "purchases", "view")
 	salesPos := v132CreatePerm(t, db, "sales", "pos")
+	invDoc := v132CreatePerm(t, db, "inventory", "create_document")
+	invView := v132CreatePerm(t, db, "inventory", "view")
 
 	mk := func(name string, perms ...database.TenantPermission) database.TenantRole {
 		r := database.TenantRole{Name: name}
@@ -28,6 +30,8 @@ func TestV165_StockToEveryoneCostToThoseWhoHandleIt(t *testing.T) {
 	editor := mk("Editor", productsView, productsEdit)
 	compras := mk("Compras", purchasesView)
 	vacio := mk("Vacio")
+	ingresos := mk("Ingresos", invDoc)
+	soloInv := mk("SoloInv", invView)
 
 	for i := 0; i < 2; i++ { // idempotente
 		if err := (V165POSStockAndProductCostPermissions{}).Up(db); err != nil {
@@ -35,17 +39,17 @@ func TestV165_StockToEveryoneCostToThoseWhoHandleIt(t *testing.T) {
 		}
 	}
 
-	for _, r := range []database.TenantRole{admin, cajero, editor, compras, vacio} {
+	for _, r := range []database.TenantRole{admin, cajero, editor, compras, vacio, ingresos, soloInv} {
 		if !v132HasGrant(t, db, r.ID, "pos", "view_stock") {
 			t.Errorf("%s debe recibir pos.view_stock", r.Name)
 		}
 	}
-	for _, r := range []database.TenantRole{admin, editor, compras} {
+	for _, r := range []database.TenantRole{admin, editor, compras, ingresos} {
 		if !v132HasGrant(t, db, r.ID, "products", "view_cost") {
 			t.Errorf("%s debe recibir products.view_cost", r.Name)
 		}
 	}
-	for _, r := range []database.TenantRole{cajero, vacio} {
+	for _, r := range []database.TenantRole{cajero, vacio, soloInv} {
 		if v132HasGrant(t, db, r.ID, "products", "view_cost") {
 			t.Errorf("%s no debe recibir products.view_cost", r.Name)
 		}

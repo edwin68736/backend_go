@@ -14,8 +14,8 @@ import (
 //     inventory.view o, desde el commit anterior, nada); el dueño puede quitárselo a un rol después.
 //   - products.view_cost: ver y editar el costo (purchase_price). Sin él el servidor omite el costo
 //     de las respuestas y no deja que una edición lo sobrescriba. Se reparte solo a quien ya lo
-//     manejaba: Administrador, roles que crean/editan/eliminan/gestionan productos y roles con
-//     cualquier permiso de compras. Los roles nuevos nacen sin él.
+//     manejaba: Administrador, roles que crean/editan/eliminan/gestionan productos, roles con
+//     cualquier permiso de compras y roles que crean documentos/ajustes de inventario. Los roles nuevos nacen sin él.
 //
 // Idempotente. Catálogo espejo: internal/users/service/role_service.go (SeedPermissions).
 type V165POSStockAndProductCostPermissions struct{}
@@ -66,7 +66,8 @@ func (V165POSStockAndProductCostPermissions) Up(db *gorm.DB) error {
 	return nil
 }
 
-// v165RoleHandlesCost: Administrador, o un rol que ya gestiona productos o compras.
+// v165RoleHandlesCost: Administrador, o un rol que ya gestiona productos, compras o ingresos de
+// inventario (esas pantallas usan el costo).
 func v165RoleHandlesCost(db *gorm.DB, role database.TenantRole) (bool, error) {
 	if role.Name == "Administrador" {
 		return true, nil
@@ -75,8 +76,11 @@ func v165RoleHandlesCost(db *gorm.DB, role database.TenantRole) (bool, error) {
 	err := db.Model(&database.TenantRolePermission{}).
 		Joins("JOIN tenant_permissions ON tenant_permissions.id = tenant_role_permissions.permission_id").
 		Where("tenant_role_permissions.role_id = ?", role.ID).
-		Where("(tenant_permissions.module = ? AND tenant_permissions.action IN ?) OR tenant_permissions.module = ?",
-			"products", []string{"create", "edit", "delete", "manage"}, "purchases").
+		Where("(tenant_permissions.module = ? AND tenant_permissions.action IN ?) OR (tenant_permissions.module = ? AND tenant_permissions.action IN ?) OR tenant_permissions.module = ?",
+			"products", []string{"create", "edit", "delete", "manage"},
+			// Los documentos de ingreso/ajuste de inventario precargan el costo del producto.
+			"inventory", []string{"manage", "create_document", "adjust", "import_adjustment"},
+			"purchases").
 		Count(&n).Error
 	return n > 0, err
 }
