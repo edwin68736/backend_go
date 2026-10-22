@@ -1937,6 +1937,7 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 		}
 	}
 	manualDocs, _ := buildDespatchRelatedDocs(input.DocsRelacionados)
+	fillRelatedGreIssuer(manualDocs, sunatCode, input.Remitente)
 	payload.AddDocs = append(payload.AddDocs, manualDocs...)
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {

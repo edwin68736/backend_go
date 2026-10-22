@@ -268,3 +268,16 @@ func TestLastDespatchTransport_CadaDatoDeLaGuiaMasRecienteQueLoDeclaro(t *testin
 		t.Fatalf("la modalidad es la de la guía más reciente: %q", got.ModTraslado)
 	}
 }
+
+func TestFillRelatedGreIssuer_SoloTransportistaConRucDelRemitente(t *testing.T) {
+	docs := []facturador.DespatchAdditionalDoc{{Tipo: "09", Nro: "T001-9"}, {Tipo: "01", Nro: "F001-1"}}
+	fillRelatedGreIssuer(docs, "31", DespatchDestinatarioInput{NumDoc: "20131312955"})
+	if docs[0].Emisor != "20131312955" || docs[1].Emisor != "" {
+		t.Fatalf("docs: %+v", docs)
+	}
+	other := []facturador.DespatchAdditionalDoc{{Tipo: "09", Nro: "T001-9"}}
+	fillRelatedGreIssuer(other, "09", DespatchDestinatarioInput{NumDoc: "20131312955"})
+	if other[0].Emisor != "" {
+		t.Fatal("la guía remitente no completa el emisor")
+	}
+}

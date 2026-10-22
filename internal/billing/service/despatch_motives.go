@@ -252,3 +252,20 @@ func firstNonEmptyTrim(vals ...string) string {
 	}
 	return ""
 }
+
+// fillRelatedGreIssuer en la guía transportista, la GRE remitente relacionada la emitió el
+// remitente: SUNAT (3380) exige su RUC como emisor del documento relacionado.
+func fillRelatedGreIssuer(docs []facturador.DespatchAdditionalDoc, sunatCode string, remitente DespatchDestinatarioInput) {
+	if sunatCode != "31" {
+		return
+	}
+	_, num := normalizeGrePartyDoc(remitente.TipoDoc, remitente.NumDoc)
+	if len(num) != 11 {
+		return
+	}
+	for i := range docs {
+		if docs[i].Tipo == "09" && docs[i].Emisor == "" {
+			docs[i].Emisor = num
+		}
+	}
+}
