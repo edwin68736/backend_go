@@ -137,6 +137,7 @@ var TenantMigrations = []TenantMigration{
 	V163DetraccionTransportUbigeo{},
 	V164CompanyPdfA4Design{},
 	V165POSStockAndProductCostPermissions{},
+	V166POSCostAndPricesPermissions{},
 }
 
 // ByVersion mapa versión → migración.
