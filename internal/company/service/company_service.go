@@ -2,8 +2,10 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/receiptdesign"
 	"tukifac/pkg/docseries"
@@ -377,8 +379,39 @@ func (s *CompanyService) UpdateBranch(id uint, name, address, phone, fiscalDomic
 	}).Error
 }
 
+// BranchDeleteBlockedError la sucursal no se puede eliminar por una regla de negocio (mensaje apto para el usuario).
+type BranchDeleteBlockedError struct{ Msg string }
+
+func (e *BranchDeleteBlockedError) Error() string { return e.Msg }
+
+// DeleteBranch elimina una sucursal sin dejar usuarios huérfanos: no se elimina la principal ni una que sea la
+// única sucursal de algún usuario; a los demás se les quita la asignación y se reubica su sucursal de origen.
 func (s *CompanyService) DeleteBranch(id uint) error {
-	return s.db.Delete(&database.TenantBranch{}, id).Error
+	var b database.TenantBranch
+	if err := s.db.First(&b, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if b.IsMain {
+		return &BranchDeleteBlockedError{"No se puede eliminar la sucursal principal; marque otra sucursal como principal primero."}
+	}
+	names, err := branch.UsersOnlyInBranch(s.db, id)
+	if err != nil {
+		return err
+	}
+	if len(names) > 0 {
+		return &BranchDeleteBlockedError{fmt.Sprintf(
+			"No se puede eliminar la sucursal %s: estos usuarios solo la tienen asignada (%s). Asígneles otra sucursal primero.",
+			b.Name, strings.Join(names, ", "))}
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := branch.DetachBranchFromUsers(tx, id); err != nil {
+			return err
+		}
+		return tx.Delete(&database.TenantBranch{}, id).Error
+	})
 }
 
 // UpdateBranchLogoURL guarda (o, con url="", borra) el logo propio de la sucursal. Vacío no es

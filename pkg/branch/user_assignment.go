@@ -28,10 +28,83 @@ func GetUserAssignedBranchIDs(db *gorm.DB, userID uint) ([]uint, error) {
 	err := db.Model(&database.TenantUserBranch{}).
 		Select("tenant_user_branches.branch_id").
 		Joins("JOIN tenant_branches ON tenant_branches.id = tenant_user_branches.branch_id").
-		Where("tenant_user_branches.user_id = ? AND tenant_branches.active = ?", userID, true).
+		Where("tenant_user_branches.user_id = ? AND tenant_branches.active = ? AND tenant_branches.deleted_at IS NULL", userID, true).
 		Order("tenant_branches.is_main DESC, tenant_branches.name ASC").
 		Pluck("tenant_user_branches.branch_id", &ids).Error
 	return ids, err
+}
+
+// UsersOnlyInBranch nombres de los usuarios que se quedarían sin ninguna sucursal si se elimina branchID:
+// los que solo la tienen asignada (o, sin asignaciones N:N, la tienen como sucursal de origen).
+func UsersOnlyInBranch(db *gorm.DB, branchID uint) ([]string, error) {
+	var users []database.TenantUser
+	if err := db.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, u := range users {
+		ids, err := GetUserAssignedBranchIDs(db, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) > 0 {
+			others := 0
+			for _, id := range ids {
+				if id != branchID {
+					others++
+				}
+			}
+			if others == 0 {
+				names = append(names, u.Name)
+			}
+			continue
+		}
+		legacy := uint(0)
+		if u.HomeBranchID != nil && *u.HomeBranchID > 0 {
+			legacy = *u.HomeBranchID
+		} else if u.BranchID != nil && *u.BranchID > 0 {
+			legacy = *u.BranchID
+		}
+		if legacy == branchID {
+			names = append(names, u.Name)
+		}
+	}
+	return names, nil
+}
+
+// DetachBranchFromUsers quita branchID de las asignaciones de todos los usuarios y reubica la sucursal de
+// origen de quienes la tenían como tal en la primera que les queda. Llamar dentro de la transacción que
+// elimina la sucursal, y solo después de comprobar con UsersOnlyInBranch que nadie se queda sin ninguna.
+func DetachBranchFromUsers(tx *gorm.DB, branchID uint) error {
+	if UserBranchesReady(tx) {
+		if err := tx.Where("branch_id = ?", branchID).Delete(&database.TenantUserBranch{}).Error; err != nil {
+			return err
+		}
+	}
+	var users []database.TenantUser
+	if err := tx.Where("home_branch_id = ? OR branch_id = ?", branchID, branchID).Find(&users).Error; err != nil {
+		return err
+	}
+	for _, u := range users {
+		ids, err := GetUserAssignedBranchIDs(tx, u.ID)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if err := tx.Model(&database.TenantUser{}).Where("id = ?", u.ID).Updates(map[string]interface{}{
+			"home_branch_id":    ids[0],
+			"branch_id":         ids[0],
+			"can_switch_branch": len(ids) > 1,
+		}).Error; err != nil {
+			return err
+		}
+		if err := BumpSessionVersion(tx, u.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListUserBranchBriefs sucursales asignadas (vacío si no hay tabla o filas).

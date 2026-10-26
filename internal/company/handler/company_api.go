@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -387,6 +388,10 @@ func (h *CompanyHandler) DeleteBranchAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	if err := service.NewCompanyService(db(c)).DeleteBranch(uint(id)); err != nil {
+		var blocked *service.BranchDeleteBlockedError
+		if errors.As(err, &blocked) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": blocked.Error()})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
