@@ -267,6 +267,11 @@ func (s *ProductService) applyProductListOrder(q *gorm.DB, params ProductListPar
 	case "category":
 		q = q.Joins("LEFT JOIN tenant_categories ON tenant_categories.id = tenant_products.category_id")
 		return q.Order("COALESCE(tenant_categories.name, '') " + dir + tie)
+	case "catalog":
+		// Catálogo de venta (POS y tienda): agrupado por categoría en el orden configurado de las
+		// categorías, con las sin categoría al final y los productos por nombre dentro de cada una.
+		q = q.Joins("LEFT JOIN tenant_categories ON tenant_categories.id = tenant_products.category_id")
+		return q.Order("(tenant_categories.id IS NULL) ASC, tenant_categories.sort_order ASC, tenant_categories.name ASC, tenant_products.name ASC, tenant_products.id ASC")
 	case "price":
 		return q.Order("tenant_products.sale_price " + dir + tie)
 	case "stock":

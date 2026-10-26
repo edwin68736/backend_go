@@ -298,6 +298,7 @@ func (s *EcommerceService) PublicProducts(query string, categoryID uint, minPric
 		ExcludeCombos:            true, // v1: sin combos/configurables en la tienda pública
 		MinPrice:                 minPrice,
 		MaxPrice:                 maxPrice,
+		SortBy:                   "catalog", // agrupado por categoría, no por orden de registro
 	}
 	if perPage > 0 {
 		if page < 1 {

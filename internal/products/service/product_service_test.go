@@ -546,3 +546,45 @@ func TestProductCreate_ServiceCanHavePresentations(t *testing.T) {
 		t.Errorf("manage_stock en BD = true, se esperaba false")
 	}
 }
+
+func TestProductList_SortByCatalogGroupsByCategory(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+	bebidas := database.TenantCategory{Name: "Bebidas", SortOrder: 2, Active: true}
+	comidas := database.TenantCategory{Name: "Comidas", SortOrder: 1, Active: true}
+	for _, c := range []*database.TenantCategory{&bebidas, &comidas} {
+		if err := db.Create(c).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Orden de registro intercalado a propósito: bebida, sin categoría, comida, bebida, comida.
+	seed := []struct {
+		name string
+		cat  *uint
+	}{{"Agua", &bebidas.ID}, {"Suelto", nil}, {"Pollo", &comidas.ID}, {"Cola", &bebidas.ID}, {"Arroz", &comidas.ID}}
+	for _, s := range seed {
+		if _, _, err := svc.Create(ProductInput{
+			Code: s.name, Name: s.name, Type: "product", Unit: "NIU", CategoryID: s.cat,
+			SalePrice: 10, TaxRate: 18, IgvAffectationType: "10", BranchID: 1, Active: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, _, err := svc.ListWithCategoryNames(ProductListParams{ActiveOnly: true, SortBy: "catalog", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range items {
+		got = append(got, it.Name)
+	}
+	want := []string{"Arroz", "Pollo", "Agua", "Cola", "Suelto"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
