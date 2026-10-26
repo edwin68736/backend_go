@@ -253,6 +253,9 @@ func validateDespatchDriverFields(env DespatchEnvioInput, required bool) error {
 }
 
 func validateDespatchBusinessRules(input CreateDespatchInput, sunatCode, emisorRUC string) error {
+	if err := validateDespatchRelatedDocs(input.DocsRelacionados); err != nil {
+		return err
+	}
 	emisorRUC = strings.TrimSpace(emisorRUC)
 	destDoc := strings.TrimSpace(input.Destinatario.NumDoc)
 	// El destinatario puede ser la propia empresa solo cuando el motivo lo exige (traslado entre

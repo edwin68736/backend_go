@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"tukifac/pkg/database"
@@ -192,8 +193,41 @@ func buildDespatchSecondaryDriver(c *DespatchChoferInput) (*facturador.DespatchD
 }
 
 // buildDespatchRelatedDocs documentos relacionados manuales (catálogo 61).
+var greRelatedDocNroRe = regexp.MustCompile(`^[A-Z0-9]{4}-\d{1,8}$`)
+
+// validateDespatchRelatedDocs formato (no existencia) de los documentos relacionados: tipo del
+// catálogo 61, número SERIE-NÚMERO y, si viene, RUC del emisor de 11 dígitos.
+func validateDespatchRelatedDocs(in []DespatchRelatedDocInput) error {
+	for _, d := range in {
+		nro := strings.ToUpper(strings.TrimSpace(d.Nro))
+		if nro == "" {
+			continue
+		}
+		switch strings.TrimSpace(d.Tipo) {
+		case "", "01", "03", "09", "31":
+		default:
+			return fmt.Errorf("documento relacionado %s: tipo %q no admitido", nro, d.Tipo)
+		}
+		if !greRelatedDocNroRe.MatchString(nro) {
+			return fmt.Errorf("documento relacionado %s: use el formato SERIE-NÚMERO (serie de 4 caracteres, por ejemplo T001-123)", nro)
+		}
+		if e := strings.TrimSpace(d.Emisor); e != "" && !greRucRe.MatchString(e) {
+			return fmt.Errorf("documento relacionado %s: el RUC del emisor debe tener 11 dígitos", nro)
+		}
+	}
+	return nil
+}
+
+var greRucRe = regexp.MustCompile(`^\d{11}$`)
+
+// buildDespatchRelatedDocs documentos relacionados manuales (catálogo 61), sin repetidos. El
+// emisor explícito del formulario se respeta tal cual.
 func buildDespatchRelatedDocs(in []DespatchRelatedDocInput) ([]facturador.DespatchAdditionalDoc, error) {
+	if err := validateDespatchRelatedDocs(in); err != nil {
+		return nil, err
+	}
 	var out []facturador.DespatchAdditionalDoc
+	seen := map[string]bool{}
 	for _, d := range in {
 		nro := strings.ToUpper(strings.TrimSpace(d.Nro))
 		if nro == "" {
@@ -203,6 +237,12 @@ func buildDespatchRelatedDocs(in []DespatchRelatedDocInput) ([]facturador.Despat
 		if tipo == "" {
 			tipo = "09"
 		}
+		emisor := strings.TrimSpace(d.Emisor)
+		key := tipo + "|" + emisor + "|" + nro
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		desc := "Documento relacionado"
 		switch tipo {
 		case "01":
@@ -211,8 +251,10 @@ func buildDespatchRelatedDocs(in []DespatchRelatedDocInput) ([]facturador.Despat
 			desc = "Boleta de Venta"
 		case "09":
 			desc = "Guía de Remisión Remitente"
+		case "31":
+			desc = "Guía de Remisión Transportista"
 		}
-		out = append(out, facturador.DespatchAdditionalDoc{Tipo: tipo, Nro: nro, TipoDesc: desc, Emisor: strings.TrimSpace(d.Emisor)})
+		out = append(out, facturador.DespatchAdditionalDoc{Tipo: tipo, Nro: nro, TipoDesc: desc, Emisor: emisor})
 	}
 	return out, nil
 }

@@ -281,3 +281,48 @@ func TestFillRelatedGreIssuer_SoloTransportistaConRucDelRemitente(t *testing.T) 
 		t.Fatal("la guía remitente no completa el emisor")
 	}
 }
+
+func TestRelatedDocs_EmisorExplicitoSeRespetaYNoSeDuplica(t *testing.T) {
+	docs, err := buildDespatchRelatedDocs([]DespatchRelatedDocInput{
+		{Tipo: "09", Nro: "t001-9", Emisor: "20131312955"},
+		{Tipo: "09", Nro: "T001-9", Emisor: "20131312955"},
+	})
+	if err != nil || len(docs) != 1 || docs[0].Emisor != "20131312955" || docs[0].Nro != "T001-9" {
+		t.Fatalf("docs=%+v err=%v", docs, err)
+	}
+	// Emisor explícito distinto del remitente: fillRelatedGreIssuer no lo pisa.
+	fillRelatedGreIssuer(docs, "31", DespatchDestinatarioInput{NumDoc: "20100070970"})
+	if docs[0].Emisor != "20131312955" {
+		t.Fatalf("el emisor explícito debía respetarse: %q", docs[0].Emisor)
+	}
+}
+
+func TestRelatedDocs_EmisorDeducidoDelRemitenteSiNoViene(t *testing.T) {
+	docs, err := buildDespatchRelatedDocs([]DespatchRelatedDocInput{{Tipo: "09", Nro: "T001-9"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fillRelatedGreIssuer(docs, "31", DespatchDestinatarioInput{NumDoc: "20100070970"})
+	if docs[0].Emisor != "20100070970" {
+		t.Fatalf("emisor deducido: %q", docs[0].Emisor)
+	}
+}
+
+func TestRelatedDocs_FormatoInvalidoSeRechaza(t *testing.T) {
+	for _, in := range []DespatchRelatedDocInput{
+		{Tipo: "09", Nro: "T001-9", Emisor: "2013131295"},
+		{Tipo: "09", Nro: "T001-9", Emisor: "20131312abc"},
+		{Tipo: "09", Nro: "T1-9"},
+		{Tipo: "09", Nro: "T001-"},
+		{Tipo: "99", Nro: "T001-9"},
+	} {
+		if err := validateDespatchRelatedDocs([]DespatchRelatedDocInput{in}); err == nil {
+			t.Fatalf("debía rechazar %+v", in)
+		}
+	}
+	in := baseTraslado04()
+	in.DocsRelacionados = []DespatchRelatedDocInput{{Tipo: "09", Nro: "T001-9", Emisor: "123"}}
+	if err := validateDespatchBusinessRules(in, "09", testEmisorRUC); err == nil {
+		t.Fatal("las reglas de negocio deben validar el RUC del emisor del documento relacionado")
+	}
+}

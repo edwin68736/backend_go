@@ -1936,9 +1936,23 @@ func (s *BillingService) CreateAndSendDespatch(input CreateDespatchInput) (*data
 			payload.AddDocs = append(payload.AddDocs, *addDoc)
 		}
 	}
-	manualDocs, _ := buildDespatchRelatedDocs(input.DocsRelacionados)
+	manualDocs, errDocs := buildDespatchRelatedDocs(input.DocsRelacionados)
+	if errDocs != nil {
+		return nil, errDocs
+	}
 	fillRelatedGreIssuer(manualDocs, sunatCode, input.Remitente)
-	payload.AddDocs = append(payload.AddDocs, manualDocs...)
+	for _, m := range manualDocs {
+		dup := false
+		for _, ex := range payload.AddDocs {
+			if ex.Tipo == m.Tipo && strings.EqualFold(ex.Nro, m.Nro) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			payload.AddDocs = append(payload.AddDocs, m)
+		}
+	}
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("serializar payload guía: %w", err)
