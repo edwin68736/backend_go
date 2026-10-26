@@ -66,6 +66,7 @@ type UpdateSettingsInput struct {
 	CategoryStyle  *string
 	ShowStock      *bool
 	HeroStyle      *string
+	PaymentMethods *[]PaymentMethod
 }
 
 func (s *EcommerceService) UpdateSettings(input UpdateSettingsInput) (*database.TenantEcommerceSettings, error) {
@@ -119,6 +120,17 @@ func (s *EcommerceService) UpdateSettings(input UpdateSettingsInput) (*database.
 			return nil, fmt.Errorf("hero_style inválido: %q", v)
 		}
 		upd["hero_style"] = v
+	}
+	if input.PaymentMethods != nil {
+		ms, err := NormalizePaymentMethods(*input.PaymentMethods)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(ms)
+		if err != nil {
+			return nil, err
+		}
+		upd["payment_methods_json"] = string(raw)
 	}
 	if len(upd) > 0 {
 		if err := s.db.Model(&database.TenantEcommerceSettings{}).Where("id = ?", 1).Updates(upd).Error; err != nil {

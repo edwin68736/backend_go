@@ -1120,9 +1120,12 @@ type TenantEcommerceSettings struct {
 	ShowStock bool `gorm:"column:show_stock;default:true" json:"show_stock"`
 	// HeroStyle: 'split' (texto + botón a la izquierda, imagen a la derecha) | 'image' (solo la
 	// imagen completa a todo el ancho, sin textos, botón ni degradado encima).
-	HeroStyle string    `gorm:"column:hero_style;size:20;default:'split'" json:"hero_style"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	HeroStyle string `gorm:"column:hero_style;size:20;default:'split'" json:"hero_style"`
+	// PaymentMethodsJSON medios de pago que se muestran al hacer el pedido (Yape, Plin, cuentas…).
+	// Informativo: ver service.PaymentMethod.
+	PaymentMethodsJSON string    `gorm:"column:payment_methods_json;type:text" json:"payment_methods_json"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // TenantEcommerceSlider imagen del carrusel principal de la tienda pública.

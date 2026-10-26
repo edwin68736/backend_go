@@ -60,6 +60,7 @@ func (h *EcommerceHandler) UpdateSettingsAPI(c fiber.Ctx) error {
 		CategoryStyle  *string `json:"category_style"`
 		ShowStock      *bool   `json:"show_stock"`
 		HeroStyle      *string `json:"hero_style"`
+		PaymentMethods *[]service.PaymentMethod `json:"payment_methods"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -77,6 +78,7 @@ func (h *EcommerceHandler) UpdateSettingsAPI(c fiber.Ctx) error {
 		CategoryStyle:  body.CategoryStyle,
 		ShowStock:      body.ShowStock,
 		HeroStyle:      body.HeroStyle,
+		PaymentMethods: body.PaymentMethods,
 	}
 	if body.WhatsAppNumber != nil {
 		input.WhatsAppNumber = &body.WhatsAppNumber
@@ -359,6 +361,7 @@ func (h *EcommerceHandler) PublicSettingsAPI(c fiber.Ctx) error {
 		"category_style":       settings.CategoryStyle,
 		"show_stock":           settings.ShowStock,
 		"hero_style":           settings.HeroStyle,
+		"payment_methods":      service.EnabledPaymentMethods(settings.PaymentMethodsJSON),
 		"sliders":              sliders,
 	})
 }
