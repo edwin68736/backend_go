@@ -14,6 +14,7 @@ import (
 	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
+	"tukifac/pkg/tenantctx"
 	"tukifac/pkg/tenantstorage"
 	"tukifac/pkg/uploadlimits"
 
@@ -559,5 +560,36 @@ func (h *EcommerceHandler) CreatePublicOrderAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(201).JSON(fiber.Map{"data": order, "order_number": order.ID})
+	pdfToken := ""
+	if t, ok := tenantctx.Tenant(c); ok {
+		pdfToken = service.OrderPDFToken(t.ID, order.ID)
+	}
+	return c.Status(201).JSON(fiber.Map{"data": order, "order_number": order.ID, "pdf_token": pdfToken})
+}
+
+// PublicOrderPDFAPI sirve el PDF del pedido web a quien tenga el enlace firmado (?t=). Se abre
+// desde el mensaje de WhatsApp, sin sesión, por eso la firma es obligatoria.
+func (h *EcommerceHandler) PublicOrderPDFAPI(c fiber.Ctx) error {
+	id, _ := strconv.ParseUint(c.Params("id"), 10, 32)
+	t, ok := tenantctx.Tenant(c)
+	if !ok || id == 0 || !service.ValidOrderPDFToken(t.ID, uint(id), c.Query("t")) {
+		return c.Status(404).SendString("pedido no encontrado")
+	}
+	svc := service.NewEcommerceService(db(c))
+	var order database.TenantEcommerceOrder
+	if err := db(c).First(&order, uint(id)).Error; err != nil {
+		return c.Status(404).SendString("pedido no encontrado")
+	}
+	storeName := "Tienda online"
+	if settings, err := svc.GetSettings(); err == nil && strings.TrimSpace(settings.StoreName) != "" {
+		storeName = settings.StoreName
+	}
+	pdf, err := service.BuildOrderPDF(&order, storeName)
+	if err != nil {
+		return c.Status(500).SendString("no se pudo generar el PDF")
+	}
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf("inline; filename=\"pedido-%d.pdf\"", order.ID))
+	c.Set("Cache-Control", "private, max-age=300")
+	return c.Send(pdf)
 }

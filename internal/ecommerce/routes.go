@@ -51,4 +51,5 @@ func RegisterPublicRoutes(app fiber.Router) {
 	g.Get("/products/:id/options", h.PublicProductOptionsAPI)
 	g.Get("/products/:id/gallery", h.PublicProductGalleryAPI)
 	g.Post("/orders", h.CreatePublicOrderAPI)
+	g.Get("/orders/:id/pdf", h.PublicOrderPDFAPI)
 }
