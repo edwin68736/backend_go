@@ -23,6 +23,9 @@ type ContactListParams struct {
 	Query     string
 	Type      string
 	DocNumber string
+	// TypesIn restringe por permisos (customers.* / suppliers.*): nil = sin restricción;
+	// vacío = no ve nada. Se combina con Type.
+	TypesIn []string
 	// Status: "active" (default), "inactive" o "all"
 	Status string
 }
@@ -36,6 +39,9 @@ func (s *ContactService) buildListQuery(params ContactListParams) *gorm.DB {
 	}
 	if params.Type != "" {
 		q = q.Where("type = ? OR type = 'both'", params.Type)
+	}
+	if params.TypesIn != nil {
+		q = q.Where("type IN ?", params.TypesIn)
 	}
 	if params.DocNumber != "" {
 		q = q.Where("doc_number = ?", params.DocNumber)
