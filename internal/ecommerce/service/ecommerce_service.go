@@ -50,6 +50,24 @@ func (s *EcommerceService) ResolveWhatsAppNumber(settings *database.TenantEcomme
 	return strings.TrimSpace(cfg.Phone)
 }
 
+// PublicContact son los únicos datos de la empresa que la tienda pública expone en el pie.
+type PublicContact struct {
+	Address string `json:"address"`
+	Phone   string `json:"phone"`
+	Email   string `json:"email"`
+}
+
+// ResolvePublicContact toma dirección, teléfono y correo de la configuración de empresa.
+// El teléfono respeta el WhatsApp propio de la tienda si lo tiene (mismo criterio que el botón).
+func (s *EcommerceService) ResolvePublicContact(settings *database.TenantEcommerceSettings) PublicContact {
+	out := PublicContact{Phone: s.ResolveWhatsAppNumber(settings)}
+	if cfg, err := companyservice.NewCompanyService(s.db).GetConfig(); err == nil && cfg != nil {
+		out.Address = strings.TrimSpace(cfg.Address)
+		out.Email = strings.TrimSpace(cfg.Email)
+	}
+	return out
+}
+
 // UpdateSettingsInput campos nil = no tocar (update parcial). WhatsAppNumber: puntero a puntero
 // para distinguir "no enviado" (nil) de "enviado vacío = volver a heredar el teléfono general".
 type UpdateSettingsInput struct {

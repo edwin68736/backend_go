@@ -361,6 +361,7 @@ func (h *EcommerceHandler) PublicSettingsAPI(c fiber.Ctx) error {
 		"category_style":       settings.CategoryStyle,
 		"show_stock":           settings.ShowStock,
 		"hero_style":           settings.HeroStyle,
+		"contact":              svc.ResolvePublicContact(settings),
 		"payment_methods":      service.EnabledPaymentMethods(settings.PaymentMethodsJSON),
 		"sliders":              sliders,
 	})
