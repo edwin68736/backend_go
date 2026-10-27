@@ -50,6 +50,6 @@ func RegisterRoutes(api fiber.Router) {
 	api.Get("/cashbank/bank-accounts/:id", mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetBankAccountAPI)
 	api.Post("/cashbank/bank-accounts", mod, loadRest, middleware.RequireCashbankAccess("manage"), h.CreateBankAccountAPI)
 	api.Put("/cashbank/bank-accounts/:id", mod, loadRest, middleware.RequireCashbankAccess("manage"), h.UpdateBankAccountAPI)
-	api.Get("/cashbank/bank-accounts/:id/movements", mod, loadRest, middleware.RequireCashbankAccess("manage"), h.GetBankMovementsAPI)
+	api.Get("/cashbank/bank-accounts/:id/movements", mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetBankMovementsAPI)
 	api.Post("/cashbank/bank-accounts/:id/movements", mod, loadRest, middleware.RequireCashbankAccess("manage"), h.AddBankMovementAPI)
 }
