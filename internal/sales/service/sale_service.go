@@ -560,7 +560,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 
 	isCreditSale := false
-	if emitFromNV && total > 0 && len(payments) > 0 {
+	if emitFromNV && total > 0 && len(payments) > 0 && normalizePaymentConditionCode(input.PaymentConditionCode) != paymentcondition.CodeCredit {
 		var sumPayments float64
 		for _, p := range payments {
 			sumPayments += p.Amount
@@ -655,6 +655,18 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				DueDate: input.DueDate.Format("2006-01-02"),
 				Amount:  creditTarget,
 			}}
+		}
+		// Conversión NV→comprobante: el total se recalcula (redondeo SUNAT) y puede diferir unos
+		// centavos del de la NV; se absorbe en la última cuota copiada.
+		if emitFromNV && len(installments) > 0 {
+			var instSum float64
+			for _, in := range installments {
+				instSum += in.Amount
+			}
+			if diff := money.RoundDisplay(creditTarget - instSum); diff != 0 && diff > -0.10 && diff < 0.10 {
+				installments = append([]CreditInstallmentInput(nil), installments...)
+				installments[len(installments)-1].Amount = money.RoundDisplay(installments[len(installments)-1].Amount + diff)
+			}
 		}
 		var lastDue *time.Time
 		var instErr error
@@ -1215,7 +1227,7 @@ type SaleListParams struct {
 	// el estado SUNAT de cada uno.
 	CommercialReport bool
 	Limit            int // 0 = sin límite
-	Offset          int
+	Offset           int
 	// SkipSummary no calcula los totales (summary queda en cero). Las pantallas que solo muestran
 	// filas (p. ej. Ventas) no los usan; calcularlos cuesta ~8 sentencias sobre todo el filtro.
 	SkipSummary bool
@@ -2493,20 +2505,33 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 	}
 	var pays []PaymentInput
 	for _, p := range paymentsDB {
-		if p.Amount > 0 && strings.TrimSpace(p.Method) != "" {
+		if p.Amount > 0 && strings.TrimSpace(p.Method) != "" && !paymentcondition.IsCreditCode(p.Method) {
 			pays = append(pays, PaymentInput{Method: p.Method, Amount: p.Amount, Reference: p.Reference})
 		}
 	}
-	if len(pays) == 0 && nota.Total > 0 {
+	notaInstallments, err := s.GetCreditInstallments(nota.ID)
+	if err != nil {
+		return nil, err
+	}
+	issueAt, dateErr := resolveElectronicIssueDate(issueYMD, nota.IssueDate, time.Now())
+	if dateErr != nil {
+		return nil, dateErr
+	}
+	// NV a crédito: el comprobante hereda la deuda (cuotas pendientes + abonos reales como pagos
+	// sin caja). Ver buildNotaCreditPlan. Si ya está saldada se emite por el camino de contado.
+	var creditPlan *notaCreditPlan
+	if isCreditNota(&nota, notaInstallments) {
+		creditPlan, err = buildNotaCreditPlan(&nota, notaInstallments, pays, issueAt)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(pays) == 0 && nota.Total > 0 && creditPlan == nil {
 		method := strings.TrimSpace(nota.PaymentMethod)
 		if method == "" {
 			method = "cash"
 		}
 		pays = []PaymentInput{{Method: method, Amount: nota.Total}}
-	}
-	issueAt, dateErr := resolveElectronicIssueDate(issueYMD, nota.IssueDate, time.Now())
-	if dateErr != nil {
-		return nil, dateErr
 	}
 	nvRef := strings.TrimSpace(nota.Series) + "-" + strings.TrimSpace(nota.Number)
 	notes := strings.TrimSpace(nota.Notes)
@@ -2539,6 +2564,15 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		return nil, fmt.Errorf("nota de venta en USD: %w", err)
 	}
 	nvID := notaSaleID
+	dueDate := nota.DueDate
+	payCondCode := ""
+	var creditInsts []CreditInstallmentInput
+	if creditPlan != nil {
+		payCondCode = paymentcondition.CodeCredit
+		creditInsts = creditPlan.Installments
+		due := creditPlan.LastDue
+		dueDate = &due
+	}
 	issued, err := s.Create(CreateSaleInput{
 		BranchID:                nota.BranchID,
 		ContactID:               contactID,
@@ -2547,7 +2581,9 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		SeriesID:                targetSeriesID,
 		DocType:                 strings.TrimSpace(target.DocType),
 		IssueDate:               issueAt,
-		DueDate:                 nota.DueDate,
+		DueDate:                 dueDate,
+		PaymentConditionCode:    payCondCode,
+		CreditInstallments:      creditInsts,
 		Currency:                nota.Currency,
 		OperationTypeCode:       opCode,
 		ExchangeRate:            nota.ExchangeRate,

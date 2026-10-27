@@ -123,7 +123,8 @@ type StatementResult struct {
 func (s *ReceivableService) List(f ListFilter) ([]ReceivableRow, int64, error) {
 	// Ventas con saldo pendiente (crédito, parcial o SPOT BN). Doc types reales: BOLETA, FACTURA, NOTA DE VENTA, etc.
 	q := s.db.Model(&database.TenantSale{}).
-		Where("tenant_sales.status != ?", "cancelled")
+		Where("tenant_sales.status != ?", "cancelled").
+		Where(salescope.NotaWithoutLiveIssuedWhere("tenant_sales"))
 
 	if f.BranchID > 0 {
 		q = q.Where("tenant_sales.branch_id = ?", f.BranchID)
@@ -263,6 +264,15 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 	}
 	if salescope.IsNoteDocType(sale.DocType) {
 		return errors.New("una nota de crédito/débito no es una venta cobrable")
+	}
+	var liveChild int64
+	if err := s.db.Model(&database.TenantSale{}).
+		Where("issued_from_nota_sale_id = ? AND status <> ?", saleID, "cancelled").
+		Count(&liveChild).Error; err != nil {
+		return err
+	}
+	if liveChild > 0 {
+		return errors.New("esta nota de venta ya fue convertida en factura/boleta; cobre el saldo desde el comprobante electrónico")
 	}
 
 	var det *database.TenantSaleDetraccion
@@ -410,7 +420,8 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 		return nil, errors.New("contacto no encontrado")
 	}
 
-	q := s.db.Where("contact_id = ? AND status != ?", contactID, "cancelled")
+	q := s.db.Where("contact_id = ? AND status != ?", contactID, "cancelled").
+		Where(salescope.NotaWithoutLiveIssuedWhere("tenant_sales"))
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)
 	}
