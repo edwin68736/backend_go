@@ -54,11 +54,15 @@ func runServer(cfg *config.Config) {
 		AppName:      "Tukifac SaaS ERP",
 		ServerHeader: "",
 		BodyLimit:    cfg.BodyLimitBytes,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
-		ProxyHeader:  fiber.HeaderXForwardedFor,
-		TrustProxy:   true,
+		// El JWT lleva permisos y módulos (un Administrador ronda los 3 KB) y Cloudflare/el proxy
+		// suman sus cabeceras: con el búfer por defecto (4096) esas peticiones se rechazaban con
+		// 431 "Request Header Fields Too Large" antes de llegar a cualquier middleware.
+		ReadBufferSize: 16384,
+		ReadTimeout:    cfg.ReadTimeout,
+		WriteTimeout:   cfg.WriteTimeout,
+		IdleTimeout:    cfg.IdleTimeout,
+		ProxyHeader:    fiber.HeaderXForwardedFor,
+		TrustProxy:     true,
 		TrustProxyConfig: fiber.TrustProxyConfig{
 			Loopback:  true,
 			Private:   true,
