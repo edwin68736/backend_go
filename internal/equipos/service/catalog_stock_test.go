@@ -209,3 +209,26 @@ func TestStockReport_carriesOpeningAcrossPeriodsAndSemaphore(t *testing.T) {
 }
 
 func ptrUint(v uint) *uint { return &v }
+
+// gorm aplica el default:true de la columna cuando Active es false al insertar: un producto o
+// transportista creado como inactivo debe quedar inactivo.
+func TestCreate_inactiveStaysInactive(t *testing.T) {
+	s := New(setupEquiposDB(t))
+	off := false
+	p, err := s.CreateProduct(ProductInput{Code: "OFF1", Name: "Off", Active: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got database.EquipProduct
+	if err := s.db.First(&got, p.ID).Error; err != nil || got.Active {
+		t.Fatalf("producto creado inactivo quedó active=%v (err %v)", got.Active, err)
+	}
+	c, err := s.CreateCarrier(CarrierInput{Code: "OFFC", Name: "Off", Active: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotC database.EquipCarrier
+	if err := s.db.First(&gotC, c.ID).Error; err != nil || gotC.Active {
+		t.Fatalf("transportista creado inactivo quedó active=%v (err %v)", gotC.Active, err)
+	}
+}

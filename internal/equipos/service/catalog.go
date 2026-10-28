@@ -162,8 +162,15 @@ func (s *Service) CreateProduct(in ProductInput) (*database.EquipProduct, error)
 	if in.Active != nil {
 		p.Active = *in.Active
 	}
+	inactive := !p.Active
 	if err := s.db.Create(p).Error; err != nil {
 		return nil, err
+	}
+	if inactive {
+		// gorm trata false como "sin valor" y aplica el default:true de la columna al insertar.
+		if err := s.db.Model(p).Update("active", false).Error; err != nil {
+			return nil, err
+		}
 	}
 	return p, nil
 }
@@ -313,8 +320,15 @@ func (s *Service) CreateCombo(in ComboInput) (*ComboView, error) {
 		if in.Active != nil {
 			c.Active = *in.Active
 		}
+		inactive := !c.Active
 		if err := tx.Create(&c).Error; err != nil {
 			return err
+		}
+		if inactive {
+			// gorm trata false como "sin valor" y aplica el default:true de la columna al insertar.
+			if err := tx.Model(&c).Update("active", false).Error; err != nil {
+				return err
+			}
 		}
 		id = c.ID
 		for _, it := range in.Items {
@@ -509,7 +523,15 @@ func (s *Service) CreateCarrier(in CarrierInput) (*database.EquipCarrier, error)
 			}
 			c.IsDefault = true
 		}
-		return tx.Create(c).Error
+		inactive := !c.Active
+		if err := tx.Create(c).Error; err != nil {
+			return err
+		}
+		if inactive {
+			// gorm trata false como "sin valor" y aplica el default:true de la columna al insertar.
+			return tx.Model(c).Update("active", false).Error
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
