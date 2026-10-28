@@ -140,6 +140,7 @@ var TenantMigrations = []TenantMigration{
 	V166POSCostAndPricesPermissions{},
 	V167EcommercePaymentMethods{},
 	V168SplitContactPermissions{},
+	V169SaleUnitFractionalPrices{},
 }
 
 // ByVersion mapa versión → migración.

@@ -1666,7 +1666,7 @@ type SaleUnitInput struct {
 // desde que nace. requireUnit=false (UpdateSaleUnit): se permite guardar sin UnitID para no romper
 // SaleUnits creadas antes de que este campo existiera — quedan con unitCode="" (el backend usa la
 // unidad base del producto como resguardo al vender, ver resolveSaleItemUnitCode).
-func validateSaleUnitInput(db *gorm.DB, in SaleUnitInput, requireUnit bool) (name, unitCode string, err error) {
+func validateSaleUnitInput(db *gorm.DB, productID uint, in SaleUnitInput, requireUnit bool) (name, unitCode string, err error) {
 	name = strings.TrimSpace(in.Name)
 	if name == "" {
 		return "", "", errors.New("nombre de la unidad de venta requerido")
@@ -1695,6 +1695,15 @@ func validateSaleUnitInput(db *gorm.DB, in SaleUnitInput, requireUnit bool) (nam
 	var u database.TenantUnit
 	if err := db.First(&u, *in.UnitID).Error; err != nil {
 		return "", "", errors.New("unidad de medida no encontrada")
+	}
+	// Una unidad con factor distinto de 1 que declara el MISMO código SUNAT que la unidad base
+	// (ej. "Gramo" con factor 0.001 y código KGM) haría que el comprobante diga 250 KGM cuando
+	// se vendieron 250 gramos: la línea se declara con la unidad propia, así que debe ser otra.
+	if in.ConversionFactor != 1 {
+		var product database.TenantProduct
+		if err := db.Select("unit").First(&product, productID).Error; err == nil && u.Code != "" && strings.EqualFold(u.Code, strings.TrimSpace(product.Unit)) {
+			return "", "", fmt.Errorf("la unidad SUNAT %s es la misma que la unidad base del producto, pero el factor de conversión no es 1: elige la unidad real de esta presentación (ej. GRM para gramo, MLT para mililitro)", u.Code)
+		}
 	}
 	return name, u.Code, nil
 }
@@ -1751,7 +1760,7 @@ func (s *ProductService) CreateSaleUnit(productID uint, in SaleUnitInput) (*data
 	if err := s.db.Model(&database.TenantProductPresentation{}).Where("product_id = ? AND active = ?", productID, true).Count(&presCount).Error; err == nil && presCount > 0 {
 		return nil, errors.New("este producto tiene presentaciones: no se pueden agregar unidades de venta. Elimina las presentaciones o usa solo unidades de venta")
 	}
-	name, unitCode, err := validateSaleUnitInput(s.db, in, true)
+	name, unitCode, err := validateSaleUnitInput(s.db, productID, in, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1788,7 +1797,7 @@ func (s *ProductService) UpdateSaleUnit(productID, id uint, in SaleUnitInput) (*
 	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&row).Error; err != nil {
 		return nil, errors.New("unidad de venta no encontrada")
 	}
-	name, unitCode, err := validateSaleUnitInput(s.db, in, false)
+	name, unitCode, err := validateSaleUnitInput(s.db, productID, in, false)
 	if err != nil {
 		return nil, err
 	}

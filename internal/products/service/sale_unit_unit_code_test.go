@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"tukifac/pkg/database"
+)
 
 // Corrección "Unidad Comercial Fiscal": TenantProductSaleUnit gana UnitID/Unit (unidad comercial
 // SUNAT propia, ej. "Caja" → BX), siguiendo el mismo patrón que TenantProduct.UnitID/Unit
@@ -93,5 +97,40 @@ func TestSaleUnit_Update_UnitIDOptional_PreExistingRowKeepsWorking(t *testing.T)
 	}
 	if updated.UnitID != nil || updated.Unit != "" {
 		t.Errorf("UnitID/Unit deberían seguir vacíos (no se inventa nada), got UnitID=%v Unit=%q", updated.UnitID, updated.Unit)
+	}
+}
+
+// Una unidad de venta con factor ≠ 1 no puede declarar el mismo código SUNAT que la unidad base:
+// "Gramo" (factor 0.001) con KGM haría que 250 g salgan como 250 KGM en el comprobante.
+func TestSaleUnit_Create_RejectsSameUnitCodeAsBaseWhenFactorNotOne(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+	p := newSaleUnitTestProduct(t, db) // unidad base KGM
+	kgm := database.TenantUnit{Code: "KGM", Name: "Kilos", Active: true}
+	grm := database.TenantUnit{Code: "GRM", Name: "Gramos", Active: true}
+	if err := db.Create(&kgm).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&grm).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
+		Name: "Gramo", UnitID: &kgm.ID, ConversionFactor: 0.001, Price1: 0.0045,
+	}); err == nil {
+		t.Fatal("Gramo con código KGM (el de la unidad base) debería rechazarse")
+	}
+
+	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{
+		Name: "Gramo", UnitID: &grm.ID, ConversionFactor: 0.001, Price1: 0.0045,
+	})
+	if err != nil {
+		t.Fatalf("Gramo con GRM debería aceptarse: %v", err)
+	}
+	if u.Unit != "GRM" {
+		t.Errorf("Unit = %q, want GRM", u.Unit)
+	}
+	if u.Price1 != 0.0045 {
+		t.Errorf("Price1 = %v, want 0.0045", u.Price1)
 	}
 }
