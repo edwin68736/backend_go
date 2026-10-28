@@ -1696,10 +1696,12 @@ func validateSaleUnitInput(db *gorm.DB, productID uint, in SaleUnitInput, requir
 	if err := db.First(&u, *in.UnitID).Error; err != nil {
 		return "", "", errors.New("unidad de medida no encontrada")
 	}
-	// Una unidad con factor distinto de 1 que declara el MISMO código SUNAT que la unidad base
-	// (ej. "Gramo" con factor 0.001 y código KGM) haría que el comprobante diga 250 KGM cuando
+	// Una unidad FRACCIONARIA (factor menor que 1) que declara el MISMO código SUNAT que la unidad
+	// base (ej. "Gramo" con factor 0.001 y código KGM) haría que el comprobante diga 250 KGM cuando
 	// se vendieron 250 gramos: la línea se declara con la unidad propia, así que debe ser otra.
-	if in.ConversionFactor != 1 {
+	// Los factores mayores que 1 (ej. "Caja x12" con NIU en un producto NIU) son presentaciones que
+	// ya existen en producción y se siguen aceptando para no bloquear su edición.
+	if in.ConversionFactor > 0 && in.ConversionFactor < 1 {
 		var product database.TenantProduct
 		if err := db.Select("unit").First(&product, productID).Error; err == nil && u.Code != "" && strings.EqualFold(u.Code, strings.TrimSpace(product.Unit)) {
 			return "", "", fmt.Errorf("la unidad SUNAT %s es la misma que la unidad base del producto, pero el factor de conversión no es 1: elige la unidad real de esta presentación (ej. GRM para gramo, MLT para mililitro)", u.Code)

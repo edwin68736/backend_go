@@ -100,9 +100,9 @@ func TestSaleUnit_Update_UnitIDOptional_PreExistingRowKeepsWorking(t *testing.T)
 	}
 }
 
-// Una unidad de venta con factor ≠ 1 no puede declarar el mismo código SUNAT que la unidad base:
+// Una unidad de venta fraccionaria (factor < 1) no puede declarar el mismo código SUNAT que la unidad base:
 // "Gramo" (factor 0.001) con KGM haría que 250 g salgan como 250 KGM en el comprobante.
-func TestSaleUnit_Create_RejectsSameUnitCodeAsBaseWhenFactorNotOne(t *testing.T) {
+func TestSaleUnit_Create_RejectsSameUnitCodeAsBaseWhenFractional(t *testing.T) {
 	db := setupProductServiceTestDB(t)
 	svc := NewProductService(db)
 	p := newSaleUnitTestProduct(t, db) // unidad base KGM
@@ -132,5 +132,24 @@ func TestSaleUnit_Create_RejectsSameUnitCodeAsBaseWhenFactorNotOne(t *testing.T)
 	}
 	if u.Price1 != 0.0045 {
 		t.Errorf("Price1 = %v, want 0.0045", u.Price1)
+	}
+}
+
+// Las presentaciones con factor > 1 (ej. "Caja x12" con el mismo código que la base) ya existen en
+// producción: se siguen aceptando al crear y, sobre todo, al editar (por ejemplo cambiar su precio).
+func TestSaleUnit_SameUnitCodeAsBaseAllowedWhenFactorGreaterThanOne(t *testing.T) {
+	db := setupProductServiceTestDB(t)
+	svc := NewProductService(db)
+	p := newSaleUnitTestProduct(t, db) // unidad base KGM
+	kgm := database.TenantUnit{Code: "KGM", Name: "Kilos", Active: true}
+	if err := db.Create(&kgm).Error; err != nil {
+		t.Fatal(err)
+	}
+	u, err := svc.CreateSaleUnit(p.ID, SaleUnitInput{Name: "Saco x25", UnitID: &kgm.ID, ConversionFactor: 25, Price1: 100, Active: true})
+	if err != nil {
+		t.Fatalf("factor 25 con el código de la base debe aceptarse: %v", err)
+	}
+	if _, err := svc.UpdateSaleUnit(p.ID, u.ID, SaleUnitInput{Name: "Saco x25", UnitID: &kgm.ID, ConversionFactor: 25, Price1: 110, Active: true}); err != nil {
+		t.Fatalf("editar el precio de una presentación existente no debe bloquearse: %v", err)
 	}
 }
