@@ -232,7 +232,7 @@ func TestOrder_duplicateWarning(t *testing.T) {
 	}
 }
 
-func TestDispatchFlow_requiresValidationAndGuide(t *testing.T) {
+func TestDispatchFlow_requiresValidationAndFullFlow(t *testing.T) {
 	f := newFixture(t)
 	o := f.confirmed(t, 1, 100)
 	if _, err := f.s.DispatchOrder(o.ID, ""); err == nil || !strings.Contains(err.Error(), "valid") {
@@ -240,9 +240,6 @@ func TestDispatchFlow_requiresValidationAndGuide(t *testing.T) {
 	}
 	if _, err := f.s.ValidateOrder(o.ID, "ok", 1); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := f.s.DispatchOrder(o.ID, ""); err == nil || !strings.Contains(err.Error(), "guía") {
-		t.Fatalf("por agencia exige guía: %v", err)
 	}
 	if _, err := f.s.UpdateShipment(o.ID, ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "ABC123", DestinationDepartment: "Cusco", DeliveryMode: "agencia"}); err != nil {
 		t.Fatal(err)
@@ -503,5 +500,28 @@ func TestUpdateOrderKeepsEditedPhoneAndNameWithSavedCustomer(t *testing.T) {
 	}
 	if r.Order.CustomerPhone != "912345678" || r.Order.CustomerName != "Juan Pérez Soto" {
 		t.Errorf("quedó: nombre=%q celular=%q", r.Order.CustomerName, r.Order.CustomerPhone)
+	}
+}
+
+// La guía de la agencia se puede registrar después: despachar sin guía no se bloquea, solo avisa.
+func TestDispatchOrder_withoutGuideAllowedWithWarning(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	if _, err := f.s.ValidateOrder(o.ID, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := f.s.ListShipments(ShipmentFilter{Status: "pendiente_envio"})
+	if err != nil || len(rows) != 1 || !rows[0].ReadyToDispatch || rows[0].GuideNumber != "" {
+		t.Fatalf("validado sin guía debe estar listo para despachar: %v %+v", err, rows)
+	}
+	r, err := f.s.DispatchOrder(o.ID, "")
+	if err != nil {
+		t.Fatalf("despachar sin guía: %v", err)
+	}
+	if r.Order.Shipment == nil || r.Order.Shipment.Status != "en_transito" {
+		t.Fatalf("envío tras despachar: %+v", r.Order.Shipment)
+	}
+	if len(r.Warnings) == 0 || !strings.Contains(r.Warnings[0], "sin N° de guía") {
+		t.Errorf("avisos: %v", r.Warnings)
 	}
 }
