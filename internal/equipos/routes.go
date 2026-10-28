@@ -16,6 +16,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Get("/equipos/products", p("equipos.view"), h.ListProducts)
 	saAPI.Post("/equipos/products", p("equipos.catalog"), h.CreateProduct)
 	saAPI.Put("/equipos/products/:id", p("equipos.catalog"), h.UpdateProduct)
+	saAPI.Post("/equipos/products/import", p("equipos.catalog"), h.ImportCatalog)
 
 	saAPI.Get("/equipos/combos", p("equipos.view"), h.ListCombos)
 	saAPI.Post("/equipos/combos", p("equipos.catalog"), h.CreateCombo)
