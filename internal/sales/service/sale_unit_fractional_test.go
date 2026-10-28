@@ -173,3 +173,22 @@ func TestBulkSale_Grams_NotaToBoletaKeepsUnitQuantityAndPrice(t *testing.T) {
 		t.Errorf("stock = %g, want 99.75 (la boleta no descuenta de nuevo)", stock.Quantity)
 	}
 }
+
+// El costo snapshot de la línea va en la unidad VENDIDA: kilo a S/ 3 → gramo a S/ 0.003. Sin la
+// conversión, la utilidad de 250 g restaba 250 × S/ 3.
+func TestBulkSale_Grams_PurchasePriceSnapshotInSoldUnit(t *testing.T) {
+	f := setupArrozGranel(t)
+	if err := f.db.Model(&database.TenantProduct{}).Where("id = ?", f.product.ID).
+		Update("purchase_price", 3.0).Error; err != nil {
+		t.Fatal(err)
+	}
+	pid, suid := f.product.ID, f.gramo.ID
+	got := resolveSaleItemPurchasePrice(f.db, SaleItemInput{ProductID: &pid, SaleUnitID: &suid})
+	if got == nil || math.Abs(*got-0.003) > 1e-9 {
+		t.Fatalf("costo en gramos = %v, want 0.003", got)
+	}
+	base := resolveSaleItemPurchasePrice(f.db, SaleItemInput{ProductID: &pid})
+	if base == nil || math.Abs(*base-3.0) > 1e-9 {
+		t.Fatalf("costo en unidad base = %v, want 3", base)
+	}
+}

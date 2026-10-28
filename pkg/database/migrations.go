@@ -2189,7 +2189,7 @@ type TenantPurchaseItem struct {
 	// TenantSaleItem, la conversión a unidad base vive únicamente en el TenantStockMovement
 	// vinculado (ver SaleUnitID abajo y TenantStockMovement.PurchaseItemID).
 	Quantity float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost float64 `gorm:"type:decimal(15,2);not null" json:"unit_cost"`
+	UnitCost float64 `gorm:"type:decimal(15,6);not null" json:"unit_cost"`
 	// SaleUnitID: unidad de venta con conversión utilizada en esta línea de compra (ej. "Saco 100
 	// KG"), cuando aplica. nil = línea legacy sin conversión (comportamiento previo, intacto).
 	SaleUnitID *uint `gorm:"index" json:"sale_unit_id,omitempty"`
