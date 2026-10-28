@@ -485,3 +485,23 @@ func TestUpdateOrderCustomerAndContactWithPayments(t *testing.T) {
 		t.Errorf("quedó: %+v", r.Order.EquipOrder)
 	}
 }
+
+// El front reenvía customer_id al editar: nombre y celular corregidos en el pedido no deben
+// perderse pisados por la ficha del cliente.
+func TestUpdateOrderKeepsEditedPhoneAndNameWithSavedCustomer(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	if o.CustomerID == nil {
+		t.Fatal("precondición: el pedido debe tener cliente guardado")
+	}
+	in := f.input(1, 100)
+	in.CustomerID = o.CustomerID
+	in.CustomerName, in.CustomerPhone = "Juan Pérez Soto", "912345678"
+	r, err := f.s.UpdateOrder(o.ID, in, ConfirmInput{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Order.CustomerPhone != "912345678" || r.Order.CustomerName != "Juan Pérez Soto" {
+		t.Errorf("quedó: nombre=%q celular=%q", r.Order.CustomerName, r.Order.CustomerPhone)
+	}
+}
