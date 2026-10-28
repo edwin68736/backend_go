@@ -525,3 +525,31 @@ func TestDispatchOrder_withoutGuideAllowedWithWarning(t *testing.T) {
 		t.Errorf("avisos: %v", r.Warnings)
 	}
 }
+
+// Recojo en oficina: no hay transportista ni guía, aunque el formulario los mande; el flujo sigue completo.
+func TestOrder_officePickupDropsCarrierAndGuide(t *testing.T) {
+	f := newFixture(t)
+	in := f.input(1, 100)
+	in.Shipment = &ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "ABC123", DestinationAgency: "Agencia X", DeliveryMode: "oficina"}
+	r, err := f.s.CreateOrder(in, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh := r.Order.Shipment
+	if sh == nil || sh.CarrierID != nil || sh.GuideNumber != "" || sh.DestinationAgency != "" || sh.DeliveryMode != "oficina" {
+		t.Fatalf("envío de oficina: %+v", sh)
+	}
+	id := r.Order.ID
+	if _, err := f.s.ConfirmOrder(id, ConfirmInput{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.ValidateOrder(id, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := f.s.DispatchOrder(id, ""); err != nil || len(d.Warnings) != 0 {
+		t.Fatalf("despachar oficina sin avisos: %v %v", err, d)
+	}
+	if p, err := f.s.MarkPickedUp(id, ""); err != nil || p.Order.Shipment.Status != "entregado" {
+		t.Fatalf("recojo: %v", err)
+	}
+}

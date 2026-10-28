@@ -67,6 +67,12 @@ func (s *Service) carrierByIDTx(tx *gorm.DB, id *uint) (*database.EquipCarrier, 
 	return &c, nil
 }
 
+// isOfficeMode indica si la modalidad es de recojo en oficina (sin transportista).
+func isOfficeMode(mode string) bool {
+	m := strings.TrimSpace(mode)
+	return m == "oficina" || m == "pendiente_recojo"
+}
+
 // applyShipmentInput copia los datos editables del envío validándolos contra su transportista.
 func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in *ShipmentInput) error {
 	if in == nil {
@@ -80,6 +86,15 @@ func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in
 		}
 		return nil
 	}
+	// Recojo en oficina: no interviene ningún transportista ni agencia, así que esos datos se descartan.
+	office := isOfficeMode(in.DeliveryMode)
+	if office {
+		cp := *in
+		cp.CarrierID, cp.GuideNumber, cp.DestinationAgency = nil, "", ""
+		cp.OriginAgencyID, cp.DestinationAgencyID = nil, nil
+		in = &cp
+		sh.CarrierID = nil
+	}
 	if in.CarrierID != nil {
 		c, err := s.carrierByIDTx(tx, in.CarrierID)
 		if err != nil {
@@ -90,7 +105,7 @@ func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in
 		}
 		id := c.ID
 		sh.CarrierID = &id
-	} else if sh.CarrierID == nil {
+	} else if sh.CarrierID == nil && !office {
 		if c, err := s.defaultCarrierTx(tx); err != nil {
 			return err
 		} else if c != nil {
