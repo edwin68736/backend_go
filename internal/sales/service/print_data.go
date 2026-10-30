@@ -386,7 +386,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	// Cliente
 	if sale.ContactID != nil && *sale.ContactID > 0 {
 		var contact database.TenantContact
-		if db.First(&contact, *sale.ContactID).Error == nil {
+		// Unscoped: un contacto eliminado después de emitir sigue siendo el cliente de ese comprobante.
+		if db.Unscoped().First(&contact, *sale.ContactID).Error == nil {
 			addr, _ := database.NormalizeTenantContactAddressUbigeo(contact.Address, contact.Ubigeo)
 			pd.Client = &PrintClient{
 				DocType:      contact.DocType,

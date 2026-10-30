@@ -1352,7 +1352,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		contactName := ""
 		if sale.ContactID != nil {
 			var c database.TenantContact
-			if s.db.First(&c, *sale.ContactID).Error == nil {
+			if s.db.Unscoped().First(&c, *sale.ContactID).Error == nil {
 				contactName = contactDisplayName(c)
 			}
 		}
@@ -1443,7 +1443,7 @@ func (s *CashBankService) buildCashMovementReportRows(f MovementReportFilters) (
 	for pid, pur := range purchases {
 		if pur.ContactID != nil {
 			var c database.TenantContact
-			if s.db.First(&c, *pur.ContactID).Error == nil {
+			if s.db.Unscoped().First(&c, *pur.ContactID).Error == nil {
 				contactsByPurchase[pid] = contactDisplayName(c)
 			}
 		}
@@ -1714,7 +1714,7 @@ func (s *CashBankService) buildPurchasePaymentMovementRows(f MovementReportFilte
 		contactName := ""
 		if p.ContactID != nil {
 			var c database.TenantContact
-			if s.db.First(&c, *p.ContactID).Error == nil {
+			if s.db.Unscoped().First(&c, *p.ContactID).Error == nil {
 				contactName = contactDisplayName(c)
 			}
 		}
@@ -1790,7 +1790,7 @@ func (s *CashBankService) buildPurchasePaymentMovementRows(f MovementReportFilte
 			docNumber = pur.Series + "-" + pur.Number
 			if pur.ContactID != nil {
 				var c database.TenantContact
-				if s.db.First(&c, *pur.ContactID).Error == nil {
+				if s.db.Unscoped().First(&c, *pur.ContactID).Error == nil {
 					contactName = contactDisplayName(c)
 				}
 			}
@@ -1833,7 +1833,7 @@ func loadUserNamesMap(db *gorm.DB, ids map[uint]struct{}) map[uint]string {
 		return out
 	}
 	var list []database.TenantUser
-	db.Where("id IN ?", keysUint(ids)).Find(&list)
+	db.Unscoped().Where("id IN ?", keysUint(ids)).Find(&list)
 	for _, u := range list {
 		out[u.ID] = u.Name
 	}
