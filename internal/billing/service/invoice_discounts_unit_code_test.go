@@ -57,3 +57,31 @@ func TestBuildInvoiceDetails_SaleUnitSale_UsesSaleUnitCode_NeverMultipliesQuanti
 		t.Errorf("Cantidad = %v, want 1 (comercial, nunca 12 = 1×factor)", d.Cantidad)
 	}
 }
+
+// Venta por gramo (SaleUnit GRM, factor 0.001): el detalle fiscal declara 250 GRM —nunca 250 KGM
+// ni 0.25 KGM sin avisar— y el valor/precio unitario conserva los decimales de S/ 0.0045 por gramo.
+func TestBuildInvoiceDetails_GramSale_Declares250GRM(t *testing.T) {
+	suid := uint(7)
+	items := []database.TenantSaleItem{{
+		Code: "ARR-GR", Description: "Arroz a granel", Unit: "GRM", Quantity: 250, SaleUnitID: &suid,
+		UnitPrice: 0.0045, IgvAffectationType: "10", TaxRate: 18,
+		Subtotal: 0.95, TaxAmount: 0.17, Total: 1.13,
+	}}
+	details, err := BuildInvoiceDetailsFromSaleItems(items, 18, testNormUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := details[0]
+	if d.Unidad != "GRM" {
+		t.Errorf("Unidad = %q, want GRM", d.Unidad)
+	}
+	if d.Cantidad != 250 {
+		t.Errorf("Cantidad = %v, want 250 (comercial)", d.Cantidad)
+	}
+	if d.MtoValorUnitario < 0.0037 || d.MtoValorUnitario > 0.0039 {
+		t.Errorf("MtoValorUnitario = %v, want ≈0.0038 (0.95/250)", d.MtoValorUnitario)
+	}
+	if d.MtoPrecioUnitario < 0.0044 || d.MtoPrecioUnitario > 0.0046 {
+		t.Errorf("MtoPrecioUnitario = %v, want ≈0.0045", d.MtoPrecioUnitario)
+	}
+}

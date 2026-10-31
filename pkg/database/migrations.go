@@ -1231,9 +1231,9 @@ type TenantProductSaleUnit struct {
 	// AllowFraction:false explícito terminaría persistiendo el default (true) en vez de false.
 	// El servicio siempre setea este campo explícitamente al crear/actualizar.
 	AllowFraction bool           `json:"allow_fraction"`
-	Price1        float64        `gorm:"type:decimal(15,2);not null" json:"price1"`
-	Price2        *float64       `gorm:"type:decimal(15,2)" json:"price2"`
-	Price3        *float64       `gorm:"type:decimal(15,2)" json:"price3"`
+	Price1        float64        `gorm:"type:decimal(15,6);not null" json:"price1"`
+	Price2        *float64       `gorm:"type:decimal(15,6)" json:"price2"`
+	Price3        *float64       `gorm:"type:decimal(15,6)" json:"price3"`
 	SortOrder     int            `gorm:"default:0" json:"sort_order"`
 	Active        bool           `gorm:"default:true;index:idx_sale_unit_product_active" json:"active"`
 	CreatedAt     time.Time      `json:"created_at"`
@@ -1261,9 +1261,9 @@ type TenantProductSaleUnitBranchPrice struct {
 	ID         uint     `gorm:"primaryKey" json:"id"`
 	SaleUnitID uint     `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price" json:"sale_unit_id"`
 	BranchID   uint     `gorm:"not null;uniqueIndex:idx_sale_unit_branch_price;index" json:"branch_id"`
-	Price1     float64  `gorm:"type:decimal(15,2);not null" json:"price1"`
-	Price2     *float64 `gorm:"type:decimal(15,2)" json:"price2"`
-	Price3     *float64 `gorm:"type:decimal(15,2)" json:"price3"`
+	Price1     float64  `gorm:"type:decimal(15,6);not null" json:"price1"`
+	Price2     *float64 `gorm:"type:decimal(15,6)" json:"price2"`
+	Price3     *float64 `gorm:"type:decimal(15,6)" json:"price3"`
 	// Active: sin gorm:"default:..." a propósito — mismo motivo que TenantProductSaleUnit.
 	// AllowFraction (ver ahí): GORM omite del INSERT los campos con tag `default` cuando el valor
 	// Go es su zero value, así que Active:false explícito terminaría persistiendo el default
@@ -1656,7 +1656,7 @@ type TenantSaleItem struct {
 	Description string  `gorm:"size:255;not null" json:"description"`
 	Unit        string  `gorm:"size:50" json:"unit"`
 	Quantity    float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitPrice   float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
+	UnitPrice   float64 `gorm:"type:decimal(15,6);not null" json:"unit_price"`
 	// PurchasePrice: snapshot del costo del producto (TenantProduct.PurchasePrice) al momento de
 	// vender esta línea — para reportes de utilidad exactos aunque el costo del catálogo cambie
 	// después (ver v145_sale_item_purchase_price_snapshot.go). nil en líneas manuales (sin
@@ -1880,7 +1880,7 @@ type TenantQuotationItem struct {
 	Description        string  `gorm:"size:255;not null" json:"description"`
 	Unit               string  `gorm:"size:50" json:"unit"`
 	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitPrice          float64 `gorm:"type:decimal(15,2);not null" json:"unit_price"`
+	UnitPrice          float64 `gorm:"type:decimal(15,6);not null" json:"unit_price"`
 	// Discount: monto en formato CalcItem (resta del bruto qty*precio). Se conserva para ventas y
 	// consumidores que no conocen LineDiscountMode; el dato de verdad es LineDiscountMode/Value.
 	Discount float64 `gorm:"type:decimal(15,2);default:0" json:"discount"`
@@ -2189,7 +2189,7 @@ type TenantPurchaseItem struct {
 	// TenantSaleItem, la conversión a unidad base vive únicamente en el TenantStockMovement
 	// vinculado (ver SaleUnitID abajo y TenantStockMovement.PurchaseItemID).
 	Quantity float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost float64 `gorm:"type:decimal(15,2);not null" json:"unit_cost"`
+	UnitCost float64 `gorm:"type:decimal(15,6);not null" json:"unit_cost"`
 	// SaleUnitID: unidad de venta con conversión utilizada en esta línea de compra (ej. "Saco 100
 	// KG"), cuando aplica. nil = línea legacy sin conversión (comportamiento previo, intacto).
 	SaleUnitID *uint `gorm:"index" json:"sale_unit_id,omitempty"`

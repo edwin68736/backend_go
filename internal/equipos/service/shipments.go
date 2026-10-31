@@ -67,6 +67,12 @@ func (s *Service) carrierByIDTx(tx *gorm.DB, id *uint) (*database.EquipCarrier, 
 	return &c, nil
 }
 
+// isOfficeMode indica si la modalidad es de recojo en oficina (sin transportista).
+func isOfficeMode(mode string) bool {
+	m := strings.TrimSpace(mode)
+	return m == "oficina" || m == "pendiente_recojo"
+}
+
 // applyShipmentInput copia los datos editables del envío validándolos contra su transportista.
 func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in *ShipmentInput) error {
 	if in == nil {
@@ -80,6 +86,15 @@ func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in
 		}
 		return nil
 	}
+	// Recojo en oficina: no interviene ningún transportista ni agencia, así que esos datos se descartan.
+	office := isOfficeMode(in.DeliveryMode)
+	if office {
+		cp := *in
+		cp.CarrierID, cp.GuideNumber, cp.DestinationAgency = nil, "", ""
+		cp.OriginAgencyID, cp.DestinationAgencyID = nil, nil
+		in = &cp
+		sh.CarrierID = nil
+	}
 	if in.CarrierID != nil {
 		c, err := s.carrierByIDTx(tx, in.CarrierID)
 		if err != nil {
@@ -90,7 +105,7 @@ func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in
 		}
 		id := c.ID
 		sh.CarrierID = &id
-	} else if sh.CarrierID == nil {
+	} else if sh.CarrierID == nil && !office {
 		if c, err := s.defaultCarrierTx(tx); err != nil {
 			return err
 		} else if c != nil {
@@ -267,7 +282,8 @@ func actionDate(raw string) (time.Time, error) {
 	return *d, nil
 }
 
-// DispatchOrder marca el envío como despachado (en tránsito). Exige pedido validado y, si va por agencia, el N° de guía.
+// DispatchOrder marca el envío como despachado (en tránsito). Exige pedido validado; el N° de guía NO es
+// obligatorio (la agencia lo entrega después): si falta, se despacha igual con un aviso para registrarlo luego.
 func (s *Service) DispatchOrder(orderID uint, date string) (*OrderResult, error) {
 	return s.shipmentActionTx(orderID, func(tx *gorm.DB, o *database.EquipOrder, sh *database.EquipShipment, c *database.EquipCarrier) ([]string, error) {
 		if o.ValidationStatus != "validado" {
@@ -275,9 +291,6 @@ func (s *Service) DispatchOrder(orderID uint, date string) (*OrderResult, error)
 		}
 		if sh.Status != "pendiente_envio" {
 			return nil, invalid("el envío ya está %s", shipmentStatusLabel(sh.Status))
-		}
-		if sh.DeliveryMode == "agencia" && strings.TrimSpace(sh.GuideNumber) == "" {
-			return nil, invalid("registra el N° de guía antes de despachar")
 		}
 		d, err := actionDate(date)
 		if err != nil {
@@ -290,10 +303,14 @@ func (s *Service) DispatchOrder(orderID uint, date string) (*OrderResult, error)
 		if sh.DeliveryMode != "agencia" { // entrega en oficina/recojo: no pasa por una agencia
 			return nil, nil
 		}
-		if msg := s.dispatchDayWarning(tx, &database.EquipShipment{ScheduledDispatchDate: &d, CarrierID: sh.CarrierID}); msg != "" {
-			return []string{msg}, nil
+		var warns []string
+		if strings.TrimSpace(sh.GuideNumber) == "" {
+			warns = append(warns, "Se despachó sin N° de guía: regístralo cuando la agencia te lo entregue.")
 		}
-		return nil, nil
+		if msg := s.dispatchDayWarning(tx, &database.EquipShipment{ScheduledDispatchDate: &d, CarrierID: sh.CarrierID}); msg != "" {
+			warns = append(warns, msg)
+		}
+		return warns, nil
 	})
 }
 
@@ -523,7 +540,7 @@ func (s *Service) ListShipments(f ShipmentFilter) ([]ShipmentRow, error) {
 		rows = append(rows, ShipmentRow{
 			ShipmentView: s.shipmentView(s.db, sh, st), OrderNumber: o.OrderNumber, CustomerName: o.CustomerName, CustomerPhone: o.CustomerPhone,
 			ValidationStatus: o.ValidationStatus, PaymentStatus: o.PaymentStatus, TotalAmount: o.TotalAmount, BalanceAmount: o.BalanceAmount,
-			ReadyToDispatch: sh.Status == "pendiente_envio" && o.ValidationStatus == "validado" && (sh.DeliveryMode != "agencia" || strings.TrimSpace(sh.GuideNumber) != ""),
+			ReadyToDispatch: sh.Status == "pendiente_envio" && o.ValidationStatus == "validado",
 			Packing:         s.packingFor(s.db, items[sh.OrderID]),
 		})
 	}

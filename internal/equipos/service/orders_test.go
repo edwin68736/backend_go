@@ -232,7 +232,7 @@ func TestOrder_duplicateWarning(t *testing.T) {
 	}
 }
 
-func TestDispatchFlow_requiresValidationAndGuide(t *testing.T) {
+func TestDispatchFlow_requiresValidationAndFullFlow(t *testing.T) {
 	f := newFixture(t)
 	o := f.confirmed(t, 1, 100)
 	if _, err := f.s.DispatchOrder(o.ID, ""); err == nil || !strings.Contains(err.Error(), "valid") {
@@ -240,9 +240,6 @@ func TestDispatchFlow_requiresValidationAndGuide(t *testing.T) {
 	}
 	if _, err := f.s.ValidateOrder(o.ID, "ok", 1); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := f.s.DispatchOrder(o.ID, ""); err == nil || !strings.Contains(err.Error(), "guía") {
-		t.Fatalf("por agencia exige guía: %v", err)
 	}
 	if _, err := f.s.UpdateShipment(o.ID, ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "ABC123", DestinationDepartment: "Cusco", DeliveryMode: "agencia"}); err != nil {
 		t.Fatal(err)
@@ -483,5 +480,76 @@ func TestUpdateOrderCustomerAndContactWithPayments(t *testing.T) {
 	}
 	if r.Order.CustomerName != "María López" || r.Order.ContactName != "Pedro Ruiz" || r.Order.PaidAmount != 40 {
 		t.Errorf("quedó: %+v", r.Order.EquipOrder)
+	}
+}
+
+// El front reenvía customer_id al editar: nombre y celular corregidos en el pedido no deben
+// perderse pisados por la ficha del cliente.
+func TestUpdateOrderKeepsEditedPhoneAndNameWithSavedCustomer(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	if o.CustomerID == nil {
+		t.Fatal("precondición: el pedido debe tener cliente guardado")
+	}
+	in := f.input(1, 100)
+	in.CustomerID = o.CustomerID
+	in.CustomerName, in.CustomerPhone = "Juan Pérez Soto", "912345678"
+	r, err := f.s.UpdateOrder(o.ID, in, ConfirmInput{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Order.CustomerPhone != "912345678" || r.Order.CustomerName != "Juan Pérez Soto" {
+		t.Errorf("quedó: nombre=%q celular=%q", r.Order.CustomerName, r.Order.CustomerPhone)
+	}
+}
+
+// La guía de la agencia se puede registrar después: despachar sin guía no se bloquea, solo avisa.
+func TestDispatchOrder_withoutGuideAllowedWithWarning(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	if _, err := f.s.ValidateOrder(o.ID, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := f.s.ListShipments(ShipmentFilter{Status: "pendiente_envio"})
+	if err != nil || len(rows) != 1 || !rows[0].ReadyToDispatch || rows[0].GuideNumber != "" {
+		t.Fatalf("validado sin guía debe estar listo para despachar: %v %+v", err, rows)
+	}
+	r, err := f.s.DispatchOrder(o.ID, "")
+	if err != nil {
+		t.Fatalf("despachar sin guía: %v", err)
+	}
+	if r.Order.Shipment == nil || r.Order.Shipment.Status != "en_transito" {
+		t.Fatalf("envío tras despachar: %+v", r.Order.Shipment)
+	}
+	if len(r.Warnings) == 0 || !strings.Contains(r.Warnings[0], "sin N° de guía") {
+		t.Errorf("avisos: %v", r.Warnings)
+	}
+}
+
+// Recojo en oficina: no hay transportista ni guía, aunque el formulario los mande; el flujo sigue completo.
+func TestOrder_officePickupDropsCarrierAndGuide(t *testing.T) {
+	f := newFixture(t)
+	in := f.input(1, 100)
+	in.Shipment = &ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "ABC123", DestinationAgency: "Agencia X", DeliveryMode: "oficina"}
+	r, err := f.s.CreateOrder(in, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh := r.Order.Shipment
+	if sh == nil || sh.CarrierID != nil || sh.GuideNumber != "" || sh.DestinationAgency != "" || sh.DeliveryMode != "oficina" {
+		t.Fatalf("envío de oficina: %+v", sh)
+	}
+	id := r.Order.ID
+	if _, err := f.s.ConfirmOrder(id, ConfirmInput{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.ValidateOrder(id, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := f.s.DispatchOrder(id, ""); err != nil || len(d.Warnings) != 0 {
+		t.Fatalf("despachar oficina sin avisos: %v %v", err, d)
+	}
+	if p, err := f.s.MarkPickedUp(id, ""); err != nil || p.Order.Shipment.Status != "entregado" {
+		t.Fatalf("recojo: %v", err)
 	}
 }

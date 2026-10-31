@@ -94,6 +94,18 @@ func resolveSaleItemPurchasePrice(db *gorm.DB, item SaleItemInput) *float64 {
 		return nil
 	}
 	price := product.PurchasePrice
+	// El costo del catálogo es por unidad BASE (ej. S/ 3 el kg); la línea se vende en su unidad de
+	// venta (ej. gramos, a precio por gramo), así que el costo de la línea debe ir en esa misma
+	// unidad (3 × 0.001 = S/ 0.003 el gramo). Sin esto la utilidad de una venta fraccionada
+	// restaba el costo del kilo por cada gramo vendido.
+	if item.SaleUnitID != nil && *item.SaleUnitID != 0 {
+		var su database.TenantProductSaleUnit
+		if err := db.Select("conversion_factor").
+			Where("id = ? AND product_id = ?", *item.SaleUnitID, *item.ProductID).
+			First(&su).Error; err == nil && su.ConversionFactor > 0 {
+			price = money.RoundSunat(price * su.ConversionFactor)
+		}
+	}
 	return &price
 }
 

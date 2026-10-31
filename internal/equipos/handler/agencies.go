@@ -6,6 +6,29 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+// ── Importación del catálogo ───────────────────────────────────────────────
+
+type catalogImportBody struct {
+	Rows   []service.CatalogImportRow `json:"rows"`
+	Commit bool                       `json:"commit"`
+}
+
+// ImportCatalog carga masiva del catálogo desde la plantilla de Excel (sin commit = vista previa).
+func (h *Handler) ImportCatalog(c fiber.Ctx) error {
+	var in catalogImportBody
+	if err := c.Bind().JSON(&in); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	res, err := svc().ImportCatalog(in.Rows, in.Commit)
+	if err != nil {
+		return fail(c, err)
+	}
+	if in.Commit {
+		audit(c, "equip_catalog_imported", "equip_product", 0, fiber.Map{"total": res.Total, "created": res.Created, "updated": res.Updated, "unchanged": res.Unchanged, "errors": res.Errors})
+	}
+	return c.JSON(fiber.Map{"data": res})
+}
+
 // ── Agencias de los transportistas ─────────────────────────────────────────
 
 func (h *Handler) ListAgencies(c fiber.Ctx) error {

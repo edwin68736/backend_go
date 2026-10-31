@@ -64,6 +64,7 @@ func TestRoutes_requireExactPermission(t *testing.T) {
 		{"GET", "/equipos/products", "equipos.view"},
 		{"POST", "/equipos/products", "equipos.catalog"},
 		{"PUT", "/equipos/products/1", "equipos.catalog"},
+		{"POST", "/equipos/products/import", "equipos.catalog"},
 		{"GET", "/equipos/combos", "equipos.view"},
 		{"POST", "/equipos/combos", "equipos.catalog"},
 		{"PUT", "/equipos/combos/1", "equipos.catalog"},

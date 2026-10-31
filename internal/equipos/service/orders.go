@@ -271,6 +271,14 @@ func (s *Service) resolveCustomer(tx *gorm.DB, in OrderInput, o *database.EquipO
 		}
 		id := c.ID
 		o.CustomerID, o.CustomerName, o.CustomerDocType, o.CustomerPhone = &id, c.Name, c.DocType, c.Phone
+		// Nombre y celular del pedido son una copia editable: lo que el usuario corrige en el
+		// pedido prevalece sobre la ficha del cliente (el documento sí sale de la ficha).
+		if n := collapse(in.CustomerName); n != "" {
+			o.CustomerName = n
+		}
+		if p := strings.TrimSpace(in.CustomerPhone); p != "" {
+			o.CustomerPhone, _, _ = classifyPhone(p)
+		}
 		o.CustomerDocNumber = ""
 		if c.DocNumber != nil {
 			o.CustomerDocNumber = *c.DocNumber

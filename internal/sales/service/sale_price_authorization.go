@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"tukifac/pkg/database"
@@ -115,10 +116,16 @@ func validateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput)
 			}
 		}
 
-		expected := money.RoundDisplay(basePrice + extrasSum)
-		got := money.RoundDisplay(item.UnitPrice)
+		// Las unidades de venta pueden costar menos de un céntimo por unidad (gramo, mililitro: S/ 0.0045),
+		// así que ahí el precio se compara con la precisión completa y no redondeado a 2 decimales.
+		round := money.RoundDisplay
+		if usesSaleUnit {
+			round = money.RoundSunat
+		}
+		expected := round(basePrice + extrasSum)
+		got := round(item.UnitPrice)
 		if got != expected {
-			return fmt.Errorf("'%s' no tiene un precio autorizado (precio de catálogo: S/ %.2f)", saleItemLabel(item), expected)
+			return fmt.Errorf("'%s' no tiene un precio autorizado (precio de catálogo: S/ %s)", saleItemLabel(item), formatCatalogPrice(expected))
 		}
 	}
 	return nil
@@ -189,4 +196,16 @@ func sumModifierExtras(db *gorm.DB, productID uint, modifiersJSON string) (float
 		sum += o.ExtraPrice
 	}
 	return sum, nil
+}
+
+// formatCatalogPrice muestra el precio con 2 decimales y solo agrega más (hasta 6) cuando hacen
+// falta, para no mostrar "S/ 0.00" en un precio de S/ 0.0045.
+func formatCatalogPrice(v float64) string {
+	s := strconv.FormatFloat(v, 'f', -1, 64)
+	if i := strings.IndexByte(s, '.'); i < 0 {
+		return s + ".00"
+	} else if len(s)-i-1 < 2 {
+		return s + "0"
+	}
+	return s
 }
