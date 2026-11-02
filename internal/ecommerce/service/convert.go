@@ -143,6 +143,15 @@ func (s *EcommerceService) ConvertToSale(orderID uint, input ConvertInput) (*dat
 				igvType = p.IgvAffectationType
 				priceIncludesIgv = p.PriceIncludesIgv
 			}
+			// Con unidad de venta (Gramo, Caja…) la línea se declara con SU unidad SUNAT: la
+			// cantidad del pedido está en esa unidad, no en la base del producto.
+			if it.SaleUnitID != nil && *it.SaleUnitID > 0 {
+				var su database.TenantProductSaleUnit
+				if s.db.Select("unit").Where("id = ? AND product_id = ?", *it.SaleUnitID, it.ProductID).First(&su).Error == nil &&
+					strings.TrimSpace(su.Unit) != "" {
+					unit = su.Unit
+				}
+			}
 		}
 		saleItems = append(saleItems, salessvc.SaleItemInput{
 			ProductID:          productID,
