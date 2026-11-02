@@ -325,13 +325,50 @@ func (s *ContactService) UpdatePhotoURL(id uint, photoURL string) error {
 	return s.db.Model(&database.TenantContact{}).Where("id = ?", id).Update("photo_url", photoURL).Error
 }
 
+// ContactInUseError el contacto tiene documentos asociados: eliminarlo los dejaría sin su cliente.
+type ContactInUseError struct{ Documents int64 }
+
+func (e *ContactInUseError) Error() string {
+	return fmt.Sprintf("Este contacto tiene %d documento(s) asociado(s) (ventas, cotizaciones, compras, etc.). "+
+		"No se elimina para no alterar sus comprobantes; desactívelo para que deje de aparecer en los buscadores.", e.Documents)
+}
+
+// contactReferencingTables tablas del tenant con documentos o movimientos ligados a un contacto.
+var contactReferencingTables = []string{
+	"tenant_sales", "tenant_quotations", "tenant_purchases", "tenant_memberships",
+	"tenant_sale_prepayment_vouchers", "tenant_table_sessions", "tenant_cash_movements", "tenant_bank_movements",
+}
+
+// CountLinkedDocuments cuenta los registros (incluso anulados) que apuntan al contacto.
+func (s *ContactService) CountLinkedDocuments(id uint) (int64, error) {
+	var total int64
+	for _, table := range contactReferencingTables {
+		if !s.db.Migrator().HasTable(table) {
+			continue
+		}
+		var n int64
+		if err := s.db.Table(table).Where("contact_id = ?", id).Count(&n).Error; err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
 func (s *ContactService) Delete(id uint) error {
 	var c database.TenantContact
 	if err := s.db.First(&c, id).Error; err != nil {
 		return err
 	}
+	linked, err := s.CountLinkedDocuments(id)
+	if err != nil {
+		return err
+	}
+	if linked > 0 {
+		return &ContactInUseError{Documents: linked}
+	}
 	oldPhoto := strings.TrimSpace(c.PhotoURL)
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("contact_id = ?", id).Delete(&database.TenantContactPerson{}).Error; err != nil {
 			return err
 		}

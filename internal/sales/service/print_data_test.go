@@ -159,3 +159,33 @@ func TestPrintsSaleNotes_excluyeNotasYGuias(t *testing.T) {
 		t.Error("una NC (por doc_type) no imprime notas de venta")
 	}
 }
+
+// Bug reportado (RUC 20611759518, F002-18): el cliente se eliminó y se recreó después de emitir; la
+// venta seguía apuntando al contacto eliminado y el PDF salía con "Cliente genérico". Un contacto
+// eliminado sigue siendo el cliente del comprobante ya emitido.
+func TestBuildPrintData_clientSurvivesContactDeletion(t *testing.T) {
+	db := setupPrintDataTestDB(t)
+	if err := db.AutoMigrate(&database.TenantContact{}); err != nil {
+		t.Fatal(err)
+	}
+	contact := database.TenantContact{Type: "customer", DocType: "6", DocNumber: "20565959027", BusinessName: "DEPOSITO DE MINERALES CAJAMARQUILLA S.A.C.", Active: true}
+	if err := db.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	cid := contact.ID
+	sale := &database.TenantSale{
+		ID: 10, DocType: "01", Series: "F002", Number: "F002-00000018",
+		IssueDate: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC), Currency: "PEN", Total: 100, ContactID: &cid,
+	}
+
+	pd, err := BuildPrintData(db, sale, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pd.Client == nil || pd.Client.DocNumber != "20565959027" || pd.Client.BusinessName == "Cliente genérico" {
+		t.Fatalf("el cliente debe ser el del comprobante aunque su contacto se haya eliminado: %+v", pd.Client)
+	}
+}

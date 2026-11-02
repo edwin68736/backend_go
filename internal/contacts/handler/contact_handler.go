@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -136,7 +138,9 @@ func (h *ContactHandler) DeleteForm(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString("ID inválido")
 	}
-	service.NewContactService(db(c)).Delete(uint(id))
+	if err := service.NewContactService(db(c)).Delete(uint(id)); err != nil {
+		return c.Redirect().To("/contacts?error=" + url.QueryEscape(err.Error()))
+	}
 	return c.Redirect().To("/contacts?success=deleted")
 }
 
@@ -311,6 +315,12 @@ func (h *ContactHandler) DeleteAPI(c fiber.Ctx) error {
 		return contactAccessError(c, status)
 	}
 	if err := svc.Delete(uint(id)); err != nil {
+		var inUse *service.ContactInUseError
+		if errors.As(err, &inUse) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": inUse.Error(), "code": "contact_in_use", "documents": inUse.Documents,
+			})
+		}
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})
