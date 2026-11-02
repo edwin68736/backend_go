@@ -463,7 +463,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		// /api/company/config).
 		branchDataURL := branchlogo.ResolveBranchDataURL(company.RUC, branch.ID, branch.LogoURL)
 		companyDataURL := branchlogo.ResolveCompanyDataURL(company.RUC, company.LogoURL)
-		if dataURL := branchlogo.ResolveURL(branchDataURL, companyDataURL); dataURL != "" {
+		if dataURL := branchlogo.ResolvePrintLogo(branch.LogoURL, branchDataURL, company.LogoURL, companyDataURL); dataURL != "" {
 			pd.Company.LogoURL = dataURL
 		}
 	}

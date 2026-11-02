@@ -111,7 +111,7 @@ func BuildPrintDataForOrder(db *gorm.DB, orderID uint) (*salessvc.PrintData, err
 			// tenga que pedir /uploads/* en vivo al armar el PDF.
 			branchDataURL := branchlogo.ResolveBranchDataURL(company.RUC, branch.ID, branch.LogoURL)
 			companyDataURL := branchlogo.ResolveCompanyDataURL(company.RUC, company.LogoURL)
-			if dataURL := branchlogo.ResolveURL(branchDataURL, companyDataURL); dataURL != "" {
+			if dataURL := branchlogo.ResolvePrintLogo(branch.LogoURL, branchDataURL, company.LogoURL, companyDataURL); dataURL != "" {
 				pd.Company.LogoURL = dataURL
 			}
 		}

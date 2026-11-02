@@ -12,3 +12,15 @@ func ResolveURL(branchLogoURL, companyLogoURL string) string {
 	}
 	return companyLogoURL
 }
+
+// ResolvePrintLogo devuelve el logo a imprimir de una sucursal: embebido (data:) cuando se pudo,
+// y la URL cruda cuando no. Nunca mezcla niveles: si la sucursal TIENE logo propio pero no se
+// pudo embeber (archivo >512 KB, ausente o de extensión no soportada), se devuelve su URL
+// remota — no el data URL del logo de la empresa, que sería el de OTRA sucursal a ojos del
+// cliente. Solo cae al logo de la empresa cuando la sucursal no tiene logo propio.
+func ResolvePrintLogo(branchLogoURL, branchDataURL, companyLogoURL, companyDataURL string) string {
+	if strings.TrimSpace(branchLogoURL) != "" {
+		return ResolveURL(branchDataURL, branchLogoURL)
+	}
+	return ResolveURL(companyDataURL, companyLogoURL)
+}
