@@ -98,6 +98,8 @@ type IncomeDetailRow struct {
 	Reference     string    `json:"reference"`
 	Amount        float64   `json:"amount"`
 	PaymentMethod string    `json:"payment_method"`
+	// Category: motivo/categoría del movimiento manual (ej. "Ingreso manual", "Gasto"); vacío en ventas.
+	Category string `json:"category,omitempty"`
 	// SaleCashSessionID: Caja donde se REGISTRÓ la venta — presente únicamente en filas
 	// Type="cobro_cxc" (un cobro que ocurrió en esta sesión de una venta registrada en OTRA),
 	// para trazabilidad hacia el documento original. nil en "venta" (contado, misma Caja).
@@ -111,6 +113,7 @@ type ExpenseDetailRow struct {
 	Reference     string    `json:"reference"`
 	Amount        float64   `json:"amount"`
 	PaymentMethod string    `json:"payment_method"`
+	Category      string    `json:"category,omitempty"`
 }
 
 // CancelledSaleRow venta anulada vinculada a la sesión (reversión en caja).
@@ -528,7 +531,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			if m.SaleID != nil {
 				continue
 			}
-			row := IncomeDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: paymentMethod}
+			row := IncomeDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: paymentMethod, Category: m.Category}
 			if m.Category == "ingreso_manual" || m.Category == "Ingreso manual" {
 				row.Type = "ingreso_manual"
 			} else {
@@ -541,7 +544,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			if IsCashPaymentMethod(paymentMethod) {
 				report.Totals.TotalExpense += m.Amount
 			}
-			row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: paymentMethod}
+			row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: paymentMethod, Category: m.Category}
 			if m.PurchaseID != nil {
 				report.Totals.TotalPurchases += m.Amount
 				purchasesByMethod[paymentMethod] += m.Amount
@@ -595,7 +598,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			}
 			method := normalizeReportMethod(code)
 			if m.Type == "credit" {
-				row := IncomeDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference}
+				row := IncomeDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference, Category: m.Category}
 				if m.Category == "ingreso_manual" || m.Category == "Ingreso manual" {
 					row.Type = "ingreso_manual"
 				} else {
@@ -604,7 +607,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 				manualIncomeByMethod[method] += m.Amount
 				report.IncomeDetail = append(report.IncomeDetail, row)
 			} else {
-				row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference}
+				row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference, Category: m.Category}
 				if m.Category == "gasto" || m.Category == "Gasto" {
 					row.Type = "gasto"
 				} else {

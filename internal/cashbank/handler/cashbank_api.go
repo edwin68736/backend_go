@@ -335,6 +335,28 @@ func (h *CashBankHandler) GetSessionProductsReportAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": rows})
 }
 
+// GET /api/cashbank/sessions/:id/report/documents — comprobantes (vigentes y anulados) de la sesión,
+// con subtotales por tipo; alimenta el «Detalle de caja» imprimible.
+func (h *CashBankHandler) GetSessionDocumentsReportAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	svc := service.NewCashBankService(db(c))
+	sess, err := svc.GetSessionByID(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !canAccessCashSession(c, sess) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "No puede ver el reporte de esta sesión"})
+	}
+	rep, err := svc.GetSessionDocumentsReport(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rep})
+}
+
 // GET /api/cashbank/reports/movements?branch_id=&user_id=&date_from=&date_to=&session_id=&type=&payment_method=&page=&per_page=
 // per_page=0 u omitido: todas las filas (compatibilidad con vistas que agrupan totales).
 func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
