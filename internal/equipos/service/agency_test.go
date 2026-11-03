@@ -220,3 +220,41 @@ func TestListOrdersRowCarriesShippingData(t *testing.T) {
 		t.Errorf("fila: %+v", r)
 	}
 }
+
+// Registro tardío: el despacho se marcó hoy pero el paquete ya había llegado días antes. La llegada
+// (y luego el recojo) con fecha anterior no se bloquean: retroceden la fecha previa y avisan.
+func TestMarkArrivedAndPickedUpBeforeDispatchAdjustsDates(t *testing.T) {
+	f := newFixture(t)
+	o := f.confirmed(t, 1, 100)
+	if _, err := f.s.ValidateOrder(o.ID, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.UpdateShipment(o.ID, ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "G1", DestinationDepartment: "Cusco", DeliveryMode: "agencia"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.DispatchOrder(o.ID, ""); err != nil { // despacho = hoy
+		t.Fatal(err)
+	}
+	day := func(ago int) string { return todayNoon().AddDate(0, 0, -ago).Format("2006-01-02") }
+
+	r, err := f.s.MarkArrived(o.ID, day(5))
+	if err != nil {
+		t.Fatalf("llegada anterior al despacho debe permitirse: %v", err)
+	}
+	sh := r.Order.Shipment
+	if sh.ArrivedAt.In(limaLoc()).Format("2006-01-02") != day(5) || sh.DispatchedAt.In(limaLoc()).Format("2006-01-02") != day(5) {
+		t.Errorf("fechas: llegada %v, despacho %v, want ambas %s", sh.ArrivedAt, sh.DispatchedAt, day(5))
+	}
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "despacho") {
+		t.Errorf("avisos: %v", r.Warnings)
+	}
+
+	p, err := f.s.MarkPickedUp(o.ID, day(7))
+	if err != nil {
+		t.Fatalf("recojo anterior a la llegada debe permitirse: %v", err)
+	}
+	sh = p.Order.Shipment
+	if sh.Status != "entregado" || sh.ArrivedAt.In(limaLoc()).Format("2006-01-02") != day(7) || sh.DispatchedAt.In(limaLoc()).Format("2006-01-02") != day(7) {
+		t.Errorf("recojo: %+v", sh)
+	}
+}

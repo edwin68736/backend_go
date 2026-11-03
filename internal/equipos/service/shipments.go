@@ -324,8 +324,12 @@ func (s *Service) MarkArrived(orderID uint, date string) (*OrderResult, error) {
 		if err != nil {
 			return nil, err
 		}
+		// El despacho suele registrarse tarde (el paquete ya salió y llegó antes de marcarlo en el
+		// sistema). La llegada real manda: se retrocede el despacho a esa fecha en vez de bloquear.
+		var warns []string
 		if sh.DispatchedAt != nil && d.Before(noonLima(*sh.DispatchedAt)) {
-			return nil, invalid("la llegada no puede ser anterior al despacho (%s)", sh.DispatchedAt.Format("02/01/2006"))
+			warns = append(warns, fmt.Sprintf("El despacho estaba registrado el %s; se ajustó al %s porque el paquete no puede llegar antes de salir.", sh.DispatchedAt.Format("02/01/2006"), d.Format("02/01/2006")))
+			sh.DispatchedAt = &d
 		}
 		days := 15
 		if c != nil && c.PickupDays > 0 {
@@ -333,7 +337,7 @@ func (s *Service) MarkArrived(orderID uint, date string) (*OrderResult, error) {
 		}
 		deadline := d.AddDate(0, 0, days)
 		sh.ArrivedAt, sh.PickupDeadline, sh.Status = &d, &deadline, "en_agencia"
-		return nil, nil
+		return warns, nil
 	})
 }
 
@@ -354,17 +358,24 @@ func (s *Service) MarkPickedUp(orderID uint, date string) (*OrderResult, error) 
 		if err != nil {
 			return nil, err
 		}
+		// Igual que en la llegada: fechas anteriores a las ya registradas se retroceden (registro tardío).
+		var warns []string
 		if sh.ArrivedAt != nil && d.Before(noonLima(*sh.ArrivedAt)) {
-			return nil, invalid("el recojo no puede ser anterior a la llegada (%s)", sh.ArrivedAt.Format("02/01/2006"))
+			warns = append(warns, fmt.Sprintf("La llegada estaba registrada el %s; se ajustó al %s porque el recojo no puede ser anterior.", sh.ArrivedAt.Format("02/01/2006"), d.Format("02/01/2006")))
+			sh.ArrivedAt = &d
+		}
+		if sh.DispatchedAt != nil && d.Before(noonLima(*sh.DispatchedAt)) {
+			warns = append(warns, fmt.Sprintf("El despacho estaba registrado el %s; se ajustó al %s.", sh.DispatchedAt.Format("02/01/2006"), d.Format("02/01/2006")))
+			sh.DispatchedAt = &d
 		}
 		if sh.DispatchedAt == nil {
 			sh.DispatchedAt = &d
 		}
 		sh.PickedUpAt, sh.Status = &d, "entregado"
 		if o.BalanceAmount > 0.004 {
-			return []string{fmt.Sprintf("El pedido %d fue recogido con un saldo pendiente de S/ %.2f: queda en cobranza hasta registrar el cobro.", o.OrderNumber, o.BalanceAmount)}, nil
+			warns = append(warns, fmt.Sprintf("El pedido %d fue recogido con un saldo pendiente de S/ %.2f: queda en cobranza hasta registrar el cobro.", o.OrderNumber, o.BalanceAmount))
 		}
-		return nil, nil
+		return warns, nil
 	})
 }
 
