@@ -35,6 +35,8 @@ type ProviderView struct {
 	BaseURL               string     `json:"base_url"`
 	APIKeySet             bool       `json:"api_key_set"`
 	APIKeyHint            string     `json:"api_key_hint"`
+	ProEmail              string     `json:"pro_email"`
+	ProPasswordSet        bool       `json:"pro_password_set"`
 	EncryptionReady       bool       `json:"encryption_ready"`
 	WebhookURL            string     `json:"webhook_url"`
 	WebhookSecretSet      bool       `json:"webhook_secret_set"`
@@ -52,6 +54,10 @@ type ProviderSettingsInput struct {
 	BaseURL     *string `json:"base_url"`
 	Enabled     *bool   `json:"enabled"`
 	WebhookURL  *string `json:"webhook_url"`
+	// Cuenta de Shalom Pro (cotizar tarifas). ProPassword vacío no borra la existente (usar ClearPro).
+	ProEmail    *string `json:"pro_email"`
+	ProPassword *string `json:"pro_password"`
+	ClearPro    bool    `json:"clear_pro"`
 }
 
 func (s *Service) providerSettings() (*database.EquipProviderSettings, error) {
@@ -93,7 +99,7 @@ func (s *Service) ProviderSettingsView() (*ProviderView, error) {
 	_, encErr := secrets.Encrypt("test")
 	return &ProviderView{
 		Provider: st.Provider, Enabled: st.Enabled, BaseURL: st.BaseURL,
-		APIKeySet: st.APIKeyEnc != "", APIKeyHint: st.APIKeyHint, EncryptionReady: encErr == nil,
+		APIKeySet: st.APIKeyEnc != "", APIKeyHint: st.APIKeyHint, ProEmail: st.ProEmail, ProPasswordSet: st.ProPasswordEnc != "", EncryptionReady: encErr == nil,
 		WebhookURL: st.WebhookURL, WebhookSecretSet: st.WebhookSecretEnc != "", WebhookVerified: st.WebhookVerified,
 		LastAgenciesSyncAt: st.LastAgenciesSyncAt, LastAgenciesSyncCount: st.LastAgenciesSyncCount,
 		LastLocationsSyncAt: st.LastLocationsSyncAt, AgencyCount: n,
@@ -137,6 +143,23 @@ func (s *Service) SaveProviderSettings(in ProviderSettingsInput) (*ProviderView,
 			return nil, invalid("no se puede guardar la API key: %v", err)
 		}
 		st.APIKeyEnc, st.APIKeyHint = enc, secrets.Hint(key)
+	}
+	if in.ClearPro {
+		st.ProEmail, st.ProPasswordEnc = "", ""
+		clearProSession()
+	} else {
+		if in.ProEmail != nil {
+			st.ProEmail = strings.TrimSpace(*in.ProEmail)
+			clearProSession()
+		}
+		if in.ProPassword != nil && strings.TrimSpace(*in.ProPassword) != "" {
+			enc, err := secrets.Encrypt(*in.ProPassword)
+			if err != nil {
+				return nil, invalid("no se puede guardar la clave de Shalom Pro: %v", err)
+			}
+			st.ProPasswordEnc = enc
+			clearProSession()
+		}
 	}
 	if in.Enabled != nil {
 		if *in.Enabled && st.APIKeyEnc == "" {

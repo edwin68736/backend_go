@@ -17,6 +17,10 @@ type EquipProviderSettings struct {
 	APIKeyEnc  string `gorm:"type:text" json:"-"`
 	APIKeyHint string `gorm:"size:8" json:"api_key_hint"`
 
+	// Cuenta de Shalom Pro (solo para cotizar tarifas): el correo se muestra, la clave va CIFRADA y no se devuelve.
+	ProEmail       string `gorm:"size:150" json:"pro_email"`
+	ProPasswordEnc string `gorm:"type:text" json:"-"`
+
 	// Webhook de seguimiento: la URL pública que registramos en el proveedor y el secreto de firma (cifrado).
 	WebhookURL       string `gorm:"size:255" json:"webhook_url"`
 	WebhookSecretEnc string `gorm:"type:text" json:"-"`

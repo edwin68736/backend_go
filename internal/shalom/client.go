@@ -72,6 +72,11 @@ func AsAPIError(err error) (*APIError, bool) {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	return c.doH(ctx, method, path, query, body, out, nil)
+}
+
+// doH igual que do, con cabeceras extra (p. ej. X-Shalom-Session).
+func (c *Client) doH(ctx context.Context, method, path string, query url.Values, body, out any, headers map[string]string) error {
 	if c.apiKey == "" {
 		return errors.New("falta la API key de Shalom")
 	}
@@ -93,6 +98,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 	req.Header.Set("X-API-Key", c.apiKey)
 	req.Header.Set("Accept", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -342,4 +350,52 @@ func (c *Client) TrackBatch(ctx context.Context, items []BatchItem) ([]BatchResu
 		return nil, err
 	}
 	return out.Results, nil
+}
+
+// ── Shalom Pro: sesión y tarifas ───────────────────────────────────────────
+
+// Session token efímero (ssk_…, 2 horas). Solo sirve con la misma X-API-Key que lo emitió.
+type Session struct {
+	Token     string    `json:"session_token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// CreateSession inicia sesión en Shalom Pro. La primera llamada de una cuenta puede tardar de 90 s a 2 min.
+func (c *Client) CreateSession(ctx context.Context, email, password string) (*Session, error) {
+	var out Session
+	err := c.do(ctx, http.MethodPost, "/v1/shalom/sessions", nil, map[string]string{"email": email, "password": password}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type Dimensions struct {
+	WeightKg float64 `json:"weight_kg"`
+	HeightM  float64 `json:"height_m"`
+	LengthM  float64 `json:"length_m"`
+	WidthM   float64 `json:"width_m"`
+}
+
+type TariffRequest struct {
+	OriginTerminalID  int         `json:"origin_terminal_id"`
+	DestinyTerminalID int         `json:"destiny_terminal_id"`
+	Dimensions        *Dimensions `json:"dimensions,omitempty"`
+	Aereo             bool        `json:"aereo,omitempty"`
+}
+
+type TariffResult struct {
+	Currency  string             `json:"currency"`
+	Aereo     bool               `json:"aereo"`
+	Breakdown map[string]float64 `json:"breakdown"`
+}
+
+// Tariff cotiza el envío entre dos agencias sin crear nada (no cobra ni genera guía).
+func (c *Client) Tariff(ctx context.Context, sessionToken string, req TariffRequest) (*TariffResult, error) {
+	var out TariffResult
+	err := c.doH(ctx, http.MethodPost, "/v1/tariff/calculate", nil, req, &out, map[string]string{"X-Shalom-Session": sessionToken})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

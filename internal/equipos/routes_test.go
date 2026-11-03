@@ -83,6 +83,7 @@ func TestRoutes_requireExactPermission(t *testing.T) {
 		{"GET", "/equipos/provider/shalom/departments/15/provinces/1/districts", "equipos.view"},
 		{"POST", "/equipos/orders/1/provider/link", "equipos.shipments"},
 		{"POST", "/equipos/orders/1/provider/refresh", "equipos.shipments"},
+		{"POST", "/equipos/orders/1/provider/tariff", "equipos.shipments"},
 		{"PUT", "/equipos/settings", "equipos.settings"},
 		{"GET", "/equipos/stock", "equipos.stock_view"},
 		{"GET", "/equipos/stock/1/movements", "equipos.stock_view"},

@@ -38,6 +38,7 @@ func (h *Handler) SaveProvider(c fiber.Ctx) error {
 	}
 	audit(c, "equip_provider_settings_updated", "equip_provider", 0, fiber.Map{
 		"api_key_changed": in.APIKey != nil && *in.APIKey != "", "api_key_cleared": in.ClearAPIKey,
+		"pro_email": in.ProEmail, "pro_password_changed": in.ProPassword != nil && *in.ProPassword != "", "pro_cleared": in.ClearPro,
 		"enabled": v.Enabled, "base_url": v.BaseURL, "webhook_url": v.WebhookURL,
 	})
 	return c.JSON(fiber.Map{"data": v})
@@ -179,4 +180,23 @@ func ShalomWebhook(c fiber.Ctx) error {
 		return c.Status(res.Status).SendString(res.Body)
 	}
 	return c.Status(res.Status).JSON(fiber.Map{"ok": res.Status == 200, "note": res.Note})
+}
+
+// QuoteShipmentTariff POST /equipos/orders/:id/provider/tariff {aereo} — cotiza el flete (solo lectura, no crea guía).
+func (h *Handler) QuoteShipmentTariff(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	var body struct {
+		Aereo bool `json:"aereo"`
+	}
+	_ = c.Bind().JSON(&body)
+	ctx, cancel := providerCtx()
+	defer cancel()
+	q, err := svc().QuoteShipmentTariff(ctx, id, body.Aereo)
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"data": q})
 }

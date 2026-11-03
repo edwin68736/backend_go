@@ -42,6 +42,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Get("/equipos/provider/shalom/departments/:dep/provinces/:prov/districts", p("equipos.view"), h.ProviderDistricts)
 	saAPI.Post("/equipos/orders/:id/provider/link", p("equipos.shipments"), h.LinkShipmentTracking)
 	saAPI.Post("/equipos/orders/:id/provider/refresh", p("equipos.shipments"), h.RefreshShipmentTracking)
+	saAPI.Post("/equipos/orders/:id/provider/tariff", p("equipos.shipments"), h.QuoteShipmentTariff)
 
 	saAPI.Get("/equipos/settings", p("equipos.view"), h.GetSettings)
 	saAPI.Put("/equipos/settings", p("equipos.settings"), h.UpdateSettings)
