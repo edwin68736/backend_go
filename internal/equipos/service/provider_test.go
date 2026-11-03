@@ -100,19 +100,22 @@ func TestProviderNotEnabledNeverCallsAPI(t *testing.T) {
 
 func TestSyncAgenciesMergesWithoutOverwriting(t *testing.T) {
 	f, fake := providerFixture(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"page":1,"per_page":1000,"total":3,"items":[
+		_, _ = w.Write([]byte(`{"page":1,"per_page":1000,"total":4,"items":[
 			{"id":190,"abrebiatura":"MIRAF","nombre":"LIMA / LIMA / MIRAFLORES / AV. JOSE PARDO","departamento":"LIMA","provincia":"LIMA","direccion":"AV. JOSE PARDO 533","ubi_id":150122,"aereo":true,"habilitado":true},
 			{"id":7,"abrebiatura":"AQP","nombre":"AREQUIPA / AREQUIPA / AREQUIPA / AV PARRA","departamento":"AREQUIPA","provincia":"AREQUIPA","ubi_id":40101,"habilitado":false},
-			{"id":404,"abrebiatura":"SLS","nombre":"ICA / ICA / SALAS / PANAMERICANA","departamento":"ICA","provincia":"ICA","habilitado":true}]}`))
+			{"id":404,"abrebiatura":"SLS","nombre":"ICA / ICA / SALAS / PANAMERICANA","departamento":"ICA","provincia":"ICA","habilitado":true},
+			{"id":900,"abrebiatura":"CLS","nombre":"CUSCO / CUSCO / CUSCO / CERRADA","departamento":"CUSCO","provincia":"CUSCO","habilitado":false}]}`))
 	})
 	enableProvider(t, f)
 	// Agencia ya cargada a mano (por código): se enlaza, conserva su nombre y no pisa lo que ya tiene.
 	f.s.db.Create(&database.EquipCarrierAgency{CarrierID: f.carrier.ID, Code: "MIRAF", Name: "Miraflores (manual)", Department: "Lima", Address: "Dirección corregida", Active: true, LocationStatus: database.AgencyLocConfirmed})
+	// Agencia del Excel: su código es el ID de Shalom (404), no la abreviatura; debe enlazarse y no duplicarse.
+	f.s.db.Create(&database.EquipCarrierAgency{CarrierID: f.carrier.ID, Code: "404", Name: "SALAS (Excel)", Active: true})
 	// Agencia manual que Shalom deshabilitó: se desactiva.
 	f.s.db.Create(&database.EquipCarrierAgency{CarrierID: f.carrier.ID, Code: "AQP", Name: "Arequipa Parra", Active: true})
 
 	res, err := f.s.SyncAgencies(t.Context(), true)
-	if err != nil || res.Total != 3 || res.Created != 1 || res.Updated != 2 {
+	if err != nil || res.Total != 4 || res.Created != 1 || res.Updated != 3 {
 		t.Fatalf("resultado: %+v %v", res, err)
 	}
 	var m database.EquipCarrierAgency
@@ -126,9 +129,18 @@ func TestSyncAgenciesMergesWithoutOverwriting(t *testing.T) {
 		t.Errorf("deshabilitada por Shalom: %+v", aqp)
 	}
 	var n int64
-	f.s.db.Model(&database.EquipCarrierAgency{}).Where("provider_ref = 404 AND active = ?", true).Count(&n)
+	f.s.db.Model(&database.EquipCarrierAgency{}).Where("provider_ref = 404 AND name = ?", "SALAS (Excel)").Count(&n)
 	if n != 1 {
-		t.Error("la agencia nueva debe crearse activa")
+		t.Error("la agencia del Excel (código = id de Shalom) debe enlazarse conservando su nombre")
+	}
+	f.s.db.Model(&database.EquipCarrierAgency{}).Where("carrier_id = ?", f.carrier.ID).Count(&n)
+	if n != 4 {
+		t.Errorf("no debe haber duplicados: %d agencias, quería 4", n)
+	}
+	var closed database.EquipCarrierAgency
+	f.s.db.Where("provider_ref = 900").First(&closed)
+	if closed.ID == 0 || closed.Active {
+		t.Errorf("una agencia nueva deshabilitada por Shalom debe quedar inactiva: %+v", closed)
 	}
 	// Job automático: hay una sincronización reciente → no vuelve a llamar a la API.
 	before := fake.calls.Load()

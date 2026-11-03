@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,6 +249,12 @@ func (s *Service) SyncAgencies(ctx context.Context, force bool) (*SyncAgenciesRe
 			}
 			enabled, aereo := p.Enabled, p.Aereo
 			a := byRef[p.ID]
+			// El catálogo cargado del Excel usa como código el ID de la agencia en Shalom (ej. 637), no la abreviatura.
+			if a == nil {
+				if c := byCode[strconv.Itoa(p.ID)]; c != nil && c.ProviderRef == 0 {
+					a = c
+				}
+			}
 			if a == nil && p.Abbreviation != "" {
 				if c := byCode[strings.ToLower(p.Abbreviation)]; c != nil && c.ProviderRef == 0 {
 					a = c
@@ -307,6 +314,11 @@ func (s *Service) SyncAgencies(ctx context.Context, force bool) (*SyncAgenciesRe
 			}
 			if err := tx.Create(n).Error; err != nil {
 				return err
+			}
+			if !enabled { // el default:true de la columna pisa el false al insertar: se baja explícitamente
+				if err := tx.Model(n).Update("active", false).Error; err != nil {
+					return err
+				}
 			}
 			byName[strings.ToLower(name)], byRef[p.ID] = n, n
 			res.Created++
