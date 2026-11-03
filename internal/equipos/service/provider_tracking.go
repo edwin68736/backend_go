@@ -403,7 +403,11 @@ func (s *Service) refreshShipment(ctx context.Context, shipmentID uint) error {
 		return providerError(err)
 	}
 	s.recordPollSnapshot(shipmentID, numero, tr)
-	s.applyProviderState(shipmentID, stateFromTracking(tr))
+	// Al vincular, la consulta corre antes de que llegue el primer evento del webhook y ya mueve el envío: el aviso
+	// debe nacer aquí (es idempotente por envío y tipo, así que el webhook posterior no lo duplica).
+	if _, event := s.applyProviderStateEv(shipmentID, stateFromTracking(tr)); event != "" {
+		s.notifyShipmentEvent(shipmentID, event)
+	}
 	return nil
 }
 
@@ -522,8 +526,13 @@ func (s *Service) SyncShalomShipments(ctx context.Context) (*SyncShipmentsResult
 			var id uint
 			fmt.Sscan(r.CustomID, &id)
 			s.recordPollSnapshot(id, r.Numero, r.Tracking)
-			if n := s.applyProviderState(id, stateFromTracking(r.Tracking)); n != "sin cambios" {
+			n, event := s.applyProviderStateEv(id, stateFromTracking(r.Tracking))
+			if n != "sin cambios" {
 				res.Changed++
+			}
+			// En lote solo se avisa lo accionable (llegó a agencia, demora); entregas antiguas serían ruido.
+			if event == NotifArrival || event == NotifDelay {
+				s.notifyShipmentEvent(id, event)
 			}
 		}
 	}
