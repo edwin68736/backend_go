@@ -134,9 +134,18 @@ func (s *Service) applyTrackingEvent(d *shalom.TrackingData, eventType string) s
 	if eventType == shalom.EventExpired {
 		return "suscripción vencida en Shalom (sin cambios)"
 	}
-	var sh database.EquipShipment
-	found, err := findOne(s.db.Order("id DESC"), &sh, "is_current = ? AND guide_number = ?", true, d.Numero)
-	if err != nil || !found {
+	var cands []database.EquipShipment
+	if err := s.db.Where("is_current = ? AND guide_number LIKE ?", true, d.Numero+"%").Order("id DESC").Find(&cands).Error; err != nil {
+		return "error al buscar el envío: " + err.Error()
+	}
+	var sh *database.EquipShipment
+	for i := range cands {
+		if n, _ := shalomRef(cands[i].GuideNumber); n == d.Numero {
+			sh = &cands[i]
+			break
+		}
+	}
+	if sh == nil {
 		return "sin envío vigente con la guía " + d.Numero
 	}
 	ps := providerState{
@@ -263,6 +272,31 @@ func (s *Service) applyProviderState(shipmentID uint, ps providerState) string {
 
 var providerCodeRe = regexp.MustCompile(`^[A-Za-z0-9]{4}$`)
 
+// shalomGuideRe reconoce «NÚMERO - CÓDIGO» tal como se registra la guía de Shalom (ej. «100439617 - M7JK»,
+// «99526318-kHHT», «101732548 -3WJC»): 8 a 10 dígitos, separador opcional y el código de 4 caracteres.
+var shalomGuideRe = regexp.MustCompile(`^\s*(\d{8,10})\s*[-–—]?\s*([A-Za-z0-9]{4})\s*$`)
+var shalomNumberRe = regexp.MustCompile(`^\s*(\d{8,10})\s*$`)
+
+// shalomRef extrae del N° de guía el número (obligatorio) y el código (si viene en el mismo texto).
+func shalomRef(guide string) (numero, code string) {
+	if m := shalomGuideRe.FindStringSubmatch(guide); m != nil {
+		return m[1], strings.ToUpper(m[2])
+	}
+	if m := shalomNumberRe.FindStringSubmatch(guide); m != nil {
+		return m[1], ""
+	}
+	return "", ""
+}
+
+// shipmentRef número y código a consultar: el código guardado manda; si no, el que trae la propia guía.
+func shipmentRef(sh *database.EquipShipment) (numero, code string) {
+	numero, code = shalomRef(sh.GuideNumber)
+	if c := strings.ToUpper(strings.TrimSpace(sh.ProviderCode)); c != "" {
+		code = c
+	}
+	return numero, code
+}
+
 func (s *Service) currentShalomShipment(tx *gorm.DB, orderID uint) (*database.EquipShipment, error) {
 	var sh database.EquipShipment
 	if found, err := findOne(tx, &sh, "order_id = ? AND is_current = ?", orderID, true); err != nil {
@@ -283,16 +317,23 @@ func (s *Service) currentShalomShipment(tx *gorm.DB, orderID uint) (*database.Eq
 // LinkShipmentTracking guarda el código de 4 caracteres de la guía, trae el estado actual y deja el envío
 // suscrito al webhook (si está verificado). Es lo único que el operador debe hacer para activar el seguimiento.
 func (s *Service) LinkShipmentTracking(ctx context.Context, orderID uint, code string) (*OrderResult, error) {
-	code = strings.ToUpper(strings.TrimSpace(code))
-	if !providerCodeRe.MatchString(code) {
-		return nil, invalid("el código de Shalom son 4 letras o números")
-	}
 	sh, err := s.currentShalomShipment(s.db, orderID)
 	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(sh.GuideNumber) == "" {
 		return nil, invalid("registra primero el N° de guía del envío")
+	}
+	numero, fromGuide := shalomRef(sh.GuideNumber)
+	if numero == "" {
+		return nil, invalid("el N° de guía no tiene el formato de Shalom (8 a 10 dígitos): corrígelo antes de vincular")
+	}
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		code = fromGuide // «100439617 - M7JK»: el código ya viene en la guía
+	}
+	if !providerCodeRe.MatchString(code) {
+		return nil, invalid("el código de Shalom son 4 letras o números")
 	}
 	if err := s.db.Model(&database.EquipShipment{}).Where("id = ?", sh.ID).Update("provider_code", code).Error; err != nil {
 		return nil, err
@@ -334,14 +375,15 @@ func (s *Service) refreshShipment(ctx context.Context, shipmentID uint) error {
 	if found, err := findOne(s.db, &sh, "id = ?", shipmentID); err != nil || !found {
 		return err
 	}
-	if sh.GuideNumber == "" || sh.ProviderCode == "" {
-		return invalid("falta el N° de guía o el código de Shalom")
+	numero, code := shipmentRef(&sh)
+	if numero == "" || code == "" {
+		return invalid("falta el N° de guía de Shalom o su código de 4 caracteres")
 	}
 	cl, _, err := s.shalomClient()
 	if err != nil {
 		return err
 	}
-	tr, err := cl.Track(ctx, strings.TrimSpace(sh.GuideNumber), sh.ProviderCode)
+	tr, err := cl.Track(ctx, numero, code)
 	if err != nil {
 		return providerError(err)
 	}
@@ -380,7 +422,8 @@ func (s *Service) subscribeShipment(ctx context.Context, shipmentID uint) (strin
 	if found, err := findOne(s.db, &sh, "id = ?", shipmentID); err != nil || !found {
 		return "", err
 	}
-	if sh.ProviderSubID > 0 || sh.ProviderCode == "" || sh.GuideNumber == "" {
+	numero, code := shipmentRef(&sh)
+	if sh.ProviderSubID > 0 || numero == "" || code == "" {
 		return "", nil
 	}
 	cl, st, err := s.shalomClient()
@@ -390,7 +433,7 @@ func (s *Service) subscribeShipment(ctx context.Context, shipmentID uint) (strin
 	if !st.WebhookVerified {
 		return "Seguimiento vinculado, pero el webhook de Shalom aún no está verificado: usa «Actualizar desde Shalom» mientras tanto.", nil
 	}
-	sub, err := cl.Subscribe(ctx, strings.TrimSpace(sh.GuideNumber), sh.ProviderCode)
+	sub, err := cl.Subscribe(ctx, numero, code)
 	if err != nil {
 		return "", providerError(err)
 	}
@@ -410,6 +453,7 @@ type SyncShipmentsResult struct {
 	Checked int `json:"checked"`
 	Changed int `json:"changed"`
 	Failed  int `json:"failed"`
+	Skipped int `json:"skipped"` // sin N° de guía con formato Shalom
 }
 
 // SyncShalomShipments alinea con Shalom los envíos en tránsito o en agencia que ya tienen guía y código, de a
@@ -424,7 +468,7 @@ func (s *Service) SyncShalomShipments(ctx context.Context) (*SyncShipmentsResult
 		return nil, err
 	}
 	var rows []database.EquipShipment
-	if err := s.db.Where("is_current = ? AND carrier_id = ? AND status IN ? AND guide_number <> '' AND provider_code <> ''",
+	if err := s.db.Where("is_current = ? AND carrier_id = ? AND status IN ? AND guide_number <> ''",
 		true, c.ID, []string{"pendiente_envio", "en_transito", "en_agencia"}).Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -434,10 +478,20 @@ func (s *Service) SyncShalomShipments(ctx context.Context) (*SyncShipmentsResult
 		if end > len(rows) {
 			end = len(rows)
 		}
-		chunk := rows[i:end]
-		items := make([]shalom.BatchItem, len(chunk))
-		for j, sh := range chunk {
-			items[j] = shalom.BatchItem{CustomID: fmt.Sprint(sh.ID), Numero: strings.TrimSpace(sh.GuideNumber), Codigo: sh.ProviderCode}
+		items := make([]shalom.BatchItem, 0, end-i)
+		for _, sh := range rows[i:end] {
+			numero, code := shipmentRef(&sh)
+			if numero == "" || code == "" {
+				res.Skipped++
+				continue
+			}
+			if sh.ProviderCode == "" { // queda guardado para las próximas consultas
+				s.db.Model(&database.EquipShipment{}).Where("id = ?", sh.ID).Update("provider_code", code)
+			}
+			items = append(items, shalom.BatchItem{CustomID: fmt.Sprint(sh.ID), Numero: numero, Codigo: code})
+		}
+		if len(items) == 0 {
+			continue
 		}
 		results, err := cl.TrackBatch(ctx, items)
 		if err != nil {
