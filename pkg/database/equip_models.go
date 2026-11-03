@@ -229,6 +229,12 @@ type EquipShipment struct {
 	Status                string     `gorm:"size:16;default:'pendiente_envio';index" json:"status"` // pendiente_envio | en_transito | en_agencia | entregado | retorno
 	IsCurrent             bool       `gorm:"default:true" json:"is_current"`
 	LabelPrintedAt        *time.Time `json:"label_printed_at"`
+	// Seguimiento por API del transportista (Shalom): ose_id interno, código de 4 caracteres y último hito informado.
+	ProviderOseID    string     `gorm:"size:20;index" json:"provider_ose_id"`
+	ProviderCode     string     `gorm:"size:8" json:"provider_code"`
+	ProviderStatus   string     `gorm:"size:20" json:"provider_status"`
+	ProviderSyncedAt *time.Time `json:"provider_synced_at"`
+	ProviderSubID    uint       `json:"provider_subscription_id"`
 	// FreightCost costo del flete de este envío (opcional) para la utilidad.
 	FreightCost float64   `gorm:"type:decimal(15,2);default:0" json:"freight_cost"`
 	Notes       string    `gorm:"size:255" json:"notes"`
@@ -344,6 +350,10 @@ type EquipCarrierAgency struct {
 	District   string `gorm:"size:80" json:"district"`
 	Ubigeo     string `gorm:"size:6" json:"ubigeo"`
 	Address    string `gorm:"size:255" json:"address"`
+	// Datos del catálogo del proveedor (API): id de la agencia, si recibe órdenes y si despacha aéreo.
+	ProviderRef     int   `gorm:"index" json:"provider_ref"`
+	ProviderEnabled *bool `json:"provider_enabled"`
+	ProviderAereo   *bool `json:"provider_aereo"`
 	// LocationStatus: confirmada (manual o coincidencia exacta) | sugerida (coincidencia parcial, por revisar) | pendiente (sin ubicación).
 	LocationStatus string    `gorm:"size:12;default:'pendiente';index" json:"location_status"`
 	Active         bool      `gorm:"default:true" json:"active"`

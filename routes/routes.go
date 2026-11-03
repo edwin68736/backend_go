@@ -17,6 +17,7 @@ import (
 	"tukifac/internal/contacts"
 	"tukifac/internal/dashboard"
 	"tukifac/internal/ecommerce"
+	"tukifac/internal/equipos"
 	"tukifac/internal/rum"
 	"tukifac/internal/fiscal"
 	"tukifac/internal/fleet"
@@ -74,6 +75,7 @@ func Setup(app *fiber.App) {
 	app.Get("/fleet-health", health.FleetHealth)
 	app.Get("/api/internal/fleet-health", health.FleetHealth)
 	fiscal.RegisterInternalRoutes(app)
+	equipos.RegisterPublicRoutes(app)
 
 	// CORS antes de rate limits: preflight OPTIONS debe recibir Allow-Origin si el origen es válido.
 	app.Use(cors.New(cors.Config{

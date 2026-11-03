@@ -49,6 +49,7 @@ func runServer(cfg *config.Config) {
 	cron.StartExchangeRateScheduler()
 	cron.StartFiscalReconcileWorker()
 	cron.StartFiscalTenantSnapshotWorker()
+	cron.StartEquipShalomAgencySync()
 
 	app := fiber.New(fiber.Config{
 		AppName:      "Tukifac SaaS ERP",

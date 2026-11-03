@@ -30,6 +30,19 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/equipos/carriers/:id/agencies/import", p("equipos.carriers"), h.ImportAgencies)
 	saAPI.Put("/equipos/agencies/:id", p("equipos.carriers"), h.UpdateAgency)
 
+	// Integración con Shalom API Perú (la API key se guarda cifrada en la BD y nunca se devuelve).
+	saAPI.Get("/equipos/provider/shalom", p("equipos.view"), h.GetProvider)
+	saAPI.Put("/equipos/provider/shalom", p("equipos.carriers"), h.SaveProvider)
+	saAPI.Post("/equipos/provider/shalom/sync-agencies", p("equipos.carriers"), h.SyncProviderAgencies)
+	saAPI.Post("/equipos/provider/shalom/webhook", p("equipos.carriers"), h.SetupProviderWebhook)
+	saAPI.Post("/equipos/provider/shalom/webhook/rotate", p("equipos.carriers"), h.RotateProviderWebhook)
+	saAPI.Post("/equipos/provider/shalom/sync-shipments", p("equipos.shipments"), h.SyncProviderShipments)
+	saAPI.Get("/equipos/provider/shalom/departments", p("equipos.view"), h.ProviderDepartments)
+	saAPI.Get("/equipos/provider/shalom/departments/:dep/provinces", p("equipos.view"), h.ProviderProvinces)
+	saAPI.Get("/equipos/provider/shalom/departments/:dep/provinces/:prov/districts", p("equipos.view"), h.ProviderDistricts)
+	saAPI.Post("/equipos/orders/:id/provider/link", p("equipos.shipments"), h.LinkShipmentTracking)
+	saAPI.Post("/equipos/orders/:id/provider/refresh", p("equipos.shipments"), h.RefreshShipmentTracking)
+
 	saAPI.Get("/equipos/settings", p("equipos.view"), h.GetSettings)
 	saAPI.Put("/equipos/settings", p("equipos.settings"), h.UpdateSettings)
 	saAPI.Post("/equipos/settings/pin", p("equipos.settings"), h.SetSecurityPin)

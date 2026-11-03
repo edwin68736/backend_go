@@ -285,6 +285,14 @@ func actionDate(raw string) (time.Time, error) {
 // DispatchOrder marca el envío como despachado (en tránsito). Exige pedido validado; el N° de guía NO es
 // obligatorio (la agencia lo entrega después): si falta, se despacha igual con un aviso para registrarlo luego.
 func (s *Service) DispatchOrder(orderID uint, date string) (*OrderResult, error) {
+	res, err := s.dispatchOrder(orderID, date)
+	if err == nil {
+		s.maybeSubscribeAsync(orderID)
+	}
+	return res, err
+}
+
+func (s *Service) dispatchOrder(orderID uint, date string) (*OrderResult, error) {
 	return s.shipmentActionTx(orderID, func(tx *gorm.DB, o *database.EquipOrder, sh *database.EquipShipment, c *database.EquipCarrier) ([]string, error) {
 		if o.ValidationStatus != "validado" {
 			return nil, invalid("el pedido debe estar validado antes de despacharse (estado: %s)", strings.ReplaceAll(o.ValidationStatus, "_", " "))

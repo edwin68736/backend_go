@@ -454,6 +454,9 @@ func MigrateCentral() error {
 		&EquipStockPeriod{},
 		&EquipSettings{},
 		&EquipImportBatch{},
+		&EquipProviderSettings{},
+		&EquipProviderLocation{},
+		&EquipProviderEvent{},
 	)
 }
 
