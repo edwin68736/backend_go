@@ -29,7 +29,7 @@ func providerFixture(t *testing.T, handler http.HandlerFunc) (*fixture, *shalomF
 	t.Helper()
 	t.Setenv("SECRETS_ENCRYPTION_KEY", testMasterKey)
 	f := newFixture(t)
-	if err := f.s.db.AutoMigrate(&database.EquipCarrierAgency{}, &database.EquipProviderSettings{}, &database.EquipProviderLocation{}, &database.EquipProviderEvent{}); err != nil {
+	if err := f.s.db.AutoMigrate(&database.EquipCarrierAgency{}, &database.EquipProviderSettings{}, &database.EquipProviderLocation{}, &database.EquipProviderEvent{}, &database.EquipNotification{}); err != nil {
 		t.Fatal(err)
 	}
 	fake := &shalomFake{}

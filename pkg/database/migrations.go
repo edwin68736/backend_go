@@ -457,6 +457,7 @@ func MigrateCentral() error {
 		&EquipProviderSettings{},
 		&EquipProviderLocation{},
 		&EquipProviderEvent{},
+		&EquipNotification{},
 	)
 }
 

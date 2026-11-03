@@ -73,3 +73,20 @@ type EquipProviderEvent struct {
 }
 
 func (EquipProviderEvent) TableName() string { return "equip_provider_events" }
+
+// EquipNotification aviso de la campana del panel central (llegada a agencia, entrega, demora…). DedupKey único
+// evita avisos repetidos por entregas duplicadas del webhook.
+type EquipNotification struct {
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	Kind        string     `gorm:"size:30;index" json:"kind"`
+	Severity    string     `gorm:"size:10" json:"severity"` // info | success | warning
+	Title       string     `gorm:"size:150" json:"title"`
+	Message     string     `gorm:"size:255" json:"message"`
+	OrderID     uint       `gorm:"index" json:"order_id"`
+	OrderNumber int        `json:"order_number"`
+	DedupKey    string     `gorm:"size:120;uniqueIndex" json:"-"`
+	ReadAt      *time.Time `gorm:"index" json:"read_at"`
+	CreatedAt   time.Time  `gorm:"index" json:"created_at"`
+}
+
+func (EquipNotification) TableName() string { return "equip_notifications" }

@@ -200,3 +200,39 @@ func (h *Handler) QuoteShipmentTariff(c fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"data": q})
 }
+
+// ShipmentProviderEvents GET /equipos/orders/:id/provider/events — historial guardado del envío (no llama a Shalom).
+func (h *Handler) ShipmentProviderEvents(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	rows, err := svc().ShipmentProviderEvents(id)
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// ListNotifications GET /equipos/notifications — avisos de la campana del header.
+func (h *Handler) ListNotifications(c fiber.Ctx) error {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	res, err := svc().ListNotifications(limit)
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"data": res.Items, "unread": res.Unread})
+}
+
+// MarkNotificationsRead POST /equipos/notifications/read {ids, all}.
+func (h *Handler) MarkNotificationsRead(c fiber.Ctx) error {
+	var body struct {
+		IDs []uint `json:"ids"`
+		All bool   `json:"all"`
+	}
+	_ = c.Bind().JSON(&body)
+	if err := svc().MarkNotificationsRead(body.IDs, body.All); err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"success": true})
+}

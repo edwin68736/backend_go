@@ -157,7 +157,11 @@ func (s *Service) applyTrackingEvent(d *shalom.TrackingData, eventType string) s
 		now := time.Now()
 		ps.Delivered = &now
 	}
-	return s.applyProviderState(sh.ID, ps)
+	note, event := s.applyProviderStateEv(sh.ID, ps)
+	if event != "" {
+		s.notifyShipmentEvent(sh.ID, event)
+	}
+	return note
 }
 
 // ── Aplicar el estado del proveedor a un envío ─────────────────────────────
@@ -192,13 +196,21 @@ func dayNoon(t *time.Time) *time.Time {
 // nunca pisa una fecha que ya existe (la del usuario manda), nunca bloquea por orden de fechas (las fechas
 // previas se ajustan, igual que en las acciones manuales) y no toca envíos entregados ni en retorno.
 func (s *Service) applyProviderState(shipmentID uint, ps providerState) string {
-	var note string
+	note, _ := s.applyProviderStateEv(shipmentID, ps)
+	return note
+}
+
+// applyProviderStateEv igual que applyProviderState; además devuelve el hito relevante que cambió (llegada,
+// entregado, demora) para avisar en el panel. Vacío si no hubo nada que avisar.
+func (s *Service) applyProviderStateEv(shipmentID uint, ps providerState) (string, string) {
+	var note, event string
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var sh database.EquipShipment
 		if found, err := findOne(tx, &sh, "id = ?", shipmentID); err != nil || !found {
 			return err
 		}
 		now := time.Now()
+		prevStatus := sh.ProviderStatus
 		sh.ProviderStatus, sh.ProviderSyncedAt = ps.Status, &now
 		if ps.OseID > 0 {
 			sh.ProviderOseID = fmt.Sprint(ps.OseID)
@@ -233,7 +245,7 @@ func (s *Service) applyProviderState(shipmentID uint, ps providerState) string {
 				sh.ArrivedAt = delivered
 			}
 			sh.PickedUpAt, sh.Status = delivered, "entregado"
-			note = "entregado según Shalom"
+			note, event = "entregado según Shalom", NotifDelivered
 		case arrived != nil:
 			setDispatched(firstTime(transit, arrived))
 			if sh.Status == "pendiente_envio" || sh.Status == "en_transito" {
@@ -243,7 +255,7 @@ func (s *Service) applyProviderState(shipmentID uint, ps providerState) string {
 					dl := arrived.AddDate(0, 0, pickupDays)
 					sh.PickupDeadline = &dl
 				}
-				note = "llegó a agencia según Shalom"
+				note, event = "llegó a agencia según Shalom", NotifArrival
 			} else if sh.ArrivedAt == nil { // ya en agencia pero sin fecha: se completa
 				sh.ArrivedAt = arrived
 				dl := arrived.AddDate(0, 0, pickupDays)
@@ -257,15 +269,18 @@ func (s *Service) applyProviderState(shipmentID uint, ps providerState) string {
 				note = "en tránsito según Shalom"
 			}
 		}
+		if ps.Status == "demora" && prevStatus != "demora" && event == "" {
+			event = NotifDelay
+		}
 		return tx.Save(&sh).Error
 	})
 	if err != nil {
-		return "error al aplicar el estado: " + err.Error()
+		return "error al aplicar el estado: " + err.Error(), ""
 	}
 	if note == "" {
 		note = "sin cambios"
 	}
-	return note
+	return note, event
 }
 
 // ── Acciones sobre un envío ────────────────────────────────────────────────
@@ -387,6 +402,7 @@ func (s *Service) refreshShipment(ctx context.Context, shipmentID uint) error {
 	if err != nil {
 		return providerError(err)
 	}
+	s.recordPollSnapshot(shipmentID, numero, tr)
 	s.applyProviderState(shipmentID, stateFromTracking(tr))
 	return nil
 }
@@ -505,6 +521,7 @@ func (s *Service) SyncShalomShipments(ctx context.Context) (*SyncShipmentsResult
 			}
 			var id uint
 			fmt.Sscan(r.CustomID, &id)
+			s.recordPollSnapshot(id, r.Numero, r.Tracking)
 			if n := s.applyProviderState(id, stateFromTracking(r.Tracking)); n != "sin cambios" {
 				res.Changed++
 			}
