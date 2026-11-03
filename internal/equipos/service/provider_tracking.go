@@ -150,7 +150,7 @@ func (s *Service) applyTrackingEvent(d *shalom.TrackingData, eventType string) s
 	}
 	ps := providerState{
 		Status: d.Status, OseID: d.OseID,
-		Transit: firstTime(d.MilestoneDate("origen"), d.MilestoneDate("transito"), d.MilestoneDate("registrado")),
+		Transit: firstTime(d.MilestoneDate("origen"), d.MilestoneDate("transito")),
 		Arrived: d.MilestoneDate("destino"), Delivered: d.MilestoneDate("entregado"),
 	}
 	if eventType == shalom.EventDelivered && ps.Delivered == nil {
@@ -394,7 +394,7 @@ func (s *Service) refreshShipment(ctx context.Context, shipmentID uint) error {
 func stateFromTracking(tr *shalom.Tracking) providerState {
 	st := tr.Status
 	ps := providerState{OseID: tr.Order.OseID,
-		Transit: firstTime(st.Origen.Date(), st.Transito.Date(), st.Registrado.Date()),
+		Transit: firstTime(st.Origen.Date(), st.Transito.Date()), // «registrado» = guía creada en Shalom, el paquete aún no salió
 		Arrived: st.Destino.Date(), Delivered: st.Entregado.Date()}
 	switch {
 	case st.Entregado != nil:

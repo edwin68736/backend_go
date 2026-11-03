@@ -138,3 +138,26 @@ func TestBatchSyncDerivesCodesFromGuidesAndSkipsInvalid(t *testing.T) {
 }
 
 func encryptForTest(plain string) (string, error) { return secrets.Encrypt(plain) }
+
+// «registrado» en Shalom solo significa que la guía existe; el paquete no salió: el envío sigue por despachar.
+func TestRegisteredOnlyDoesNotDispatchShipment(t *testing.T) {
+	f, _ := providerFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tracking" {
+			_, _ = w.Write([]byte(`{"detailed":false,"order":{"ose_id":9},"status":{"registrado":{"fecha":"2026-11-02 09:00:00","completo":true}}}`))
+		}
+	})
+	o := f.confirmed(t, 1, 100)
+	f.s.ValidateOrder(o.ID, "", 1)
+	if _, err := f.s.UpdateShipment(o.ID, ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "100439617 - M7JK", DestinationDepartment: "Cusco", DeliveryMode: "agencia"}); err != nil {
+		t.Fatal(err)
+	}
+	enableProvider(t, f)
+	res, err := f.s.LinkShipmentTracking(t.Context(), o.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh := res.Order.Shipment
+	if sh.Status != "pendiente_envio" || sh.DispatchedAt != nil || sh.ProviderStatus != "registrado" {
+		t.Errorf("no debe marcarse como despachado solo por estar registrado: %+v", sh)
+	}
+}
