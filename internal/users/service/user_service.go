@@ -249,7 +249,42 @@ func (s *UserService) update(id uint, input UpdateUserInput) error {
 	return s.db.Model(&database.TenantUser{}).Where("id = ?", id).Updates(updates).Error
 }
 
+// Delete elimina (borrado lógico) a un usuario. Se rechaza cuando:
+//   - es el usuario principal: es quien recibe el acceso maestro de soporte y el que define
+//     "principal" (el de menor id entre los no eliminados); si se borra, ese título pasa a otro
+//     usuario sin que nadie lo note (incidente industrialrafaz: se borraron todos los admins).
+//   - es el último administrador activo: sin él nadie podría gestionar roles ni usuarios.
 func (s *UserService) Delete(id uint) error {
+	var user database.TenantUser
+	if err := s.db.First(&user, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil // ya no existe: nada que borrar
+		}
+		return err
+	}
+
+	isOwner, err := database.IsTenantOwnerUser(s.db, id)
+	if err != nil {
+		return err
+	}
+	if isOwner {
+		return errors.New("no se puede eliminar al usuario principal del sistema")
+	}
+
+	var role database.TenantRole
+	if err := s.db.First(&role, user.RoleID).Error; err == nil && branch.IsTenantAdmin(role.Name) && user.Active {
+		var others int64
+		if err := s.db.Model(&database.TenantUser{}).
+			Joins("JOIN tenant_roles ON tenant_roles.id = tenant_users.role_id").
+			Where("tenant_roles.name = ? AND tenant_users.active = ? AND tenant_users.id <> ?", role.Name, true, id).
+			Count(&others).Error; err != nil {
+			return err
+		}
+		if others == 0 {
+			return errors.New("no se puede eliminar al último administrador activo")
+		}
+	}
+
 	return s.db.Delete(&database.TenantUser{}, id).Error
 }
 

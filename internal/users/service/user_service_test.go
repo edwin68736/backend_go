@@ -159,3 +159,81 @@ func TestToggleActive_ReactivarAlOwnerSiempreSePermite(t *testing.T) {
 		t.Fatal("el owner debía quedar activo tras reactivarlo")
 	}
 }
+
+func seedAdminRoleAndUsers(t *testing.T, db *gorm.DB) (ownerID, adminID uint) {
+	t.Helper()
+	role := database.TenantRole{Name: "Administrador", IsSystem: true}
+	if err := db.Create(&role).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := database.TenantUser{Name: "Dueño", Email: "o@t.com", RoleID: role.ID, Active: true}
+	admin := database.TenantUser{Name: "Admin 2", Email: "a@t.com", RoleID: role.ID, Active: true}
+	if err := db.Create(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	return owner.ID, admin.ID
+}
+
+// El caso del incidente: el botón de eliminar borraba al usuario principal sin validación.
+func TestDelete_NoPuedeEliminarAlOwner(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	ownerID, _ := seedAdminRoleAndUsers(t, db)
+
+	if err := svc.Delete(ownerID); err == nil {
+		t.Fatal("esperaba error al eliminar al usuario principal")
+	}
+	var reloaded database.TenantUser
+	if err := db.First(&reloaded, ownerID).Error; err != nil {
+		t.Fatalf("el owner no debía eliminarse: %v", err)
+	}
+}
+
+// Un segundo administrador sí puede eliminarse mientras quede otro administrador activo.
+func TestDelete_PuedeEliminarAdminSiQuedaOtroActivo(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	_, adminID := seedAdminRoleAndUsers(t, db)
+
+	if err := svc.Delete(adminID); err != nil {
+		t.Fatalf("eliminar un admin con otro admin activo debe permitirse: %v", err)
+	}
+	if err := db.First(&database.TenantUser{}, adminID).Error; err == nil {
+		t.Fatal("el admin debía quedar eliminado")
+	}
+}
+
+// Si el owner está inactivo (estado heredado), el único admin activo no puede borrarse.
+func TestDelete_NoPuedeEliminarAlUltimoAdminActivo(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	ownerID, adminID := seedAdminRoleAndUsers(t, db)
+	if err := db.Model(&database.TenantUser{}).Where("id = ?", ownerID).Update("active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Delete(adminID); err == nil {
+		t.Fatal("esperaba error al eliminar al último administrador activo")
+	}
+	if err := db.First(&database.TenantUser{}, adminID).Error; err != nil {
+		t.Fatalf("el admin no debía eliminarse: %v", err)
+	}
+}
+
+// Un usuario sin rol de administrador se elimina sin restricciones.
+func TestDelete_PuedeEliminarUsuarioNormal(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	seedAdminRoleAndUsers(t, db)
+	seller := database.TenantRole{Name: "Vendedor", IsSystem: true}
+	db.Create(&seller)
+	u := database.TenantUser{Name: "V", Email: "v@t.com", RoleID: seller.ID, Active: true}
+	db.Create(&u)
+
+	if err := svc.Delete(u.ID); err != nil {
+		t.Fatalf("eliminar un vendedor debe permitirse: %v", err)
+	}
+}
