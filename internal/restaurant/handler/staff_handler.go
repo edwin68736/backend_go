@@ -13,7 +13,8 @@ import (
 
 // GET /api/restaurant/staff/management — usuarios + perfiles (Ajustes Tukichef)
 func (h *RestaurantHandler) ListStaffManagement(c fiber.Ctx) error {
-	list, err := staff.New(db(c)).ListStaffManagement()
+	onlyDeleted := c.Query("deleted") == "1" || c.Query("deleted") == "true"
+	list, err := staff.New(db(c)).ListStaffManagement(onlyDeleted)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}

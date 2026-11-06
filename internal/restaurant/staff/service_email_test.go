@@ -110,7 +110,9 @@ func TestRestoreStaffUser_rechazaUsuarioDelERPYNoEliminado(t *testing.T) {
 	db := setupStaffQuotaDB(t, 0)
 	svc := New(db).WithTenant(staffQuotaTenantID)
 
-	erp := database.TenantUser{Name: "Cajero ERP", Email: "erp@t.com", RoleID: 1, Active: true}
+	erpRole := database.TenantRole{Name: "Cajero", IsSystem: true}
+	db.Create(&erpRole)
+	erp := database.TenantUser{Name: "Cajero ERP", Email: "erp@t.com", RoleID: erpRole.ID, Active: true}
 	db.Create(&erp)
 	db.Delete(&database.TenantUser{}, erp.ID)
 	if _, err := svc.RestoreStaffUser(erp.ID, CreateStaffUserInput{Name: "X", EmployeeType: "cashier", Pin: "4444"}); err == nil {
@@ -121,5 +123,38 @@ func TestRestoreStaffUser_rechazaUsuarioDelERPYNoEliminado(t *testing.T) {
 	db.Unscoped().Model(&database.TenantUser{}).Where("id = ?", live).Update("deleted_at", nil)
 	if _, err := svc.RestoreStaffUser(live, CreateStaffUserInput{Name: "X", EmployeeType: "cashier", Pin: "6666"}); err == nil {
 		t.Error("restaurar a un usuario que no está eliminado debe fallar")
+	}
+}
+
+func TestListStaffManagement_soloEliminadosConRestorable(t *testing.T) {
+	db := setupStaffQuotaDB(t, 0)
+	svc := New(db).WithTenant(staffQuotaTenantID)
+	opID := createAndDeleteStaff(t, db, svc, "op@t.com", "1111")
+	erpRole := database.TenantRole{Name: "Administrador", IsSystem: true}
+	db.Create(&erpRole)
+	erp := database.TenantUser{Name: "Admin ERP", Email: "erp@t.com", RoleID: erpRole.ID, Active: true}
+	db.Create(&erp)
+	db.Delete(&database.TenantUser{}, erp.ID)
+	if _, err := svc.CreateStaffUser(staffInput("vivo@t.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := svc.ListStaffManagement(true)
+	if err != nil || len(deleted) != 2 {
+		t.Fatalf("debía listar solo los 2 eliminados: %d %v", len(deleted), err)
+	}
+	for _, it := range deleted {
+		if it.DeletedAt == nil {
+			t.Errorf("falta deleted_at: %+v", it)
+		}
+		if want := it.UserID == opID; it.Restorable != want {
+			t.Errorf("restorable de %d = %v, esperado %v", it.UserID, it.Restorable, want)
+		}
+	}
+	live, _ := svc.ListStaffManagement(false)
+	for _, it := range live {
+		if it.DeletedAt != nil {
+			t.Errorf("el listado normal no debe traer eliminados: %+v", it)
+		}
 	}
 }

@@ -340,7 +340,7 @@ func (s *Service) CreateStaffUser(in CreateStaffUserInput) (*StaffManagementItem
 		return nil, err
 	}
 
-	items, err := s.ListStaffManagement()
+	items, err := s.ListStaffManagement(false)
 	if err != nil {
 		return nil, err
 	}
@@ -437,12 +437,31 @@ type StaffManagementItem struct {
 	BranchIDs         []uint   `json:"branch_ids,omitempty"`
 	BranchNames       []string `json:"branch_names,omitempty"`
 	RoleEditLocked    bool     `json:"role_edit_locked"`
+	// Solo en el listado de eliminados: cuándo se eliminó y si puede restaurarse desde Tukichef
+	// (solo los usuarios operativos; los del ERP se restauran desde Usuarios del ERP).
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	Restorable bool       `json:"restorable,omitempty"`
 }
 
-func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
+// ListStaffManagement lista usuarios + perfil de staff. Con onlyDeleted lista solo los eliminados
+// (borrado lógico) para poder restaurarlos.
+func (s *Service) ListStaffManagement(onlyDeleted bool) ([]StaffManagementItem, error) {
 	var users []database.TenantUser
-	if err := s.db.Order("name, email").Find(&users).Error; err != nil {
+	uq := s.db.Order("name, email")
+	if onlyDeleted {
+		uq = s.db.Unscoped().Where("deleted_at IS NOT NULL").Order("name, email")
+	}
+	if err := uq.Find(&users).Error; err != nil {
 		return nil, err
+	}
+	roleNames := map[uint]string{}
+	if onlyDeleted {
+		var roles []database.TenantRole
+		if err := s.db.Unscoped().Select("id", "name").Find(&roles).Error; err == nil {
+			for _, r := range roles {
+				roleNames[r.ID] = r.Name
+			}
+		}
 	}
 	var staffRows []database.TenantRestaurantStaff
 	if err := s.db.Find(&staffRows).Error; err != nil {
@@ -459,6 +478,11 @@ func (s *Service) ListStaffManagement() ([]StaffManagementItem, error) {
 			Name:   u.Name,
 			Email:  u.Email,
 			Active: u.Active,
+		}
+		if onlyDeleted {
+			t := u.DeletedAt.Time
+			item.DeletedAt = &t
+			item.Restorable = IsOperativeRestaurantRole(roleNames[u.RoleID])
 		}
 		if st, ok := byUser[u.ID]; ok {
 			item.StaffID = st.ID
@@ -651,7 +675,7 @@ func (s *Service) RestoreStaffUser(userID uint, in CreateStaffUserInput) (*Staff
 		return nil, err
 	}
 
-	items, err := s.ListStaffManagement()
+	items, err := s.ListStaffManagement(false)
 	if err != nil {
 		return nil, err
 	}
