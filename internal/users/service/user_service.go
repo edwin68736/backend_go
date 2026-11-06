@@ -45,11 +45,16 @@ type UserListParams struct {
 	Query  string
 	RoleID uint
 	Active *bool
+	// OnlyDeleted lista únicamente los usuarios eliminados (para poder restaurarlos).
+	OnlyDeleted bool
 }
 
 func (s *UserService) List(params UserListParams) ([]database.TenantUser, error) {
 	var users []database.TenantUser
 	q := s.db.Model(&database.TenantUser{})
+	if params.OnlyDeleted {
+		q = q.Unscoped().Where("tenant_users.deleted_at IS NOT NULL")
+	}
 	if params.Query != "" {
 		q = q.Where("name LIKE ? OR email LIKE ?", "%"+params.Query+"%", "%"+params.Query+"%")
 	}
@@ -80,6 +85,10 @@ type CreateUserInput struct {
 	Password  string `json:"password"`
 	Phone     string `json:"phone"`
 	Active    bool   `json:"active"`
+	// ReplaceDeleted: si el correo pertenece a un usuario eliminado, libera ese correo (renombrando
+	// al eliminado, que conserva su historial) y crea un usuario nuevo. Sin esto Create devuelve
+	// *database.DeletedUserEmailError para que el cliente elija entre restaurar o crear uno nuevo.
+	ReplaceDeleted bool `json:"replace_deleted"`
 }
 
 func (s *UserService) Create(input CreateUserInput) (*database.TenantUser, error) {
@@ -105,9 +114,20 @@ func (s *UserService) create(input CreateUserInput) (*database.TenantUser, error
 		return nil, errors.New("rol es requerido")
 	}
 
+	input.Email = strings.TrimSpace(input.Email)
 	var existing database.TenantUser
 	if err := s.db.Where("email = ?", input.Email).First(&existing).Error; err == nil {
 		return nil, errors.New("el email ya está registrado")
+	}
+	if deleted, err := database.FindDeletedUserByEmail(s.db, input.Email); err != nil {
+		return nil, err
+	} else if deleted != nil {
+		if !input.ReplaceDeleted {
+			return nil, database.NewDeletedUserEmailError(s.db, deleted)
+		}
+		if err := database.ArchiveDeletedUserEmail(s.db, deleted); err != nil {
+			return nil, err
+		}
 	}
 
 	user := &database.TenantUser{
@@ -210,6 +230,13 @@ func (s *UserService) update(id uint, input UpdateUserInput) error {
 		}
 	}
 
+	if newEmail := strings.TrimSpace(input.Email); newEmail != "" && !strings.EqualFold(newEmail, user.Email) {
+		if err := s.ensureEmailFree(newEmail, id); err != nil {
+			return err
+		}
+		input.Email = newEmail
+	}
+
 	updates := map[string]interface{}{
 		"name":      input.Name,
 		"email":     input.Email,
@@ -254,6 +281,99 @@ func (s *UserService) update(id uint, input UpdateUserInput) error {
 //     "principal" (el de menor id entre los no eliminados); si se borra, ese título pasa a otro
 //     usuario sin que nadie lo note (incidente industrialrafaz: se borraron todos los admins).
 //   - es el último administrador activo: sin él nadie podría gestionar roles ni usuarios.
+// ensureEmailFree valida que el correo no lo use otro usuario, ni activo ni eliminado (el índice
+// único cuenta también a los eliminados; sin esto el cliente recibía el error crudo de MySQL).
+func (s *UserService) ensureEmailFree(email string, excludeID uint) error {
+	var existing database.TenantUser
+	if err := s.db.Where("email = ? AND id <> ?", email, excludeID).First(&existing).Error; err == nil {
+		return errors.New("el email ya está registrado")
+	}
+	deleted, err := database.FindDeletedUserByEmail(s.db, email)
+	if err != nil {
+		return err
+	}
+	if deleted != nil && deleted.ID != excludeID {
+		return errors.New("ese correo pertenece a un usuario eliminado: restáurelo desde «Ver eliminados» o use otro correo")
+	}
+	return nil
+}
+
+// Restore reactiva a un usuario eliminado conservando su id (y con él su historial de ventas,
+// cajas, etc.). Se exige contraseña nueva: la anterior no vuelve. Nombre, teléfono, rol y
+// sucursales se toman de input; el correo es el del usuario eliminado. Ocupa un cupo del plan.
+func (s *UserService) Restore(id uint, input CreateUserInput) (*database.TenantUser, error) {
+	var restored *database.TenantUser
+	err := s.inSeatTx(func(tx *UserService) error {
+		u, err := tx.restore(id, input)
+		restored = u
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return restored, nil
+}
+
+func (s *UserService) restore(id uint, input CreateUserInput) (*database.TenantUser, error) {
+	if strings.TrimSpace(input.Name) == "" || input.Password == "" {
+		return nil, errors.New("nombre y contraseña son requeridos")
+	}
+	if input.RoleID == 0 {
+		return nil, errors.New("rol es requerido")
+	}
+	var user database.TenantUser
+	if err := s.db.Unscoped().First(&user, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("usuario no encontrado")
+		}
+		return nil, err
+	}
+	if !user.DeletedAt.Valid {
+		return nil, errors.New("el usuario no está eliminado")
+	}
+	var role database.TenantRole
+	if err := s.db.First(&role, input.RoleID).Error; err != nil {
+		return nil, errors.New("rol no válido")
+	}
+	hasher := database.TenantUser{}
+	if err := hasher.SetPassword(input.Password); err != nil {
+		return nil, err
+	}
+
+	updates := map[string]interface{}{
+		"deleted_at": nil,
+		"active":     true,
+		"name":       strings.TrimSpace(input.Name),
+		"phone":      strings.TrimSpace(input.Phone),
+		"role_id":    input.RoleID,
+		"password":   hasher.Password,
+	}
+	if database.TenantBranchMultiSchemaReady(s.db) {
+		updates["can_switch_branch"] = branch.IsTenantAdmin(role.Name)
+	}
+	if err := s.db.Unscoped().Model(&database.TenantUser{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+
+	branchIDs := input.BranchIDs
+	if len(branchIDs) == 0 && input.BranchID != nil && *input.BranchID > 0 {
+		branchIDs = []uint{*input.BranchID}
+	}
+	if len(branchIDs) > 0 {
+		if err := branch.SetUserAssignedBranches(s.db, id, branchIDs, true); err != nil {
+			return nil, err
+		}
+	} else {
+		// Conserva las sucursales que ya tenía, pero invalida cualquier sesión anterior.
+		_ = branch.BumpSessionVersion(s.db, id)
+	}
+	var fresh database.TenantUser // struct nuevo: reusar `user` conserva el DeletedAt anterior
+	if err := s.db.First(&fresh, id).Error; err != nil {
+		return nil, err
+	}
+	return &fresh, nil
+}
+
 func (s *UserService) Delete(id uint) error {
 	var user database.TenantUser
 	if err := s.db.First(&user, id).Error; err != nil {
@@ -333,9 +453,8 @@ func (s *UserService) UpdateProfile(id uint, input UpdateProfileInput) error {
 		return errors.New("nombre y email son requeridos")
 	}
 
-	var existing database.TenantUser
-	if err := s.db.Where("email = ? AND id <> ?", email, id).First(&existing).Error; err == nil {
-		return errors.New("el email ya está registrado")
+	if err := s.ensureEmailFree(email, id); err != nil {
+		return err
 	}
 
 	return s.db.Model(&database.TenantUser{}).Where("id = ?", id).Updates(map[string]interface{}{

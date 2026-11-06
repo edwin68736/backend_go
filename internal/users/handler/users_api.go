@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"errors"
 	"strconv"
+	"time"
 
 	"tukifac/internal/users/service"
 	"tukifac/pkg/branch"
@@ -16,7 +18,8 @@ func (h *UserHandler) ListAPI(c fiber.Ctx) error {
 	db := tenantDB(c)
 	svc := service.NewUserService(db)
 	roleID, _ := strconv.ParseUint(c.Query("role_id"), 10, 32)
-	users, err := svc.List(service.UserListParams{Query: c.Query("q"), RoleID: uint(roleID)})
+	onlyDeleted := c.Query("deleted") == "1" || c.Query("deleted") == "true"
+	users, err := svc.List(service.UserListParams{Query: c.Query("q"), RoleID: uint(roleID), OnlyDeleted: onlyDeleted})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -50,10 +53,16 @@ func (h *UserHandler) ListAPI(c fiber.Ctx) error {
 		// bloquear también el control de "Activo" — ver UserService.Update/ToggleActive, que
 		// rechazan desactivarlo (sin él, MasterAccess de soporte queda sin destinatario).
 		IsOwner bool `json:"is_owner"`
+		// DeletedAt solo viene en el listado de eliminados (?deleted=1).
+		DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	}
 	out := make([]UserOut, 0, len(users))
 	for _, u := range users {
 		ro := UserOut{ID: u.ID, Name: u.Name, Email: u.Email, RoleID: u.RoleID, BranchID: u.BranchID, Active: u.Active}
+		if u.DeletedAt.Valid {
+			t := u.DeletedAt.Time
+			ro.DeletedAt = &t
+		}
 		ro.RoleName = roleNames[u.RoleID]
 		if locked, err := svc.TenantRoleEditLocked(u.ID, u.RoleID); err == nil {
 			ro.RoleEditLocked = locked
@@ -116,11 +125,50 @@ func (h *UserHandler) CreateAPI(c fiber.Ctx) error {
 		if middleware.RespondQuotaError(c, err) {
 			return nil
 		}
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return respondDeletedUserEmail(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": fiber.Map{
 		"id": u.ID, "name": u.Name, "email": u.Email,
 		"role_id": u.RoleID, "branch_id": u.BranchID,
+	}})
+}
+
+// respondDeletedUserEmail responde 409 con los datos del usuario eliminado cuando el correo ya
+// pertenece a uno (el cliente ofrece restaurarlo o crear uno nuevo); cualquier otro error es 400.
+func respondDeletedUserEmail(c fiber.Ctx, err error) error {
+	var de *database.DeletedUserEmailError
+	if errors.As(err, &de) {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": de.Error(),
+			"code":  "user_deleted_exists",
+			"deleted_user": fiber.Map{
+				"id": de.UserID, "name": de.Name, "email": de.Email,
+				"role_name": de.RoleName, "deleted_at": de.DeletedAt,
+			},
+		})
+	}
+	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+}
+
+// POST /api/users/:id/restore — reactiva a un usuario eliminado (mismo formulario que crear).
+func (h *UserHandler) RestoreAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var input service.CreateUserInput
+	if err := c.Bind().JSON(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	u, err := service.NewUserService(tenantDB(c)).WithTenant(middleware.TenantIDFromClaims(c)).Restore(uint(id), input)
+	if err != nil {
+		if middleware.RespondQuotaError(c, err) {
+			return nil
+		}
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"id": u.ID, "name": u.Name, "email": u.Email, "role_id": u.RoleID, "branch_id": u.BranchID,
 	}})
 }
 

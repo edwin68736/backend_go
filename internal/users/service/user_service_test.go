@@ -1,6 +1,8 @@
 package service
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"tukifac/pkg/database"
@@ -235,5 +237,127 @@ func TestDelete_PuedeEliminarUsuarioNormal(t *testing.T) {
 
 	if err := svc.Delete(u.ID); err != nil {
 		t.Fatalf("eliminar un vendedor debe permitirse: %v", err)
+	}
+}
+
+func softDelete(t *testing.T, db *gorm.DB, id uint) {
+	t.Helper()
+	if err := db.Delete(&database.TenantUser{}, id).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// El caso reportado: crear un usuario con el correo de uno eliminado explotaba con el error crudo
+// de MySQL (índice único). Ahora devuelve un error tipado con los datos del eliminado.
+func TestCreate_CorreoDeUsuarioEliminadoDevuelveErrorTipado(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	_, adminID := seedAdminRoleAndUsers(t, db)
+	softDelete(t, db, adminID)
+
+	_, err := svc.Create(CreateUserInput{Name: "Nuevo", Email: "A@t.com", Password: "x1234567", RoleID: 1})
+	var de *database.DeletedUserEmailError
+	if !errors.As(err, &de) {
+		t.Fatalf("esperaba *DeletedUserEmailError, llegó %v", err)
+	}
+	if de.UserID != adminID || de.Name != "Admin 2" || de.RoleName != "Administrador" || de.DeletedAt.IsZero() {
+		t.Errorf("datos del eliminado incorrectos: %+v", de)
+	}
+}
+
+func TestCreate_ReplaceDeletedLiberaCorreoYConservaAlEliminado(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	_, adminID := seedAdminRoleAndUsers(t, db)
+	softDelete(t, db, adminID)
+
+	u, err := svc.Create(CreateUserInput{Name: "Nuevo", Email: "a@t.com", Password: "x1234567", RoleID: 1, ReplaceDeleted: true})
+	if err != nil {
+		t.Fatalf("crear reemplazando al eliminado: %v", err)
+	}
+	if u.ID == adminID || u.Email != "a@t.com" {
+		t.Fatalf("debía ser un usuario nuevo con el correo libre: %+v", u)
+	}
+	var old database.TenantUser
+	if err := db.Unscoped().First(&old, adminID).Error; err != nil {
+		t.Fatalf("el eliminado debe conservarse (historial): %v", err)
+	}
+	if !old.DeletedAt.Valid || old.Email == "a@t.com" {
+		t.Errorf("el eliminado debía seguir eliminado y con otro correo: %+v", old)
+	}
+}
+
+func TestRestore_ReactivaConMismoIDYContrasenaNueva(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	_, adminID := seedAdminRoleAndUsers(t, db)
+	var before database.TenantUser
+	db.First(&before, adminID)
+	softDelete(t, db, adminID)
+
+	u, err := svc.Restore(adminID, CreateUserInput{Name: "Admin Renovado", Phone: "999", Password: "nueva-clave-1", RoleID: before.RoleID})
+	if err != nil {
+		t.Fatalf("restaurar: %v", err)
+	}
+	if u.ID != adminID || u.DeletedAt.Valid || !u.Active || u.Name != "Admin Renovado" || u.Email != "a@t.com" {
+		t.Errorf("usuario restaurado incorrecto: %+v", u)
+	}
+	if u.Password == before.Password || !u.CheckPassword("nueva-clave-1") {
+		t.Error("la contraseña anterior no debe volver: se exige la nueva")
+	}
+}
+
+func TestRestore_RechazaUsuarioNoEliminadoYDatosIncompletos(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	_, adminID := seedAdminRoleAndUsers(t, db)
+
+	if _, err := svc.Restore(adminID, CreateUserInput{Name: "X", Password: "p1234567", RoleID: 1}); err == nil {
+		t.Error("restaurar a un usuario que no está eliminado debe fallar")
+	}
+	softDelete(t, db, adminID)
+	if _, err := svc.Restore(adminID, CreateUserInput{Name: "X", RoleID: 1}); err == nil {
+		t.Error("restaurar sin contraseña debe fallar")
+	}
+	var still database.TenantUser
+	if err := db.First(&still, adminID).Error; err == nil {
+		t.Error("el usuario debía seguir eliminado tras los intentos fallidos")
+	}
+}
+
+func TestUpdate_CorreoDeEliminadoOActivoDaMensajeClaro(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	ownerID, adminID := seedAdminRoleAndUsers(t, db)
+	softDelete(t, db, adminID)
+	staff := database.TenantUser{Name: "S", Email: "s@t.com", RoleID: 1, Active: true}
+	db.Create(&staff)
+
+	err := svc.Update(staff.ID, UpdateUserInput{Name: "S", Email: "a@t.com", RoleID: 1, Active: true})
+	if err == nil || !strings.Contains(err.Error(), "eliminado") {
+		t.Errorf("correo de un eliminado: mensaje esperado menciona 'eliminado', llegó %v", err)
+	}
+	err = svc.Update(staff.ID, UpdateUserInput{Name: "S", Email: "o@t.com", RoleID: 1, Active: true})
+	if err == nil || !strings.Contains(err.Error(), "ya está registrado") {
+		t.Errorf("correo de un activo: llegó %v", err)
+	}
+	if err := svc.Update(ownerID, UpdateUserInput{Name: "Dueño", Email: "o@t.com", RoleID: 1, Active: true}); err != nil {
+		t.Errorf("mantener el propio correo debe permitirse: %v", err)
+	}
+}
+
+func TestList_OnlyDeleted(t *testing.T) {
+	db := setupUserServiceTestDB(t)
+	svc := NewUserService(db)
+	_, adminID := seedAdminRoleAndUsers(t, db)
+	softDelete(t, db, adminID)
+
+	deleted, err := svc.List(UserListParams{OnlyDeleted: true})
+	if err != nil || len(deleted) != 1 || deleted[0].ID != adminID {
+		t.Fatalf("OnlyDeleted debía listar solo al eliminado: %v %v", deleted, err)
+	}
+	live, _ := svc.List(UserListParams{})
+	if len(live) != 1 {
+		t.Errorf("el listado normal no debe incluir eliminados: %d", len(live))
 	}
 }
