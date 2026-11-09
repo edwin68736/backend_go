@@ -134,8 +134,9 @@ func seedDefaultWalkInContact(tx *gorm.DB, in TenantSeedInput) (uint, error) {
 		TradeName:       "Público en general",
 		Address:         addr,
 		Ubigeo:          ubi,
-		Phone:           strings.TrimSpace(in.Phone),
-		Email:           strings.TrimSpace(in.Email),
+		// Sin teléfono ni correo: "Clientes Varios" es el público en general, no la empresa. Antes se copiaban
+		// los de la empresa y, al enviar un comprobante a ese cliente, el correo se sugería (y se enviaba) a la
+		// propia empresa en lugar de al cliente real.
 		IsDefaultWalkIn: true,
 		Active:          true,
 	}
