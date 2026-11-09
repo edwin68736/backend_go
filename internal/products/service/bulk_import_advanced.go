@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	invsvc "tukifac/internal/inventory/service"
@@ -78,6 +79,9 @@ type BulkImportAdvancedItem struct {
 	SaleUnits     []BulkImportAdvancedSaleUnit     `json:"sale_units"`
 	BranchPrices  []BulkImportAdvancedBranchPrice  `json:"branch_prices"`
 	BranchStocks  []BulkImportAdvancedBranchStock  `json:"branch_stocks"`
+	// Solo Tukichef (restaurante): ver bulk_import_advanced_restaurant.go.
+	ModifierGroups []BulkImportAdvancedModifierGroup `json:"modifier_groups"`
+	ComboGroups    []BulkImportAdvancedComboGroup    `json:"combo_groups"`
 }
 
 type BulkImportAdvancedResult struct {
@@ -91,7 +95,29 @@ type BulkImportAdvancedResult struct {
 	BranchPricesCreated      int `json:"branch_prices_created"`
 	BranchPricesUpdated      int `json:"branch_prices_updated"`
 	BranchPricesDeactivated  int `json:"branch_prices_deactivated"`
+	appliedGroups            map[string]bool
 	BranchStocksSet          int `json:"branch_stocks_set"`
+	// Restaurante.
+	ModifierGroupsCreated      int `json:"modifier_groups_created"`
+	ModifierGroupsUpdated      int `json:"modifier_groups_updated"`
+	ModifierOptionsCreated     int `json:"modifier_options_created"`
+	ModifierOptionsUpdated     int `json:"modifier_options_updated"`
+	ModifierOptionsDeactivated int `json:"modifier_options_deactivated"`
+	ModifierLinksCreated       int `json:"modifier_links_created"`
+	ModifierLinksRemoved       int `json:"modifier_links_removed"`
+	ComboGroupsCreated         int `json:"combo_groups_created"`
+	ComboGroupsUpdated         int `json:"combo_groups_updated"`
+	ComboGroupsDeactivated     int `json:"combo_groups_deactivated"`
+}
+
+// BulkImportAdvancedOpts variantes del motor: Tukifac (catálogo) o Tukichef (platos).
+type BulkImportAdvancedOpts struct {
+	// Restaurant fuerza is_restaurant, exige sucursal activa y habilita extras y combos; las
+	// unidades de venta, precios por sucursal y stock por sucursal no existen en Tukichef.
+	Restaurant bool
+	// MaxItems: 0 = BulkImportAdvancedMaxItems. El dry_run puede subirlo para simular el archivo
+	// completo en una sola transacción (los combos referencian platos de otros lotes).
+	MaxItems int
 }
 
 func advErr(sheet string, row int, format string, args ...any) error {
@@ -101,11 +127,20 @@ func advErr(sheet string, row int, format string, args ...any) error {
 // BulkImportAdvanced importa productos con presentaciones, unidades de venta, precios y stock por
 // sucursal. Máximo BulkImportAdvancedMaxItems productos por llamada.
 func (s *ProductService) BulkImportAdvanced(items []BulkImportAdvancedItem, branchID, userID uint) (*BulkImportAdvancedResult, error) {
+	return s.BulkImportAdvancedWith(items, branchID, userID, BulkImportAdvancedOpts{})
+}
+
+// BulkImportAdvancedWith ver BulkImportAdvancedOpts.
+func (s *ProductService) BulkImportAdvancedWith(items []BulkImportAdvancedItem, branchID, userID uint, opts BulkImportAdvancedOpts) (*BulkImportAdvancedResult, error) {
 	if len(items) == 0 {
 		return nil, errors.New("no hay filas para importar")
 	}
-	if len(items) > BulkImportAdvancedMaxItems {
-		return nil, fmt.Errorf("máximo %d productos por solicitud", BulkImportAdvancedMaxItems)
+	maxItems := opts.MaxItems
+	if maxItems <= 0 {
+		maxItems = BulkImportAdvancedMaxItems
+	}
+	if len(items) > maxItems {
+		return nil, fmt.Errorf("máximo %d productos por solicitud", maxItems)
 	}
 	res := &BulkImportAdvancedResult{}
 	res.Failed = make([]BulkImportFail, 0)
@@ -119,8 +154,18 @@ func (s *ProductService) BulkImportAdvanced(items []BulkImportAdvancedItem, bran
 	// no se envían a la transacción.
 	valid := make([]BulkImportAdvancedItem, 0, len(items))
 	seenCodes := map[string]int{}
+	comboCodes := map[string]bool{}
+	for _, it := range items {
+		if len(it.ComboGroups) > 0 {
+			comboCodes[strings.ToLower(strings.TrimSpace(it.Code))] = true
+		}
+	}
 	for _, it := range items {
 		if verr := validateAdvancedItem(&it, branches, seenCodes); verr != nil {
+			res.Failed = append(res.Failed, BulkImportFail{Row: it.RowNumber, Name: it.Name, Error: verr.Error()})
+			continue
+		}
+		if verr := validateAdvancedRestaurantItem(&it, opts.Restaurant, comboCodes); verr != nil {
 			res.Failed = append(res.Failed, BulkImportFail{Row: it.RowNumber, Name: it.Name, Error: verr.Error()})
 			continue
 		}
@@ -128,6 +173,10 @@ func (s *ProductService) BulkImportAdvanced(items []BulkImportAdvancedItem, bran
 	}
 	if len(valid) == 0 {
 		return res, nil
+	}
+	if opts.Restaurant {
+		// Los combos van al final: sus componentes (platos) deben existir cuando se arma el combo.
+		sort.SliceStable(valid, func(i, j int) bool { return len(valid[i].ComboGroups) == 0 && len(valid[j].ComboGroups) > 0 })
 	}
 
 	base := make([]BulkImportItem, len(valid))
@@ -137,11 +186,12 @@ func (s *ProductService) BulkImportAdvanced(items []BulkImportAdvancedItem, bran
 
 	stockNotes := "Stock inicial — importación avanzada"
 	r, err := s.bulkImport(base, bulkImportRunOpts{
-		BranchID:   branchID,
-		UserID:     userID,
-		StockNotes: stockNotes,
+		ForceRestaurant: opts.Restaurant,
+		BranchID:        branchID,
+		UserID:          userID,
+		StockNotes:      stockNotes,
 		AfterSave: func(idx int, tx *gorm.DB, productID uint, isNew bool) (func(), error) {
-			return s.applyAdvancedChildren(tx, &valid[idx], productID, isNew, branchID, userID, branches, res)
+			return s.applyAdvancedChildren(tx, &valid[idx], productID, isNew, branchID, userID, branches, res, opts.Restaurant)
 		},
 	})
 	if err != nil {
@@ -293,7 +343,7 @@ func validateAdvancedItem(it *BulkImportAdvancedItem, branches map[string]uint, 
 // acumulan en una copia local y solo se suman al resultado si la transacción hace commit.
 func (s *ProductService) applyAdvancedChildren(
 	tx *gorm.DB, it *BulkImportAdvancedItem, productID uint, isNew bool,
-	branchID, userID uint, branches map[string]uint, res *BulkImportAdvancedResult,
+	branchID, userID uint, branches map[string]uint, res *BulkImportAdvancedResult, restaurant bool,
 ) (func(), error) {
 	ps := NewProductService(tx)
 	inv := invsvc.NewInventoryService(tx)
@@ -338,6 +388,17 @@ func (s *ProductService) applyAdvancedChildren(
 		}
 		if d := int(before) - updated; d > 0 {
 			c.PresentationsDeactivated += d
+		}
+	}
+
+	// ── Extras y combos (solo Tukichef) ──────────────────────────────────────────────────────
+	var rc restaurantCounters
+	var commitRestaurant func()
+	if restaurant {
+		var err error
+		commitRestaurant, err = s.applyRestaurantChildren(tx, ps, it, productID, branchID, &rc, res)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -516,6 +577,10 @@ func (s *ProductService) applyAdvancedChildren(
 	}
 
 	return func() {
+		if commitRestaurant != nil {
+			commitRestaurant()
+		}
+		rc.addTo(res)
 		res.PresentationsCreated += c.PresentationsCreated
 		res.PresentationsUpdated += c.PresentationsUpdated
 		res.PresentationsDeactivated += c.PresentationsDeactivated

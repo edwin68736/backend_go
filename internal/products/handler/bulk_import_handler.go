@@ -106,6 +106,16 @@ func costIfAllowed(allowed bool, v *float64) *float64 {
 // con presentaciones, unidades de venta, precios por sucursal y stock por sucursal (máx. 200
 // productos por request). Ver service.BulkImportAdvanced.
 func (h *ProductHandler) BulkImportAdvancedAPI(c fiber.Ctx) error {
+	return h.bulkImportAdvanced(c, false)
+}
+
+// BulkImportRestaurantAdvancedAPI POST /api/products/bulk-import/restaurant-advanced — lo mismo para
+// platos de Tukichef (is_restaurant forzado, sucursal activa obligatoria) con extras y combos.
+func (h *ProductHandler) BulkImportRestaurantAdvancedAPI(c fiber.Ctx) error {
+	return h.bulkImportAdvanced(c, true)
+}
+
+func (h *ProductHandler) bulkImportAdvanced(c fiber.Ctx, restaurant bool) error {
 	var body struct {
 		BranchID uint                             `json:"branch_id"`
 		Items    []service.BulkImportAdvancedItem `json:"items"`
@@ -135,7 +145,13 @@ func (h *ProductHandler) BulkImportAdvancedAPI(c fiber.Ctx) error {
 		defer tx.Rollback()
 		conn = tx
 	}
-	res, err := service.NewProductService(conn).BulkImportAdvanced(body.Items, branchID, uid)
+	opts := service.BulkImportAdvancedOpts{Restaurant: restaurant}
+	if body.DryRun {
+		// El dry_run simula el archivo completo en una sola transacción (los combos referencian
+		// platos de otros lotes, que en un dry_run por lotes no existirían).
+		opts.MaxItems = service.BulkImportMaxItems
+	}
+	res, err := service.NewProductService(conn).BulkImportAdvancedWith(body.Items, branchID, uid, opts)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
