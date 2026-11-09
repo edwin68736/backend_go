@@ -101,3 +101,31 @@ func costIfAllowed(allowed bool, v *float64) *float64 {
 	}
 	return v
 }
+
+// BulkImportAdvancedAPI POST /api/products/bulk-import/advanced — importación avanzada: producto
+// con presentaciones, unidades de venta, precios por sucursal y stock por sucursal (máx. 200
+// productos por request). Ver service.BulkImportAdvanced.
+func (h *ProductHandler) BulkImportAdvancedAPI(c fiber.Ctx) error {
+	var body struct {
+		BranchID uint                             `json:"branch_id"`
+		Items    []service.BulkImportAdvancedItem `json:"items"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	if !middleware.CanViewProductCost(c) {
+		for i := range body.Items {
+			body.Items[i].PurchasePrice = nil // sin permiso de costo no se importa ni se pisa el costo
+		}
+	}
+	uid, _ := c.Locals("user_id").(uint)
+	res, err := service.NewProductService(db(c)).BulkImportAdvanced(body.Items, branchID, uid)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": res})
+}

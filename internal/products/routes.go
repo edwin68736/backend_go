@@ -46,6 +46,7 @@ func RegisterRoutes(api fiber.Router) {
 	api.Post("/products", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.CreateAPI)
 	api.Post("/products/bulk-import/restaurant", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.BulkImportRestaurantAPI)
 	api.Post("/products/bulk-import/catalog", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.BulkImportCatalogAPI)
+	api.Post("/products/bulk-import/advanced", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.BulkImportAdvancedAPI)
 	api.Post("/products/bulk-delete/restaurant",
 		middleware.RequireModule("products"),
 		middleware.LoadRestaurantPermissions(),

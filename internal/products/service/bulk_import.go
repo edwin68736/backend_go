@@ -48,6 +48,8 @@ type BulkImportItem struct {
 	// BranchNames: columna "sucursales" — nombres separados por coma. nil/vacío = no cambiar (un
 	// producto nuevo queda en todas); "todas" = todas las sucursales. Ver pkg/productbranch.
 	BranchNames *string `json:"branch_names"`
+	// MinStock: columna "stock_minimo". nil = no cambiar (un producto nuevo queda en 0).
+	MinStock *float64 `json:"min_stock"`
 }
 
 type BulkImportFail struct {
@@ -68,6 +70,11 @@ type bulkImportRunOpts struct {
 	BranchID        uint
 	UserID          uint
 	StockNotes      string
+	// AfterSave (importación avanzada): corre DENTRO de la transacción del producto, después de
+	// guardarlo y de registrar su stock inicial. Si devuelve error el producto entero se revierte.
+	// idx es la posición del ítem en la lista recibida por bulkImport. El func devuelto (opcional)
+	// se ejecuta solo si la transacción hizo commit (para acumular contadores sin contar rollbacks).
+	AfterSave func(idx int, tx *gorm.DB, productID uint, isNew bool) (onCommit func(), err error)
 }
 
 // BulkImportRestaurant importa platos (is_restaurant=true, con área de preparación).
@@ -289,6 +296,15 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			input.MinStock = existing.MinStock
 			input.ImageURL = existing.ImageURL
 		}
+		if item.MinStock != nil {
+			if *item.MinStock < 0 {
+				result.Failed = append(result.Failed, BulkImportFail{
+					Row: item.RowNumber, Name: item.Name, Error: "stock_minimo no puede ser negativo",
+				})
+				continue
+			}
+			input.MinStock = *item.MinStock
+		}
 
 		branchIDs, setBranches, branchErr := s.resolveImportBranches(item.BranchNames, &branchNameCache)
 		if branchErr != nil {
@@ -299,6 +315,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 		}
 
 		var productID uint
+		var onCommit func()
 		isNewProduct := !hasExisting
 		err := s.db.Transaction(func(tx *gorm.DB) error {
 			ps := NewProductService(tx)
@@ -351,6 +368,13 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 					}
 				}
 			}
+			if opts.AfterSave != nil {
+				cb, err := opts.AfterSave(i, tx, productID, isNewProduct)
+				if err != nil {
+					return err
+				}
+				onCommit = cb
+			}
 			if manageStock && opts.BranchID > 0 {
 				return inv.EnsureProductBranchLink(productID, opts.BranchID)
 			}
@@ -366,6 +390,9 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			continue
 		}
 
+		if onCommit != nil {
+			onCommit()
+		}
 		codesProcessedInBatch[code] = struct{}{}
 		if hasExisting {
 			result.Updated++
