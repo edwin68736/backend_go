@@ -251,6 +251,21 @@ func (s *Service) SalesDocs(from, to time.Time) ([]SaleDoc, []string, error) {
 			items[l.SaleID] = append(items[l.SaleID], lineRow{ParentID: l.SaleID, Affectation: l.IgvAffectationType, Subtotal: l.Subtotal, TaxAmount: l.TaxAmount})
 		}
 	}
+	// Una venta «anulada» que tiene una nota de crédito vigente NO está dada de baja: el comprobante
+	// original conserva sus importes y es la nota (en negativo) la que lo revierte. Poner en cero el
+	// original Y restar la nota duplicaría la reversión.
+	reversedByNote := map[uint]bool{}
+	if len(ids) > 0 {
+		var noted []uint
+		if err := s.db.Table("tenant_sales").
+			Where("original_sale_id IN ? AND doc_type = ? AND deleted_at IS NULL AND status <> ? AND billing_status <> ?", ids, "NOTA_CREDITO", "draft", "rejected").
+			Pluck("original_sale_id", &noted).Error; err != nil {
+			return nil, nil, err
+		}
+		for _, id := range noted {
+			reversedByNote[id] = true
+		}
+	}
 	orig := map[uint]database.TenantSale{}
 	if len(origIDs) > 0 {
 		var os []database.TenantSale
@@ -275,7 +290,9 @@ func (s *Service) SalesDocs(from, to time.Time) ([]SaleDoc, []string, error) {
 			FullNumber: fmt.Sprintf("%s-%d", r.Series, r.Correlative), IssueDate: r.IssueDate, DueDate: r.DueDate,
 			ContactDocType: identityCode(r.CDocType, r.CDocNum), ContactDocNumber: strings.TrimSpace(r.CDocNum),
 			ContactName: strings.TrimSpace(r.CName), Currency: strings.ToUpper(r.Currency), ExchangeRate: 1,
-			Voided: r.Status == "cancelled", BillingStatus: r.BillingStatus, Observation: strings.TrimSpace(r.Notes),
+			// Una nota de crédito aceptada es un documento válido aunque Tukifac la marque como «cancelled» al
+			// anular la venta de origen: nunca se trata como dada de baja.
+			Voided: r.Status == "cancelled" && !reversedByNote[r.ID] && code != "07", BillingStatus: r.BillingStatus, Observation: strings.TrimSpace(r.Notes),
 			PaymentCondition: r.PaymentConditionCode, Orig: b,
 		}
 		if d.Currency == "" {

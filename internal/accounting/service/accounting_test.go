@@ -529,3 +529,42 @@ func TestSire_BadCredentialsGiveClearError(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 }
+
+// Una venta anulada que tiene nota de crédito vigente conserva sus importes (la nota la revierte en
+// negativo): ponerla en cero y además restar la nota duplicaría la reversión.
+func TestSalesRegister_CancelledWithCreditNoteIsNotDoubleReversed(t *testing.T) {
+	db := testDB(t)
+	f := mkSale(t, db, saleOpts{docType: "FACTURA", series: "F001", corr: 1, status: "cancelled", subtotal: 100, tax: 18,
+		items: []database.TenantSaleItem{item("10", 100, 18)}})
+	mkSale(t, db, saleOpts{docType: "NOTA_CREDITO", series: "FC01", corr: 1, subtotal: 100, tax: 18, original: &f.ID,
+		items: []database.TenantSaleItem{item("10", 100, 18)}})
+	tb, err := New(db).SalesRegister("2026-03", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum float64
+	for _, r := range tb.Rows {
+		sum += r[17].(float64)
+	}
+	if len(tb.Rows) != 2 || sum != 0 || tb.Rows[0][17] != 118.0 || tb.Rows[1][17] != -118.0 {
+		t.Fatalf("esperaba +118 y −118 (neto 0): %v", tb.Rows)
+	}
+	rep, _ := New(db).SummaryReport(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC))
+	if len(rep.Voided) != 0 || rep.ConfirmedTotals.Total != 0 {
+		t.Errorf("resumen: anulados=%v total=%v", rep.Voided, rep.ConfirmedTotals.Total)
+	}
+}
+
+// Tukifac marca como «cancelled» tanto la venta anulada como su nota de crédito: la nota aceptada sigue
+// siendo un documento válido (en negativo), nunca una fila «anulada».
+func TestSalesRegister_CancelledCreditNoteStaysValid(t *testing.T) {
+	db := testDB(t)
+	f := mkSale(t, db, saleOpts{docType: "FACTURA", series: "F001", corr: 1, status: "cancelled", subtotal: 100, tax: 18,
+		items: []database.TenantSaleItem{item("10", 100, 18)}})
+	mkSale(t, db, saleOpts{docType: "NOTA_CREDITO", series: "FC01", corr: 1, status: "cancelled", subtotal: 100, tax: 18, original: &f.ID,
+		items: []database.TenantSaleItem{item("10", 100, 18)}})
+	rep, _ := New(db).SummaryReport(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC))
+	if len(rep.Voided) != 0 || rep.ConfirmedTotals.Total != 0 || len(rep.Confirmed) != 2 {
+		t.Errorf("anulados=%v confirmados=%+v", rep.Voided, rep.Confirmed)
+	}
+}
