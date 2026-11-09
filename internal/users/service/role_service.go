@@ -229,6 +229,15 @@ func (s *RoleService) SeedPermissions() error {
 		// reports.*: gatea la PÁGINA de cada reporte en /reports/* (solo Tukifac — Tukichef no
 		// tiene esta sección). Los endpoints que consumen esos reportes siguen exigiendo el
 		// permiso de su módulo real (sales.view, products.view, etc.), sin cambios.
+		// Contabilidad (módulo accounting, V174): cada pantalla/acción se asigna por separado.
+		{Module: "accounting", Action: "sales_register", Label: "Contabilidad: exportar registro de ventas"},
+		{Module: "accounting", Action: "purchases_register", Label: "Contabilidad: exportar registro de compras"},
+		{Module: "accounting", Action: "export_formats", Label: "Contabilidad: exportar formatos a sistemas contables"},
+		{Module: "accounting", Action: "summary_report", Label: "Contabilidad: reporte resumido de ventas"},
+		{Module: "accounting", Action: "ledger", Label: "Contabilidad: libro mayor"},
+		{Module: "accounting", Action: "sire_view", Label: "Contabilidad: consultar SIRE (ventas y compras)"},
+		{Module: "accounting", Action: "sire_manage", Label: "Contabilidad: solicitar propuesta SIRE y aceptar propuesta de ventas"},
+		{Module: "accounting", Action: "settings", Label: "Contabilidad: cuentas contables y credenciales SIRE"},
 		{Module: "reports", Action: "manage", Label: "Ver todos los reportes"},
 		{Module: "reports", Action: "sales", Label: "Ver reporte de ventas"},
 		{Module: "reports", Action: "sales_by_product", Label: "Ver reporte de ventas por producto"},

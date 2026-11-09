@@ -549,7 +549,7 @@ var moduleCodeCatalog = []moduleCodeMeta{
 	{Key: "transport", Implemented: false, Category: "vertical", SortOrder: 15},
 	{Key: "manufacturing", Implemented: false, Category: "vertical", SortOrder: 16},
 	{Key: "hr", Implemented: false, Category: "avanzado", SortOrder: 17},
-	{Key: "accounting", Implemented: false, Category: "avanzado", SortOrder: 18},
+	{Key: "accounting", Name: "Contabilidad", Description: "Registros de ventas y compras, formatos para sistemas contables, libro mayor y SIRE", Icon: "file-text", Implemented: true, Requires: "sales,purchases", Category: "avanzado", SortOrder: 18},
 	{Key: "bi", Implemented: false, Category: "avanzado", SortOrder: 19},
 	{Key: "fixedassets", Implemented: false, Category: "avanzado", SortOrder: 20},
 	{Key: "documents", Implemented: false, Category: "avanzado", SortOrder: 21},

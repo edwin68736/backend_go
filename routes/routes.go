@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"tukifac/config"
+	"tukifac/internal/accounting"
 	"tukifac/internal/auth"
 	authHandler "tukifac/internal/auth/handler"
 	"tukifac/internal/billing"
@@ -18,7 +19,6 @@ import (
 	"tukifac/internal/dashboard"
 	"tukifac/internal/ecommerce"
 	"tukifac/internal/equipos"
-	"tukifac/internal/rum"
 	"tukifac/internal/fiscal"
 	"tukifac/internal/fleet"
 	"tukifac/internal/inventory"
@@ -32,6 +32,7 @@ import (
 	"tukifac/internal/quotations"
 	"tukifac/internal/receivables"
 	"tukifac/internal/restaurant"
+	"tukifac/internal/rum"
 	"tukifac/internal/sales"
 	superadmin "tukifac/internal/superadmin"
 	"tukifac/internal/tenantportal"
@@ -242,6 +243,7 @@ func Setup(app *fiber.App) {
 	fleet.RegisterRoutes(tenantAPI)
 	purchases.RegisterRoutes(tenantAPI)
 	cashbank.RegisterRoutes(tenantAPI)
+	accounting.RegisterRoutes(tenantAPI)
 	paymentcatalog.RegisterRoutes(tenantAPI)
 	receivables.RegisterRoutes(tenantAPI)
 	payables.RegisterRoutes(tenantAPI)
