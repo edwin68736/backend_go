@@ -109,6 +109,9 @@ func (h *ProductHandler) BulkImportAdvancedAPI(c fiber.Ctx) error {
 	var body struct {
 		BranchID uint                             `json:"branch_id"`
 		Items    []service.BulkImportAdvancedItem `json:"items"`
+		// DryRun: simula la importación completa dentro de una transacción que se revierte, para
+		// mostrar el resumen (creados/modificados/desactivados) y los errores antes de importar.
+		DryRun bool `json:"dry_run"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -123,7 +126,16 @@ func (h *ProductHandler) BulkImportAdvancedAPI(c fiber.Ctx) error {
 		}
 	}
 	uid, _ := c.Locals("user_id").(uint)
-	res, err := service.NewProductService(db(c)).BulkImportAdvanced(body.Items, branchID, uid)
+	conn := db(c)
+	if body.DryRun {
+		tx := conn.Begin()
+		if tx.Error != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": tx.Error.Error()})
+		}
+		defer tx.Rollback()
+		conn = tx
+	}
+	res, err := service.NewProductService(conn).BulkImportAdvanced(body.Items, branchID, uid)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

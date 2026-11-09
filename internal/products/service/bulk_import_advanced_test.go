@@ -439,3 +439,27 @@ func TestBulkImportCatalog_MinStock(t *testing.T) {
 		t.Fatalf("min_stock actualizado: %v", p.MinStock)
 	}
 }
+
+// Dry-run (lo que hace el handler con dry_run=true): se ejecuta todo dentro de una transacción
+// externa y se revierte; los contadores deben ser reales y no debe quedar nada en la BD.
+func TestBulkImportAdvanced_DryRunLeavesNothing(t *testing.T) {
+	e := setupAdvancedImportEnv(t)
+	tx := e.db.Begin()
+	res, err := NewProductService(tx).BulkImportAdvanced([]BulkImportAdvancedItem{{
+		BulkImportItem: BulkImportItem{RowNumber: 2, Name: "Dry", Code: "DRY", SalePrice: 5, CategoryName: "Nueva categoría"},
+		SaleUnits:      []BulkImportAdvancedSaleUnit{{RowNumber: 2, Name: "U", Unit: "NIU", ConversionFactor: 1, Price1: 5}},
+	}}, e.main.ID, 1)
+	tx.Rollback()
+	if err != nil || res.Created != 1 || res.SaleUnitsCreated != 1 || len(res.Failed) != 0 {
+		t.Fatalf("dry-run: %+v err=%v", res, err)
+	}
+	var n int64
+	e.db.Model(&database.TenantProduct{}).Count(&n)
+	var m int64
+	e.db.Model(&database.TenantProductSaleUnit{}).Count(&m)
+	var c int64
+	e.db.Model(&database.TenantCategory{}).Count(&c)
+	if n != 0 || m != 0 || c != 0 {
+		t.Fatalf("el dry-run dejó datos: productos=%d unidades=%d categorías=%d", n, m, c)
+	}
+}
