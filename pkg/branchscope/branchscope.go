@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"reflect"
 	"runtime"
 	"strings"
@@ -164,8 +165,13 @@ func resolve(tx *gorm.DB) (s *Scope, ok bool) {
 		return nil, false
 	}
 	table := tx.Statement.Table
-	if table == "" || !IsRegistered(table) {
-		return nil, false
+	if !IsRegistered(table) {
+		// db.Table("tenant_sales ts") / "tenant_sales AS ts": GORM deja Statement.Table = alias; la tabla real está en TableExpr.
+		real := realTable(tx.Statement)
+		if real == "" || !IsRegistered(real) {
+			return nil, false
+		}
+		table = real
 	}
 	ctx := tx.Statement.Context
 	if _, sys := tx.Get(settingSystem); sys || isSystem(ctx) {
@@ -185,6 +191,36 @@ func resolve(tx *gorm.DB) (s *Scope, ok bool) {
 		return nil, false
 	}
 	return s, true
+}
+
+var tableExprRe = regexp.MustCompile("^\\s*`?(\\w+)`?(?:\\s|$)")
+
+// realTable extrae el nombre real de la tabla de un Table("nombre alias") (TableExpr). "" si no aplica (subconsulta, etc.).
+func realTable(st *gorm.Statement) string {
+	if st.TableExpr == nil {
+		return ""
+	}
+	m := tableExprRe.FindStringSubmatch(st.TableExpr.SQL)
+	if len(m) != 2 {
+		return ""
+	}
+	return m[1]
+}
+
+var aliasRe = regexp.MustCompile("^\\s*`?\\w+`?(?:\\s+(?:[Aa][Ss]\\s+)?`?(\\w+)`?)?\\s*$")
+
+// qualifier devuelve el calificador de la columna branch_id: el alias o el nombre de la tabla principal de la consulta.
+// GORM no siempre rellena Statement.Table con el alias (p. ej. Table("`tenant_sales` s")): se deduce del TableExpr.
+func qualifier(st *gorm.Statement) string {
+	if st.TableExpr != nil {
+		if m := aliasRe.FindStringSubmatch(st.TableExpr.SQL); len(m) == 2 && m[1] != "" {
+			return m[1]
+		}
+		if real := realTable(st); real != "" && IsRegistered(real) && st.Table == "" {
+			return real
+		}
+	}
+	return clause.CurrentTable
 }
 
 var auditSeen sync.Map
@@ -230,7 +266,7 @@ func whereBranch(tx *gorm.DB, s *Scope) {
 		// Sin ninguna sucursal permitida no se devuelve nada (fail-closed), salvo registros sin sucursal.
 		ids = []uint{0}
 	}
-	col := tx.Statement.Quote(clause.Column{Table: clause.CurrentTable, Name: "branch_id"})
+	col := tx.Statement.Quote(clause.Column{Table: qualifier(tx.Statement), Name: "branch_id"})
 	tx.Statement.AddClause(clause.Where{Exprs: []clause.Expression{
 		clause.Expr{SQL: "(" + col + " IN ? OR " + col + " IS NULL OR " + col + " = 0)", Vars: []interface{}{ids}},
 	}})

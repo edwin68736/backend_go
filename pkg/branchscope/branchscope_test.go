@@ -239,3 +239,30 @@ func TestScopeSurvivesContextReplacementAndNewSession(t *testing.T) {
 		t.Errorf("estricto tras WithContext: %d", n)
 	}
 }
+
+// db.Table("tenant_sales ts") deja Statement.Table = alias: el scope debe aplicarse igual (antes se saltaba en silencio).
+func TestScopeAppliesToAliasedTable(t *testing.T) {
+	db := setup(t)
+	seller := scoped(db, branchscope.Scope{ActiveBranchID: 1, AllowedBranchIDs: []uint{1}})
+	for _, tbl := range []string{"tenant_sales ts", "tenant_sales AS ts", "`tenant_sales` s2"} {
+		var n int64
+		if err := seller.Table(tbl).Count(&n).Error; err != nil || n != 3 {
+			t.Errorf("Table(%q): n=%d err=%v, quiere 3", tbl, n, err)
+		}
+	}
+	// Con JOIN y alias de la tabla principal.
+	var n int64
+	err := seller.Table("tenant_sales AS v").Joins("JOIN tenant_contacts c ON c.id = v.contact_id OR v.contact_id IS NULL").Count(&n).Error
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Una subconsulta como tabla no debe romperse.
+	if err := seller.Table("(SELECT 1 AS x) q").Count(&n).Error; err != nil {
+		t.Errorf("subconsulta como tabla: %v", err)
+	}
+	// El modo estricto tampoco la deja pasar sin contexto.
+	t.Setenv("BRANCH_SCOPE_STRICT", "1")
+	if err := db.Table("tenant_sales ts").Count(&n).Error; err == nil {
+		t.Error("estricto sin contexto sobre Table con alias debía fallar")
+	}
+}
