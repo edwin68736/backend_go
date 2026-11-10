@@ -238,6 +238,7 @@ func (s *RoleService) SeedPermissions() error {
 		{Module: "accounting", Action: "sire_view", Label: "Contabilidad: consultar SIRE (ventas y compras)"},
 		{Module: "accounting", Action: "sire_manage", Label: "Contabilidad: solicitar propuesta SIRE y aceptar propuesta de ventas"},
 		{Module: "accounting", Action: "settings", Label: "Contabilidad: cuentas contables y credenciales SIRE"},
+		{Module: "products", Action: "manage_global", Label: "Catálogo global: crear/editar/eliminar productos, categorías, marcas, unidades, imágenes, atributos y precio global"},
 		{Module: "branches", Action: "view_all", Label: "Sucursales: ver todas las sucursales (consulta consolidada, solo lectura)"},
 		{Module: "branches", Action: "switch", Label: "Sucursales: cambiar entre las sucursales asignadas"},
 		{Module: "branches", Action: "manage", Label: "Sucursales: crear/editar sucursales y asignar acceso total"},

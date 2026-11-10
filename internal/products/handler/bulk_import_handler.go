@@ -85,7 +85,16 @@ func (h *ProductHandler) BulkUpdatePricesAPI(c fiber.Ctx) error {
 	if body.BranchID > 0 && !branchPriceWriteAllowed(c, body.BranchID) {
 		return writeForbidden(c)
 	}
-	canCost := middleware.CanViewProductCost(c)
+	// Sin sucursal el precio de venta es GLOBAL y el precio de compra (costo) siempre lo es: exigen products.manage_global.
+	// El precio de venta por sucursal es información comercial de la sucursal y solo requiere products.edit.
+	canGlobal := middleware.CanManageGlobalCatalog(c)
+	if body.BranchID == 0 && !canGlobal {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error":      "Actualizar el precio global requiere permiso sobre el catálogo global; elija una sucursal para cambiar su precio",
+			"permission": middleware.PermProductsManageGlobal,
+		})
+	}
+	canCost := middleware.CanViewProductCost(c) && canGlobal
 	rows := make([]service.BulkPriceUpdateRow, 0, len(body.Rows))
 	for _, r := range body.Rows {
 		rows = append(rows, service.BulkPriceUpdateRow{
