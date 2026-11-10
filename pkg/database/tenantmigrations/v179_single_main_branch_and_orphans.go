@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"tukifac/pkg/branchscope"
 	"tukifac/pkg/database"
 
 	"gorm.io/gorm"
@@ -24,7 +25,7 @@ import (
 type V179SingleMainBranchAndOrphans struct{}
 
 func (V179SingleMainBranchAndOrphans) Version() int { return 179 }
-func (V179SingleMainBranchAndOrphans) Name() string  { return "single_main_branch_and_orphans" }
+func (V179SingleMainBranchAndOrphans) Name() string { return "single_main_branch_and_orphans" }
 
 func (V179SingleMainBranchAndOrphans) Up(db *gorm.DB) error {
 	if !db.Migrator().HasTable(&database.TenantBranch{}) {
@@ -75,6 +76,8 @@ func ensureSingleMainBranch(tx *gorm.DB) (uint, error) {
 }
 
 func linkOrphansToBranch(tx *gorm.DB, mainID uint) error {
+	// Proceso interno de migración sobre todo el tenant: acceso declarado (sin ruido de auditoría del scope de sucursal).
+	tx = branchscope.System(tx, "migración V179: vincular huérfanos a la sucursal principal")
 	ignore := "UPDATE IGNORE"
 	if tx.Dialector.Name() == "sqlite" {
 		ignore = "UPDATE OR IGNORE"
