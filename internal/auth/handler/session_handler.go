@@ -1,16 +1,13 @@
 package handler
 
 import (
-	"time"
-
-	"tukifac/config"
+	authservice "tukifac/internal/auth/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
 )
 
@@ -158,6 +155,10 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "Usuario no encontrado"})
 	}
+	// Un usuario desactivado con token vigente no debe obtener ninguna credencial nueva (esta ruta se salta BranchContext).
+	if !user.Active {
+		return c.Status(401).JSON(fiber.Map{"error": "Usuario desactivado"})
+	}
 	if legacy || !database.TenantBranchMultiSchemaReady(tdb) {
 		return c.Status(503).JSON(fiber.Map{
 			"error":   "Migración de sucursales pendiente",
@@ -182,7 +183,7 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 		}
 	}
 
-	tokenString, brief, err := issueTokenWithBranch(tdb, claims, user, b.ID)
+	tokenString, brief, err := reissueWithBranch(tdb, claims, user, b.ID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -204,47 +205,16 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 	})
 }
 
-func branchSessionVersionForToken(tdb *gorm.DB, user *database.TenantUser) uint {
-	if user == nil || !database.TenantBranchSessionVersionReady(tdb) {
-		return 0
-	}
-	return user.BranchSessionVersion
-}
-
-func issueTokenWithBranch(tdb *gorm.DB, old *middleware.TenantClaims, user *database.TenantUser, activeBranchID uint) (string, *branch.BranchBrief, error) {
+// reissueWithBranch emite el token del cambio de sucursal vía el emisor único: relee rol/permisos/módulos desde
+// la BD, conserva el tipo de sesión y NO extiende exp (ver authservice.Issuer.Reissue).
+func reissueWithBranch(tdb *gorm.DB, old *middleware.TenantClaims, user *database.TenantUser, activeBranchID uint) (string, *branch.BranchBrief, error) {
 	brief, err := branch.GetBranchBrief(tdb, activeBranchID)
 	if err != nil {
 		return "", nil, err
 	}
-	claims := &middleware.TenantClaims{
-		UserID:               old.UserID,
-		Email:                old.Email,
-		RoleID:               old.RoleID,
-		RoleName:             old.RoleName,
-		TenantSlug:           old.TenantSlug,
-		TenantDB:             old.TenantDB,
-		TenantID:             old.TenantID,
-		TenantVersion:        old.TenantVersion,
-		PlanID:               old.PlanID,
-		Modules:              old.Modules,
-		Permissions:          old.Permissions,
-		EmployeeType:         old.EmployeeType,
-		AuthMethod:           old.AuthMethod,
-		Impersonated:         old.Impersonated,
-		MasterActorID:        old.MasterActorID,
-		MasterActorEmail:     old.MasterActorEmail,
-		PermVer:              old.PermVer,
-		StaffID:              old.StaffID,
-		Status:               old.Status,
-		Type:                 "tenant",
-		ActiveBranchID:       activeBranchID,
-		BranchSessionVersion: branchSessionVersionForToken(tdb, user),
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
+	sess, err := authservice.DefaultIssuer().Reissue(tdb, old, user, authservice.Change{ActiveBranchID: activeBranchID})
+	if err != nil {
+		return "", nil, err
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(config.AppConfig.JWTSecret))
-	return tokenString, brief, err
+	return sess.Token, brief, nil
 }

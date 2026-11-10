@@ -852,9 +852,9 @@ func (s *TenantService) MasterAccess(tenantID, saUserID uint, saEmail, clientIP 
 		return nil, errors.New("el usuario propietario está inactivo")
 	}
 
-	session, err := authsvc.BuildTenantSession(tenant, tenantDB, user, legacyBranch, authsvc.TenantSessionOpts{
-		AuthMethod:       middleware.AuthMethodMasterAccess,
-		Impersonated:     true,
+	session, err := authsvc.DefaultIssuer().Issue(tenant, tenantDB, user, authsvc.IssueOpts{
+		Kind:             authsvc.KindMasterAccess,
+		Legacy:           legacyBranch,
 		MasterActorID:    saUserID,
 		MasterActorEmail: saEmail,
 	})
