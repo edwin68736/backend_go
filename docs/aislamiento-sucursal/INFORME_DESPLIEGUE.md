@@ -136,3 +136,11 @@ rate limit de autenticación y auditoría `master_access_exchange[_failed]`) y l
 abrir `/?master_code=…` en el navegador inicia sesión como acceso maestro (`auth_method: master_access`, `impersonated`, actor `superadmin@saas.com`) y la URL queda en `/home` sin código.
 Tests: `pkg/mastercode` (memoria y Redis con miniredis: un solo uso, TTL, cross-tenant), handler de canje, Tukifac 98 tests (incl. flujo completo del `AuthProvider`), central 129 tests.
 **No probado:** Redis real en producción (miniredis sí), el flujo con el frontend central desplegado.
+
+---
+
+## 10. Sucursal principal única y huérfanos (V179) — 10-nov-2026
+
+Commit backend `e019ca5`. **Migración nueva: V179** (ahora `migrate-fleet` aplica V172→V179). Deja a cada tenant con exactamente una sucursal principal y vincula a ella los registros con `branch_id = 0`
+(decisión del dueño). Efecto esperado: `doriconta` conserva la sucursal 1 como única principal; 5 retenciones (3 tenants) pasan a la principal. Código: crear/editar sucursal transaccional, no se puede quitar la marca a la única principal,
+retenciones/percepciones se crean con sucursal. Ver `INFORME_BRANCH_ID_CERO.md`. Rollback: no hace falta revertir (aditiva); para deshacer el vínculo de las 5 filas habría que restaurarlas a mano (ids en el informe).
