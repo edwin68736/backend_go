@@ -70,7 +70,7 @@ func (s *Service) sireCreds() (*SireCreds, error) {
 		return nil, err
 	}
 	if st.ClientID == "" || st.ClientSecretEnc == "" || st.SolUsername == "" || st.SolPasswordEnc == "" {
-		return nil, errors.New("configura las credenciales SIRE (client_id, client_secret, usuario y clave SOL) en Contabilidad → Configuración")
+		return nil, errors.New("configura las credenciales SIRE (client_id, client_secret, usuario y clave SOL) en Ajustes → Contabilidad")
 	}
 	sec, err := secrets.Decrypt(st.ClientSecretEnc)
 	if err != nil {

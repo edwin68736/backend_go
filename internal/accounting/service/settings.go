@@ -22,7 +22,7 @@ type Accounts struct {
 }
 
 // DefaultAccounts valores PCGE usados cuando el tenant no configuró la cuenta (los mismos que traía el
-// sistema anterior para ventas gravadas). Son editables en Contabilidad → Configuración.
+// sistema anterior para ventas gravadas). Son editables en Ajustes → Contabilidad.
 var DefaultAccounts = Accounts{
 	ReceivablePEN: "12121", ReceivableUSD: "12122",
 	IgvSalesPEN: "40111", IgvSalesUSD: "40111",

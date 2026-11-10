@@ -9,7 +9,7 @@ import (
 )
 
 // AccountingSeedDefaults cuentas contables de ventas sembradas en todo tenant (PCGE). Son las mismas para
-// todo el Perú, por eso no se dejan vacías; el tenant las edita en Contabilidad → Configuración si su contador
+// todo el Perú, por eso no se dejan vacías; el tenant las edita en Ajustes → Contabilidad si su contador
 // usa otras. Espejo de internal/accounting/service.DefaultAccounts (una prueba verifica que coincidan).
 var AccountingSeedDefaults = database.TenantAccountingSettings{
 	ReceivablePEN: "12121", ReceivableUSD: "12122",
