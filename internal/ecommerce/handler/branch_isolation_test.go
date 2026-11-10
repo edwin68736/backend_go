@@ -74,8 +74,8 @@ func TestConvertOrder_BranchIDFromBodyIsValidated(t *testing.T) {
 	if c, b := convertReq(t, app, "s1", 1); c == 403 {
 		t.Errorf("vendedor S1 con su sucursal: %d (%s), la guarda no debe bloquearlo", c, b)
 	}
-	// Quien ve todo puede indicar una sucursal accesible (otra no es de escritura salvo que sea accesible).
-	if c, b := convertReq(t, app, "admin", 2); c == 403 {
-		t.Errorf("admin con branch_id=2: %d (%s), ResolveWriteBranchID acepta sucursales accesibles", c, b)
+	// Ni siquiera quien ve todo escribe en otra sucursal por el body: debe cambiar de sucursal activa.
+	if c, b := convertReq(t, app, "admin", 2); c != 403 {
+		t.Errorf("admin con branch_id=2 y activa 1: %d (%s), quiere 403", c, b)
 	}
 }

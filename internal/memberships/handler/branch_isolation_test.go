@@ -215,8 +215,8 @@ func TestMemberships_CreateBranchValidated(t *testing.T) {
 	if created.BranchID != 1 {
 		t.Errorf("la membresía debía quedar en la sucursal activa 1, quedó %d", created.BranchID)
 	}
-	// Admin con acceso a la 2 puede crearla allí.
-	if code, b := doM(t, db, adminS1, "POST", "/memberships", body(2)); code != 201 {
-		t.Errorf("admin creando en S2 (accesible): %d (%s)", code, b)
+	// Ni siquiera el admin crea en otra sucursal por el body: debe cambiar de sucursal activa.
+	if code, b := doM(t, db, adminS1, "POST", "/memberships", body(2)); code != 403 {
+		t.Errorf("admin creando en S2 con activa S1: %d (%s), quiere 403", code, b)
 	}
 }

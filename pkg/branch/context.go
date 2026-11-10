@@ -131,7 +131,9 @@ func RecordWritable(c fiber.Ctx, recordBranchID uint) bool {
 	return active != 0 && recordBranchID == active
 }
 
-// ResolveWriteBranchID usa la sucursal activa; se acepta otra solo si el usuario puede acceder a ella.
+// ResolveWriteBranchID devuelve la sucursal en la que se registra una operación: SIEMPRE la activa del contexto
+// validado (JWT + BD). El branch_id que envíe el cliente solo se acepta si coincide con ella; ni siquiera quien ve
+// todas las sucursales puede escribir en otra por el body: debe cambiar de sucursal activa primero.
 func ResolveWriteBranchID(c fiber.Ctx, requested uint) (uint, error) {
 	active := ActiveBranchID(c)
 	if active == 0 {
@@ -140,10 +142,7 @@ func ResolveWriteBranchID(c fiber.Ctx, requested uint) (uint, error) {
 	if requested == 0 || requested == active {
 		return active, nil
 	}
-	if CanAccessBranch(c, requested) {
-		return requested, nil
-	}
-	return 0, errors.New("no puede operar en otra sucursal")
+	return 0, errors.New("la operación debe registrarse en la sucursal activa; cambie de sucursal para operar en otra")
 }
 
 // ResolveReadBranchFilter para listados: 0 = activa; se acepta otra solo si el usuario puede acceder a ella.

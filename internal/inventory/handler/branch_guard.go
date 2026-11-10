@@ -59,12 +59,12 @@ func loadTransfer(tdb *gorm.DB, id uint) (database.TenantTransfer, error) {
 	return tr, err
 }
 
-// canOriginateTransferFrom: el origen debe ser accesible; quien no ve todo solo puede sacar stock de su sucursal activa.
+// canOriginateTransferFrom: el origen debe ser la sucursal ACTIVA, incluso para quien ve todas (debe cambiar de sucursal).
 func canOriginateTransferFrom(c fiber.Ctx, from uint) bool {
 	if branch.ActiveBranchID(c) == 0 || !branch.CanAccessBranch(c, from) {
 		return false
 	}
-	return branch.IsBranchAdmin(c) || branch.RecordWritable(c, from)
+	return branch.RecordWritable(c, from)
 }
 
 // destinationBranchValid: el destino debe existir y estar activo.

@@ -209,6 +209,10 @@ func TestInventoryTransfers_OriginDestinationRules(t *testing.T) {
 	if c, _ := createTransfer(t, f, "adminall", 1, 2); c != 403 {
 		t.Errorf("admin sin sucursal activa (modo todas) creando transferencia: %d, quiere 403", c)
 	}
+	// Ni el admin saca stock de una sucursal que no es la activa: debe cambiar de sucursal.
+	if c, _ := createTransfer(t, f, "admin", 2, 1); c != 403 && c != 404 {
+		t.Errorf("admin con S1 activa creando transferencia con origen S2: %d, quiere 403/404", c)
+	}
 
 	// Caso propio: S1 -> S2.
 	code, tr1 := createTransfer(t, f, "s1", 1, 2)

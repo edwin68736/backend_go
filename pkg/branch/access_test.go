@@ -1,6 +1,7 @@
 package branch
 
 import (
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"strconv"
@@ -116,5 +117,26 @@ func TestResolveWriteBranchID(t *testing.T) {
 	got = run(t, seller, func(c fiber.Ctx) string { id, _ := ResolveWriteBranchID(c, 0); return u(id) })
 	if got != "1" {
 		t.Errorf("sin pedir: got %s", got)
+	}
+}
+
+// Ni siquiera quien ve todas las sucursales escribe en otra por el branch_id del body.
+func TestResolveWriteBranchIDAdminMustUseActive(t *testing.T) {
+	admin := ctxSetup{active: 1, viewAll: true, allowed: []uint{1, 2}}
+	got := run(t, admin, func(c fiber.Ctx) string {
+		id, err := ResolveWriteBranchID(c, 2)
+		if err != nil {
+			return "err"
+		}
+		return u(id)
+	})
+	if got != "err" {
+		t.Errorf("admin con branch_id=2 y activa 1: %s, quiere err", got)
+	}
+	if got := run(t, admin, func(c fiber.Ctx) string { id, _ := ResolveWriteBranchID(c, 1); return u(id) }); got != "1" {
+		t.Errorf("admin con su sucursal activa: %s", got)
+	}
+	if got := run(t, ctxSetup{viewAll: true}, func(c fiber.Ctx) string { _, err := ResolveWriteBranchID(c, 1); return fmt.Sprint(err != nil) }); got != "true" {
+		t.Errorf("sin sucursal activa no se escribe: %s", got)
 	}
 }
