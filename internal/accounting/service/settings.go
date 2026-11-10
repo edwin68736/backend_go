@@ -66,7 +66,20 @@ func (s *Service) ResolvedAccounts() (Accounts, error) {
 	}, nil
 }
 
-// SaveSettings valida y guarda las cuentas (texto, sin perder ceros iniciales).
+// FillDefaults completa con el valor por defecto (PCGE) cada cuenta de ventas que esté vacía: las cuentas
+// son las mismas en todo el Perú, así que nunca se guardan vacías (el tenant las edita si su contador usa otras).
+func FillDefaults(st *database.TenantAccountingSettings) {
+	d := DefaultAccounts
+	st.ReceivablePEN, st.ReceivableUSD = pick(st.ReceivablePEN, d.ReceivablePEN), pick(st.ReceivableUSD, d.ReceivableUSD)
+	st.IgvSalesPEN, st.IgvSalesUSD = pick(st.IgvSalesPEN, d.IgvSalesPEN), pick(st.IgvSalesUSD, d.IgvSalesUSD)
+	st.TaxedPEN, st.TaxedUSD = pick(st.TaxedPEN, d.TaxedPEN), pick(st.TaxedUSD, d.TaxedUSD)
+	st.Exonerated, st.Unaffected = pick(st.Exonerated, d.Exonerated), pick(st.Unaffected, d.Unaffected)
+	st.Exportation, st.Icbper = pick(st.Exportation, d.Exportation), pick(st.Icbper, d.Icbper)
+	st.SubdiarioSales = pick(st.SubdiarioSales, d.SubdiarioSales)
+}
+
+// SaveSettings valida y guarda las cuentas (texto, sin perder ceros iniciales). Una cuenta de ventas
+// borrada vuelve a su valor por defecto.
 func (s *Service) SaveSettings(in database.TenantAccountingSettings) (*database.TenantAccountingSettings, error) {
 	fields := []*string{
 		&in.ReceivablePEN, &in.ReceivableUSD, &in.IgvSalesPEN, &in.IgvSalesUSD, &in.TaxedPEN, &in.TaxedUSD,
@@ -83,6 +96,7 @@ func (s *Service) SaveSettings(in database.TenantAccountingSettings) (*database.
 	if len(in.SubdiarioSales) > 5 {
 		return nil, errors.New("el subdiario de ventas admite hasta 5 caracteres")
 	}
+	FillDefaults(&in)
 	cur, err := s.Settings()
 	if err != nil {
 		return nil, err

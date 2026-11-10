@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/database/tenantmigrations"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -566,5 +567,30 @@ func TestSalesRegister_CancelledCreditNoteStaysValid(t *testing.T) {
 	rep, _ := New(db).SummaryReport(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC))
 	if len(rep.Voided) != 0 || rep.ConfirmedTotals.Total != 0 || len(rep.Confirmed) != 2 {
 		t.Errorf("anulados=%v confirmados=%+v", rep.Voided, rep.Confirmed)
+	}
+}
+
+// Las cuentas sembradas por la migración V175 deben ser las mismas que usa el servicio por defecto.
+func TestSeedDefaultsMatchServiceDefaults(t *testing.T) {
+	d, s := DefaultAccounts, tenantmigrations.AccountingSeedDefaults
+	got := Accounts{
+		ReceivablePEN: s.ReceivablePEN, ReceivableUSD: s.ReceivableUSD, IgvSalesPEN: s.IgvSalesPEN, IgvSalesUSD: s.IgvSalesUSD,
+		TaxedPEN: s.TaxedPEN, TaxedUSD: s.TaxedUSD, Exonerated: s.Exonerated, Unaffected: s.Unaffected,
+		Exportation: s.Exportation, Icbper: s.Icbper, SubdiarioSales: s.SubdiarioSales,
+	}
+	if got != d {
+		t.Errorf("la migración V175 y DefaultAccounts difieren:\n migración: %+v\n servicio:  %+v", got, d)
+	}
+}
+
+// Guardar con campos vacíos devuelve cada cuenta de ventas a su valor por defecto (nunca queda vacía).
+func TestSaveSettingsEmptyRestoresDefaults(t *testing.T) {
+	s := New(testDB(t))
+	st, err := s.SaveSettings(database.TenantAccountingSettings{ReceivablePEN: "0121"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ReceivablePEN != "0121" || st.TaxedPEN != "70111" || st.IgvSalesPEN != "40111" || st.SubdiarioSales != "05" {
+		t.Errorf("guardado: %+v", st)
 	}
 }

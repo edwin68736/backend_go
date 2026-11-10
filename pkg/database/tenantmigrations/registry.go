@@ -146,6 +146,7 @@ var TenantMigrations = []TenantMigration{
 	V172ClearWalkInCompanyContact{},
 	V173CashbankFinePermissions{},
 	V174AccountingModule{},
+	V175AccountingDefaultAccounts{},
 }
 
 // ByVersion mapa versión → migración.
