@@ -329,6 +329,9 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 func (h *AuthHandler) RefreshAPI(c fiber.Ctx) error {
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
+		// ActiveBranchID: sucursal con la que el cliente venía operando. Se respeta solo si el usuario puede
+		// acceder a ella; si no, se vuelve a la base. Sin esto el refresh devolvía siempre a la sucursal base.
+		ActiveBranchID uint `json:"active_branch_id"`
 	}
 	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
@@ -381,9 +384,32 @@ func (h *AuthHandler) RefreshAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "No se pudo renovar la sesión"})
 	}
 
+	token := sess.Token
+	if want := req.ActiveBranchID; want > 0 && want != sess.Claims.ActiveBranchID && !legacyBranch {
+		if allowedBranchForRefresh(tenantDB, user, sess.Claims.RoleName, want) {
+			if t, _, ierr := issueTokenWithBranch(tenantDB, sess.Claims, user, want); ierr == nil {
+				token = t
+			}
+		}
+	}
+
 	return c.JSON(fiber.Map{
-		"token":       sess.Token,
+		"token":       token,
 		"modules":     sess.Claims.Modules,
 		"permissions": sess.Claims.Permissions,
 	})
+}
+
+// allowedBranchForRefresh indica si el usuario puede conservar la sucursal wantID al renovar el token: debe estar
+// activa y ser asignada (o el usuario ve todas las sucursales). Nunca confía en lo que pida el cliente.
+func allowedBranchForRefresh(db *gorm.DB, user *database.TenantUser, roleName string, wantID uint) bool {
+	var b database.TenantBranch
+	if err := db.Where("id = ? AND active = ?", wantID, true).First(&b).Error; err != nil {
+		return false
+	}
+	if branch.IsTenantAdmin(roleName) {
+		return true
+	}
+	ok, err := branch.UserHasBranchAccess(db, user.ID, wantID)
+	return err == nil && ok
 }

@@ -83,21 +83,38 @@ func BranchContextMiddleware() fiber.Handler {
 			})
 		}
 
-		canSwitch := branch.CanSwitchBranch(claims.RoleName, user)
-		if !canSwitch {
-			home, _ := branch.ResolveHomeBranchID(tdb, user)
-			if home > 0 && activeID != home {
+		if !user.Active {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Usuario inactivo"})
+		}
+
+		// "Ver todas las sucursales" = rol administrador (Fase 3B: permiso branches.view_all). Tener varias
+		// sucursales asignadas permite cambiar entre ellas, pero NO ver las demás.
+		viewAll := branch.IsTenantAdmin(claims.RoleName)
+		home, _ := branch.ResolveHomeBranchID(tdb, user)
+		allowed, _ := branch.GetUserAssignedBranchIDs(tdb, user.ID)
+		if len(allowed) == 0 && home > 0 {
+			allowed = []uint{home}
+		}
+		if !viewAll {
+			ok := false
+			for _, id := range allowed {
+				if id == activeID {
+					ok = true
+					break
+				}
+			}
+			if !ok {
 				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 					"code":    branch.CodeBranchForbidden,
 					"error":   "No puede operar en otra sucursal",
-					"message": "Su sucursal asignada es la única permitida",
+					"message": "La sucursal activa no está entre las asignadas a su usuario",
 				})
 			}
-			activeID = home
 		}
 
 		c.Locals("active_branch_id", activeID)
-		c.Locals("is_branch_admin", canSwitch)
+		c.Locals("allowed_branch_ids", allowed)
+		c.Locals("is_branch_admin", viewAll)
 		c.Locals("branch_legacy_mode", legacy)
 		return c.Next()
 	}

@@ -10,6 +10,7 @@ import (
 	"tukifac/internal/restaurant/service"
 	"tukifac/internal/restaurant/staff"
 	billingsvc "tukifac/internal/billing/service"
+	"tukifac/internal/sales/branchguard"
 	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
@@ -140,6 +141,9 @@ func (h *RestaurantHandler) UpdateFloor(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardFloor(c, id, true); !ok {
+		return gerr
+	}
 	var body struct {
 		Name   string `json:"name"`
 		Order  int    `json:"sort_order"`
@@ -160,6 +164,9 @@ func (h *RestaurantHandler) DeleteFloor(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardFloor(c, id, true); !ok {
+		return gerr
 	}
 	if err := svc(c).DeleteFloor(id); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -215,6 +222,9 @@ func (h *RestaurantHandler) UpdateTable(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardTable(c, id, true); !ok {
+		return gerr
+	}
 	var body struct {
 		FloorID  *uint  `json:"floor_id"`
 		Name     string `json:"name"`
@@ -239,6 +249,9 @@ func (h *RestaurantHandler) DeleteTable(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardTable(c, id, true); !ok {
+		return gerr
 	}
 	if err := svc(c).DeleteTable(id); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -298,6 +311,9 @@ func (h *RestaurantHandler) GetSession(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardSession(c, id, false); !ok {
+		return gerr
+	}
 	detail, err := svc(c).GetSessionDetail(id)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
@@ -310,6 +326,9 @@ func (h *RestaurantHandler) GetTableSession(c fiber.Ctx) error {
 	tableID, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardTable(c, tableID, false); !ok {
+		return gerr
 	}
 	sess, err := svc(c).GetActiveSessionByTable(tableID)
 	if err != nil {
@@ -327,6 +346,9 @@ func (h *RestaurantHandler) CancelSession(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardSession(c, id, true); !ok {
+		return gerr
 	}
 	var body struct {
 		Reason string `json:"reason"`
@@ -346,6 +368,9 @@ func (h *RestaurantHandler) CancelAllComandas(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardSession(c, id, true); !ok {
+		return gerr
 	}
 	var body struct {
 		Reason  string `json:"reason"`
@@ -371,6 +396,9 @@ func (h *RestaurantHandler) AddOrder(c fiber.Ctx) error {
 	sessionID, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardSession(c, sessionID, true); !ok {
+		return gerr
 	}
 	var body struct {
 		StaffID *uint                  `json:"staff_id"`
@@ -398,6 +426,9 @@ func (h *RestaurantHandler) UpdateComandaNotes(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardComanda(c, id, true); !ok {
+		return gerr
+	}
 	var body struct {
 		Notes string `json:"notes"`
 	}
@@ -416,6 +447,9 @@ func (h *RestaurantHandler) UpdateComandaStatus(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardComanda(c, id, true); !ok {
+		return gerr
+	}
 	var body struct {
 		Status string `json:"status"`
 	}
@@ -433,6 +467,9 @@ func (h *RestaurantHandler) CancelComanda(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardComanda(c, id, true); !ok {
+		return gerr
 	}
 	var body struct {
 		Reason string `json:"reason"`
@@ -456,6 +493,9 @@ func (h *RestaurantHandler) PrintComanda(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardComanda(c, id, true); !ok {
+		return gerr
+	}
 	if err := svc(c).MarkComandaPrinted(id, uid(c)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -467,6 +507,9 @@ func (h *RestaurantHandler) MarkTableOrderPrinted(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardTableOrder(c, id, true); !ok {
+		return gerr
 	}
 	if err := svc(c).MarkTableOrderPrinted(id, uid(c)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -521,6 +564,9 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 	sessionID, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardSession(c, sessionID, true); !ok {
+		return gerr
 	}
 	var body struct {
 		SeriesID       uint                   `json:"series_id"`
@@ -674,6 +720,11 @@ func (h *RestaurantHandler) POSCheckout(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchRequired})
 	}
+	if body.SessionID != nil && *body.SessionID != 0 {
+		if ok, gerr := guardSession(c, *body.SessionID, true); !ok {
+			return gerr
+		}
+	}
 
 	issueDate := saas.NowLima()
 	if body.IssueDate != "" {
@@ -731,6 +782,9 @@ func (h *RestaurantHandler) CloseSession(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardSession(c, sessionID, true); !ok {
+		return gerr
+	}
 	if err := svc(c).CloseSessionOnly(sessionID); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -756,6 +810,9 @@ func (h *RestaurantHandler) RegisterPayments(c fiber.Ctx) error {
 	if len(body.Payments) == 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "se requiere al menos un pago"})
 	}
+	if err := branchguard.SaleWritable(c, db(c), saleID); err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "venta no encontrada"})
+	}
 	if err := svc(c).RegisterPayments(saleID, body.Payments, uid(c)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -768,6 +825,9 @@ func (h *RestaurantHandler) GetSalePayments(c fiber.Ctx) error {
 	saleID, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if err := branchguard.SaleReadable(c, db(c), saleID); err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "venta no encontrada"})
 	}
 	payments, err := svc(c).GetSalePayments(saleID)
 	if err != nil {
@@ -796,6 +856,9 @@ func (h *RestaurantHandler) UpdateSession(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardSession(c, id, true); !ok {
+		return gerr
+	}
 	var body service.UpdateSessionInput
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
@@ -811,6 +874,9 @@ func (h *RestaurantHandler) MoveSessionTable(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardSession(c, id, true); !ok {
+		return gerr
 	}
 	var body struct {
 		TableID uint `json:"table_id"`
@@ -837,6 +903,9 @@ func (h *RestaurantHandler) UpdateOrderStatus(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if ok, gerr := guardSession(c, id, true); !ok {
+		return gerr
+	}
 	var body struct {
 		OrderStatus string `json:"order_status"`
 	}
@@ -854,6 +923,9 @@ func (h *RestaurantHandler) GetPrecuenta(c fiber.Ctx) error {
 	id, err := parseID(c)
 	if err != nil {
 		return err
+	}
+	if ok, gerr := guardSession(c, id, false); !ok {
+		return gerr
 	}
 	data, err := svc(c).GetPrecuenta(id)
 	if err != nil {

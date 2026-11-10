@@ -18,9 +18,12 @@ import (
 func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 	tdb := db(c)
 	contactID, _ := strconv.ParseUint(c.Query("contact_id"), 10, 32)
+	// La sucursal del cliente se valida: una no accesible cae a la activa; sin sucursal resuelta no lista nada.
+	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
 	params := service.PurchaseListParams{
 		Query:     c.Query("q"),
 		ContactID: uint(contactID),
+		BranchID:  branch.ResolveReadBranchFilter(c, uint(reqBranch)),
 	}
 	// El rango se interpreta en hora de Perú y cubre el día completo: la fecha de emisión
 	// se guarda al mediodía, así que un `to` en 00:00 dejaría fuera las compras de ese día.
@@ -119,6 +122,9 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 	svc := service.NewPurchaseService(tdb)
 	p, err := svc.GetByID(uint(id))
 	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Compra no encontrada"})
+	}
+	if !branch.RecordReadable(c, p.BranchID) {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Compra no encontrada"})
 	}
 	items, _ := svc.GetItems(uint(id))
@@ -294,6 +300,17 @@ func (h *PurchaseHandler) VoidAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	tdb := db(c)
+	// Anular revierte stock/caja/banco: solo compras de la sucursal activa. Otra sucursal no visible -> 404;
+	// visible (admin viendo todas) pero no activa -> 403.
+	p, gerr := service.NewPurchaseService(tdb).GetByID(uint(id))
+	if gerr != nil || !branch.RecordReadable(c, p.BranchID) {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Compra no encontrada"})
+	}
+	if !branch.RecordWritable(c, p.BranchID) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "Solo puede anular compras de su sucursal activa; cambie de sucursal", "code": branch.CodeBranchForbidden,
+		})
+	}
 	err = service.NewPurchaseService(tdb).Void(uint(id), userID(c))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})

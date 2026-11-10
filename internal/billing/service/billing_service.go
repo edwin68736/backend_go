@@ -130,14 +130,23 @@ func (s *BillingService) buildInvoiceAddressFromUbigeo(ubigeo, direccion string)
 // GetNotificationCounts devuelve cantidades de comprobantes electrónicos por estado (solo 01, 03, 07, 08).
 // Para notificaciones en el header del tenant.
 func (s *BillingService) GetNotificationCounts() (pending, errorCount, rejected int64, err error) {
+	return s.GetNotificationCountsForBranch(0)
+}
+
+// GetNotificationCountsForBranch igual que GetNotificationCounts pero limitado a una sucursal
+// (branchID > 0). 0 = todo el tenant (solo para quien ve todas las sucursales o procesos internos).
+func (s *BillingService) GetNotificationCountsForBranch(branchID uint) (pending, errorCount, rejected int64, err error) {
 	electronicCodes := []string{"01", "03", "07", "08", "09", "31"}
 	for _, status := range []string{"pending", "error", "rejected"} {
 		var n int64
-		e := s.db.Model(&database.TenantSale{}).
+		q := s.db.Model(&database.TenantSale{}).
 			Joins("JOIN tenant_document_series ON tenant_document_series.id = tenant_sales.series_id").
 			Where("tenant_document_series.sunat_code IN ?", electronicCodes).
-			Where("tenant_sales.billing_status = ?", status).
-			Count(&n).Error
+			Where("tenant_sales.billing_status = ?", status)
+		if branchID > 0 {
+			q = q.Where("tenant_sales.branch_id = ?", branchID)
+		}
+		e := q.Count(&n).Error
 		if e != nil {
 			return 0, 0, 0, e
 		}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tukifac/internal/company/service"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/branchlogo"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
@@ -349,6 +350,9 @@ func (h *CompanyHandler) CreateBranchAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
+	if ok, gerr := guardAdminOnly(c); !ok {
+		return gerr
+	}
 	if middleware.EnforceCreateQuota(c, db(c), saas.QuotaBranches) {
 		return nil
 	}
@@ -375,6 +379,16 @@ func (h *CompanyHandler) UpdateBranchAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
+	if ok, gerr := guardConfigBranch(c, uint(id), "sucursal no encontrada"); !ok {
+		return gerr
+	}
+	// Marcar otra sucursal como principal cambia al tenant entero: solo quien administra todas.
+	if body.IsMain && !branch.IsBranchAdmin(c) {
+		var cur database.TenantBranch
+		if db(c).First(&cur, uint(id)).Error == nil && !cur.IsMain {
+			return guardForbidden(c, "Solo quien administra todas las sucursales puede cambiar la sucursal principal")
+		}
+	}
 	if err := service.NewCompanyService(db(c)).UpdateBranch(uint(id), body.Name, body.Address, body.Phone, body.FiscalDomicileCode, body.IsMain); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -386,6 +400,9 @@ func (h *CompanyHandler) DeleteBranchAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if ok, gerr := guardAdminOnly(c); !ok {
+		return gerr
 	}
 	if err := service.NewCompanyService(db(c)).DeleteBranch(uint(id)); err != nil {
 		var blocked *service.BranchDeleteBlockedError
@@ -405,6 +422,9 @@ func (h *CompanyHandler) UploadBranchLogoAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if ok, gerr := guardConfigBranch(c, uint(id), "sucursal no encontrada"); !ok {
+		return gerr
 	}
 	ruc, err := tenantstorage.ResolveTenantRUC(c)
 	if err != nil {
@@ -465,6 +485,9 @@ func (h *CompanyHandler) DeleteBranchLogoAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	if ok, gerr := guardConfigBranch(c, uint(id), "sucursal no encontrada"); !ok {
+		return gerr
+	}
 	svc := service.NewCompanyService(db(c))
 	if err := svc.UpdateBranchLogoURL(uint(id), ""); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -507,7 +530,13 @@ func queryFlag(c fiber.Ctx, name string) bool {
 func (h *CompanyHandler) ListSeriesAPI(c fiber.Ctx) error {
 	svc := service.NewCompanyService(db(c))
 	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
-	series, err := svc.ListSeriesEnriched(uint(branchID))
+	// branch_id debe ser accesible. Sin branch_id: quien ve todo recibe todas las series (pantalla de configuración);
+	// el resto, solo las de su sucursal activa (antes cualquiera listaba las series de todas).
+	listBranch := uint(branchID)
+	if listBranch > 0 || !branch.IsBranchAdmin(c) {
+		listBranch = branch.ResolveReadBranchFilter(c, uint(branchID))
+	}
+	series, err := svc.ListSeriesEnriched(listBranch)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -563,6 +592,14 @@ func (h *CompanyHandler) CreateSeriesAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
+	if body.BranchID > 0 {
+		if ok, gerr := guardConfigBranch(c, body.BranchID, "sucursal no encontrada"); !ok {
+			return gerr
+		}
+		if verr := db(c).Select("id").First(&database.TenantBranch{}, body.BranchID).Error; verr != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "la sucursal indicada no existe"})
+		}
+	}
 	if err := service.NewCompanyService(db(c)).CreateSeries(body.BranchID, body.DocType, body.Series, body.Correlative, body.IsDefault); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -574,6 +611,9 @@ func (h *CompanyHandler) UpdateSeriesAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if ok, gerr := guardSeriesByID(c, uint(id)); !ok {
+		return gerr
 	}
 	var body struct {
 		Series      string `json:"series"`
@@ -602,6 +642,9 @@ func (h *CompanyHandler) SetDefaultSeriesAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	if ok, gerr := guardSeriesByID(c, uint(id)); !ok {
+		return gerr
+	}
 	if err := service.NewCompanyService(db(c)).SetDefaultSeries(uint(id)); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -613,6 +656,9 @@ func (h *CompanyHandler) DeleteSeriesAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if ok, gerr := guardSeriesByID(c, uint(id)); !ok {
+		return gerr
 	}
 	if err := service.NewCompanyService(db(c)).DeleteSeries(uint(id)); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})

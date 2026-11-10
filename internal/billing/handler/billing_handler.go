@@ -10,6 +10,8 @@ import (
 
 	"tukifac/config"
 	"tukifac/internal/billing/service"
+	"tukifac/internal/sales/branchguard"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/saas/docusage"
@@ -48,6 +50,22 @@ func billingSvc(c fiber.Ctx) *service.BillingService {
 	return svc
 }
 
+// notFound 404 uniforme de las guardas de sucursal: no revela si el ID existe en otra sucursal.
+func notFound(c fiber.Ctx, msg string) error {
+	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": msg})
+}
+
+// listScope sucursal de un listado fiscal: branch_id pedido (si el usuario accede a ella), "all"
+// solo para quien ve todas las sucursales, y en otro caso la activa. 0 = todas.
+func listScope(c fiber.Ctx) uint {
+	raw := strings.TrimSpace(c.Query("branch_id"))
+	if strings.EqualFold(raw, "all") {
+		return branch.ResolveReportBranchFilter(c, 0, true)
+	}
+	req, _ := strconv.ParseUint(raw, 10, 32)
+	return branch.ResolveReportBranchFilter(c, uint(req), true)
+}
+
 func (h *BillingHandler) ListPage(c fiber.Ctx) error {
 	svc := billingSvc(c)
 	invoices, _ := svc.ListInvoices(service.InvoiceListParams{
@@ -68,6 +86,10 @@ func (h *BillingHandler) SendToSUNAT(c fiber.Ctx) error {
 	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+
+	if err := branchguard.SaleWritable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "venta no encontrada")
 	}
 
 	tenant, _ := c.Locals("tenant").(*database.Tenant)
@@ -99,6 +121,9 @@ func (h *BillingHandler) GetBillingStatus(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	if err := branchguard.SaleReadable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "venta no encontrada")
+	}
 	svc := billingSvc(c)
 	st, err := svc.GetBillingStatus(uint(saleID))
 	if err != nil {
@@ -113,6 +138,9 @@ func (h *BillingHandler) GetBillingJobStatus(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	if err := branchguard.SaleReadable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "comprobante no encontrado")
+	}
 	svc := billingSvc(c)
 	inv, err := svc.GetBillingJobStatus(uint(saleID))
 	if err != nil {
@@ -126,6 +154,9 @@ func (h *BillingHandler) ResendToSUNAT(c fiber.Ctx) error {
 	saleID, err := strconv.ParseUint(c.Params("saleId"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := branchguard.SaleWritable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "venta no encontrada")
 	}
 	svc := billingSvc(c)
 	result, err := svc.ManualResendToSUNAT(uint(saleID))
@@ -224,6 +255,9 @@ func (h *BillingHandler) VoidWithCreditNoteAPI(c fiber.Ctx) error {
 		IssueDate string `json:"issue_date"`
 	}
 	_ = c.Bind().Body(&body)
+	if err := branchguard.SaleWritable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "venta no encontrada")
+	}
 	svc := billingSvc(c)
 	ncSale, ncInvoice, err := svc.CreateCreditNoteAndVoidSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode), body.Items, strings.TrimSpace(body.IssueDate))
 	if err != nil {
@@ -261,6 +295,9 @@ func (h *BillingHandler) CreateDebitNoteAPI(c fiber.Ctx) error {
 		ReasonCode string `json:"reason_code"`
 	}
 	_ = c.Bind().Body(&body)
+	if err := branchguard.SaleWritable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "venta no encontrada")
+	}
 	svc := billingSvc(c)
 	ndSale, ndInvoice, err := svc.CreateDebitNoteForSale(uint(saleID), strings.TrimSpace(body.Reason), strings.TrimSpace(body.ReasonCode))
 	if err != nil {
@@ -286,6 +323,12 @@ func (h *BillingHandler) CreateIndependentNoteAPI(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
 	}
+	// branch_id del body: solo una sucursal a la que el usuario accede (0 = la activa).
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	body.BranchID = branchID
 	svc := billingSvc(c)
 	noteSale, invoice, err := svc.CreateIndependentNote(body)
 	if err != nil {
@@ -310,6 +353,9 @@ func (h *BillingHandler) GetInvoiceAPI(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
 
+	if err := branchguard.SaleReadable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "Sin registro de facturación")
+	}
 	svc := billingSvc(c)
 	invoice, err := svc.GetInvoice(uint(saleID))
 	if err != nil {
@@ -330,6 +376,9 @@ func (h *BillingHandler) GetInvoiceDocumentAPI(c fiber.Ctx) error {
 	validKind := kind == "xml" || kind == "xml-generated" || kind == "cdr" || kind == "pdf"
 	if !validKind {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Tipo de documento no válido. Use: xml, xml-generated, cdr o pdf"})
+	}
+	if err := branchguard.SaleReadable(c, db(c), uint(saleID)); err != nil {
+		return notFound(c, "Documento no disponible")
 	}
 	svc := billingSvc(c)
 
@@ -410,6 +459,11 @@ func (h *BillingHandler) GetInvoiceDocumentAPI(c fiber.Ctx) error {
 
 // ListSummariesAPI GET /billing/summaries
 func (h *BillingHandler) ListSummariesAPI(c fiber.Ctx) error {
+	// El resumen diario es un documento del RUC completo (incluye las boletas de todas las
+	// sucursales) y no tiene sucursal propia: solo lo ven/emiten quienes ven todas las sucursales.
+	if !branchguard.CoversAllBranches(c, db(c)) {
+		return c.JSON(fiber.Map{"summaries": []any{}})
+	}
 	svc := billingSvc(c)
 	list, err := svc.ListSummaries()
 	if err != nil {
@@ -430,6 +484,12 @@ func (h *BillingHandler) CreateSummaryAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "fec_resumen inválido (use YYYY-MM-DD)"})
 	}
+	if !branchguard.CoversAllBranches(c, db(c)) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "el resumen diario incluye todas las sucursales: solo lo puede emitir quien accede a todas",
+			"code":  branch.CodeBranchForbidden,
+		})
+	}
 	svc := billingSvc(c)
 	rec, err := svc.CreateSummary(fecResumen)
 	if err != nil {
@@ -443,6 +503,9 @@ func (h *BillingHandler) GetSummaryStatusAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if !branchguard.CoversAllBranches(c, db(c)) {
+		return notFound(c, "no encontrado")
 	}
 	svc := billingSvc(c)
 	rec, err := svc.GetSummaryStatus(uint(id))
@@ -459,6 +522,17 @@ func (h *BillingHandler) ListVoidedAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	// Sin branch_id propio: la sucursal de una baja es la de los comprobantes que da de baja.
+	scope := listScope(c)
+	if scope != 0 {
+		kept := make([]database.TenantSunatVoided, 0, len(list))
+		for _, v := range list {
+			if branchguard.LinesInScope(db(c), v.PayloadJSON, scope) {
+				kept = append(kept, v)
+			}
+		}
+		list = kept
+	}
 	return c.JSON(fiber.Map{"voided": list})
 }
 
@@ -469,6 +543,19 @@ func (h *BillingHandler) CreateVoidedAPI(c fiber.Ctx) error {
 	}
 	if err := c.Bind().JSON(&body); err != nil || len(body.Details) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "details requerido (array con al menos un comprobante)"})
+	}
+	// Cada comprobante a dar de baja debe ser de la sucursal activa (se resuelve por sale_id o por
+	// serie/correlativo, igual que el servicio).
+	for _, d := range body.Details {
+		if d.SaleID > 0 {
+			if err := branchguard.SaleWritable(c, db(c), d.SaleID); err != nil {
+				return notFound(c, "comprobante no encontrado")
+			}
+			continue
+		}
+		if !branchguard.LineWritable(c, db(c), d.TipoDoc, d.Serie, d.Correlativo) {
+			return notFound(c, "comprobante no encontrado")
+		}
 	}
 	svc := billingSvc(c)
 	rec, err := svc.CreateVoided(body.Details)
@@ -484,6 +571,10 @@ func (h *BillingHandler) GetVoidedStatusAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	var vrec database.TenantSunatVoided
+	if db(c).First(&vrec, uint(id)).Error != nil || !branchguard.LinesReadable(c, db(c), vrec.PayloadJSON) {
+		return notFound(c, "no encontrado")
+	}
 	svc := billingSvc(c)
 	rec, err := svc.GetVoidedStatus(uint(id))
 	if err != nil {
@@ -495,7 +586,8 @@ func (h *BillingHandler) GetVoidedStatusAPI(c fiber.Ctx) error {
 // NotificationCountsAPI GET /billing/notification-counts — cantidades de comprobantes electrónicos por estado (para campanita del header).
 func (h *BillingHandler) NotificationCountsAPI(c fiber.Ctx) error {
 	svc := billingSvc(c)
-	pending, errorCount, rejected, err := svc.GetNotificationCounts()
+	// La campanita muestra solo la sucursal activa; quien ve todas las sucursales, el total.
+	pending, errorCount, rejected, err := svc.GetNotificationCountsForBranch(branch.ResolveReportBranchFilter(c, 0, true))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -513,6 +605,10 @@ func (h *BillingHandler) ConsultInvoiceStatusAPI(c fiber.Ctx) error {
 	numero := c.Query("numero")
 	if tipo == "" || serie == "" || numero == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "tipo, serie y numero son requeridos"})
+	}
+	// Si el comprobante existe localmente, debe ser legible desde la sucursal del usuario.
+	if b, found := branchguard.DocBranch(db(c), tipo, serie, numero); found && !branch.RecordReadable(c, b) {
+		return notFound(c, "comprobante no encontrado")
 	}
 	svc := billingSvc(c)
 	result, err := svc.ConsultInvoiceStatus(tipo, serie, numero)
@@ -534,6 +630,16 @@ func (h *BillingHandler) ListDespatchesAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	// Antes devolvía las guías de todas las sucursales.
+	if scope := listScope(c); scope != 0 {
+		kept := make([]service.DespatchListItem, 0, len(list))
+		for _, d := range list {
+			if branchguard.InScope(scope, d.BranchID) {
+				kept = append(kept, d)
+			}
+		}
+		list = kept
+	}
 	return c.JSON(fiber.Map{"despatches": list})
 }
 
@@ -541,6 +647,18 @@ func (h *BillingHandler) CreateDespatchAPI(c fiber.Ctx) error {
 	var input service.CreateDespatchInput
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
+	}
+	// branch_id y serie vienen del body: la sucursal debe ser accesible (la serie la valida el
+	// servicio contra esa sucursal) y la venta origen, de esa misma sucursal y de la activa.
+	branchID, err := branch.ResolveWriteBranchID(c, input.BranchID)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	input.BranchID = branchID
+	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
+		if err := branchguard.SaleBranchMatches(c, db(c), *input.SourceSaleID, branchID); err != nil {
+			return notFound(c, "venta origen no encontrada")
+		}
 	}
 	svc := billingSvc(c)
 	rec, err := svc.CreateAndSendDespatch(input)
@@ -552,10 +670,14 @@ func (h *BillingHandler) CreateDespatchAPI(c fiber.Ctx) error {
 
 func (h *BillingHandler) LastDespatchTransportAPI(c fiber.Ctx) error {
 	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
-	return c.JSON(billingSvc(c).GetLastDespatchTransport(uint(branchID), strings.TrimSpace(c.Query("tipo"))))
+	// Nunca "todas": 0 = sucursal activa; otra solo si el usuario accede a ella.
+	return c.JSON(billingSvc(c).GetLastDespatchTransport(branch.ResolveReadBranchFilter(c, uint(branchID)), strings.TrimSpace(c.Query("tipo"))))
 }
 
 func (h *BillingHandler) LookupDespatchAPI(c fiber.Ctx) error {
+	if !branchguard.DespatchNumberReadable(c, db(c), c.Query("number")) {
+		return notFound(c, "guía no encontrada")
+	}
 	res, err := billingSvc(c).LookupOwnDespatch(c.Query("number"))
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
@@ -567,6 +689,9 @@ func (h *BillingHandler) GetDespatchStatusAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := branchguard.DespatchReadable(c, db(c), uint(id)); err != nil {
+		return notFound(c, "no encontrado")
 	}
 	svc := billingSvc(c)
 	rec, err := svc.GetDespatchStatus(uint(id))
@@ -620,6 +745,16 @@ func (h *BillingHandler) ListRetentionsAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	// Sin branch_id propio: la sucursal sale de la compra origen o de la serie.
+	if scope := listScope(c); scope != 0 {
+		kept := make([]service.RetentionListItem, 0, len(list))
+		for _, r := range list {
+			if branchguard.InScope(scope, branchguard.RetentionBranch(db(c), r.TenantRetention)) {
+				kept = append(kept, r)
+			}
+		}
+		list = kept
+	}
 	return c.JSON(fiber.Map{"retentions": list})
 }
 
@@ -627,6 +762,16 @@ func (h *BillingHandler) CreateRetentionAPI(c fiber.Ctx) error {
 	var input service.CreateRetentionInput
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
+	}
+	branchID, err := branch.ResolveWriteBranchID(c, input.BranchID)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	input.BranchID = branchID
+	if input.SourcePurchaseID != nil && *input.SourcePurchaseID > 0 {
+		if err := branchguard.PurchaseBranchMatches(c, db(c), *input.SourcePurchaseID, branchID); err != nil {
+			return notFound(c, "compra origen no encontrada")
+		}
 	}
 	svc := billingSvc(c)
 	rec, err := svc.CreateAndSendRetention(input)
@@ -640,6 +785,9 @@ func (h *BillingHandler) GetRetentionStatusAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := branchguard.RetentionReadable(c, db(c), uint(id)); err != nil {
+		return notFound(c, "no encontrado")
 	}
 	svc := billingSvc(c)
 	rec, err := svc.GetRetentionStatus(uint(id))
@@ -657,6 +805,15 @@ func (h *BillingHandler) ListPerceptionsAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	if scope := listScope(c); scope != 0 {
+		kept := make([]service.PerceptionListItem, 0, len(list))
+		for _, p := range list {
+			if branchguard.InScope(scope, branchguard.PerceptionBranch(db(c), p.TenantPerception)) {
+				kept = append(kept, p)
+			}
+		}
+		list = kept
+	}
 	return c.JSON(fiber.Map{"perceptions": list})
 }
 
@@ -664,6 +821,16 @@ func (h *BillingHandler) CreatePerceptionAPI(c fiber.Ctx) error {
 	var input service.CreatePerceptionInput
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payload inválido"})
+	}
+	branchID, err := branch.ResolveWriteBranchID(c, input.BranchID)
+	if err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	input.BranchID = branchID
+	if input.SourceSaleID != nil && *input.SourceSaleID > 0 {
+		if err := branchguard.SaleBranchMatches(c, db(c), *input.SourceSaleID, branchID); err != nil {
+			return notFound(c, "venta origen no encontrada")
+		}
 	}
 	svc := billingSvc(c)
 	rec, err := svc.CreateAndSendPerception(input)
@@ -677,6 +844,9 @@ func (h *BillingHandler) GetPerceptionStatusAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := branchguard.PerceptionReadable(c, db(c), uint(id)); err != nil {
+		return notFound(c, "no encontrado")
 	}
 	svc := billingSvc(c)
 	rec, err := svc.GetPerceptionStatus(uint(id))
@@ -694,6 +864,15 @@ func (h *BillingHandler) ListReversionsAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	if scope := listScope(c); scope != 0 {
+		kept := make([]service.ReversionListItem, 0, len(list))
+		for _, r := range list {
+			if branchguard.LinesInScope(db(c), r.PayloadJSON, scope) {
+				kept = append(kept, r)
+			}
+		}
+		list = kept
+	}
 	return c.JSON(fiber.Map{"reversions": list})
 }
 
@@ -703,6 +882,11 @@ func (h *BillingHandler) CreateReversionAPI(c fiber.Ctx) error {
 	}
 	if err := c.Bind().JSON(&body); err != nil || len(body.Details) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "details requerido (array con al menos un comprobante)"})
+	}
+	for _, d := range body.Details {
+		if !branchguard.LineWritable(c, db(c), d.TipoDoc, d.Serie, d.Correlativo) {
+			return notFound(c, "comprobante no encontrado")
+		}
 	}
 	svc := billingSvc(c)
 	rec, err := svc.CreateReversion(body.Details)
@@ -716,6 +900,10 @@ func (h *BillingHandler) GetReversionStatusAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var rrec database.TenantSunatReversion
+	if db(c).First(&rrec, uint(id)).Error != nil || !branchguard.LinesReadable(c, db(c), rrec.PayloadJSON) {
+		return notFound(c, "no encontrado")
 	}
 	svc := billingSvc(c)
 	rec, err := svc.GetReversionStatus(uint(id))

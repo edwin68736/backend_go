@@ -181,6 +181,17 @@ func (h *InventoryHandler) TransferAPI(c fiber.Ctx) error {
 	if len(body.Items) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "debe haber al menos un ítem"})
 	}
+	// Origen: accesible y (si no ve todo) la sucursal activa. Destino: existente y activo. Las dos validaciones
+	// se hacen en el servidor; antes cualquier usuario con inventory.transfer movía stock entre sucursales ajenas.
+	if !canOriginateTransferFrom(c, body.FromBranchID) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "No puede transferir stock desde una sucursal distinta de la activa",
+			"code":  branch.CodeBranchForbidden,
+		})
+	}
+	if err := destinationBranchValid(db(c), body.ToBranchID); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
 	lines := make([]service.TransferLineInput, 0, len(body.Items))
 	for _, it := range body.Items {
 		if it.ProductID == 0 || it.Quantity <= 0 {
@@ -213,7 +224,8 @@ func (h *InventoryHandler) TransfersListAPI(c fiber.Ctx) error {
 			limit = n
 		}
 	}
-	transfers, logs, err := svc.ListTransfersByHeader(limit)
+	// Solo transferencias cuyo origen o destino es una sucursal accesible (quien ve todo, todas).
+	transfers, logs, err := svc.ListTransfersByHeaderForBranches(limit, visibleBranchIDs(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -383,6 +395,9 @@ func (h *InventoryHandler) TransferConfirmAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	if ok, gerr := guardTransfer(c, uint(id), "confirm"); !ok {
+		return gerr
+	}
 	svc := service.NewInventoryService(db(c))
 	if err := svc.ConfirmTransfer(uint(id), userID(c)); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -395,6 +410,9 @@ func (h *InventoryHandler) TransferCancelAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if ok, gerr := guardTransfer(c, uint(id), "cancel"); !ok {
+		return gerr
 	}
 	svc := service.NewInventoryService(db(c))
 	if err := svc.CancelTransfer(uint(id), userID(c)); err != nil {
@@ -409,6 +427,9 @@ func (h *InventoryHandler) TransferReverseAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
 	}
+	if ok, gerr := guardTransferLogReverse(c, uint(id)); !ok {
+		return gerr
+	}
 	svc := service.NewInventoryService(db(c))
 	if err := svc.ReverseTransfer(uint(id), userID(c)); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -419,7 +440,19 @@ func (h *InventoryHandler) TransferReverseAPI(c fiber.Ctx) error {
 // StockAPI devuelve stock por producto (opcionalmente por sucursal).
 func (h *InventoryHandler) StockAPI(c fiber.Ctx) error {
 	productID, _ := strconv.ParseUint(c.Params("productId"), 10, 32)
-	branchID, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	reqBranch, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	// branch_id explícito: debe ser accesible (si no, cae a la sucursal activa). Sin branch_id: quien ve todo recibe el
+	// desglose de todas; el resto, solo el de sus sucursales accesibles (nunca el de sucursales ajenas).
+	var branchID uint
+	var visible []uint
+	if reqBranch > 0 {
+		branchID = branch.ResolveReadBranchFilter(c, uint(reqBranch))
+	} else {
+		visible = visibleBranchIDs(c)
+		if visible != nil && len(visible) == 1 {
+			branchID, visible = visible[0], nil
+		}
+	}
 
 	var product database.TenantProduct
 	if err := db(c).Select("has_variants").First(&product, productID).Error; err == nil && product.HasVariants {
@@ -428,7 +461,16 @@ func (h *InventoryHandler) StockAPI(c fiber.Ctx) error {
 		// por sucursal, sin forma de saber cuánto había de cada una. Ver
 		// InventoryService.GetPresentationStockByProduct para el desglose real.
 		svc := service.NewInventoryService(db(c))
-		rows := svc.GetPresentationStockByProduct(uint(productID), uint(branchID))
+		rows := svc.GetPresentationStockByProduct(uint(productID), branchID)
+		if visible != nil {
+			filtered := make([]service.PresentationStockRow, 0, len(rows))
+			for _, r := range rows {
+				if containsUint(visible, r.BranchID) {
+					filtered = append(filtered, r)
+				}
+			}
+			rows = filtered
+		}
 		return c.JSON(fiber.Map{"data": rows})
 	}
 
@@ -436,6 +478,8 @@ func (h *InventoryHandler) StockAPI(c fiber.Ctx) error {
 	q := db(c).Where("product_id = ?", productID)
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)
+	} else if visible != nil {
+		q = q.Where("branch_id IN ?", visible)
 	}
 	q.Find(&stocks)
 	return c.JSON(fiber.Map{"data": stocks})
@@ -460,10 +504,9 @@ func (h *InventoryHandler) StockSummaryAPI(c fiber.Ctx) error {
 	if len(ids) == 0 {
 		return c.JSON(fiber.Map{"data": map[string]float64{}})
 	}
-	var branchID uint
-	if reqB, err := strconv.ParseUint(c.Query("branch_id"), 10, 32); err == nil && reqB > 0 {
-		branchID = branch.ResolveReadBranchFilter(c, uint(reqB))
-	}
+	// Nunca "todas por omisión": sin branch_id (o con uno inaccesible) se usa la sucursal activa.
+	reqB, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	branchID := branch.ResolveReadBranchFilter(c, uint(reqB))
 	svc := service.NewInventoryService(db(c))
 	totals, err := svc.StockTotalsByProductIDs(ids, branchID)
 	if err != nil {

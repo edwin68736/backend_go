@@ -185,3 +185,13 @@ func queryLowStock(tdb *gorm.DB, branchID uint, limit int) []lowStockRow {
 	q.Order("ps.quantity ASC").Limit(limit).Scan(&rows)
 	return rows
 }
+
+// purchaseBranchScope filtra compras por sucursal (0 = sin filtro; "todas" solo para quien ve todo).
+func purchaseBranchScope(branchID uint) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if branchID > 0 {
+			return db.Where("branch_id = ?", branchID)
+		}
+		return db
+	}
+}

@@ -12,8 +12,8 @@ import (
 // Nota: ActiveBranchID usa fiber.Ctx en helpers HTTP.
 
 const (
-	CodeSessionUpdated = "SESSION_UPDATED"
-	CodeBranchRequired = "BRANCH_REQUIRED"
+	CodeSessionUpdated  = "SESSION_UPDATED"
+	CodeBranchRequired  = "BRANCH_REQUIRED"
 	CodeBranchForbidden = "BRANCH_FORBIDDEN"
 )
 
@@ -82,13 +82,56 @@ func ActiveBranchID(c fiber.Ctx) uint {
 	return v
 }
 
-// IsBranchAdmin desde Locals.
+// IsBranchAdmin: el usuario puede VER todas las sucursales del tenant (hoy: rol Administrador; la Fase 3B lo
+// reemplaza por el permiso branches.view_all). Tener varias sucursales asignadas NO lo activa.
 func IsBranchAdmin(c fiber.Ctx) bool {
 	v, _ := c.Locals("is_branch_admin").(bool)
 	return v
 }
 
-// ResolveWriteBranchID usa sucursal activa; admin puede enviar otra solo si can switch.
+// AllowedBranchIDs sucursales que el usuario tiene asignadas (más la activa), según el middleware.
+func AllowedBranchIDs(c fiber.Ctx) []uint {
+	v, _ := c.Locals("allowed_branch_ids").([]uint)
+	return v
+}
+
+// NoBranchFilter es un id que no existe: un filtro "branch_id = NoBranchFilter" no devuelve nada. Se usa para que
+// una consulta sin sucursal resuelta falle cerrada en lugar de mostrar todas.
+const NoBranchFilter uint = 1<<32 - 1
+
+// CanAccessBranch indica si el usuario puede LEER datos de la sucursal id (activa, asignada, o todas si ve todo).
+func CanAccessBranch(c fiber.Ctx, id uint) bool {
+	if id == 0 {
+		return false
+	}
+	if id == ActiveBranchID(c) || IsBranchAdmin(c) {
+		return true
+	}
+	for _, a := range AllowedBranchIDs(c) {
+		if a == id {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordReadable: puede leer un registro cuyo branch_id es recordBranchID. Un registro sin sucursal (0, datos
+// previos al multi-sucursal) se considera del tenant y es legible.
+func RecordReadable(c fiber.Ctx, recordBranchID uint) bool {
+	return recordBranchID == 0 || CanAccessBranch(c, recordBranchID)
+}
+
+// RecordWritable: solo se puede modificar/anular/emitir un registro de la sucursal ACTIVA (o sin sucursal).
+// Para operar en otra, el usuario debe cambiar de sucursal; ALL_BRANCHES nunca escribe.
+func RecordWritable(c fiber.Ctx, recordBranchID uint) bool {
+	if recordBranchID == 0 {
+		return true
+	}
+	active := ActiveBranchID(c)
+	return active != 0 && recordBranchID == active
+}
+
+// ResolveWriteBranchID usa la sucursal activa; se acepta otra solo si el usuario puede acceder a ella.
 func ResolveWriteBranchID(c fiber.Ctx, requested uint) (uint, error) {
 	active := ActiveBranchID(c)
 	if active == 0 {
@@ -97,41 +140,41 @@ func ResolveWriteBranchID(c fiber.Ctx, requested uint) (uint, error) {
 	if requested == 0 || requested == active {
 		return active, nil
 	}
-	if IsBranchAdmin(c) {
+	if CanAccessBranch(c, requested) {
 		return requested, nil
 	}
 	return 0, errors.New("no puede operar en otra sucursal")
 }
 
-// ResolveReadBranchFilter para listados: 0 = activa; admin puede filtrar otra sucursal.
+// ResolveReadBranchFilter para listados: 0 = activa; se acepta otra solo si el usuario puede acceder a ella.
+// Nunca devuelve 0 ("todas"): sin sucursal resuelta devuelve NoBranchFilter (fail-closed).
 func ResolveReadBranchFilter(c fiber.Ctx, requested uint) uint {
 	active := ActiveBranchID(c)
-	if requested == 0 {
-		return active
-	}
-	if IsBranchAdmin(c) {
+	if requested != 0 && CanAccessBranch(c, requested) {
 		return requested
+	}
+	if active == 0 {
+		return NoBranchFilter
 	}
 	return active
 }
 
 // ResolveReportBranchFilter sucursal para dashboards y reportes de ventas, donde "Todas las
-// sucursales" es una opción real: el administrador de sucursales que no elige ninguna (requested
-// = 0) y pide "todas" (allWhenEmpty) ve el total de la empresa; si elige una, esa. Quien no puede
-// cambiar de sucursal queda siempre en la suya.
+// sucursales" es una opción real: solo quien ve todo (IsBranchAdmin) que no elige ninguna (requested
+// = 0) y pide "todas" (allWhenEmpty) obtiene 0 = toda la empresa. Una sucursal pedida debe ser accesible.
 //
 // ResolveReadBranchFilter no sirve para esto: con requested = 0 devuelve la sucursal activa, así
 // que un reporte con el selector en "Todas" mostraba solo la sucursal activa mientras el
 // dashboard (sin ese filtro) sumaba todas, y los totales de ambos no coincidían.
 func ResolveReportBranchFilter(c fiber.Ctx, requested uint, allWhenEmpty bool) uint {
-	if !IsBranchAdmin(c) {
-		return ActiveBranchID(c)
-	}
-	if requested > 0 {
+	if requested > 0 && CanAccessBranch(c, requested) {
 		return requested
 	}
-	if allWhenEmpty {
+	if requested == 0 && allWhenEmpty && IsBranchAdmin(c) {
 		return 0
+	}
+	if ActiveBranchID(c) == 0 {
+		return NoBranchFilter
 	}
 	return ActiveBranchID(c)
 }

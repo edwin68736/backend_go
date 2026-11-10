@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"tukifac/pkg/branch"
+	"tukifac/pkg/productbranch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/paymentcondition"
@@ -216,6 +217,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		Joins("JOIN tenant_branches ON tenant_branches.id = tenant_sales.branch_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
 		Where("tenant_sales.status != ?", "cancelled").
+		Scopes(branchScope(branchID)).
 		Scopes(userScope(restrictUser, userID)).
 		Group("tenant_branches.id, tenant_branches.name").
 		Order("total DESC").
@@ -378,10 +380,15 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		DaysUntilExpiry int       `json:"days_until_expiry"`
 	}, 0)
 	horizon := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, 30)
-	tdb.Table("tenant_products p").
+	expQ := tdb.Table("tenant_products p").
 		Select(`p.id as product_id, p.name as product_name, p.expiry_date,
 			DATEDIFF(p.expiry_date, CURDATE()) as days_until_expiry`).
-		Where("p.active = ? AND p.has_expiry_date = ? AND p.expiry_date IS NOT NULL AND p.expiry_date <= ?", true, true, horizon).
+		Where("p.active = ? AND p.has_expiry_date = ? AND p.expiry_date IS NOT NULL AND p.expiry_date <= ?", true, true, horizon)
+	// Productos compartidos con visibilidad por sucursal: con una sucursal elegida, solo los vendibles allí.
+	if branchID > 0 && productbranch.Ready(tdb) {
+		expQ = expQ.Where(productbranch.ListFilterSQL("p.id", "(p.branch_id IS NULL OR p.branch_id = 0 OR p.branch_id = ?)"), branchID, branchID)
+	}
+	expQ.
 		Order("p.expiry_date ASC").
 		Limit(8).
 		Scan(&expiringProducts)

@@ -3,6 +3,7 @@ package handler
 import (
 	"tukifac/internal/products/service"
 	"tukifac/pkg/branch"
+	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
 
 	"github.com/gofiber/fiber/v3"
@@ -75,8 +76,14 @@ func (h *ProductHandler) BulkUpdatePricesAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
+	// branch_id > 0: precio POR SUCURSAL (override), solo de la sucursal activa (accesible y de escritura); antes se
+	// validaba la sucursal pero se pisaba el precio GLOBAL de todas. Sin branch_id: precio global, solo de productos
+	// visibles para el usuario.
 	if _, err := branch.ResolveWriteBranchID(c, body.BranchID); err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	if body.BranchID > 0 && !branchPriceWriteAllowed(c, body.BranchID) {
+		return writeForbidden(c)
 	}
 	canCost := middleware.CanViewProductCost(c)
 	rows := make([]service.BulkPriceUpdateRow, 0, len(body.Rows))
@@ -88,7 +95,10 @@ func (h *ProductHandler) BulkUpdatePricesAPI(c fiber.Ctx) error {
 			PurchasePrice: costIfAllowed(canCost, r.PurchasePrice),
 		})
 	}
-	res, err := service.NewProductService(db(c)).BulkUpdatePrices(rows)
+	res, err := service.NewProductService(db(c)).BulkUpdatePricesWith(rows, service.BulkPriceUpdateOptions{
+		BranchID: body.BranchID,
+		Visible: func(p database.TenantProduct) bool { return productVisibleToUser(c, db(c), p.ID) },
+	})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

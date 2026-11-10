@@ -2,9 +2,11 @@ package handler
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"tukifac/internal/sales/branchguard"
 	"tukifac/pkg/billingevents"
 	"tukifac/pkg/database"
 
@@ -26,6 +28,36 @@ func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 	c.Set("Cache-Control", "no-cache, no-transform")
 	c.Set("Connection", "keep-alive")
 	c.Set("X-Accel-Buffering", "no")
+
+	// Los eventos son por tenant y traen solo el sale_id: se filtran por la sucursal de la venta
+	// para que un usuario no reciba estados (y mensajes SUNAT) de comprobantes de otra sucursal.
+	// Se captura la regla ahora: dentro del stream writer c ya no es seguro.
+	tdb := db(c)
+	readable := branchguard.ReadableFunc(c)
+	branchOf := map[uint]uint{}
+	allowEvent := func(data []byte) bool {
+		if tdb == nil {
+			return true
+		}
+		var ev struct {
+			SaleID uint `json:"sale_id"`
+		}
+		if json.Unmarshal(data, &ev) != nil || ev.SaleID == 0 {
+			return false
+		}
+		b, ok := branchOf[ev.SaleID]
+		if !ok {
+			v, err := branchguard.SaleBranch(tdb, ev.SaleID)
+			if err != nil {
+				return false
+			}
+			if len(branchOf) > 5000 {
+				branchOf = map[uint]uint{}
+			}
+			branchOf[ev.SaleID], b = v, v
+		}
+		return readable(b)
+	}
 
 	ch, unsub := billingevents.Subscribe(tenant.ID)
 	// El contexto se captura AHORA: dentro del stream writer c ya no es seguro (Fiber lo reutiliza
@@ -54,6 +86,9 @@ func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 			case data, ok := <-ch:
 				if !ok {
 					return
+				}
+				if !allowEvent(data) {
+					continue
 				}
 				_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", billingevents.EventStatusUpdated, data)
 				if err := w.Flush(); err != nil {

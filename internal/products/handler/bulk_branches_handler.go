@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"tukifac/pkg/branch"
 	"tukifac/pkg/productbranch"
 
 	"github.com/gofiber/fiber/v3"
@@ -33,6 +34,16 @@ func (h *ProductHandler) BulkBranchesAPI(c fiber.Ctx) error {
 	if err := productbranch.ValidateBranchIDs(db(c), body.BranchIDs); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	if err := requireAccessibleBranchIDs(c, body.BranchIDs); err != nil {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	// Un producto que el usuario no puede ver (asignado solo a otras sucursales) no existe para él.
+	for _, pid := range body.ProductIDs {
+		if pid != 0 && !productVisibleToUser(c, db(c), pid) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "producto no encontrado"})
+		}
+	}
+	var forbidden bool
 	err := db(c).Transaction(func(tx *gorm.DB) error {
 		for _, pid := range body.ProductIDs {
 			if pid == 0 {
@@ -40,7 +51,12 @@ func (h *ProductHandler) BulkBranchesAPI(c fiber.Ctx) error {
 			}
 			var err error
 			if body.Mode == "set" {
-				err = productbranch.Set(tx, pid, body.BranchIDs)
+				var ids []uint
+				if ids, err = scopedBranchSet(c, tx, pid, body.BranchIDs); err != nil {
+					forbidden = true
+					return err
+				}
+				err = productbranch.Set(tx, pid, ids)
 			} else {
 				err = productbranch.Add(tx, pid, body.BranchIDs)
 			}
@@ -51,6 +67,9 @@ func (h *ProductHandler) BulkBranchesAPI(c fiber.Ctx) error {
 		return nil
 	})
 	if err != nil {
+		if forbidden {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true, "updated": len(body.ProductIDs)})

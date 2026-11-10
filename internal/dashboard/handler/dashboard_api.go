@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"strconv"
 	"time"
 
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/salescope"
 
@@ -15,6 +17,14 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 	if tdb == nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sin contexto de empresa"})
 	}
+
+	// Sucursal: quien ve todas y no elige ninguna (branch_id vacío) ve la empresa entera; el resto, solo la suya.
+	// Antes los KPIs de Inicio sumaban SIEMPRE todas las sucursales, para cualquier usuario.
+	var requestedBranch uint
+	if v, e := strconv.ParseUint(c.Query("branch_id"), 10, 32); e == nil {
+		requestedBranch = uint(v)
+	}
+	branchID := branch.ResolveReportBranchFilter(c, requestedBranch, true)
 
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
@@ -39,16 +49,16 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 		purchasesCond = "user_id = ?"
 		purchasesArgs = append(purchasesArgs, userID)
 	}
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(total), 0)").Scan(&salesTodayTotal)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(total), 0)").Scan(&salesMonthTotal)
-	tdb.Model(&database.TenantPurchase{}).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(total), 0)").Scan(&purchasesTodayTotal)
-	tdb.Model(&database.TenantPurchase{}).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(total), 0)").Scan(&purchasesMonthTotal)
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(total), 0)").Scan(&salesTodayTotal)
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(total), 0)").Scan(&salesMonthTotal)
+	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(total), 0)").Scan(&purchasesTodayTotal)
+	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(total), 0)").Scan(&purchasesMonthTotal)
 
 	// Ventas del mes en curso vs los MISMOS días del mes anterior (no contra el mes anterior completo,
 	// que a inicios de mes mostraba una caída falsa).
 	monthCmpHome := comparisonWindow(monthStart, monthEnd, now)
 	var salesPrevSameDays float64
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthCmpHome.From, monthCmpHome.ToExclusive).Select("COALESCE(SUM(total), 0)").Scan(&salesPrevSameDays)
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthCmpHome.From, monthCmpHome.ToExclusive).Select("COALESCE(SUM(total), 0)").Scan(&salesPrevSameDays)
 
 	homeKPIs := fiber.Map{
 		"sales_prev_month_same_days": salesPrevSameDays,
@@ -63,18 +73,18 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 	var contactsCount, productsCount, salesCount, purchasesCount int64
 	tdb.Model(&database.TenantContact{}).Where("active = ?", true).Count(&contactsCount)
 	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Count(&productsCount)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Where("status != ?", "cancelled").Count(&salesCount)
-	tdb.Model(&database.TenantPurchase{}).Count(&purchasesCount)
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where("status != ?", "cancelled").Count(&salesCount)
+	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Count(&purchasesCount)
 
 	var monthSalesTotal, monthPurchasesTotal float64
 	var monthSalesCount int64
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
 		Count(&monthSalesCount)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
 		Select("COALESCE(SUM(total), 0)").Scan(&monthSalesTotal)
-	tdb.Model(&database.TenantPurchase{}).
+	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).
 		Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).
 		Select("COALESCE(SUM(total), 0)").Scan(&monthPurchasesTotal)
 
@@ -88,23 +98,26 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 		s := time.Date(now.Year(), time.Month(i), 1, 0, 0, 0, 0, time.Local)
 		e := s.AddDate(0, 1, 0)
 		var sum float64
-		salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
+		salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 			Where("issue_date >= ? AND issue_date < ? AND status != ?", s, e, "cancelled").
 			Select("COALESCE(SUM(total), 0)").Scan(&sum)
 		monthly[i-1] = MonthAmount{Month: i, Year: now.Year(), Amount: sum}
 	}
 
-	lowStock := queryLowStock(tdb, 0, 10)
+	lowStock := queryLowStock(tdb, branchID, 10)
 
 	var openCashSessions int64
 	openCashQ := tdb.Model(&database.TenantCashSession{}).Where("status = ?", "open")
+	if branchID > 0 {
+		openCashQ = openCashQ.Where("branch_id = ?", branchID)
+	}
 	if us.Restrict && userID != 0 {
 		openCashQ = openCashQ.Where("user_id = ?", userID)
 	}
 	openCashQ.Count(&openCashSessions)
 	// Pendientes de envío SUNAT: misma definición que la campanita del encabezado y que el
 	// Dashboard (por serie electrónica, sin límite de fecha), acotada al usuario si no es admin.
-	pendingBilling := countElectronicBilling(tdb, "pending", 0, userID, us.Restrict)
+	pendingBilling := countElectronicBilling(tdb, "pending", branchID, userID, us.Restrict)
 
 	return c.JSON(fiber.Map{
 		"home": homeKPIs,

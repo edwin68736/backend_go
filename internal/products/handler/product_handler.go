@@ -219,6 +219,9 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	if err := productbranch.ValidateBranchIDs(db(c), body.BranchIDs); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
+	if err := requireAccessibleBranchIDs(c, body.BranchIDs); err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
 	// Cuota de productos del plan (los servicios no cuentan; ver CheckCreateQuota).
 	if body.Type != "service" && middleware.EnforceCreateQuota(c, db(c), saas.QuotaProducts) {
 		return nil
@@ -432,8 +435,17 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
-	if msg, denied := h.productBranchDenied(c, existing); denied {
-		return c.Status(403).JSON(fiber.Map{"error": msg})
+	if resp, denied := h.productDenied(c, existing); denied {
+		return resp
+	}
+	// Sucursales del producto: solo las accesibles; las que ya tenía en sucursales ajenas se conservan.
+	var scopedBranchIDs []uint
+	if body.BranchIDs != nil {
+		var serr error
+		scopedBranchIDs, serr = scopedBranchSet(c, db(c), uint(id), *body.BranchIDs)
+		if serr != nil {
+			return c.Status(403).JSON(fiber.Map{"error": serr.Error(), "code": branch.CodeBranchForbidden})
+		}
 	}
 	expiryDate, err := service.ParseProductExpiryDate(body.ExpiryDate)
 	if err != nil {
@@ -516,7 +528,7 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	if body.BranchIDs != nil {
-		if err := productbranch.Set(db(c), uint(id), *body.BranchIDs); err != nil {
+		if err := productbranch.Set(db(c), uint(id), scopedBranchIDs); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
@@ -577,8 +589,8 @@ func (h *ProductHandler) ToggleAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
-	if msg, denied := h.productBranchDenied(c, p); denied {
-		return c.Status(403).JSON(fiber.Map{"error": msg})
+	if resp, denied := h.productDenied(c, p); denied {
+		return resp
 	}
 	if err := db(c).Model(p).Update("active", !p.Active).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -597,8 +609,8 @@ func (h *ProductHandler) DeleteAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
-	if msg, denied := h.productBranchDenied(c, p); denied {
-		return c.Status(403).JSON(fiber.Map{"error": msg})
+	if resp, denied := h.productDenied(c, p); denied {
+		return resp
 	}
 	if err := svc.Delete(uint(id)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -649,9 +661,14 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		params.BranchID = branch.ResolveReadBranchFilter(c, uint(reqB))
 	} else if branch.ActiveBranchID(c) > 0 {
 		msOnly := c.Query("manage_stock_only") == "true" || c.Query("manage_stock_only") == "1"
-		if msOnly || params.RestaurantOnly {
+		// Sin branch_id el listado ya no devuelve el catálogo (ni stock_by_branch) de todas las sucursales a quien
+		// no las ve todas: se acota a la sucursal activa. Quien ve todo (administrador) conserva la vista completa
+		// salvo en los listados de stock/carta, que siempre son de la sucursal activa.
+		if msOnly || params.RestaurantOnly || !branch.IsBranchAdmin(c) {
 			params.BranchID = branch.ActiveBranchID(c)
 		}
+	} else if !branch.IsBranchAdmin(c) {
+		params.BranchID = branch.NoBranchFilter // sin sucursal resuelta: falla cerrado
 	}
 	if perPage > 0 {
 		params.Limit = perPage
@@ -699,8 +716,8 @@ func (h *ProductHandler) LookupByCodeAPI(c fiber.Ctx) error {
 	if p == nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
-	if msg, denied := h.productBranchDenied(c, p); denied {
-		return c.Status(403).JSON(fiber.Map{"error": msg})
+	if resp, denied := h.productDenied(c, p); denied {
+		return resp
 	}
 	// Con el precio de la sucursal activa: es una consulta de venta (escáner), no la edición del producto.
 	return c.JSON(fiber.Map{"data": svc.ProductListItemForBranch(*p, branchID)})
@@ -717,8 +734,8 @@ func (h *ProductHandler) GetAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
-	if msg, denied := h.productBranchDenied(c, p); denied {
-		return c.Status(403).JSON(fiber.Map{"error": msg})
+	if resp, denied := h.productDenied(c, p); denied {
+		return resp
 	}
 	modIds := svc.GetProductModifierGroupIDs(p.ID)
 	presentations, _ := svc.ListProductPresentations(p.ID)
@@ -753,9 +770,24 @@ func (h *ProductHandler) ProductSerialsAPI(c fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	svc := service.NewProductService(db(c))
+	if p, perr := svc.GetByID(uint(id)); perr != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
+	} else if resp, denied := h.productDenied(c, p); denied {
+		return resp
+	}
 	serials, err := svc.ListProductSerials(uint(id))
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	// Quien no ve todo recibe solo los series de sus sucursales accesibles.
+	if !branch.IsBranchAdmin(c) {
+		filtered := serials[:0]
+		for _, s := range serials {
+			if branch.CanAccessBranch(c, s.BranchID) {
+				filtered = append(filtered, s)
+			}
+		}
+		serials = filtered
 	}
 	return c.JSON(fiber.Map{"data": serials})
 }
@@ -777,8 +809,8 @@ func (h *ProductHandler) UploadImageAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
-	if msg, denied := h.productBranchDenied(c, p); denied {
-		return c.Status(403).JSON(fiber.Map{"error": msg})
+	if resp, denied := h.productDenied(c, p); denied {
+		return resp
 	}
 
 	file, err := c.FormFile("image")
@@ -1129,9 +1161,21 @@ func (h *ProductHandler) SaleUnitBranchPriceListAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
+	if resp, ok := h.guardProductByID(c, productID); !ok {
+		return resp
+	}
 	rows, err := service.NewProductService(db(c)).ListSaleUnitBranchPrices(productID, saleUnitID)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !branch.IsBranchAdmin(c) {
+		filtered := rows[:0]
+		for _, r := range rows {
+			if branch.CanAccessBranch(c, r.BranchID) {
+				filtered = append(filtered, r)
+			}
+		}
+		rows = filtered
 	}
 	return c.JSON(fiber.Map{"data": rows})
 }
@@ -1145,6 +1189,12 @@ func (h *ProductHandler) SaleUnitBranchPriceGetAPI(c fiber.Ctx) error {
 	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	if resp, ok := h.guardProductByID(c, productID); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), false); !ok {
+		return resp
 	}
 	row, err := service.NewProductService(db(c)).GetSaleUnitBranchPrice(productID, saleUnitID, uint(branchID))
 	if err != nil {
@@ -1167,6 +1217,12 @@ func (h *ProductHandler) SaleUnitBranchPriceCreateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
+	if resp, ok := h.guardProductByID(c, productID); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), true); !ok {
+		return resp
+	}
 	row, err := service.NewProductService(db(c)).CreateSaleUnitBranchPrice(productID, saleUnitID, uint(branchID), body.toInput())
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -1188,6 +1244,12 @@ func (h *ProductHandler) SaleUnitBranchPriceUpdateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
+	if resp, ok := h.guardProductByID(c, productID); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), true); !ok {
+		return resp
+	}
 	row, err := service.NewProductService(db(c)).UpdateSaleUnitBranchPrice(productID, saleUnitID, uint(branchID), body.toInput())
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -1204,6 +1266,12 @@ func (h *ProductHandler) SaleUnitBranchPriceDeleteAPI(c fiber.Ctx) error {
 	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	if resp, ok := h.guardProductByID(c, productID); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), true); !ok {
+		return resp
 	}
 	if err := service.NewProductService(db(c)).DeleteSaleUnitBranchPrice(productID, saleUnitID, uint(branchID)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -1228,9 +1296,21 @@ func (h *ProductHandler) ProductBranchPriceListAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "producto inválido"})
 	}
+	if resp, ok := h.guardProductByID(c, uint(productID)); !ok {
+		return resp
+	}
 	rows, err := service.NewProductService(db(c)).ListProductBranchPrices(uint(productID))
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !branch.IsBranchAdmin(c) {
+		filtered := rows[:0]
+		for _, r := range rows {
+			if branch.CanAccessBranch(c, r.BranchID) {
+				filtered = append(filtered, r)
+			}
+		}
+		rows = filtered
 	}
 	return c.JSON(fiber.Map{"data": rows})
 }
@@ -1244,6 +1324,12 @@ func (h *ProductHandler) ProductBranchPriceGetAPI(c fiber.Ctx) error {
 	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	if resp, ok := h.guardProductByID(c, uint(productID)); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), false); !ok {
+		return resp
 	}
 	row, err := service.NewProductService(db(c)).GetProductBranchPrice(uint(productID), uint(branchID))
 	if err != nil {
@@ -1266,6 +1352,12 @@ func (h *ProductHandler) ProductBranchPriceCreateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
+	if resp, ok := h.guardProductByID(c, uint(productID)); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), true); !ok {
+		return resp
+	}
 	row, err := service.NewProductService(db(c)).CreateProductBranchPrice(uint(productID), uint(branchID), body.toInput())
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -1287,6 +1379,12 @@ func (h *ProductHandler) ProductBranchPriceUpdateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
+	if resp, ok := h.guardProductByID(c, uint(productID)); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), true); !ok {
+		return resp
+	}
 	row, err := service.NewProductService(db(c)).UpdateProductBranchPrice(uint(productID), uint(branchID), body.toInput())
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -1303,6 +1401,12 @@ func (h *ProductHandler) ProductBranchPriceDeleteAPI(c fiber.Ctx) error {
 	branchID, err := strconv.ParseUint(c.Params("branchId"), 10, 32)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "sucursal inválida"})
+	}
+	if resp, ok := h.guardProductByID(c, uint(productID)); !ok {
+		return resp
+	}
+	if resp, ok := guardBranchPrice(c, uint(branchID), true); !ok {
+		return resp
 	}
 	if err := service.NewProductService(db(c)).DeleteProductBranchPrice(uint(productID), uint(branchID)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -1623,6 +1727,40 @@ func (h *ProductHandler) productBranchDenied(c fiber.Ctx, p *database.TenantProd
 	return "", false
 }
 
+// productDenied aplica las dos reglas de visibilidad por sucursal de un producto ya cargado y, si lo deniega,
+// ya escribió la respuesta: (1) dueña legacy tenant_products.branch_id (403, contrato previo) y (2) el puente
+// tenant_product_branches: un producto asignado solo a otras sucursales no existe para quien no ve todas (404,
+// para no revelar su existencia). Quien ve todas las sucursales (administrador) conserva la vista completa del
+// catálogo compartido.
+func (h *ProductHandler) productDenied(c fiber.Ctx, p *database.TenantProduct) (error, bool) {
+	if p == nil {
+		return nil, false
+	}
+	if msg, denied := h.productBranchDenied(c, p); denied {
+		return c.Status(403).JSON(fiber.Map{"error": msg}), true
+	}
+	if !productVisibleToUser(c, db(c), p.ID) {
+		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"}), true
+	}
+	return nil, false
+}
+
+// productVisibleToUser: quien ve todo ve cualquier producto; el resto, solo los disponibles en su sucursal activa
+// (sin filas en tenant_product_branches = disponible en todas).
+func productVisibleToUser(c fiber.Ctx, tdb *gorm.DB, productID uint) bool {
+	if branch.IsBranchAdmin(c) {
+		return true
+	}
+	active := branch.ActiveBranchID(c)
+	if active == 0 {
+		// Sin sucursal activa (el middleware no lo permite): solo los productos sin restricción de sucursal.
+		assigned, err := productbranch.BranchIDs(tdb, []uint{productID})
+		return err == nil && len(assigned[productID]) == 0
+	}
+	ok, err := productbranch.IsAvailable(tdb, productID, active)
+	return err == nil && ok
+}
+
 func buildProductInput(c fiber.Ctx, taxCfg tax.Config) service.ProductInput {
 	salePrice, _ := strconv.ParseFloat(c.FormValue("sale_price"), 64)
 	purchasePrice, _ := strconv.ParseFloat(c.FormValue("purchase_price"), 64)
@@ -1726,8 +1864,8 @@ func (h *ProductHandler) CostAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "producto no encontrado"})
 	}
-	if msg, denied := h.productBranchDenied(c, p); denied {
-		return c.Status(403).JSON(fiber.Map{"error": msg})
+	if resp, denied := h.productDenied(c, p); denied {
+		return resp
 	}
 	return c.JSON(fiber.Map{"data": fiber.Map{"id": p.ID, "cost": p.PurchasePrice}})
 }

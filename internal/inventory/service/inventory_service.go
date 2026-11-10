@@ -740,11 +740,24 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 
 // ListTransfersByHeader devuelve las transferencias agrupadas por cabecera (solo las que tienen transfer_id o todas las cabeceras).
 func (s *InventoryService) ListTransfersByHeader(limit int) ([]database.TenantTransfer, []database.TenantTransferLog, error) {
+	return s.ListTransfersByHeaderForBranches(limit, nil)
+}
+
+// ListTransfersByHeaderForBranches igual que ListTransfersByHeader pero, si branchIDs no es nil, solo devuelve las
+// transferencias cuyo origen O destino está en branchIDs (slice vacío = ninguna: falla cerrado).
+func (s *InventoryService) ListTransfersByHeaderForBranches(limit int, branchIDs []uint) ([]database.TenantTransfer, []database.TenantTransferLog, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	var transfers []database.TenantTransfer
-	if err := s.db.Order("created_at DESC").Limit(limit).Find(&transfers).Error; err != nil {
+	q := s.db.Order("created_at DESC").Limit(limit)
+	if branchIDs != nil {
+		if len(branchIDs) == 0 {
+			return transfers, nil, nil
+		}
+		q = q.Where("from_branch_id IN ? OR to_branch_id IN ?", branchIDs, branchIDs)
+	}
+	if err := q.Find(&transfers).Error; err != nil {
 		return nil, nil, err
 	}
 	if len(transfers) == 0 {

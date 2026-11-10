@@ -65,6 +65,7 @@ func newPurchaseTestApp(db *gorm.DB) *fiber.App {
 	app.Use(func(c fiber.Ctx) error {
 		c.Locals("tenantDB", db)
 		c.Locals("user_id", uint(1))
+		c.Locals("active_branch_id", uint(1)) // lo inyecta el middleware de sucursal en producción
 		return c.Next()
 	})
 	app.Get("/purchases/:id", h.GetAPI)

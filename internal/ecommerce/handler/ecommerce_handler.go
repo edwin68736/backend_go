@@ -12,6 +12,7 @@ import (
 	"tukifac/config"
 	"tukifac/internal/ecommerce/service"
 	salessvc "tukifac/internal/sales/service"
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantctx"
@@ -271,11 +272,16 @@ func (h *EcommerceHandler) ConvertOrderAPI(c fiber.Ctx) error {
 	if body.BranchID == 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "branch_id es obligatorio"})
 	}
+	// El branch_id del body ya no es de confianza: debe ser la sucursal activa o una a la que el usuario accede.
+	branchID, berr := branch.ResolveWriteBranchID(c, body.BranchID)
+	if berr != nil {
+		return c.Status(403).JSON(fiber.Map{"error": berr.Error(), "code": branch.CodeBranchForbidden})
+	}
 	svc := service.NewEcommerceService(db(c))
 	sale, err := svc.ConvertToSale(uint(id), service.ConvertInput{
 		Target:        body.Target,
 		SeriesID:      body.SeriesID,
-		BranchID:      body.BranchID,
+		BranchID:      branchID,
 		IssueDate:     parseOrderIssueDate(body.IssueDate),
 		ContactID:     body.ContactID,
 		UserID:        orderUserID(c),
