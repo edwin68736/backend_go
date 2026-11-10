@@ -3,6 +3,7 @@ package worker
 import (
 	"fmt"
 	"time"
+	"tukifac/pkg/branchscope"
 
 	billingsvc "tukifac/internal/billing/service"
 	"tukifac/pkg/database"
@@ -64,6 +65,7 @@ func ResendTenantPending(tenant database.Tenant, limit int) (ResendResult, error
 		return ResendResult{}, fmt.Errorf("abrir BD del tenant: %w", err)
 	}
 	defer database.ReleaseTenantDB(tenant.DBName)
+	db = branchscope.System(db, "billing worker: reenvío de pendientes")
 
 	ids, total, err := pendingCandidates(db, time.Now().Add(-ResendMinAge), limit)
 	if err != nil {

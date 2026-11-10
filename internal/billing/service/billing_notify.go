@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"tukifac/pkg/branchscope"
 
 	fiscalsvc "tukifac/internal/fiscal/service"
 	"tukifac/pkg/billingevents"
@@ -53,6 +54,7 @@ func RunFiscalWebhookSideEffects(tenantID uint, tenantSlug string, saleID uint, 
 		return
 	}
 	defer database.ReleaseTenantDB(tenant.DBName)
+	db = branchscope.System(db, "billing: notificación de comprobante (proceso interno)")
 	svc := NewBillingService(db)
 	svc.SetCentralTenantID(tenantID)
 	if tenant.Slug != "" {

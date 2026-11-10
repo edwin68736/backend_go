@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"tukifac/pkg/branchscope"
 
 	"tukifac/config"
 	authsvc "tukifac/internal/auth/service"
@@ -697,7 +698,7 @@ func (s *TenantService) CleanupAbandonedQuickSalesFleet() (cleaned int64, failed
 			failed = append(failed, t.Slug)
 			continue
 		}
-		n, err := restaurantsvc.New(tdb).CleanupAbandonedQuickSales()
+		n, err := restaurantsvc.New(branchscope.System(tdb, "superadmin: limpieza de ventas rápidas abandonadas")).CleanupAbandonedQuickSales()
 		release()
 		if err != nil {
 			failed = append(failed, t.Slug)

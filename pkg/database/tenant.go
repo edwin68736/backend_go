@@ -51,6 +51,10 @@ func openTenantDB(dbName string) (*gorm.DB, error) {
 	}
 	configureTenantPool(sqlDB)
 
+	if err := installBranchScope(db); err != nil {
+		return nil, fmt.Errorf("scope de sucursal en BD tenant %s: %w", dbName, err)
+	}
+
 	return db, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"tukifac/pkg/branchscope"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -69,7 +70,7 @@ func NewScanner() *Scanner {
 			if err != nil {
 				return nil, func() {}, err
 			}
-			return db, release, nil
+			return branchscope.System(db, "fiscal: barrido de resúmenes diarios"), release, nil
 		},
 		Now: time.Now,
 	}

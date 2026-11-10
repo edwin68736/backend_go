@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"tukifac/pkg/branch"
+	"tukifac/pkg/branchscope"
 	"tukifac/pkg/database"
 
 	"github.com/gofiber/fiber/v3"
@@ -146,6 +147,13 @@ func BranchContextMiddleware() fiber.Handler {
 			CanViewAll: viewAll, CanSwitch: canSwitch, Mode: mode,
 		})
 		c.Locals("branch_legacy_mode", legacy)
+
+		// Scope global de sucursal: el tenantDB de la solicitud pasa a ser una sesión cuyo contexto lleva el Scope, y los
+		// callbacks de pkg/branchscope acotan por sucursal toda consulta/escritura sobre las entidades registradas.
+		c.Locals("tenantDB", branchscope.Attach(tdb, &branchscope.Scope{
+			UserID: user.ID, ActiveBranchID: activeID, AllowedBranchIDs: allowed,
+			ViewAll: viewAll, ReadOnly: mode == branch.ModeAllBranches,
+		}))
 		return c.Next()
 	}
 }

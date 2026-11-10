@@ -3,6 +3,7 @@ package worker
 import (
 	"log/slog"
 	"time"
+	"tukifac/pkg/branchscope"
 
 	billingsvc "tukifac/internal/billing/service"
 	"tukifac/pkg/billinglock"
@@ -26,6 +27,7 @@ func ReconcileTenantPending(tenant database.Tenant) (synced int) {
 		return 0
 	}
 	defer release()
+	db = branchscope.System(db, "billing worker: reconciliación de pendientes")
 
 	cutoff := time.Now().Add(-reconcileMinAge)
 	var rows []reconcileSaleRow
