@@ -101,3 +101,17 @@ Después: 24 h más tarde activar `RejectLegacyZeroSessionVersion = true` (recha
 - Pruebas: backend 3 corridas completas sin fallos tras estabilizar `TestBillingEventsSSE_BranchIsolation` (era sensible a la carga); Tukifac 93 tests; Tukichef 86 tests.
 
 **Rollback adicional:** volver a la imagen anterior del backend; V178 es inofensiva (versión 1). Si se revierte un frontend con el backend nuevo, los cambios de rol/contraseña vuelven a cerrar sesión (por eso el orden). `SSE_ALLOW_QUERY_TOKEN=1` mantiene vivos a los clientes antiguos.
+
+---
+
+## 8. Hotfix ecommerce E0 (10-nov-2026, noche)
+
+Commit backend: ver `git log` (fix(ecommerce) hotfix E0). **Sin migración, solo backend.** La respuesta pública `GET /api/public/ecommerce/products`
+(sin autenticación) filtraba el stock por sucursal con el nombre de cada sucursal, los números de serie y, con "Mostrar stock" apagado, el stock por
+presentación y sucursal. Ahora: nunca `stock_by_branch` ni `serials`; con `show_stock` se conserva `stock_total` y la disponibilidad por presentación
+sumada y anónima; sin `show_stock` no hay stock ni por presentación. La tienda propia solo usaba `stock_total`, así que no pierde funcionalidad.
+Verificado en vivo (8 productos públicos del demo: 0 con stock por sucursal, 0 con series, `stock_total` intacto). Test que falla sin el arreglo:
+`TestPublicProducts_DoesNotExposeBranchStockOrSerials`. Despliegue: puede salir con el backend; rollback: imagen anterior.
+
+**Pendiente de ecommerce (no incluido):** `ListOrders`, `print-data` y `status` de pedidos no se pueden aislar por sucursal sin `branch_id` en
+`tenant_ecommerce_orders` (migración E1, sin ejecutar); el stock mostrado sigue siendo el total del tenant hasta definir la sucursal de despacho.
