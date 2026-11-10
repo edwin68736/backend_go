@@ -358,14 +358,43 @@ func (s *EcommerceService) PublicProducts(query string, categoryID uint, minPric
 		// PurchasePrice (costo/precio de compra) es dato interno del tenant: nunca debe viajar en
 		// esta respuesta pública sin autenticación, sin importar la config de "Mostrar stock".
 		items[i].PurchasePrice = 0
-		if !showStock {
+		// Esta respuesta no requiere autenticación: NUNCA expone el stock por sucursal, el nombre de las sucursales ni los
+		// números de serie (datos internos del tenant), sin importar "Mostrar stock". La tienda solo usa stock_total.
+		items[i].StockByBranch = nil
+		items[i].Serials = nil
+		items[i].SerialCount = 0
+		if showStock {
+			items[i].StockByPresentation = aggregatePresentationStock(items[i].StockByPresentation)
+		} else {
 			items[i].StockTotal = 0
-			items[i].StockByBranch = nil
-			items[i].Serials = nil
-			items[i].SerialCount = 0
+			items[i].StockByPresentation = nil
 		}
 	}
 	return items, total, nil
+}
+
+// aggregatePresentationStock suma el stock de cada presentación entre sucursales y descarta la identidad de la sucursal
+// (branch_id=0, sin nombre): se conserva la disponibilidad por presentación sin revelar cómo se reparte el inventario.
+func aggregatePresentationStock(rows []productservice.PresentationStockRow) []productservice.PresentationStockRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	order := make([]uint, 0, len(rows))
+	byID := map[uint]*productservice.PresentationStockRow{}
+	for _, r := range rows {
+		agg, ok := byID[r.PresentationID]
+		if !ok {
+			agg = &productservice.PresentationStockRow{PresentationID: r.PresentationID, PresentationName: r.PresentationName}
+			byID[r.PresentationID] = agg
+			order = append(order, r.PresentationID)
+		}
+		agg.Quantity += r.Quantity
+	}
+	out := make([]productservice.PresentationStockRow, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out
 }
 
 // ── Pedidos ──────────────────────────────────────────────────────────
