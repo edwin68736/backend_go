@@ -150,6 +150,7 @@ var TenantMigrations = []TenantMigration{
 	V176BranchPermissionsAndAssignments{},
 	V177ProductsManageGlobalPermission{},
 	V178SessionVersionBackfill{},
+	V179SingleMainBranchAndOrphans{},
 }
 
 // ByVersion mapa versión → migración.

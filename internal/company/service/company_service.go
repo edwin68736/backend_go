@@ -1,16 +1,16 @@
 package service
 
 import (
-	"tukifac/pkg/branchscope"
 	"errors"
 	"fmt"
 	"strings"
+	"tukifac/pkg/branchscope"
 
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
-	"tukifac/pkg/receiptdesign"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
+	"tukifac/pkg/receiptdesign"
 
 	"gorm.io/gorm"
 )
@@ -343,22 +343,36 @@ func (s *CompanyService) GetBranch(id uint) (*database.TenantBranch, error) {
 	return &b, err
 }
 
+// ErrMainBranchRequired: el tenant debe tener SIEMPRE una (y solo una) sucursal principal.
+var ErrMainBranchRequired = errors.New("el negocio debe tener una sucursal principal: para cambiarla, marque otra sucursal como principal")
+
+// CreateBranch crea una sucursal. Un tenant tiene exactamente UNA sucursal principal: si se pide is_main (o aún no existe ninguna
+// principal) la nueva pasa a serlo y la anterior deja de serlo, todo en una sola transacción.
 func (s *CompanyService) CreateBranch(name, address, phone, fiscalDomicileCode string, isMain bool) (*database.TenantBranch, error) {
 	if name == "" {
 		return nil, errors.New("el nombre de la sucursal es requerido")
-	}
-	if isMain {
-		s.db.Model(&database.TenantBranch{}).Update("is_main", false)
 	}
 	b := &database.TenantBranch{
 		Name:               name,
 		Address:            address,
 		Phone:              phone,
 		FiscalDomicileCode: strings.TrimSpace(fiscalDomicileCode),
-		IsMain:             isMain,
 		Active:             true,
 	}
-	if err := s.db.Create(b).Error; err != nil {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var mains int64
+		if err := tx.Model(&database.TenantBranch{}).Where("is_main = ?", true).Count(&mains).Error; err != nil {
+			return err
+		}
+		b.IsMain = isMain || mains == 0
+		if b.IsMain {
+			if err := tx.Model(&database.TenantBranch{}).Where("is_main = ?", true).Update("is_main", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Create(b).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	if err := database.SeedInventoryDocumentSeriesForBranch(s.db, b.ID); err != nil {
@@ -367,17 +381,30 @@ func (s *CompanyService) CreateBranch(name, address, phone, fiscalDomicileCode s
 	return b, nil
 }
 
+// UpdateBranch actualiza una sucursal. Marcarla principal la hace la única principal; quitarle la marca a la principal actual
+// sin designar otra se rechaza (ErrMainBranchRequired).
 func (s *CompanyService) UpdateBranch(id uint, name, address, phone, fiscalDomicileCode string, isMain bool) error {
-	if isMain {
-		s.db.Model(&database.TenantBranch{}).Where("id != ?", id).Update("is_main", false)
-	}
-	return s.db.Model(&database.TenantBranch{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"name":                 name,
-		"address":              address,
-		"phone":                phone,
-		"fiscal_domicile_code": strings.TrimSpace(fiscalDomicileCode),
-		"is_main":              isMain,
-	}).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var cur database.TenantBranch
+		if err := tx.First(&cur, id).Error; err != nil {
+			return err
+		}
+		if !isMain && cur.IsMain {
+			return ErrMainBranchRequired
+		}
+		if isMain {
+			if err := tx.Model(&database.TenantBranch{}).Where("id != ? AND is_main = ?", id, true).Update("is_main", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&database.TenantBranch{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"name":                 name,
+			"address":              address,
+			"phone":                phone,
+			"fiscal_domicile_code": strings.TrimSpace(fiscalDomicileCode),
+			"is_main":              isMain,
+		}).Error
+	})
 }
 
 // BranchDeleteBlockedError la sucursal no se puede eliminar por una regla de negocio (mensaje apto para el usuario).

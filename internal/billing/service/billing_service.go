@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"tukifac/pkg/branch"
 
 	"tukifac/config"
 	detraccionsvc "tukifac/internal/detraccion"
@@ -2300,6 +2301,7 @@ func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*da
 		payloadJSON, _ := json.Marshal(payload)
 
 		retSale = database.TenantSale{
+			BranchID:      docBranchID(tx, input.BranchID, seriesRec),
 			SeriesID:      seriesRec.ID,
 			DocType:       "RETENCION",
 			Series:        seriesRec.Series,
@@ -2544,6 +2546,7 @@ func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*
 		payloadJSON, _ := json.Marshal(payload)
 
 		percSale = database.TenantSale{
+			BranchID:      docBranchID(tx, input.BranchID, seriesRec),
 			SeriesID:      seriesRec.ID,
 			DocType:       "PERCEPCION",
 			Series:        seriesRec.Series,
@@ -2773,4 +2776,19 @@ func (s *BillingService) GetReversionStatus(id uint) (*database.TenantSunatRever
 	}
 	s.db.Save(&rec)
 	return &rec, nil
+}
+
+// docBranchID sucursal de la fila "venta" de una retención/percepción: la pedida, o la de su serie, o la sucursal principal.
+// Nunca 0: un documento sin sucursal queda huérfano de los listados por sucursal (ver INFORME_BRANCH_ID_CERO.md).
+func docBranchID(db *gorm.DB, requested uint, series database.TenantDocumentSeries) uint {
+	if requested > 0 {
+		return requested
+	}
+	if series.BranchID > 0 {
+		return series.BranchID
+	}
+	if id, err := branch.GetMainBranchID(db); err == nil {
+		return id
+	}
+	return 0
 }

@@ -32,3 +32,17 @@ Las 5 filas son **comprobantes de retención** (`doc_type = RETENCION`), no vent
 1. **Corrección hacia adelante (código):** que el servicio de emisión de retenciones/percepciones fije `branch_id` desde la sucursal activa del contexto (o la de la compra/venta origen). Sin migración.
 2. **Backfill de las 5 filas:** asignar cada una a la sucursal de su documento origen (la compra o venta que la originó) cuando exista, y consultarlo con el cliente cuando no. Se haría con un script de solo esas 5 filas, con backup y verificación previa, **no** con una migración automática.
 3. Mientras tanto no se endurece nada que dependa de `branch_id != 0` en esas entidades.
+
+---
+
+## Decisión del dueño (10-nov-2026) y su implementación
+
+1. **Un tenant tiene exactamente UNA sucursal principal.** Si hay varias, se conserva la primera (menor id, preferiblemente activa); si no hay ninguna, la primera sucursal activa pasa a serlo.
+2. **Todo registro huérfano (`branch_id = 0`/NULL) se vincula a la sucursal principal.**
+
+Implementado en **V179** (`SingleMainBranchAndOrphans`, aditiva e idempotente) y en el código:
+- Causa raíz de las dos principales de `doriconta`: `CompanyService.CreateBranch` quitaba la marca anterior con un `UPDATE` sin `WHERE` (GORM lo rechaza con "WHERE conditions required") y no revisaba el error.
+  Ahora crear/editar una sucursal es transaccional: marcar una como principal desmarca las demás; la primera sucursal del negocio es principal; quitarle la marca a la única principal se rechaza (`ErrMainBranchRequired`: hay que marcar otra).
+- Las retenciones y percepciones ya no se crean sin sucursal (`docBranchID`: la pedida, la de su serie o la principal). Era el origen de los 5 huérfanos.
+- V179 vincula los huérfanos existentes a la principal en las 15 entidades con sucursal propia. Una fila que choque con un índice único se omite (queda en el log `V179: registros sin sucursal…`) en vez de fallar o borrar datos.
+- **Efecto esperado en producción:** `doriconta` queda con la sucursal 1 como única principal (la 3 deja de serlo); las 5 retenciones (doriconta 1, industrialrafaz 3, col 1) pasan a la principal de su tenant. No se ejecutó nada en producción: se aplica con `migrate-fleet`.
