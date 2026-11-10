@@ -67,3 +67,23 @@ Límite: los *backfills* de permisos (V173/V176/V177) no se ejercitaron con role
 6. **Vigilancia 3–7 días**: auditoría del scope, 403 de sucursal, quejas de roles; luego decidir `STRICT`.
 7. **Segunda entrega (24 h–1 semana después)**: `RejectLegacyZeroSessionVersion=true`, apagar puentes (`SSE_ALLOW_QUERY_TOKEN=0`, `MASTER_ACCESS_LEGACY_TOKEN=0`), retirar `?master_sso=`.
 **Rollback:** imagen anterior del backend y builds anteriores de los frontends; `BRANCH_SCOPE_DISABLED=1` apaga el scope sin cambiar código; las migraciones no se revierten (aditivas). El vínculo de las 5 retenciones a la principal se deshace a mano (ids en el informe de V179).
+
+---
+
+## 8. Guía para el despliegue de esta noche (10-nov-2026)
+
+**Push seguro:** los workflows (`deploy-production.yml` del backend, `deploy.yml` de Tukifac y de central) son solo `workflow_dispatch` (manuales); ninguno se dispara con `push`. Subir hoy no despliega nada. Tukichef no tiene workflow (se compila a mano).
+**Estado final de los repos (todos en `main`, sin cambios sueltos, sin nada nuevo en el remoto):** backend 33 commits · Tukifac 10 · Tukichef 7 (incluye `9398ca9` versión 1.4.8, código 14008) · central 1.
+**Versiones para compilar:** Tukichef **1.4.8** (14008; `tukichef.version.json` sincronizado a `package.json`, `Cargo.toml`, `Cargo.lock`, `tauri.conf.json` y `build.gradle`: exe `tukichef-1.4.8.exe`); Tukifac **2.1.3** (102013, ya estaba fijada y sin compilar).
+
+**Orden de la noche**
+1. Push de los 4 repos (cuando quieras; no despliega).
+2. **Backend → workflow "Deploy Production" con las opciones por defecto** (`skip_migrate=false`, `allow_fleet_failures=false`). El workflow construye la imagen, ejecuta `migrate-central` y **`migrate-fleet` sobre todos los tenants ANTES de reiniciar** (V172→V179 por cada tenant, ≈160 ms cada uno; espera del candado hasta 15 min). Si `migrate-fleet` falla en algún tenant, **el deploy se aborta y sigue corriendo la versión anterior**. No hay migraciones centrales nuevas. No definir `BRANCH_SCOPE_STRICT` ni cambiar las variables de los puentes (`SSE_ALLOW_QUERY_TOKEN`, `MASTER_ACCESS_LEGACY_TOKEN`).
+3. **Frontend de Tukifac** ("Deploy" de `frontend_tenant`) y **frontend central** ("Deploy" de `frontend_central`), **después** del paso 2 (Tukifac web requiere V173/V176/V177). Hacerlos seguidos (el backend nuevo ya sube la versión de sesión al cambiar roles; los frontends nuevos refrescan en lugar de cerrar sesión).
+4. **No editar roles, permisos ni contraseñas** hasta que terminen los pasos 2 y 3.
+5. Compilar **Tukichef 1.4.8** (Tauri y Android) y **Tukifac 2.1.3**.
+
+**Verificación rápida tras el backend (5 min):** `/health`; en el log: `V179 … registros sin sucursal` (esperado: ninguno) y errores de `migrate-fleet` (esperado: ninguno); iniciar sesión como admin y como vendedor de 1 sucursal; ver Empresa → Sucursales (una sola "principal"); `doriconta`: la principal debe ser "Principal" (id 1).
+**Verificación tras los frontends (10 min):** cambiar de sucursal con un carrito en el POS (debe pedir confirmación); selector "Todas las sucursales" como admin (solo lectura, banner); abrir una venta/nota de venta y su PDF; la tienda pública (sin `stock_by_branch`); acceso maestro desde central (abre con `?master_code=`).
+**Corrección fiscal:** viaja con el backend; no emite nada por sí sola. Las 5 retenciones siguen en error y **no se reenvían** sin autorización por cliente.
+**Rollback:** el propio workflow imprime la pista de rollback (volver a la imagen anterior); `BRANCH_SCOPE_DISABLED=1` apaga el scope sin cambiar código; las migraciones no se revierten (aditivas e idempotentes).
