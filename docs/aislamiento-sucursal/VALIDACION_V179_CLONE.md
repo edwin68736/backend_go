@@ -60,3 +60,9 @@ Esta vez el esquema real de producción se cargó **completo y sin recortes** (9
 
 Totales de filas por tabla sin cambios en los 6 casos. **Resultados idénticos a los de MariaDB**, y más rápidos. Con esto queda cerrada la limitación de la sección 2 (versión del motor). Siguen siendo datos sintéticos y volúmenes pequeños; la corrida real en producción sigue requiriendo backup y arranque en 1–2 tenants pequeños.
 La instancia de prueba se detiene y se elimina al terminar.
+
+### 6.1 Cadena completa V172 → V179 en MySQL 8.0.46
+Además de V179 sola, se ejecutó **la cadena de migraciones pendientes de producción (V172, V173, V174, V175, V176, V177, V178, V179) en orden** sobre las 6 bases clon (esquema real en V171, datos sintéticos), con el mismo *scope* y `sql_mode` que producción:
+**48 aplicaciones (6 bases × 8 migraciones), 0 errores; segunda pasada idempotente en las 6.** Tiempos por migración (doriconta): V172 4 ms · V173 7 ms · V174 100 ms (crea tablas de Contabilidad) · V175 3 ms · V176 9 ms · V177 4 ms · V178 3 ms · V179 30 ms (≈ 160 ms por tenant en total).
+Limitación: el clon no tiene roles/permisos reales (solo esquema), por lo que los *backfills* de permisos de V173/V176/V177 se ejercitan en SQLite con tests unitarios pero **no con datos reales de roles**: conviene una verificación por muestreo tras `migrate-fleet` (permisos `branches.*`, `products.manage_global`, usuarios con fila en `tenant_user_branches`).
+Evidencia: salidas completas guardadas en el área temporal de la sesión (`v179_mysql8_result.txt`, `v172_179_chain_mysql8.txt`).
