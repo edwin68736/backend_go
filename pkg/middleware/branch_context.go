@@ -87,13 +87,22 @@ func BranchContextMiddleware() fiber.Handler {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Usuario inactivo"})
 		}
 
-		// "Ver todas las sucursales" = rol administrador (Fase 3B: permiso branches.view_all). Tener varias
-		// sucursales asignadas permite cambiar entre ellas, pero NO ver las demás.
-		viewAll := branch.IsTenantAdmin(claims.RoleName)
+		// "Ver todas las sucursales" depende del permiso branches.view_all (no del nombre del rol ni de cuántas
+		// sucursales tenga asignadas). Tenants aún sin V176 conservan la regla anterior.
+		viewAll := branch.ResolveViewAll(tdb, claims.Permissions, claims.RoleName, claims.AuthMethod)
 		home, _ := branch.ResolveHomeBranchID(tdb, user)
 		allowed, _ := branch.GetUserAssignedBranchIDs(tdb, user.ID)
 		if len(allowed) == 0 && home > 0 {
 			allowed = []uint{home}
+		}
+		// Un usuario sin ninguna sucursal asignada queda bloqueado hasta corregir su configuración (solo en
+		// tenants con V176, que ya asignó la sucursal principal a los existentes).
+		if !legacy && !viewAll && branch.PermissionCatalogReady(tdb) && !branch.UserHasAnyBranch(tdb, user) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"code":    branch.CodeBranchRequired,
+				"error":   "Usuario sin sucursal asignada",
+				"message": "Su usuario no tiene sucursal asignada. Pida al administrador que se la asigne.",
+			})
 		}
 		if !viewAll {
 			ok := false
@@ -112,9 +121,30 @@ func BranchContextMiddleware() fiber.Handler {
 			}
 		}
 
+		// Modo "Todas las sucursales": solo si se pide explícitamente y el usuario tiene branches.view_all.
+		// Es de solo lectura: cualquier escritura exige una sucursal concreta.
+		mode := branch.ModeSingleBranch
+		if viewAll && strings.EqualFold(c.Get(branch.HeaderBranchMode), "all") {
+			mode = branch.ModeAllBranches
+			switch c.Method() {
+			case fiber.MethodGet, fiber.MethodHead, fiber.MethodOptions:
+			default:
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"code":    branch.CodeBranchReadOnly,
+					"error":   "Todas las sucursales es solo de consulta",
+					"message": "Seleccione una sucursal concreta para registrar o modificar datos",
+				})
+			}
+		}
+		canSwitch := viewAll || len(allowed) > 1 || branch.RoleHasBranchPermission(tdb, claims.RoleID, "switch")
+
 		c.Locals("active_branch_id", activeID)
 		c.Locals("allowed_branch_ids", allowed)
 		c.Locals("is_branch_admin", viewAll)
+		c.Locals("branch_ctx", &branch.Context{
+			UserID: user.ID, ActiveBranchID: activeID, AllowedBranchIDs: allowed,
+			CanViewAll: viewAll, CanSwitch: canSwitch, Mode: mode,
+		})
 		c.Locals("branch_legacy_mode", legacy)
 		return c.Next()
 	}

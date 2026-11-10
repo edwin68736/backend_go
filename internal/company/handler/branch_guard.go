@@ -5,6 +5,7 @@ import (
 
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/middleware"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -48,6 +49,9 @@ func guardSeriesByID(c fiber.Ctx, seriesID uint) (bool, error) {
 // guardAdminOnly: operaciones que afectan a todo el tenant (crear/eliminar sucursales).
 func guardAdminOnly(c fiber.Ctx) (bool, error) {
 	if branch.IsBranchAdmin(c) {
+		return true, nil
+	}
+	if claims, _ := c.Locals("tenant_claims").(*middleware.TenantClaims); claims != nil && branch.HasPermission(claims.Permissions, branch.PermManage) {
 		return true, nil
 	}
 	return false, guardForbidden(c, "Solo quien administra todas las sucursales puede realizar esta acción")

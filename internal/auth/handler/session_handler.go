@@ -117,11 +117,11 @@ func (h *SessionHandler) GetContext(c fiber.Ctx) error {
 	sessionVer := uint(0)
 	allowedBranches := []branch.BranchBrief(nil)
 	if user != nil {
-		canSwitch = branch.UserCanSwitchBranch(tdb, claims.RoleName, user)
+		canSwitch = branch.UserCanSwitchBranchAuth(tdb, claims.RoleName, user, claims.AuthMethod)
 		if database.TenantBranchSessionVersionReady(tdb) {
 			sessionVer = user.BranchSessionVersion
 		}
-		if branch.IsTenantAdmin(claims.RoleName) {
+		if branch.RoleViewsAll(tdb, claims.RoleID, claims.RoleName, claims.AuthMethod) {
 			var all []database.TenantBranch
 			tdb.Where("active = ?", true).Order("is_main DESC, name ASC").Find(&all)
 			for _, b := range all {
@@ -134,6 +134,7 @@ func (h *SessionHandler) GetContext(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"active_branch":          brief,
 		"can_switch_branch":      canSwitch,
+		"can_view_all":           user != nil && branch.RoleViewsAll(tdb, claims.RoleID, claims.RoleName, claims.AuthMethod),
 		"allowed_branches":       allowedBranches,
 		"branch_session_version": sessionVer,
 	})
@@ -163,7 +164,7 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 			"message": "Ejecute migrate en el tenant antes de cambiar sucursal",
 		})
 	}
-	if !branch.UserCanSwitchBranch(tdb, claims.RoleName, user) {
+	if !branch.UserCanSwitchBranchAuth(tdb, claims.RoleName, user, claims.AuthMethod) {
 		return c.Status(403).JSON(fiber.Map{"error": "No tiene permiso para cambiar de sucursal"})
 	}
 
@@ -171,7 +172,7 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 	if err := tdb.Where("id = ? AND active = ?", body.BranchID, true).First(&b).Error; err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Sucursal no válida"})
 	}
-	if !branch.IsTenantAdmin(claims.RoleName) {
+	if !branch.RoleViewsAll(tdb, claims.RoleID, claims.RoleName, claims.AuthMethod) {
 		ok, err := branch.UserHasBranchAccess(tdb, user.ID, body.BranchID)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -186,7 +187,7 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	allowed, _ := branch.ListUserBranchBriefs(tdb, user.ID)
-	if branch.IsTenantAdmin(claims.RoleName) {
+	if branch.RoleViewsAll(tdb, claims.RoleID, claims.RoleName, claims.AuthMethod) {
 		var all []database.TenantBranch
 		tdb.Where("active = ?", true).Order("is_main DESC, name ASC").Find(&all)
 		allowed = make([]branch.BranchBrief, 0, len(all))
@@ -197,7 +198,8 @@ func (h *SessionHandler) SwitchBranch(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"token":             tokenString,
 		"active_branch":     brief,
-		"can_switch_branch": branch.UserCanSwitchBranch(tdb, claims.RoleName, user),
+		"can_switch_branch": branch.UserCanSwitchBranchAuth(tdb, claims.RoleName, user, claims.AuthMethod),
+		"can_view_all":      branch.RoleViewsAll(tdb, claims.RoleID, claims.RoleName, claims.AuthMethod),
 		"allowed_branches":  allowed,
 	})
 }

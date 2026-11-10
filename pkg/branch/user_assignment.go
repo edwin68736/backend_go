@@ -271,19 +271,50 @@ func ResolveUserSessionBranchID(db *gorm.DB, u *database.TenantUser) (uint, erro
 	return ResolveHomeBranchID(db, u)
 }
 
-// UserCanSwitchBranch indica si el usuario puede cambiar de sucursal en sesión.
+// UserCanSwitchBranch indica si el usuario puede cambiar de sucursal en sesión (ver UserCanSwitchBranchAuth).
 func UserCanSwitchBranch(db *gorm.DB, roleName string, u *database.TenantUser) bool {
-	if IsTenantAdmin(roleName) {
-		return true
+	return UserCanSwitchBranchAuth(db, roleName, u, "")
+}
+
+// UserCanSwitchBranchAuth: puede cambiar de sucursal quien ve todas (branches.view_all), quien tiene el permiso
+// explícito branches.switch, o quien tiene 2+ sucursales asignadas (solo entre ellas). El POS por PIN queda fijo en su
+// sucursal salvo permiso explícito branches.switch. Tenants sin V176 conservan la regla anterior (flag / rol).
+func UserCanSwitchBranchAuth(db *gorm.DB, roleName string, u *database.TenantUser, authMethod string) bool {
+	if u == nil {
+		return false
 	}
-	if u != nil && u.CanSwitchBranch {
-		return true
+	if !PermissionCatalogReady(db) {
+		if IsTenantAdmin(roleName) || u.CanSwitchBranch {
+			return true
+		}
+	} else {
+		if RoleViewsAll(db, u.RoleID, roleName, authMethod) || RoleHasBranchPermission(db, u.RoleID, "switch") {
+			return true
+		}
+		if authMethod == authMethodPIN {
+			return false
+		}
 	}
-	if u != nil && UserBranchesReady(db) {
+	if UserBranchesReady(db) {
 		ids, err := GetUserAssignedBranchIDs(db, u.ID)
 		if err == nil && len(ids) > 1 {
 			return true
 		}
 	}
 	return false
+}
+
+// UserHasAnyBranch indica si el usuario tiene alguna sucursal configurada (asignación N:N, home o branch_id).
+func UserHasAnyBranch(db *gorm.DB, u *database.TenantUser) bool {
+	if u == nil {
+		return false
+	}
+	if u.HomeBranchID != nil && *u.HomeBranchID > 0 {
+		return true
+	}
+	if u.BranchID != nil && *u.BranchID > 0 {
+		return true
+	}
+	ids, err := GetUserAssignedBranchIDs(db, u.ID)
+	return err == nil && len(ids) > 0
 }

@@ -84,7 +84,7 @@ func (h *RestaurantHandler) PinLogin(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
-	canSwitch := branch.UserCanSwitchBranch(tenantDB, role.Name, &user)
+	canSwitch := branch.UserCanSwitchBranchAuth(tenantDB, role.Name, &user, "pin")
 	allowedBranches, _ := branch.ListUserBranchBriefs(tenantDB, user.ID)
 	sessionVersion := user.BranchSessionVersion
 

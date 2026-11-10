@@ -153,6 +153,10 @@ func ResolveReadBranchFilter(c fiber.Ctx, requested uint) uint {
 	if requested != 0 && CanAccessBranch(c, requested) {
 		return requested
 	}
+	// Modo explícito ALL_BRANCHES (solo lectura, solo con branches.view_all): consulta consolidada.
+	if requested == 0 && IsAllBranchesMode(c) {
+		return 0
+	}
 	if active == 0 {
 		return NoBranchFilter
 	}

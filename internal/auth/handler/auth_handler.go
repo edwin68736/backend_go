@@ -245,7 +245,7 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 	canSwitch := branch.UserCanSwitchBranch(tenantDB, role.Name, user)
 	activeBrief, _ := branch.GetBranchBrief(tenantDB, activeBranchID)
 	allowedBranches, _ := branch.ListUserBranchBriefs(tenantDB, user.ID)
-	if branch.IsTenantAdmin(role.Name) {
+	if branch.RoleViewsAll(tenantDB, user.RoleID, role.Name, "") {
 		var all []database.TenantBranch
 		tenantDB.Where("active = ?", true).Order("is_main DESC, name ASC").Find(&all)
 		allowedBranches = make([]branch.BranchBrief, 0, len(all))
@@ -314,6 +314,7 @@ func (h *AuthHandler) LoginAPI(c fiber.Ctx) error {
 		},
 		"active_branch":          activeBrief,
 		"can_switch_branch":      canSwitch,
+		"can_view_all":           branch.RoleViewsAll(tenantDB, user.RoleID, role.Name, ""),
 		"allowed_branches":       allowedBranches,
 		"modules":                enabledModules,
 		"permissions":            permissionKeys,
@@ -407,7 +408,7 @@ func allowedBranchForRefresh(db *gorm.DB, user *database.TenantUser, roleName st
 	if err := db.Where("id = ? AND active = ?", wantID, true).First(&b).Error; err != nil {
 		return false
 	}
-	if branch.IsTenantAdmin(roleName) {
+	if branch.RoleViewsAll(db, user.RoleID, roleName, "") {
 		return true
 	}
 	ok, err := branch.UserHasBranchAccess(db, user.ID, wantID)

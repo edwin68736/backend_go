@@ -120,6 +120,9 @@ func (h *UserHandler) CreateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
+	if denyBranchEscalationForUser(c, input.RoleID, input.BranchID, input.BranchIDs) {
+		return nil
+	}
 	u, err := service.NewUserService(tenantDB(c)).WithTenant(middleware.TenantIDFromClaims(c)).Create(input)
 	if err != nil {
 		if middleware.RespondQuotaError(c, err) {
@@ -160,6 +163,9 @@ func (h *UserHandler) RestoreAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
+	if denyBranchEscalationForUser(c, input.RoleID, input.BranchID, input.BranchIDs) {
+		return nil
+	}
 	u, err := service.NewUserService(tenantDB(c)).WithTenant(middleware.TenantIDFromClaims(c)).Restore(uint(id), input)
 	if err != nil {
 		if middleware.RespondQuotaError(c, err) {
@@ -181,6 +187,9 @@ func (h *UserHandler) UpdateAPI(c fiber.Ctx) error {
 	var input service.UpdateUserInput
 	if err := c.Bind().JSON(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	if denyBranchEscalationForUser(c, input.RoleID, input.BranchID, input.BranchIDs) {
+		return nil
 	}
 	if err := service.NewUserService(tenantDB(c)).WithTenant(middleware.TenantIDFromClaims(c)).Update(uint(id), input); err != nil {
 		if middleware.RespondQuotaError(c, err) {
@@ -254,6 +263,9 @@ func (h *RoleHandler) CreateAPI(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
+	if denyBranchEscalationForRole(c, body.PermissionIDs) {
+		return nil
+	}
 	roleSvc := service.NewRoleService(tenantDB(c))
 	role, err := roleSvc.Create(body.Name, body.Description)
 	if err != nil {
@@ -278,6 +290,9 @@ func (h *RoleHandler) UpdateAPI(c fiber.Ctx) error {
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	if denyBranchEscalationForRole(c, body.PermissionIDs) {
+		return nil
 	}
 	roleSvc := service.NewRoleService(tenantDB(c))
 	if err := roleSvc.Update(uint(id), body.Name, body.Description); err != nil {
