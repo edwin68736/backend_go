@@ -16,11 +16,23 @@ import (
 	"strings"
 
 	"tukifac/pkg/branch"
+	"tukifac/pkg/branchscope"
 	"tukifac/pkg/database"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
 )
+
+// inferDB devuelve db sin el scope de sucursal para INFERIR la sucursal de un documento relacionado. Estas guardas son quienes
+// deciden el acceso (RecordReadable/RecordWritable): si la búsqueda del documento ajeno se ejecutara acotada no lo
+// encontraría y lo trataría como "sin sucursal / documento externo", dejándolo pasar (fail-open). Nunca devuelve datos al
+// usuario: solo se usa el branch_id para decidir.
+func inferDB(db *gorm.DB, reason string) *gorm.DB {
+	if db == nil {
+		return nil
+	}
+	return branchscope.System(db, "branchguard: "+reason)
+}
 
 // ErrNotFound: el registro no existe o pertenece a una sucursal a la que el usuario no accede.
 var ErrNotFound = errors.New("no encontrado")
@@ -152,6 +164,7 @@ func ReadableFunc(c fiber.Ctx) func(branchID uint) bool {
 // crean por sucursal). Sin coincidencia devuelve 0. Si el nombre se repite en varias sucursales
 // devuelve la primera: la serie ya la validó ValidateForBranch al emitir.
 func seriesBranch(db *gorm.DB, series string) uint {
+	db = inferDB(db, "inferir sucursal de una serie")
 	series = strings.ToUpper(strings.TrimSpace(series))
 	if series == "" {
 		return 0
@@ -165,6 +178,7 @@ func seriesBranch(db *gorm.DB, series string) uint {
 
 // RetentionBranch: compra origen > serie.
 func RetentionBranch(db *gorm.DB, r database.TenantRetention) uint {
+	db = inferDB(db, "inferir sucursal de una retención")
 	if r.PurchaseID != nil && *r.PurchaseID > 0 {
 		var p database.TenantPurchase
 		if err := db.Select("id", "branch_id").First(&p, *r.PurchaseID).Error; err == nil && p.BranchID > 0 {
@@ -176,6 +190,7 @@ func RetentionBranch(db *gorm.DB, r database.TenantRetention) uint {
 
 // PerceptionBranch: venta origen > serie.
 func PerceptionBranch(db *gorm.DB, p database.TenantPerception) uint {
+	db = inferDB(db, "inferir sucursal de una percepción")
 	if p.SourceSaleID != nil && *p.SourceSaleID > 0 {
 		if b, err := SaleBranch(db, *p.SourceSaleID); err == nil && b > 0 {
 			return b
@@ -243,6 +258,7 @@ func PayloadLines(payloadJSON string) (lines []DocLine, ok bool) {
 // DocBranch sucursal del comprobante referenciado por tipo/serie/correlativo. found=false si no
 // existe localmente (documento de otro sistema): se trata como del tenant (0).
 func DocBranch(db *gorm.DB, tipoDoc, serie, correlativo string) (branchID uint, found bool) {
+	db = inferDB(db, "inferir sucursal de un comprobante por serie y correlativo")
 	serie = strings.ToUpper(strings.TrimSpace(serie))
 	correlativo = strings.TrimSpace(correlativo)
 	if db == nil || serie == "" || correlativo == "" {
