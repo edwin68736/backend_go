@@ -28,7 +28,7 @@ func jsonWithETag(c fiber.Ctx, v any) error {
 
 	c.Set(fiber.HeaderETag, etag)
 	c.Set(fiber.HeaderCacheControl, "private, no-cache")
-	c.Set(fiber.HeaderVary, "Authorization, X-Tenant-Slug, X-Branch-Id")
+	c.Set(fiber.HeaderVary, "Authorization, X-Tenant-Slug, X-Branch-Id, X-Branch-Mode")
 
 	if etagMatches(c.Get(fiber.HeaderIfNoneMatch), etag) {
 		return c.SendStatus(fiber.StatusNotModified)
