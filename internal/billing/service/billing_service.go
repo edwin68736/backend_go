@@ -2233,9 +2233,10 @@ func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*da
 	if errProv != nil {
 		return nil, fmt.Errorf("proveedor: %w", errProv)
 	}
-	fechaEmision := strings.TrimSpace(input.FechaEmision)
-	if fechaEmision == "" {
-		fechaEmision = facturador.FormatFiscalDateTime(time.Now())
+	// Toda fecha hacia el facturador va como Y-m-dTH:i:sP (hora de Lima); ver fiscalDateTime.
+	fechaEmision, err := fiscalDateTime(input.FechaEmision, "fecha de emisión")
+	if err != nil {
+		return nil, err
 	}
 	detailIn := make([]retentionDetailBuildInput, len(input.Details))
 	for i, d := range input.Details {
@@ -2478,9 +2479,10 @@ func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*
 	if errProv != nil {
 		return nil, fmt.Errorf("sujeto percibido: %w", errProv)
 	}
-	fechaEmision := strings.TrimSpace(input.FechaEmision)
-	if fechaEmision == "" {
-		fechaEmision = facturador.FormatFiscalDateTime(time.Now())
+	// Toda fecha hacia el facturador va como Y-m-dTH:i:sP (hora de Lima); ver fiscalDateTime.
+	fechaEmision, err := fiscalDateTime(input.FechaEmision, "fecha de emisión")
+	if err != nil {
+		return nil, err
 	}
 	detailIn := make([]perceptionDetailBuildInput, len(input.Details))
 	for i, d := range input.Details {

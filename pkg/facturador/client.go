@@ -1169,6 +1169,7 @@ type RetentionPayload struct {
 
 // SendRetention envía comprobante de retención (POST /retention/send).
 func (c *Client) SendRetention(payload *RetentionPayload) (*SunatResponse, error) {
+	normalizeRetentionPayloadDates(payload)
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("payload: %w", err)
@@ -1198,6 +1199,7 @@ func (c *Client) postRetentionDocument(path string, payload *RetentionPayload) (
 	if payload == nil {
 		return nil, fmt.Errorf("payload: nil")
 	}
+	normalizeRetentionPayloadDates(payload)
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("payload: %w", err)
@@ -1262,6 +1264,7 @@ type PerceptionPayload struct {
 
 // SendPerception envía comprobante de percepción (POST /perception/send).
 func (c *Client) SendPerception(payload *PerceptionPayload) (*SunatResponse, error) {
+	normalizePerceptionPayloadDates(payload)
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("payload: %w", err)
@@ -1291,6 +1294,7 @@ func (c *Client) postPerceptionDocument(path string, payload *PerceptionPayload)
 	if payload == nil {
 		return nil, fmt.Errorf("payload: nil")
 	}
+	normalizePerceptionPayloadDates(payload)
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("payload: %w", err)

@@ -47,6 +47,11 @@ type retentionPaymentInput struct {
 	Fecha   string  `json:"fecha"`
 }
 
+// exchangeRateLookup consulta el tipo de cambio por día (AAAA-MM-DD); variable para poder inyectarlo en tests.
+var exchangeRateLookup = func(day string) (*exchangerate.QueryResult, error) {
+	return exchangerate.DefaultService().GetExchangeRate(day)
+}
+
 type retentionExchangeInput struct {
 	MonedaRef string  `json:"moneda_ref"`
 	MonedaObj string  `json:"moneda_obj"`
@@ -168,18 +173,32 @@ func normalizeFiscalMoneda(m string) string {
 	return m
 }
 
-func fiscalDateOnly(iso string) string {
-	iso = strings.TrimSpace(iso)
-	if iso == "" {
-		return time.Now().Format("2006-01-02")
+// fiscalDateTime lleva una fecha de entrada (solo día, con o sin hora, RFC3339) al formato que
+// exige el facturador para TODA fecha de retención/percepción: Y-m-d\TH:i:sP (RFC3339 con
+// offset de Lima). Un valor vacío equivale a "hoy" en Lima, como antes. Ver
+// facturador.FiscalDateTimeFromInput para las reglas de zona horaria.
+func fiscalDateTime(value, label string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return facturador.FormatFiscalDateTime(time.Now()), nil
 	}
-	if t, err := time.Parse(time.RFC3339, iso); err == nil {
-		return t.Format("2006-01-02")
+	out, err := facturador.FiscalDateTimeFromInput(value)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
 	}
-	if len(iso) >= 10 {
-		return iso[:10]
+	return out, nil
+}
+
+// fiscalCalendarDay devuelve el día (AAAA-MM-DD, Lima) de una fecha de entrada; vacío = hoy en Lima.
+// Se usa donde se necesita un día y no un instante (consulta de tipo de cambio).
+func fiscalCalendarDay(value, label string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return facturador.FiscalCalendarDay(facturador.FormatFiscalDateTime(time.Now()))
 	}
-	return iso
+	out, err := facturador.FiscalCalendarDay(value)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
+	}
+	return out, nil
 }
 
 func (s *BillingService) resolveDetailExchange(moneda string, fechaEmision string, manual *retentionExchangeInput) (*facturador.RetentionExchange, error) {
@@ -196,9 +215,14 @@ func (s *BillingService) resolveDetailExchange(moneda string, fechaEmision strin
 		if ref == "" {
 			ref = moneda
 		}
-		fecha := fiscalDateOnly(manual.Fecha)
-		if fecha == "" {
-			fecha = fiscalDateOnly(fechaEmision)
+		// Fecha del tipo de cambio: la indicada o, si falta, la del comprobante relacionado.
+		fuente := manual.Fecha
+		if strings.TrimSpace(fuente) == "" {
+			fuente = fechaEmision
+		}
+		fecha, err := fiscalDateTime(fuente, "fecha del tipo de cambio")
+		if err != nil {
+			return nil, err
 		}
 		return &facturador.RetentionExchange{
 			MonedaRef: ref,
@@ -207,8 +231,16 @@ func (s *BillingService) resolveDetailExchange(moneda string, fechaEmision strin
 			Fecha:     fecha,
 		}, nil
 	}
-	fecha := fiscalDateOnly(fechaEmision)
-	res, err := exchangerate.DefaultService().GetExchangeRate(fecha)
+	// La consulta del tipo de cambio es por DÍA (AAAA-MM-DD de Lima); el payload lleva el datetime.
+	dia, err := fiscalCalendarDay(fechaEmision, "fecha del comprobante relacionado")
+	if err != nil {
+		return nil, err
+	}
+	fecha, err := fiscalDateTime(fechaEmision, "fecha del comprobante relacionado")
+	if err != nil {
+		return nil, err
+	}
+	res, err := exchangeRateLookup(dia)
 	if err != nil {
 		return nil, fmt.Errorf("tipo de cambio: %w", err)
 	}
@@ -217,7 +249,7 @@ func (s *BillingService) resolveDetailExchange(moneda string, fechaEmision strin
 		if res != nil && res.ErrorMessage != "" {
 			msg = res.ErrorMessage
 		}
-		return nil, fmt.Errorf("tipo de cambio USD/PEN (%s): %s", fecha, msg)
+		return nil, fmt.Errorf("tipo de cambio USD/PEN (%s): %s", dia, msg)
 	}
 	return &facturador.RetentionExchange{
 		MonedaRef: moneda,
@@ -240,13 +272,15 @@ func mapPaymentsInput(pagos []retentionPaymentInput, defaultMoneda, defaultFecha
 		if p.Importe <= 0 {
 			return nil, fmt.Errorf("pago/cobro #%d: importe debe ser mayor a cero", i+1)
 		}
-		fecha := strings.TrimSpace(p.Fecha)
-		if fecha == "" {
-			fecha = fiscalDateOnly(defaultFecha)
-		} else {
-			fecha = fiscalDateOnly(fecha)
+		fuente := strings.TrimSpace(p.Fecha)
+		if fuente == "" {
+			fuente = defaultFecha
 		}
-		out[i] = facturador.RetentionPayment{
+		fecha, err := fiscalDateTime(fuente, fmt.Sprintf("pago/cobro #%d: fecha", i+1))
+		if err != nil {
+			return nil, err
+		}
+		out[i] =facturador.RetentionPayment{
 			Moneda:  moneda,
 			Importe: roundMoney(p.Importe),
 			Fecha:   fecha,
@@ -309,7 +343,14 @@ func (s *BillingService) buildRetentionDetails(details []retentionDetailBuildInp
 		if err != nil {
 			return nil, fmt.Errorf("detalle #%d: %w", i+1, err)
 		}
-		fechaDoc := fiscalDateOnly(d.FechaEmision)
+		fechaDoc, err := fiscalDateTime(d.FechaEmision, fmt.Sprintf("detalle #%d: fecha de emisión", i+1))
+		if err != nil {
+			return nil, err
+		}
+		fechaRetFiscal, err := fiscalDateTime(fechaRet, fmt.Sprintf("detalle #%d: fecha de retención", i+1))
+		if err != nil {
+			return nil, err
+		}
 		out[i] = facturador.RetentionDetail{
 			TipoDoc:        strings.TrimSpace(d.TipoDoc),
 			NumDoc:         strings.TrimSpace(d.NumDoc),
@@ -317,7 +358,7 @@ func (s *BillingService) buildRetentionDetails(details []retentionDetailBuildInp
 			ImpTotal:       roundMoney(d.ImpTotal),
 			Moneda:         moneda,
 			Pagos:          pagos,
-			FechaRetencion: fiscalDateOnly(fechaRet),
+			FechaRetencion: fechaRetFiscal,
 			ImpRetenido:    roundMoney(d.ImpRetenido),
 			ImpPagar:       roundMoney(d.ImpPagar),
 			TipoCambio:     exchange,
@@ -377,14 +418,22 @@ func (s *BillingService) buildPerceptionDetails(details []perceptionDetailBuildI
 		if err != nil {
 			return nil, fmt.Errorf("detalle #%d: %w", i+1, err)
 		}
+		fechaDoc, err := fiscalDateTime(d.FechaEmision, fmt.Sprintf("detalle #%d: fecha de emisión", i+1))
+		if err != nil {
+			return nil, err
+		}
+		fechaPercFiscal, err := fiscalDateTime(fechaPerc, fmt.Sprintf("detalle #%d: fecha de percepción", i+1))
+		if err != nil {
+			return nil, err
+		}
 		out[i] = facturador.PerceptionDetail{
 			TipoDoc:         strings.TrimSpace(d.TipoDoc),
 			NumDoc:          strings.TrimSpace(d.NumDoc),
-			FechaEmision:    fiscalDateOnly(d.FechaEmision),
+			FechaEmision:    fechaDoc,
 			ImpTotal:        roundMoney(d.ImpTotal),
 			Moneda:          moneda,
 			Cobros:          cobros,
-			FechaPercepcion: fiscalDateOnly(fechaPerc),
+			FechaPercepcion: fechaPercFiscal,
 			ImpPercibido:    roundMoney(d.ImpPercibido),
 			ImpCobrar:       roundMoney(d.ImpCobrar),
 			TipoCambio:      exchange,
