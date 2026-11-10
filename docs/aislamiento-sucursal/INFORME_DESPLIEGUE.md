@@ -72,3 +72,32 @@ No hay migración de ecommerce (solo diseño).
   El backend anterior ignora los permisos nuevos y los registros añadidos.
 - **Frontends:** redeploy del build anterior (web) o versión anterior de las apps; los frontends antiguos funcionan con el backend nuevo salvo el punto de escrituras endurecidas.
 - **Datos:** no hay migraciones destructivas ni reasignaciones; si V176 asignó una sucursal incorrecta a un usuario, se corrige desde Usuarios. Restaurar desde el backup del paso 1 solo ante corrupción.
+
+---
+
+## 7. Actualización (10-nov-2026, tarde): sesión, JWT y SSE
+
+**Commits nuevos.** Backend: `4f2be24` emisor único de JWT · `7c8141a` versión de sesión (V178) y SSE por cabecera.
+Tukifac: `509dba1` refresh ante 409 + SSE fetch-stream. Tukichef: `1cdad54` ídem + aviso de fin de turno PIN.
+
+**Migración nueva: V178** (aditiva e idempotente): `branch_session_version` 0 → 1. Sin ella la primera revocación de cada usuario no surtía efecto.
+
+**Qué cambia**
+- Un solo emisor de JWT (`internal/auth/service/issuer.go`); `switch-branch` relee rol/permisos/módulos de la BD y **no extiende** el exp (el PIN conserva su turno de 12 h; encadenar cambios de sucursal ya no prolonga la sesión; el refresh de 30 d renueva). Rechaza usuarios inactivos.
+- La versión de sesión sube al cambiar rol, permisos del rol, contraseña, PIN o estado activo → el token viejo recibe 409 `SESSION_UPDATED`; los frontends nuevos refrescan y reintentan una vez.
+- SSE de facturación: el token viaja por cabecera (fetch-stream). El `?access_token=` queda **solo** como puente en `/api/billing/events` mientras `SSE_ALLOW_QUERY_TOKEN` != 0 (con contador en el log). El stream se cierra al vencer el token o a los 55 min.
+
+**Verificado en vivo (backend local + MySQL):** SSE 200 con cabecera; puente aceptado solo en esa ruta (401 en `/api/sales?access_token=`); `switch-branch` conserva el exp del login; tras subir la versión de sesión el token viejo recibe 409 y la app de Tukichef, con login real, refrescó sin cerrar sesión (token con versión nueva, sigue en la pantalla); el stream conecta desde el navegador sin token en la URL.
+
+**Orden de despliegue (ajustado).** Hay una tensión: el frontend web de Tukifac debe salir después de V173/V176/V177, pero el backend que sube la versión por rol debe salir con (o después de) los frontends que refrescan ante 409.
+Recomendado: ventana de mantenimiento corta — backend → migrate-fleet (V172…V178) → frontends (Tukifac web y apps Tukichef) — y **no editar roles, permisos ni contraseñas** hasta que los frontends nuevos estén arriba (un cambio así expulsa a los afectados, que solo deben volver a entrar; los PIN no tienen refresh).
+Después: 24 h más tarde activar `RejectLegacyZeroSessionVersion = true` (rechaza tokens con claim de versión 0) en una entrega aparte; cuando el contador del puente deje de crecer, `SSE_ALLOW_QUERY_TOKEN=0`.
+
+**Riesgos nuevos**
+- Cambiar la propia contraseña sube la versión: con frontends antiguos el usuario tendría que volver a entrar.
+- Streaming de `fetch` en WebView de Android y Tauri sin verificar (plan B documentado: ticket de un solo uso + EventSource).
+- `?master_sso=<jwt>` (acceso maestro) sigue en la URL: segunda entrega con código de canje de un solo uso.
+- Tras 402/403/404 el stream no reintenta hasta que cambie token, sucursal o época.
+- Pruebas: backend 3 corridas completas sin fallos tras estabilizar `TestBillingEventsSSE_BranchIsolation` (era sensible a la carga); Tukifac 93 tests; Tukichef 86 tests.
+
+**Rollback adicional:** volver a la imagen anterior del backend; V178 es inofensiva (versión 1). Si se revierte un frontend con el backend nuevo, los cambios de rol/contraseña vuelven a cerrar sesión (por eso el orden). `SSE_ALLOW_QUERY_TOKEN=1` mantiene vivos a los clientes antiguos.
