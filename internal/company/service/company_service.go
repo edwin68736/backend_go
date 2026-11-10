@@ -1,6 +1,7 @@
 package service
 
 import (
+	"tukifac/pkg/branchscope"
 	"errors"
 	"fmt"
 	"strings"
@@ -436,7 +437,9 @@ func (s *CompanyService) assertSeriesCodeUnique(branchID uint, category, seriesN
 	if code == "" {
 		return errors.New("código de serie inválido")
 	}
-	q := s.db.Model(&database.TenantDocumentSeries{}).Where("series = ?", code)
+	// Regla GLOBAL del tenant: la unicidad se comprueba sobre TODAS las sucursales, no solo las del usuario (con el
+	// scope de sucursal activo, un código repetido en otra sucursal no se vería).
+	q := branchscope.System(s.db, "company: unicidad global del código de serie").Model(&database.TenantDocumentSeries{}).Where("series = ?", code)
 	// Series de almacén: código único dentro de la sucursal (puede repetirse en otra sucursal).
 	if strings.TrimSpace(strings.ToLower(category)) == "almacen" {
 		if branchID == 0 {

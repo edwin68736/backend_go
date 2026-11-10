@@ -1,6 +1,7 @@
 package service
 
 import (
+	"tukifac/pkg/branchscope"
 	"errors"
 	"fmt"
 	"strings"
@@ -341,13 +342,16 @@ var contactReferencingTables = []string{
 
 // CountLinkedDocuments cuenta los registros (incluso anulados) que apuntan al contacto.
 func (s *ContactService) CountLinkedDocuments(id uint) (int64, error) {
+	// Regla GLOBAL: un contacto es del tenant; se cuentan los documentos de TODAS las sucursales (con el scope activo no se
+	// verían los de otras sucursales y se podría eliminar un contacto usado en ellas).
+	sys := branchscope.System(s.db, "contacts: documentos vinculados de todas las sucursales")
 	var total int64
 	for _, table := range contactReferencingTables {
-		if !s.db.Migrator().HasTable(table) {
+		if !sys.Migrator().HasTable(table) {
 			continue
 		}
 		var n int64
-		if err := s.db.Table(table).Where("contact_id = ?", id).Count(&n).Error; err != nil {
+		if err := sys.Table(table).Where("contact_id = ?", id).Count(&n).Error; err != nil {
 			return 0, err
 		}
 		total += n
