@@ -1,6 +1,7 @@
 package service
 
 import (
+	"tukifac/pkg/branchscope"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -661,9 +662,12 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 				if err := json.Unmarshal([]byte(logRow.SerialsJSON), &serials); err != nil {
 					return err
 				}
-				// Mover seriales de origen (in_transit) a destino (available)
+				// Mover seriales de origen (in_transit) a destino (available). Las filas están en la sucursal ORIGEN y quien confirma solo
+				// tiene acceso al destino: la autorización (activa == destino) ya la validó el handler, así que este paso interno de la
+				// transferencia se ejecuta fuera del scope de sucursal (con él, el UPDATE afectaba 0 filas sin error).
+				sysTx := branchscope.System(tx, "inventario: confirmación de transferencia mueve series de origen a destino")
 				for _, serial := range serials {
-					if err := tx.Model(&database.TenantProductSerial{}).
+					if err := sysTx.Model(&database.TenantProductSerial{}).
 						Where("product_id = ? AND branch_id = ? AND serial = ? AND status = ?",
 							logRow.ProductID, logRow.FromBranchID, serial, "in_transit").
 						Updates(map[string]interface{}{
