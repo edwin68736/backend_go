@@ -115,3 +115,24 @@ Verificado en vivo (8 productos públicos del demo: 0 con stock por sucursal, 0 
 
 **Pendiente de ecommerce (no incluido):** `ListOrders`, `print-data` y `status` de pedidos no se pueden aislar por sucursal sin `branch_id` en
 `tenant_ecommerce_orders` (migración E1, sin ejecutar); el stock mostrado sigue siendo el total del tenant hasta definir la sucursal de despacho.
+
+---
+
+## 9. Acceso maestro con código de un solo uso (10-nov-2026, noche)
+
+**Commits:** backend `fb1e0a3` · Tukifac `4368931` · frontend_central `e9fcc58` (repo nuevo en esta lista: 1 commit sin push). **Sin migración.**
+
+**Qué cambia:** el superadmin ya no abre el ERP del tenant con `?master_sso=<jwt>` (el JWT de 24 h quedaba en historial, logs de proxy/CDN y Referer).
+`POST /api/superadmin/tenants/:id/master-access` devuelve un **código aleatorio de 30 s y un solo uso** (Redis `GETDEL` en producción, memoria sin Redis; guardado como hash
+y atado al slug del tenant). La URL pasa a `/?master_code=<código>`; el ERP del tenant lo canjea con `POST /api/auth/master-exchange` (el JWT viaja en el cuerpo, `no-store`,
+rate limit de autenticación y auditoría `master_access_exchange[_failed]`) y limpia la URL de inmediato. Un código canjeado en otro tenant queda quemado.
+
+**Puentes de compatibilidad (apagables):** el backend sigue devolviendo `token` salvo `MASTER_ACCESS_LEGACY_TOKEN=0`; el ERP del tenant sigue aceptando `?master_sso=<jwt>` y `/auth/sso?token=`.
+**Orden de despliegue:** (1) backend, (2) frontend del tenant (acepta `master_code`), (3) frontend central (empieza a usar el código). Después, cuando no queden ERPs/central antiguos:
+`MASTER_ACCESS_LEGACY_TOKEN=0` y retirar el soporte de `?master_sso=` del frontend del tenant. **Rollback:** imagen/builds anteriores; el puente garantiza que el central antiguo siga funcionando con el backend nuevo.
+**Requisito:** Redis activo en producción para que el canje valga entre instancias (sin Redis solo funciona con una instancia, porque el código vive en memoria).
+
+**Verificado en vivo (backend local + MySQL, tenant demo, superadmin local):** el endpoint devuelve `code` (43 caracteres) y `token`; el canje funciona una vez y el segundo da 401 `MASTER_CODE_INVALID`;
+abrir `/?master_code=…` en el navegador inicia sesión como acceso maestro (`auth_method: master_access`, `impersonated`, actor `superadmin@saas.com`) y la URL queda en `/home` sin código.
+Tests: `pkg/mastercode` (memoria y Redis con miniredis: un solo uso, TTL, cross-tenant), handler de canje, Tukifac 98 tests (incl. flujo completo del `AuthProvider`), central 129 tests.
+**No probado:** Redis real en producción (miniredis sí), el flujo con el frontend central desplegado.
