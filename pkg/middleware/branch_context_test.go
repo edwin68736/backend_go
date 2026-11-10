@@ -62,6 +62,15 @@ func (e bcEnv) user(t *testing.T, name, role string, home uint, assigned ...uint
 }
 
 func (e bcEnv) call(u database.TenantUser, roleName string, perms []string, authMethod string, active uint, method, mode string) (int, string) {
+	// "Ver todas" se decide con los permisos del rol en BD (no con los del JWT): se reflejan los permisos branches.* pedidos.
+	for _, pm := range perms {
+		if strings.HasPrefix(pm, "branches.") {
+			var perm database.TenantPermission
+			if e.db.Where("module = ? AND action = ?", "branches", strings.TrimPrefix(pm, "branches.")).First(&perm).Error == nil {
+				e.db.FirstOrCreate(&database.TenantRolePermission{}, database.TenantRolePermission{RoleID: u.RoleID, PermissionID: perm.ID})
+			}
+		}
+	}
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		c.Locals("tenantDB", e.db)
@@ -177,5 +186,21 @@ func TestBranchContext_InactiveUserRejected(t *testing.T) {
 	e.db.Model(&database.TenantUser{}).Where("id = ?", u.ID).Update("active", false)
 	if code, _ := e.call(u, "Vendedor", nil, "pwd", 1, "GET", ""); code != 401 {
 		t.Errorf("usuario inactivo: %d, quiere 401", code)
+	}
+}
+
+// El permiso se lee de la BD, no del JWT: un token emitido ANTES de V176 (sin branches.view_all en sus claims) de un rol que
+// ya lo tiene en BD debe ver todas las sucursales, igual que indica `can_view_all` en login/contexto. Antes el servidor ignoraba
+// la cabecera X-Branch-Mode y devolvía solo la sucursal activa (vista "consolidada" falsa).
+func TestBranchContext_ViewAllComesFromDBNotStaleJWT(t *testing.T) {
+	e := newBCEnv(t, true)
+	u := e.user(t, "viejo", "x", 1, 1)
+	var perm database.TenantPermission
+	e.db.Where("module = 'branches' AND action = 'view_all'").First(&perm)
+	e.db.Create(&database.TenantRolePermission{RoleID: u.RoleID, PermissionID: perm.ID})
+	// JWT sin permisos de sucursales (token viejo).
+	code, body := e.call(u, "Gerente", []string{"sales.view"}, "pwd", 1, "GET", "all")
+	if code != 200 || !strings.Contains(body, "mode=ALL_BRANCHES") || !strings.Contains(body, "all=true") {
+		t.Errorf("rol con view_all en BD y JWT viejo: %d %s", code, body)
 	}
 }

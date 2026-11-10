@@ -1,6 +1,8 @@
 package branch
 
 import (
+	"sync"
+	"time"
 	"tukifac/pkg/database"
 
 	"github.com/gofiber/fiber/v3"
@@ -111,4 +113,40 @@ func FromCtx(c fiber.Ctx) *Context {
 func IsAllBranchesMode(c fiber.Ctx) bool {
 	ctx := FromCtx(c)
 	return ctx != nil && ctx.Mode == ModeAllBranches && ctx.CanViewAll
+}
+
+type viewAllKey struct {
+	pool   interface{}
+	roleID uint
+}
+
+type viewAllEntry struct {
+	val bool
+	exp time.Time
+}
+
+var viewAllCache sync.Map
+
+// viewAllTTL: los cambios de permisos de un rol se reflejan en "ver todas" en segundos, sin esperar a que venza el JWT.
+const viewAllTTL = 10 * time.Second
+
+// RoleViewsAllCached es RoleViewsAll con una caché corta por pool+rol: el middleware la usa en cada solicitud. La decisión
+// sale de la BD (no de los permisos del JWT): así coincide con el `can_view_all` que ven los clientes y un rol al que se le
+// quita branches.view_all lo pierde de inmediato, no tras 24 h.
+func RoleViewsAllCached(db *gorm.DB, roleID uint, roleName, authMethod string) bool {
+	if authMethod == authMethodPIN {
+		return false
+	}
+	if db == nil || db.Config == nil {
+		return RoleViewsAll(db, roleID, roleName, authMethod)
+	}
+	key := viewAllKey{pool: db.Config.ConnPool, roleID: roleID}
+	if v, ok := viewAllCache.Load(key); ok {
+		if e := v.(viewAllEntry); time.Now().Before(e.exp) {
+			return e.val
+		}
+	}
+	val := RoleViewsAll(db, roleID, roleName, authMethod)
+	viewAllCache.Store(key, viewAllEntry{val: val, exp: time.Now().Add(viewAllTTL)})
+	return val
 }

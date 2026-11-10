@@ -90,7 +90,7 @@ func BranchContextMiddleware() fiber.Handler {
 
 		// "Ver todas las sucursales" depende del permiso branches.view_all (no del nombre del rol ni de cuántas
 		// sucursales tenga asignadas). Tenants aún sin V176 conservan la regla anterior.
-		viewAll := branch.ResolveViewAll(tdb, claims.Permissions, claims.RoleName, claims.AuthMethod)
+		viewAll := branch.RoleViewsAllCached(tdb, claims.RoleID, claims.RoleName, claims.AuthMethod)
 		home, _ := branch.ResolveHomeBranchID(tdb, user)
 		allowed, _ := branch.GetUserAssignedBranchIDs(tdb, user.ID)
 		if len(allowed) == 0 && home > 0 {
