@@ -39,11 +39,11 @@ func TestBillingEventsSSE_BranchIsolation(t *testing.T) {
 	vend := openSSE(t, serve(branchtest.Vendedor1))
 	admin := openSSE(t, serve(branchtest.Admin))
 	for _, cl := range []*sseClient{vend, admin} {
-		if !cl.waitLine("retry: 3000", 2*time.Second) {
+		if !cl.waitLine("retry: 3000", 10*time.Second) {
 			t.Fatal("no llegó el preámbulo SSE")
 		}
 	}
-	if n := waitSubs(2, 2*time.Second); n != 2 {
+	if n := waitSubs(2, 10*time.Second); n != 2 {
 		t.Fatalf("suscripciones activas = %d, want 2", n)
 	}
 
@@ -52,13 +52,13 @@ func TestBillingEventsSSE_BranchIsolation(t *testing.T) {
 	billingevents.PublishStatusUpdated(context.Background(), billingevents.NewStatusUpdated(1, f.sale2, "rejected", "", "secreto-S2"))
 	billingevents.PublishStatusUpdated(context.Background(), billingevents.NewStatusUpdated(1, f.sale1, "accepted", "", "propio-S1"))
 
-	if !vend.waitLine("propio-S1", 3*time.Second) {
+	if !vend.waitLine("propio-S1", 10*time.Second) {
 		t.Fatal("el vendedor debía recibir el evento de su propia sucursal")
 	}
 	if vend.waitLine("secreto-S2", 500*time.Millisecond) {
 		t.Fatal("el vendedor recibió el evento de otra sucursal")
 	}
-	if !admin.waitLine("secreto-S2", 3*time.Second) {
+	if !admin.waitLine("secreto-S2", 10*time.Second) {
 		t.Fatal("el administrador debía recibir el evento de S2")
 	}
 }

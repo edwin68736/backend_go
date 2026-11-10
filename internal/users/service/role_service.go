@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 
+	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 
 	"gorm.io/gorm"
@@ -82,8 +83,13 @@ func (s *RoleService) RolePermissions(roleID uint) ([]uint, error) {
 }
 
 // SetRolePermissions reemplaza todos los permisos de un rol.
+//
+// Revoca las sesiones de todos los usuarios del rol (branch_session_version + 1): los permisos viajan en el JWT.
 func (s *RoleService) SetRolePermissions(roleID uint, permissionIDs []uint) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := branch.BumpSessionVersionForRole(tx, roleID); err != nil {
+			return err
+		}
 		if err := tx.Where("role_id = ?", roleID).Delete(&database.TenantRolePermission{}).Error; err != nil {
 			return err
 		}

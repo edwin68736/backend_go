@@ -83,7 +83,7 @@ func TenantAuthWeb() fiber.Handler {
 		claims := &TenantClaims{}
 		t, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (interface{}, error) {
 			return []byte(config.AppConfig.JWTSecret), nil
-		})
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 		if err != nil || !t.Valid || claims.Type != "tenant" {
 			c.ClearCookie("token")
 			return c.Redirect().To("/login")
@@ -130,7 +130,7 @@ func TenantAuthAPI() fiber.Handler {
 			tokenStr = c.Cookies("token")
 		}
 		if tokenStr == "" {
-			tokenStr = strings.TrimSpace(c.Query("access_token")) // SSE EventSource (?access_token=)
+			tokenStr = queryAccessToken(c, true) // SSE EventSource: solo /api/billing/events (puente SSE_ALLOW_QUERY_TOKEN)
 		}
 
 		if tokenStr == "" {
@@ -140,7 +140,7 @@ func TenantAuthAPI() fiber.Handler {
 		claims := &TenantClaims{}
 		t, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 			return []byte(config.AppConfig.JWTSecret), nil
-		})
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 		if err != nil || !t.Valid || claims.Type != "tenant" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Token inválido o expirado"})
 		}

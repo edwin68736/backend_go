@@ -45,7 +45,7 @@ func verifiedTenantID(c fiber.Ctx) uint {
 		tokenStr = c.Cookies("token")
 	}
 	if tokenStr == "" {
-		tokenStr = strings.TrimSpace(c.Query("access_token")) // EventSource (SSE)
+		tokenStr = queryAccessToken(c, false) // EventSource (SSE): solo /api/billing/events
 	}
 	if tokenStr == "" {
 		return 0

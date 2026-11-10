@@ -9,6 +9,7 @@ import (
 	"tukifac/internal/sales/branchguard"
 	"tukifac/pkg/billingevents"
 	"tukifac/pkg/database"
+	"tukifac/pkg/middleware"
 
 	"github.com/gofiber/fiber/v3"
 )
@@ -16,6 +17,20 @@ import (
 // sseKeepaliveInterval cada cuánto se escribe un comentario SSE para mantener viva la conexión
 // (Cloudflare corta conexiones inactivas) y para detectar al cliente que ya se fue. Variable para tests.
 var sseKeepaliveInterval = 25 * time.Second
+
+// sseMaxLifetime es el tope duro de vida de un stream: al vencer, el servidor lo cierra y el cliente reconecta,
+// con lo que se vuelven a evaluar permisos, sucursal y versión de sesión. Variable para tests.
+var sseMaxLifetime = 55 * time.Minute
+
+// sseDeadline devuelve el instante en que debe cerrarse el stream: el vencimiento del JWT o el tope duro, lo que
+// ocurra primero.
+func sseDeadline(now time.Time, claims *middleware.TenantClaims) time.Time {
+	dl := now.Add(sseMaxLifetime)
+	if claims != nil && claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(dl) {
+		dl = claims.ExpiresAt.Time
+	}
+	return dl
+}
 
 // BillingEventsSSE GET /api/billing/events — SSE autenticado por tenant.
 func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
@@ -25,7 +40,8 @@ func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 	}
 
 	c.Set("Content-Type", "text/event-stream")
-	c.Set("Cache-Control", "no-cache, no-transform")
+	c.Set("Cache-Control", "no-store, no-cache, no-transform")
+	c.Set("Referrer-Policy", "no-referrer")
 	c.Set("Connection", "keep-alive")
 	c.Set("X-Accel-Buffering", "no")
 
@@ -63,6 +79,8 @@ func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 	// El contexto se captura AHORA: dentro del stream writer c ya no es seguro (Fiber lo reutiliza
 	// cuando el handler retorna).
 	ctx := c.Context()
+	claims, _ := c.Locals("tenant_claims").(*middleware.TenantClaims)
+	deadline := time.NewTimer(time.Until(sseDeadline(time.Now(), claims)))
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
 		// unsub se ejecuta aquí, cuando el stream REALMENTE termina (cliente desconectado, apagado del
@@ -70,6 +88,7 @@ func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 		// método —antes de que el writer empezara—, cerraba el canal y el stream moría a los pocos
 		// milisegundos; el navegador reconectaba cada 3 s (retry) y nunca recibía eventos.
 		defer unsub()
+		defer deadline.Stop()
 
 		_, _ = fmt.Fprintf(w, "retry: 3000\n\n")
 		if err := w.Flush(); err != nil {
@@ -81,6 +100,9 @@ func (h *BillingHandler) BillingEventsSSE(c fiber.Ctx) error {
 
 		for {
 			select {
+			case <-deadline.C:
+				// Token vencido o tope de vida: se cierra para que el cliente reconecte con credenciales vigentes.
+				return
 			case <-ctx.Done():
 				return
 			case data, ok := <-ch:

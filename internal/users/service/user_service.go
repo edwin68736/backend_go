@@ -266,14 +266,24 @@ func (s *UserService) update(id uint, input UpdateUserInput) error {
 		_ = branch.BumpSessionVersion(s.db, id)
 	}
 
+	passwordChanged := false
 	if input.Password != "" {
 		if err := user.SetPassword(input.Password); err != nil {
 			return err
 		}
 		updates["password"] = user.Password
+		passwordChanged = true
 	}
 
-	return s.db.Model(&database.TenantUser{}).Where("id = ?", id).Updates(updates).Error
+	if err := s.db.Model(&database.TenantUser{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		return err
+	}
+	// Revoca los access tokens vigentes del usuario (409 SESSION_UPDATED) cuando cambia su rol, su estado
+	// activo o su contraseña: el JWT lleva rol y permisos y vive hasta 24 h.
+	if (input.RoleID > 0 && input.RoleID != user.RoleID) || input.Active != user.Active || passwordChanged {
+		_ = branch.BumpSessionVersion(s.db, id)
+	}
+	return nil
 }
 
 // Delete elimina (borrado lógico) a un usuario. Se rechaza cuando:
@@ -436,7 +446,11 @@ func (s *UserService) toggleActive(id uint) error {
 			return errors.New("no se puede desactivar al usuario principal del sistema")
 		}
 	}
-	return s.db.Model(&user).Update("active", !user.Active).Error
+	if err := s.db.Model(&user).Update("active", !user.Active).Error; err != nil {
+		return err
+	}
+	_ = branch.BumpSessionVersion(s.db, id)
+	return nil
 }
 
 type UpdateProfileInput struct {
@@ -484,5 +498,13 @@ func (s *UserService) ChangePassword(id uint, currentPassword, newPassword strin
 	if err := user.SetPassword(newPassword); err != nil {
 		return err
 	}
-	return s.db.Model(&database.TenantUser{}).Where("id = ?", id).Update("password", user.Password).Error
+	if err := s.db.Model(&database.TenantUser{}).Where("id = ?", id).Update("password", user.Password).Error; err != nil {
+		return err
+	}
+	// Cambiar la contraseña revoca los access tokens vigentes de ESTA cuenta (incluido el de quien la cambia:
+	// su próxima petición recibe 409 SESSION_UPDATED y el cliente refresca con el refresh token, que no se
+	// invalida y reconstruye los claims con la versión nueva). Decisión: tolerar en vez de re-emitir aquí,
+	// porque la emisión de JWT vive en internal/auth y ChangePassword no conoce el refresh token.
+	_ = branch.BumpSessionVersion(s.db, id)
+	return nil
 }

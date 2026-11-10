@@ -205,8 +205,10 @@ func (s *Service) UpsertStaffForUser(userID uint, employeeType string, pin strin
 	st.CanOpenTable = flags.CanOpenTable || employeeType == "waiter" || employeeType == "admin"
 	st.KitchenAccess = flags.KitchenAccess || employeeType == "cook" || employeeType == "admin"
 	st.DeliveryAccess = flags.DeliveryAccess || employeeType == "driver"
+	pinChanged := false
 	if flags.ClearPin {
 		st.PinHash = ""
+		pinChanged = true
 	} else if pin != "" {
 		pin = strings.TrimSpace(pin)
 		if err := ValidatePINFormat(pin); err != nil {
@@ -220,6 +222,7 @@ func (s *Service) UpsertStaffForUser(userID uint, employeeType string, pin strin
 			return err
 		}
 		st.PinHash = string(hash)
+		pinChanged = true
 	}
 	if isNew {
 		if err := s.db.Create(&st).Error; err != nil {
@@ -229,6 +232,10 @@ func (s *Service) UpsertStaffForUser(userID uint, employeeType string, pin strin
 		if err := s.db.Save(&st).Error; err != nil {
 			return err
 		}
+	}
+	if pinChanged {
+		// Cambiar o quitar el PIN revoca las sesiones vigentes del usuario (409 SESSION_UPDATED).
+		_ = branch.BumpSessionVersion(s.db, userID)
 	}
 	return s.BumpPermCacheVersion()
 }

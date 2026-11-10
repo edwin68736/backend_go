@@ -20,6 +20,27 @@ var branchContextSkipPaths = map[string]bool{
 	"/api/company/branches":      true, // listar sucursales para admin UI
 }
 
+// RejectLegacyZeroSessionVersion endurece la versión de sesión: con true, un token con claim
+// branch_session_version == 0 (emitido antes de V178, cuando la columna se creó sin backfill) se rechaza
+// siempre con 409 SESSION_UPDATED (el cliente refresca y recibe un token con versión >= 1).
+//
+// Con false (valor de despliegue, ventana de compatibilidad de 24 h = vigencia del access token) un claim 0
+// se tolera mientras el usuario siga en la versión base (<= 1: 0 sin migrar o 1 tras V178). En cuanto
+// ocurre la primera revocación (BumpSessionVersion deja la versión en >= 2) el claim 0 también cae.
+// Pasadas 24 h del deploy completo (V178 + backend) se cambia a true y se retira la tolerancia.
+const RejectLegacyZeroSessionVersion = false
+
+// sessionVersionStale indica si el claim de versión de sesión quedó desfasado respecto al usuario en BD.
+func sessionVersionStale(claimVersion, userVersion uint) bool {
+	if claimVersion == 0 {
+		if RejectLegacyZeroSessionVersion {
+			return true
+		}
+		return userVersion > 1
+	}
+	return userVersion != claimVersion
+}
+
 // BranchContextMiddleware valida sucursal activa en JWT vs BD y anti-spoofing base.
 // Fail-safe: si el tenant aún no tiene columnas multi-sucursal, opera en modo legacy (branch_id).
 func BranchContextMiddleware() fiber.Handler {
@@ -56,7 +77,7 @@ func BranchContextMiddleware() fiber.Handler {
 			})
 		}
 
-		if !legacy && claims.BranchSessionVersion > 0 && user.BranchSessionVersion != claims.BranchSessionVersion {
+		if !legacy && sessionVersionStale(claims.BranchSessionVersion, user.BranchSessionVersion) {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 				"code":    branch.CodeSessionUpdated,
 				"message": "Tu acceso cambió",

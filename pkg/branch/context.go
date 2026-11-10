@@ -182,14 +182,29 @@ func ResolveReportBranchFilter(c fiber.Ctx, requested uint, allWhenEmpty bool) u
 	return ActiveBranchID(c)
 }
 
-// BumpSessionVersion incrementa versión al cambiar asignación de sucursal del usuario.
+// BumpSessionVersion incrementa la versión de sesión del usuario (tenant_users.branch_session_version): revoca
+// los access tokens ya emitidos (409 SESSION_UPDATED). Se llama al cambiar sucursales asignadas, rol, permisos
+// del rol, contraseña, PIN y al activar/desactivar. Un usuario aún en 0 (sin backfill V178) pasa directo a 2
+// para que ni siquiera un token legado con claim 0 sobreviva a la primera revocación.
 // No-op si el tenant aún no tiene la columna (rolling deploy / legacy).
 func BumpSessionVersion(db *gorm.DB, userID uint) error {
 	if !database.TenantBranchSessionVersionReady(db) {
 		return nil
 	}
 	return db.Model(&database.TenantUser{}).Where("id = ?", userID).
-		UpdateColumn("branch_session_version", gorm.Expr("branch_session_version + 1")).Error
+		UpdateColumn("branch_session_version", gorm.Expr(bumpExpr)).Error
+}
+
+const bumpExpr = "CASE WHEN branch_session_version < 1 THEN 2 ELSE branch_session_version + 1 END"
+
+// BumpSessionVersionForRole revoca las sesiones de TODOS los usuarios de un rol (cambio de permisos del rol).
+// No-op si el tenant aún no tiene la columna.
+func BumpSessionVersionForRole(db *gorm.DB, roleID uint) error {
+	if !database.TenantBranchSessionVersionReady(db) {
+		return nil
+	}
+	return db.Model(&database.TenantUser{}).Where("role_id = ?", roleID).
+		UpdateColumn("branch_session_version", gorm.Expr(bumpExpr)).Error
 }
 
 // SyncUserBranchFields al crear/actualizar usuario desde branch_id legacy.

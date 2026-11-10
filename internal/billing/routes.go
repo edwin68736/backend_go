@@ -40,7 +40,7 @@ func RegisterRoutes(api fiber.Router) {
 
 	api.Post("/billing/send/:saleId", mod, loadRest, send, h.SendToSUNAT)
 	api.Get("/billing/status/:saleId", mod, loadRest, view, h.GetBillingStatus)
-	api.Get("/billing/events", mod, loadRest, view, handler.SSEAccessTokenMiddleware, h.BillingEventsSSE)
+	api.Get("/billing/events", mod, loadRest, view, h.BillingEventsSSE)
 	api.Get("/billing/job/:saleId", mod, loadRest, view, h.GetBillingJobStatus)
 	api.Post("/billing/resend/:saleId", mod, loadRest, send, h.ResendToSUNAT)
 	// Corrección fiscal: reenvía con otra fecha de emisión aunque el comprobante
