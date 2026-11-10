@@ -40,3 +40,23 @@ Totales de filas por tabla: **sin cambios** en los 6 escenarios (V179 no inserta
 1. Repetir esta prueba en **MySQL 8.0.46** (autorizar la descarga del instalador oficial o proporcionar una instancia/staging).
 2. Confirmar con los clientes la principal de `doriconta` y `naturales` (ver `REPORTE_CONFIRMACION_PRINCIPALES.md`).
 3. Respaldo previo (backup/snapshot) y ejecutar V179 primero en 1–2 tenants pequeños.
+
+---
+
+## 6. Repetición en MySQL 8.0.46 (la misma versión que producción) — 10-nov-2026, tarde
+
+Con la autorización del dueño se descargó el **paquete oficial `mysql-8.0.46-winx64.zip`** (248 009 349 bytes) desde `cdn.mysql.com` y se verificó su **MD5 `003f527d5df61b663ff191038cd676bd`**, idéntico al publicado por Oracle (`…zip.md5`). No se instaló ningún servicio ni se tocó el MySQL local (XAMPP) ni producción: se extrajo en un directorio temporal aislado, se inicializó un datadir propio y se arrancó **un proceso `mysqld` en `127.0.0.1:3307`** (sin `mysqlx`), con `sql_mode` por defecto de 8.0 idéntico al de producción
+(`ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`, `utf8mb4_unicode_ci`).
+Esta vez el esquema real de producción se cargó **completo y sin recortes** (92 tablas, incluido el índice único funcional `ux_open_session_per_table`).
+
+| Escenario | Resultado en MySQL 8.0.46 | Duración | Errores |
+|---|---|---|---|
+| doriconta | queda *Principal*; *sucursal 01* desmarcada; huérfanos 1→0 (1841→1842 ventas en la principal); **0 de 1 911** filas con sucursal modificadas; 2.ª corrida idempotente | 29,9 ms | 0 |
+| industrialrafaz | sin cambio de principal; huérfanos 3→0; 0 de 555 modificadas; idempotente | 29,8 ms | 0 |
+| col | sin cambio; huérfanos 1→0; 0 de 73 modificadas; idempotente | 31,3 ms | 0 |
+| bernapom | SANTA ANITA pasa a principal; 0 de 31 modificadas; idempotente | 31,3 ms | 0 |
+| naturales | San Borja pasa a principal; 0 de 8 modificadas; idempotente | 29,5 ms | 0 |
+| stress (principal inactiva + otra activa + conflicto único) | queda solo *Abierta*; huérfanos de ventas 2→0; contadores de comandas 2→1 (la fila en conflicto se omite con `WARN`); 0 de 10 modificadas; idempotente | 32,4 ms | 0 |
+
+Totales de filas por tabla sin cambios en los 6 casos. **Resultados idénticos a los de MariaDB**, y más rápidos. Con esto queda cerrada la limitación de la sección 2 (versión del motor). Siguen siendo datos sintéticos y volúmenes pequeños; la corrida real en producción sigue requiriendo backup y arranque en 1–2 tenants pequeños.
+La instancia de prueba se detiene y se elimina al terminar.
