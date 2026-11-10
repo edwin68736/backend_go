@@ -24,3 +24,19 @@ Estado: **pendiente de acceso**. El facturador vive en otro VPS (`2.24.110.236`,
 - **Redis del backend (VPS 72.62.83.69):** `tukifac:billing:queue`, `:processing`, `:dead`, `tukifac:fiscal:queue` y `:processing` → todas con **0** elementos.
 - **Cola propia del facturador (`fiscal_documents` / `fiscal_emit_attempts` en la BD del facturador):** **no verificado** (requiere el acceso de arriba). Consulta de solo lectura sugerida: documentos de tipo retención/percepción con estado no terminal y la fecha del último intento.
 - Las 5 retenciones **no se reencolan** hasta autorización por cliente (ver `REGULARIZACION_RETENCIONES.md`).
+
+---
+
+## Resultado de la verificación (10-nov-2026) — solo lectura, con la llave existente `~/.ssh/vps_facturador`
+Acceso: `root@2.24.110.236` (host `srv1685741`), una sola conexión de comandos de lectura (`readlink`, `grep`, `sha256sum`). No se escribió nada, no se llamó a ningún endpoint, no se tocó la BD ni SUNAT.
+
+| Comprobación | Producción (facturador) | Referencia local | Resultado |
+|---|---|---|---|
+| Release activo | `releases/2026-11-06-16-59-04-main` | — | — |
+| `jms/serializer` | **3.32.7** | 3.32.7 | ✅ igual |
+| `DateHandler.php` (sha256) | `3c871c4b…a6726a15` | `3c871c4b…a6726a15` | ✅ idéntico |
+| YAML `Retention.{Retention,RetentionDetail,Payment,Exchange}.yml` y `Perception.{Perception,PerceptionDetail}.yml` (sha256 sin saltos de línea CR) | 6 archivos | 6 archivos | ✅ idénticos |
+| PHP del servidor | 8.4.27 | 8.2.12 (pruebas locales) | ⚠ distinta versión menor; el parseo de fechas depende de JMS, no de la versión de PHP |
+
+Conclusión: **el contrato validado localmente (formato ATOM `Y-m-d\TH:i:sP` en todas las fechas de retención/percepción) es el que corre en producción**; la corrección de `c7703a9` es compatible.
+Pendiente (requiere credenciales de BD del facturador, que no se obtuvieron): consulta de solo lectura de `fiscal_documents`/`fiscal_emit_attempts` para ver si hay retenciones/percepciones antiguas en cola. Se intentó una comprobación de acceso a MySQL como `root` sin contraseña (denegado) y se detuvo ahí: necesito un usuario de solo lectura de esa BD (equivalente a `claude_ro`) entregado por el dueño.
