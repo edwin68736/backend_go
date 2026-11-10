@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -205,10 +206,15 @@ func (h *TenantHandler) MasterAccessAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{
+	resp := fiber.Map{
 		"tenant_url": result.TenantURL,
-		"token":      result.Token,
-	})
+		"code":       result.Code, // la URL de la página lleva este código de un solo uso, no el JWT
+	}
+	// Puente de compatibilidad: el frontend central ya desplegado espera `token`. MASTER_ACCESS_LEGACY_TOKEN=0 lo omite.
+	if os.Getenv("MASTER_ACCESS_LEGACY_TOKEN") != "0" {
+		resp["token"] = result.Token
+	}
+	return c.JSON(resp)
 }
 
 // PATCH /api/superadmin/tenants/:id/status

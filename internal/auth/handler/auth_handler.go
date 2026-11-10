@@ -2,13 +2,16 @@ package handler
 
 import (
 	"errors"
+	"strings"
 
 	"tukifac/config"
 	authservice "tukifac/internal/auth/service"
 	reststaff "tukifac/internal/restaurant/staff"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/mastercode"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/tenantctx"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -244,4 +247,27 @@ func allowedBranchForRefresh(db *gorm.DB, user *database.TenantUser, roleName st
 	}
 	ok, err := branch.UserHasBranchAccess(db, user.ID, wantID)
 	return err == nil && ok
+}
+
+// MasterExchangeAPI (POST /api/auth/master-exchange) canjea el código de UN SOLO USO del acceso maestro por el JWT del tenant.
+// Es público (no hay sesión todavía) pero exige contexto de empresa por host y que el código se haya emitido para ESE tenant.
+func (h *AuthHandler) MasterExchangeAPI(c fiber.Ctx) error {
+	tenant, ok := tenantctx.Tenant(c)
+	if !ok {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Acceso no permitido sin contexto de empresa"})
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := c.Bind().Body(&body); err != nil || strings.TrimSpace(body.Code) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Código requerido"})
+	}
+	token, redeemed := mastercode.Redeem(c.Context(), tenant.Slug, strings.TrimSpace(body.Code))
+	if !redeemed {
+		database.WriteAuditLog(&database.AuditLog{TenantID: tenant.ID, Action: "master_access_exchange_failed", Entity: "tenant", EntityID: tenant.ID, IPAddress: c.IP()})
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Código inválido o vencido", "code": "MASTER_CODE_INVALID"})
+	}
+	database.WriteAuditLog(&database.AuditLog{TenantID: tenant.ID, Action: "master_access_exchange", Entity: "tenant", EntityID: tenant.ID, IPAddress: c.IP()})
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(fiber.Map{"token": token})
 }

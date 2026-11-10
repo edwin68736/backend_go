@@ -122,7 +122,7 @@ func RateLimitGlobal() fiber.Handler {
 // isAuthSensitivePath rutas reales de autenticación y contraseña (no hay refresh/forgot en el código).
 func isAuthSensitivePath(path string) bool {
 	switch path {
-	case "/api/login", "/api/superadmin/login":
+	case "/api/login", "/api/superadmin/login", "/api/auth/master-exchange":
 		return true
 	}
 	return strings.HasSuffix(path, "/password")

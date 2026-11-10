@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"tukifac/pkg/database/engine"
 	"tukifac/pkg/database/tenantbackfills"
 	"tukifac/pkg/domains"
+	"tukifac/pkg/mastercode"
 	"tukifac/pkg/middleware"
 	"tukifac/pkg/pagination"
 	"tukifac/pkg/saas"
@@ -821,6 +823,8 @@ func (s *TenantService) DestroyTenantComplete(id uint, input DestroyTenantInput)
 type MasterAccessResult struct {
 	TenantURL string
 	Token     string
+	// Code: código de canje de UN SOLO USO (30 s) que va en la URL de la página en lugar del JWT (pkg/mastercode).
+	Code string
 }
 
 // MasterAccess genera JWT del usuario propietario del tenant para soporte técnico (ERP web).
@@ -883,8 +887,13 @@ func (s *TenantService) MasterAccess(tenantID, saUserID uint, saEmail, clientIP 
 	if config.AppConfig != nil {
 		rootDomain = config.AppConfig.AppDomain
 	}
+	code, err := mastercode.Issue(context.Background(), tenant.Slug, session.Token)
+	if err != nil {
+		return nil, fmt.Errorf("generando código de acceso: %w", err)
+	}
 	return &MasterAccessResult{
 		TenantURL: domains.TenantURL(tenant.Slug, rootDomain),
 		Token:     session.Token,
+		Code:      code,
 	}, nil
 }
