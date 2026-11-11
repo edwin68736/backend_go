@@ -110,8 +110,7 @@ func TestSaleList_CommercialReport_TotalCoincideConDashboard(t *testing.T) {
 	}
 }
 
-// Filtrar por Boleta debe incluir la NV convertida (cuenta como boleta) y NO el comprobante hijo,
-// que ya está representado por su NV: 100 + 50 = 150, igual que el gráfico del dashboard.
+// Regla de fecha de emisión: filtrar por Boleta incluye el COMPROBANTE hijo (con su fecha) y NO la NV de la que salió: 100 + 50 = 150.
 func TestSaleList_CommercialReport_BoletaIncluyeNVConvertidaSinDuplicar(t *testing.T) {
 	f := setupCommercialReportDB(t)
 	rows, _, sum, err := NewSaleService(f.db).List(SaleListParams{CommercialReport: true, SunatCodes: []string{"03"}})
@@ -121,9 +120,9 @@ func TestSaleList_CommercialReport_BoletaIncluyeNVConvertidaSinDuplicar(t *testi
 	if sum.SumActive != 150 {
 		t.Errorf("total Boleta = %.2f, want 150", sum.SumActive)
 	}
-	if got := idsOf(rows); !sameIDs(got, f.nv1, f.boletaDirecta) {
-		t.Errorf("filas Boleta = %v, want NV convertida (%d) y boleta directa (%d), sin el hijo (%d)",
-			got, f.nv1, f.boletaDirecta, f.boletaHijo)
+	if got := idsOf(rows); !sameIDs(got, f.boletaHijo, f.boletaDirecta) {
+		t.Errorf("filas Boleta = %v, want comprobante hijo (%d) y boleta directa (%d), sin la NV (%d)",
+			got, f.boletaHijo, f.boletaDirecta, f.nv1)
 	}
 }
 

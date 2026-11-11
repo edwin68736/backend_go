@@ -40,16 +40,16 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 	var salesCount, purchasesCount int64
 	tdb.Model(&database.TenantContact{}).Where("active = ?", true).Count(&contactsCount)
 	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Count(&productsCount)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Where("status != ?", "cancelled").Count(&salesCount)
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Where("status != ?", "cancelled").Count(&salesCount)
 	tdb.Model(&database.TenantPurchase{}).Where("status != ?", "cancelled").Count(&purchasesCount)
 
 	// Ventas del mes
 	var monthSalesTotal float64
 	var monthSalesCount int64
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
 		Count(&monthSalesCount)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
 		Select(sumSalesPENSelect()).Scan(&monthSalesTotal)
 
@@ -73,7 +73,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 		start := time.Date(now.Year(), time.Month(i), 1, 0, 0, 0, 0, time.Local)
 		end := start.AddDate(0, 1, 0)
 		var sum float64
-		salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
+		salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).
 			Where("issue_date >= ? AND issue_date < ? AND status != ?", start, end, "cancelled").
 			Select(sumSalesPENSelect()).Scan(&sum)
 		monthly[i-1] = MonthStat{Label: labels[i-1], Amount: sum}

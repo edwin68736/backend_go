@@ -1354,18 +1354,13 @@ func (s *SaleService) List(params SaleListParams) (sales []database.TenantSale, 
 	q := s.db.Model(&database.TenantSale{})
 	useDistinct := false
 	if params.CommercialReport {
-		q = salescope.CommercialSales(q)
+		// Fecha de emisión: cuenta el comprobante (con su fecha, tipo y número); la NV de la que salió se omite mientras su hijo esté vigente.
+		q = salescope.EmittedSales(q)
 	}
 	if len(params.SunatCodes) > 0 {
-		if params.CommercialReport {
-			// Tipo efectivo = el del comprobante hijo si la venta es una NV convertida, y si no
-			// el de su propia serie (mismo criterio que el gráfico por tipo del dashboard).
-			q = joinEffectiveSunatCode(q).Where(effectiveSunatCodeExpr+" IN ?", params.SunatCodes)
-		} else {
-			q = q.Joins("JOIN tenant_document_series ON tenant_document_series.id = tenant_sales.series_id").
-				Where("tenant_document_series.sunat_code IN ?", params.SunatCodes)
-			useDistinct = true
-		}
+		q = q.Joins("JOIN tenant_document_series ON tenant_document_series.id = tenant_sales.series_id").
+			Where("tenant_document_series.sunat_code IN ?", params.SunatCodes)
+		useDistinct = true
 	}
 	if params.BranchID > 0 {
 		q = q.Where("tenant_sales.branch_id = ?", params.BranchID)
@@ -1622,7 +1617,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 		sales func(*gorm.DB) *gorm.DB
 		alias func(string) func(*gorm.DB) *gorm.DB
 	}
-	sc := scopeFns{sales: salescope.CommercialSales, alias: salescope.ScopeCommercial}
+	sc := scopeFns{sales: salescope.EmittedSales, alias: salescope.ScopeEmitted}
 	if rowsAreDocuments {
 		sc = scopeFns{
 			sales: func(db *gorm.DB) *gorm.DB { return db },
@@ -2042,7 +2037,7 @@ func (s *SaleService) salesByProductBaseQuery(params SalesByProductParams) *gorm
 		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
 		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").
 		Joins("LEFT JOIN tenant_categories c ON c.id = p.category_id").
-		Scopes(salescope.ScopeCommercialNoNotes("tenant_sales"))
+		Scopes(salescope.ScopeEmittedNoNotes("tenant_sales"))
 	if params.DateFrom != nil {
 		q = q.Where("tenant_sales.issue_date >= ?", params.DateFrom)
 	}
@@ -2251,7 +2246,7 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
 		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").
 		Joins("LEFT JOIN tenant_contacts ct ON ct.id = tenant_sales.contact_id").
-		Scopes(salescope.ScopeCommercialNoNotes("tenant_sales"))
+		Scopes(salescope.ScopeEmittedNoNotes("tenant_sales"))
 	if params.DateFrom != nil {
 		q = q.Where("tenant_sales.issue_date >= ?", params.DateFrom)
 	}
@@ -2737,7 +2732,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 
 // SummaryStats retorna estadísticas resumidas de ventas.
 func (s *SaleService) SummaryStats(branchID uint, from, to time.Time) map[string]interface{} {
-	q := salescope.CommercialSalesNoNotes(s.db.Model(&database.TenantSale{})).
+	q := salescope.EmittedSalesNoNotes(s.db.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date <= ? AND status != ?", from, to, "cancelled")
 	if branchID > 0 {
 		q = q.Where("branch_id = ?", branchID)

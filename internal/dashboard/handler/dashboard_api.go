@@ -50,8 +50,8 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 		purchasesCond = "user_id = ?"
 		purchasesArgs = append(purchasesArgs, userID)
 	}
-salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select(sumSalesPENSelect()).Scan(&salesTodayTotal)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select(sumSalesPENSelect()).Scan(&salesMonthTotal)
+salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select(sumSalesPENSelect()).Scan(&salesTodayTotal)
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select(sumSalesPENSelect()).Scan(&salesMonthTotal)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("status != ?", "cancelled").Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&purchasesTodayTotal)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("status != ?", "cancelled").Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&purchasesMonthTotal)
 
@@ -59,7 +59,7 @@ salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branc
 	// que a inicios de mes mostraba una caída falsa).
 	monthCmpHome := comparisonWindow(monthStart, monthEnd, now)
 	var salesPrevSameDays float64
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthCmpHome.From, monthCmpHome.ToExclusive).Select(sumSalesPENSelect()).Scan(&salesPrevSameDays)
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthCmpHome.From, monthCmpHome.ToExclusive).Select(sumSalesPENSelect()).Scan(&salesPrevSameDays)
 
 	homeKPIs := fiber.Map{
 		"sales_prev_month_same_days": salesPrevSameDays,
@@ -74,15 +74,15 @@ salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branc
 	var contactsCount, productsCount, salesCount, purchasesCount int64
 	tdb.Model(&database.TenantContact{}).Where("active = ?", true).Count(&contactsCount)
 	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Count(&productsCount)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where("status != ?", "cancelled").Count(&salesCount)
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where("status != ?", "cancelled").Count(&salesCount)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where("status != ?", "cancelled").Count(&purchasesCount)
 
 	var monthSalesTotal, monthPurchasesTotal float64
 	var monthSalesCount int64
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
 		Count(&monthSalesCount)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
+	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
 		Select(sumSalesPENSelect()).Scan(&monthSalesTotal)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).
@@ -99,7 +99,7 @@ salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branc
 		s := time.Date(now.Year(), time.Month(i), 1, 0, 0, 0, 0, time.Local)
 		e := s.AddDate(0, 1, 0)
 		var sum float64
-		salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
+		salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 			Where("issue_date >= ? AND issue_date < ? AND status != ?", s, e, "cancelled").
 			Select(sumSalesPENSelect()).Scan(&sum)
 		monthly[i-1] = MonthAmount{Month: i, Year: now.Year(), Amount: sum}
