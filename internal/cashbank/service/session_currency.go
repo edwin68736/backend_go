@@ -1,6 +1,10 @@
 package service
 
 import (
+	"strings"
+	"time"
+
+	"tukifac/pkg/dailyfx"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/salecurrency"
@@ -168,6 +172,29 @@ func (s *CashBankService) sessionCurrencySummary(session *database.TenantCashSes
 // movementPEN importe en SOLES de un movimiento bancario sin documento (manual o de transferencia): el snapshot si existe (cuentas en
 // dólares guardan su equivalente), o el importe tal cual (soles).
 func movementPEN(m database.TenantBankMovement) float64 {
+	if m.AmountPEN != nil {
+		return *m.AmountPEN
+	}
+	return m.Amount
+}
+
+// docPENFactor multiplicador a soles de un documento: el TC guardado; si es USD sin TC, el TC del día de emisión; en soles (o sin
+// ningún TC) 1. Lo usa el detalle de la sesión de caja para que TODAS sus filas y totales estén en soles.
+func docPENFactor(currency string, rate *float64, issued time.Time) float64 {
+	if strings.ToUpper(strings.TrimSpace(currency)) != "USD" {
+		return 1
+	}
+	if rate != nil && *rate > 0 {
+		return *rate
+	}
+	if r, _, ok := dailyfx.SaleRate(salecurrency.DayOf(issued)); ok && r > 0 {
+		return r
+	}
+	return 1
+}
+
+// cashMovementPEN importe en soles de un movimiento de caja: el snapshot (amount_pen) si existe, o el importe tal cual.
+func cashMovementPEN(m database.TenantCashMovement) float64 {
 	if m.AmountPEN != nil {
 		return *m.AmountPEN
 	}

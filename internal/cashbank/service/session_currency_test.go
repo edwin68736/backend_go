@@ -167,3 +167,38 @@ func TestBankAccountBalance_UsesSolesEquivalentForUSD(t *testing.T) {
 		t.Fatalf("saldo tras la reversión = %v, quiere 0", acc.Balance)
 	}
 }
+
+// Detalle de la sesión de caja: filas y totales en SOLES (un documento en USD se convierte con su TC) y con el original a la vista.
+func TestSessionReport_USDDocumentsShownInSoles(t *testing.T) {
+	db := setupCashReportPhysicalBalanceTestDB(t)
+	svc := NewCashBankService(db)
+	seedReportPaymentMethods(t, db)
+	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open", OpeningBalance: 0, OpenedAt: time.Now()}
+	db.Create(session)
+	rate := 4.0
+	createReportSaleCur(t, db, svc, 1, session.ID, map[string]float64{"cash": 27}, "USD", &rate) // US$ 27 → S/ 108
+	createReportSaleCur(t, db, svc, 2, session.ID, map[string]float64{"yape": 10}, "USD", &rate) // US$ 10 → S/ 40
+	createReportSale(t, db, svc, 3, session.ID, map[string]float64{"cash": 50})                  // S/ 50
+
+	rep, err := svc.GetSessionReport(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.TotalSales != 198 || rep.Totals.TotalIncome != 158 {
+		t.Errorf("totales en soles: ventas=%v (quiere 198) ingreso efectivo=%v (quiere 158)", rep.Totals.TotalSales, rep.Totals.TotalIncome)
+	}
+	var usdRows int
+	var sum float64
+	for _, r := range rep.IncomeDetail {
+		sum += r.Amount
+		if r.Currency == "USD" {
+			usdRows++
+			if r.Amount != r.OriginalAmount*4 {
+				t.Errorf("fila USD: %v soles vs %v US$ (TC 4)", r.Amount, r.OriginalAmount)
+			}
+		}
+	}
+	if usdRows != 2 || sum != 198 {
+		t.Errorf("detalle: filas USD=%d suma=%v (quiere 2 y 198)", usdRows, sum)
+	}
+}
