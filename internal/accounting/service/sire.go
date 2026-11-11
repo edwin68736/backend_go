@@ -124,9 +124,21 @@ func sunatError(op string, status int, body []byte) error {
 		Desc string `json:"error_description"`
 		Err  string `json:"error"`
 		Cod  string `json:"cod"`
+		// SUNAT detalla los 422 aquí (p. ej. 1001 «El campo numRuc no enviado o es vacío»).
+		Errors []struct {
+			Cod string `json:"cod"`
+			Msg string `json:"msg"`
+		} `json:"errors"`
 	}
 	_ = json.Unmarshal(body, &e)
 	msg := strings.TrimSpace(strings.Join([]string{e.Cod, e.Msg, e.Desc, e.Err}, " "))
+	if len(e.Errors) > 0 {
+		det := make([]string, 0, len(e.Errors))
+		for _, x := range e.Errors {
+			det = append(det, strings.TrimSpace(x.Cod+" "+x.Msg))
+		}
+		msg += " [" + strings.Join(det, "; ") + "]"
+	}
 	if msg == "" {
 		msg = strings.TrimSpace(string(body))
 		if len(msg) > 200 {
@@ -161,9 +173,26 @@ func (c *SireClient) do(cr *SireCreds, method, path string, q url.Values) ([]byt
 		tokenMu.Unlock()
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, sunatError("SUNAT SIRE", resp.StatusCode, body)
+		err := sunatError("SUNAT SIRE", resp.StatusCode, body)
+		if resp.StatusCode == http.StatusUnprocessableEntity && !solUserHasRUC(cr.Username) {
+			err = fmt.Errorf("%w. El usuario SOL debe guardarse con el RUC por delante (RUC + usuario, p. ej. 20123456789MODDATOS); SUNAT toma el RUC de ese usuario", err)
+		}
+		return nil, err
 	}
 	return body, nil
+}
+
+// solUserHasRUC indica si el usuario SOL empieza con un RUC de 11 dígitos (formato exigido por la API SIRE).
+func solUserHasRUC(u string) bool {
+	if len(u) <= 11 {
+		return false
+	}
+	for _, r := range u[:11] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func bookCode(book string) string {

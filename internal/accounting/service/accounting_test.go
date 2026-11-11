@@ -594,3 +594,32 @@ func TestSaveSettingsEmptyRestoresDefaults(t *testing.T) {
 		t.Errorf("guardado: %+v", st)
 	}
 }
+
+func TestSire_422ShowsDetailAndRUCHint(t *testing.T) {
+	t.Setenv("SECRETS_ENCRYPTION_KEY", strings.Repeat("cd", 32))
+	db := testDB(t)
+	s := New(db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "oauth2/token") {
+			w.Write([]byte(`{"access_token":"T","expires_in":3600}`))
+			return
+		}
+		w.WriteHeader(422)
+		w.Write([]byte(`{"cod":"422","msg":"Unprocessable Entity - Se presentaron errores de validacion","errors":[{"cod":"1001","msg":"El campo numRuc no enviado o es vacio"}]}`))
+	}))
+	defer srv.Close()
+	c := &SireClient{AuthURL: srv.URL, APIURL: srv.URL, HTTP: srv.Client()}
+	s.SaveSireSettings("CID", "S", "MODDATOS", "P")
+	_, err := s.SirePeriods(c, SireBookSale)
+	if err == nil || !strings.Contains(err.Error(), "1001") || !strings.Contains(err.Error(), "RUC por delante") {
+		t.Fatalf("sin RUC: %v", err)
+	}
+	s.SaveSireSettings("CID", "", "20612257320MODDATOS", "")
+	tokenMu.Lock()
+	tokenCache = map[string]cachedToken{}
+	tokenMu.Unlock()
+	_, err = s.SirePeriods(c, SireBookSale)
+	if err == nil || !strings.Contains(err.Error(), "1001") || strings.Contains(err.Error(), "RUC por delante") {
+		t.Fatalf("con RUC: %v", err)
+	}
+}
