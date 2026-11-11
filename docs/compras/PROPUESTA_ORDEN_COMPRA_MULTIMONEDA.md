@@ -84,6 +84,11 @@ Cada fase: commit separado en `main`, tests (Go + vitest), migración versionada
 3. **TC de compra**: criterio del antiguo (TC **venta**, consulta por fecha de emisión, editable).
 4. **Series**: la orden de compra tiene series como los demás documentos (§3.1.1).
 
-## 6. Pendiente antes de escribir código
-- Revisar en `cashbank_service` y `TenantBankMovement` cómo se suman los saldos por cuenta, para confirmar que guardar el egreso en la moneda del documento no mezcla monedas en un mismo saldo (solo afecta Fase 2).
-- El dueño revisa este documento; luego se implementa la Fase 1 (V180 + backend + frontend + tests), en commits separados en `main`.
+## 6. Estado (11-nov-2026)
+- **Fase 1 implementada y probada en la rama `feature/orden-compra`** (ver `FASE1_ORDEN_COMPRA_REPORTE.md`); no está en `main`.
+- **Revisión de caja/bancos para la Fase 2 (hecha, solo lectura):**
+  - El enrutamiento de un pago (`recordDirectedPayment`) es por método de pago → caja o cuenta; **ni el movimiento de caja ni el de banco guardan moneda ni tipo de cambio**, y el monto se guarda tal cual. `TenantBankAccount.Currency` existe pero ningún flujo la valida ni convierte.
+  - Las ventas en USD ya funcionan igual hoy (guardan `Currency` + `ExchangeRate` en el documento y el cobro entra en la moneda del documento). Es exactamente el modelo del sistema antiguo, así que **la Fase 2 para caja/banco no cambia el motor de pagos**: basta con que la compra guarde moneda + TC y el egreso quede en la moneda del documento, como las ventas.
+  - Lo que sí hay que convertir a soles en la compra USD: el costo del movimiento de stock y `purchase_price` del producto (inventario y kardex son en soles), y los totales mezclados de reportes/CxP/dashboard (con el TC del documento).
+  - Riesgo a vigilar: los saldos por cuenta suman montos sin mirar moneda; una compra USD pagada a una cuenta PEN mezclaría monedas en el saldo. Por eso la advertencia (no bloqueo) al elegir destino con moneda distinta, ya propuesta en §3.2.1.
+- **Pendiente:** correo de la orden (1.2), Fase 2 (compras multimoneda) y Fase 3 (reportes), y la aprobación del dueño para pasar la rama a `main`.
