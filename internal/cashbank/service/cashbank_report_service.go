@@ -167,6 +167,14 @@ type MovementReportRow struct {
 	// ventas) en vez del recibo interno genérico de caja. nil cuando el movimiento es manual.
 	SaleID     *uint `json:"sale_id,omitempty"`
 	PurchaseID *uint `json:"purchase_id,omitempty"`
+	// Currency: moneda del documento de origen (Amount está en ella; manuales = PEN). ExchangeRate: TC del documento
+	// (nil en soles). AmountPEN: equivalente en soles (Amount × TC). RateEstimated: el documento no guardó TC y se usó el
+	// del día de emisión. RateMissing: USD sin ningún TC (no entra en los totales en soles).
+	Currency      string   `json:"currency"`
+	ExchangeRate  *float64 `json:"exchange_rate,omitempty"`
+	AmountPEN     float64  `json:"amount_pen"`
+	RateEstimated bool     `json:"rate_estimated,omitempty"`
+	RateMissing   bool     `json:"rate_missing,omitempty"`
 }
 
 // MovementChannelSummary totales de un canal (efectivo o electrónico).
@@ -178,6 +186,15 @@ type MovementChannelSummary struct {
 	OpeningBalance  *float64      `json:"opening_balance,omitempty"`
 	PhysicalBalance *float64      `json:"physical_balance,omitempty"`
 	SalesByMethod   []MethodTotal `json:"sales_by_method,omitempty"`
+	// ByCurrency: ingresos/egresos/neto separados por moneda (cada uno en la suya) con su equivalente en soles.
+	// SumIncomePEN/SumExpensePEN/NetMovementPEN: todo convertido a soles (cada USD al TC de su documento).
+	// El saldo físico se calcula con NetMovementPEN. RateEstimatedCount/RateMissingCount: filas en USD sin TC guardado.
+	ByCurrency         []MovementCurrencyTotal `json:"by_currency,omitempty"`
+	SumIncomePEN       float64                 `json:"sum_income_pen"`
+	SumExpensePEN      float64                 `json:"sum_expense_pen"`
+	NetMovementPEN     float64                 `json:"net_movement_pen"`
+	RateEstimatedCount int64                   `json:"rate_estimated_count"`
+	RateMissingCount   int64                   `json:"rate_missing_count"`
 }
 
 // MovementChannelBlock filas paginadas y resumen de un canal.
@@ -856,6 +873,7 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 	all = append(all, purchaseRows...)
 	all = append(all, manualBankRows...)
 	sortMovementRowsDesc(all)
+	s.enrichMovementRowsCurrency(all)
 
 	var cashChannel, electronicChannel, detractionChannel []MovementReportRow
 	for _, row := range all {
@@ -909,9 +927,11 @@ func buildMovementChannelBlock(rows []MovementReportRow, limit, offset int, open
 		NetMovement:   net,
 		SalesByMethod: mapToMethodTotals(salesByMethod),
 	}
+	// Equivalentes en soles: cada fila en USD al TC de su documento; el saldo físico y el cierre van en soles.
+	ApplyCurrencySummary(&summary, rows)
 	if opening != nil {
 		summary.OpeningBalance = opening
-		pb := *opening + net
+		pb := *opening + summary.NetMovementPEN
 		summary.PhysicalBalance = &pb
 	}
 

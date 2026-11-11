@@ -460,11 +460,8 @@ func (s *QuotationService) validateHeader(
 			return "", nil, errors.New("el contacto seleccionado no es un cliente válido")
 		}
 	}
-	cur, err = salecurrency.NormalizeCurrency(currency)
-	if err != nil {
-		return "", nil, err
-	}
-	rate, err = salecurrency.NormalizeExchangeRate(cur, exchangeRate)
+	// Moneda y TC: en USD sin TC se completa con el TC guardado de la fecha de emisión (ResolveDocumentRate).
+	cur, rate, _, err = salecurrency.ResolveDocumentRate(currency, exchangeRate, issueDate)
 	if err != nil {
 		return "", nil, err
 	}
