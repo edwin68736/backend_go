@@ -12,6 +12,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/saleunit"
+	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
@@ -60,7 +61,9 @@ type CreatePurchaseInput struct {
 	Number        string
 	IssueDate     time.Time
 	DueDate       *time.Time
-	Currency      string
+	Currency string
+	// ExchangeRate: TC (venta) obligatorio cuando Currency es USD; se ignora en PEN.
+	ExchangeRate  *float64
 	PaymentMethod string
 	Status        string
 	Notes         string
@@ -72,6 +75,22 @@ type CreatePurchaseInput struct {
 	// PurchaseOrderID: orden de compra (V180) que origina esta compra. La orden pasa a
 	// "received" en la MISMA transacción; 1 orden → 1 compra.
 	PurchaseOrderID *uint
+}
+
+// normalizePurchaseCurrency valida moneda (PEN/USD) y TC: USD exige TC > 0; PEN lo descarta.
+func normalizePurchaseCurrency(raw string, rate *float64) (string, *float64, error) {
+	cur, err := salecurrency.NormalizeCurrency(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	r, err := salecurrency.NormalizeExchangeRate(cur, rate)
+	if err != nil {
+		return "", nil, err
+	}
+	if cur == salecurrency.CurrencyUSD && r == nil {
+		return "", nil, errors.New("el tipo de cambio es obligatorio para compras en dólares (USD)")
+	}
+	return cur, r, nil
 }
 
 // validatePurchaseItems valida reglas de negocio de ítems antes de persistir la compra.
@@ -145,6 +164,15 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	if len(input.Items) == 0 {
 		return nil, errors.New("la compra debe tener al menos un ítem")
 	}
+	currency, exchangeRate, err := normalizePurchaseCurrency(input.Currency, input.ExchangeRate)
+	if err != nil {
+		return nil, err
+	}
+	// Inventario y costos se llevan en soles: una compra en USD convierte el costo con su TC.
+	penFactor := 1.0
+	if exchangeRate != nil {
+		penFactor = *exchangeRate
+	}
 	if input.BranchID == 0 {
 		return nil, errors.New("sucursal es requerida")
 	}
@@ -209,11 +237,6 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		})
 	}
 
-	currency := input.Currency
-	if currency == "" {
-		currency = "PEN"
-	}
-
 	status := input.Status
 	if status == "" {
 		status = "received"
@@ -255,6 +278,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		TaxAmount:        taxAmount,
 		Total:            total,
 		Currency:         currency,
+		ExchangeRate:     exchangeRate,
 		PaymentMethod:    input.PaymentMethod,
 		Notes:            input.Notes,
 		PriceIncludesIgv: input.PriceIncludesIgv,
@@ -269,7 +293,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			return err
 		}
 		if input.PurchaseOrderID != nil && *input.PurchaseOrderID > 0 {
-			if err := posvc.MarkReceivedTx(tx, *input.PurchaseOrderID, purchase.ID); err != nil {
+			if err := posvc.MarkReceivedTx(tx, *input.PurchaseOrderID, purchase.ID, currency); err != nil {
 				return err
 			}
 		}
@@ -342,7 +366,10 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 				movementConversionFactor = &factor
 			}
 
-			priceUpdates, err := catalogPriceUpdates(item, baseUnitCost)
+			// Costo base en SOLES (la compra en USD se convierte con su TC): lo que entra al precio de
+			// compra del catálogo y al kardex. El costo del documento (item.UnitCost) queda en su moneda.
+			baseUnitCostPEN := baseUnitCost * penFactor
+			priceUpdates, err := catalogPriceUpdates(item, baseUnitCostPEN)
 			if err != nil {
 				return err
 			}
@@ -371,7 +398,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 				BranchID:         input.BranchID,
 				Type:             "in",
 				Quantity:         baseQuantity,
-				UnitCost:         baseUnitCost,
+				UnitCost:         baseUnitCostPEN,
 				Reference:        "COMPRA/" + input.Series + "-" + input.Number,
 				UserID:           input.UserID,
 				OperationCode:    "PURCHASE",

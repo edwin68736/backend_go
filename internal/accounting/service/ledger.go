@@ -1,6 +1,7 @@
 package service
 
 import (
+	"tukifac/pkg/salecurrency"
 	"fmt"
 	"sort"
 	"strconv"
@@ -144,11 +145,12 @@ func (s *Service) activity(from, to time.Time) (map[string]dc, map[string]string
 	s.db.Table("tenant_purchase_payables").
 		Joins("JOIN tenant_purchases ON tenant_purchases.id = tenant_purchase_payables.purchase_id").
 		Where("tenant_purchases.deleted_at IS NULL AND tenant_purchases.issue_date >= ? AND tenant_purchases.issue_date < ?", from, to).
-		Select("COALESCE(SUM(tenant_purchase_payables.original_amount),0)").Scan(&creditPurch)
+		Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("tenant_purchases", "tenant_purchase_payables.original_amount") + "),0)").Scan(&creditPurch)
 	s.db.Table("tenant_purchase_payments").
 		Joins("JOIN tenant_purchase_payables ON tenant_purchase_payables.purchase_id = tenant_purchase_payments.purchase_id").
+		Joins("JOIN tenant_purchases ON tenant_purchases.id = tenant_purchase_payments.purchase_id").
 		Where("tenant_purchase_payments.created_at >= ? AND tenant_purchase_payments.created_at < ?", from, to).
-		Select("COALESCE(SUM(tenant_purchase_payments.amount),0)").Scan(&paid)
+		Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("tenant_purchases", "tenant_purchase_payments.amount") + "),0)").Scan(&paid)
 	add("2.1.1", 0, creditPurch)
 	add("2.1.1", paid, 0)
 	return acts, names, warns, nil

@@ -60,3 +60,14 @@ func TestRequireExchangeRateForUSD(t *testing.T) {
 		t.Fatalf("expected ok with TC: %v", err)
 	}
 }
+
+func TestTotalPENSQL(t *testing.T) {
+	got := TotalPENSQL("p", "pay.amount")
+	want := "CASE WHEN p.currency = 'USD' AND p.exchange_rate > 0 THEN pay.amount * p.exchange_rate ELSE pay.amount END"
+	if got != want {
+		t.Errorf("got %q", got)
+	}
+	if TotalPENSQL("", "total") != "CASE WHEN currency = 'USD' AND exchange_rate > 0 THEN total * exchange_rate ELSE total END" {
+		t.Error("sin alias")
+	}
+}

@@ -200,7 +200,7 @@ func TestSendCancelAndReceivedGuards(t *testing.T) {
 	if got.Status != StatusSent {
 		t.Errorf("estado = %s", got.Status)
 	}
-	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 77) }); err != nil {
+	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 77, "PEN") }); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.svc.Cancel(po.ID); err == nil {
@@ -217,10 +217,10 @@ func TestSendCancelAndReceivedGuards(t *testing.T) {
 func TestMarkReceived_OnlyOnceAndRelease(t *testing.T) {
 	f := newFixture(t)
 	po, _ := f.svc.Create(f.input())
-	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 10) }); err != nil {
+	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 10, "PEN") }); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 11) }); err == nil {
+	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 11, "PEN") }); err == nil {
 		t.Error("una segunda compra sobre la misma orden debe fallar")
 	}
 	if err := f.db.Transaction(func(tx *gorm.DB) error { return ReleaseOnPurchaseVoidTx(tx, 10) }); err != nil {
@@ -230,27 +230,39 @@ func TestMarkReceived_OnlyOnceAndRelease(t *testing.T) {
 	if got.Status != StatusSent || got.PurchaseID != nil {
 		t.Errorf("tras anular la compra la orden vuelve a sent: %+v", got)
 	}
-	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 12) }); err != nil {
+	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 12, "PEN") }); err != nil {
 		t.Errorf("tras liberarla se puede volver a convertir: %v", err)
 	}
 }
 
-func TestMarkReceived_RejectsUSDOrdersUntilPhase2(t *testing.T) {
+func TestMarkReceived_PurchaseMustMatchOrderCurrency(t *testing.T) {
 	f := newFixture(t)
 	in := f.input()
 	rate := 3.7
 	in.Currency, in.ExchangeRate = "USD", &rate
-	po, err := f.svc.Create(in)
+	usd, err := f.svc.Create(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, po.ID, 5) })
-	if err == nil || !strings.Contains(err.Error(), "dólares") {
-		t.Errorf("convertir una orden USD debe rechazarse en Fase 1, err=%v", err)
+	// Orden USD con compra en soles (o sin moneda): se rechaza y la orden sigue abierta.
+	for _, cur := range []string{"PEN", ""} {
+		err = f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, usd.ID, 5, cur) })
+		if err == nil || !strings.Contains(err.Error(), "moneda de la orden") {
+			t.Errorf("compra %q sobre orden USD debe rechazarse, err=%v", cur, err)
+		}
 	}
-	got, _, _ := f.svc.GetByID(po.ID)
-	if got.Status != StatusDraft {
+	if got, _, _ := f.svc.GetByID(usd.ID); got.Status != StatusDraft {
 		t.Errorf("la orden debe seguir abierta, estado=%s", got.Status)
+	}
+	// Misma moneda: se recibe.
+	if err := f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, usd.ID, 5, "USD") }); err != nil {
+		t.Errorf("orden USD con compra USD: %v", err)
+	}
+	// Orden en soles con compra en dólares: se rechaza.
+	pen, _ := f.svc.Create(f.input())
+	err = f.db.Transaction(func(tx *gorm.DB) error { return MarkReceivedTx(tx, pen.ID, 6, "USD") })
+	if err == nil {
+		t.Error("orden PEN con compra USD debe rechazarse")
 	}
 }
 

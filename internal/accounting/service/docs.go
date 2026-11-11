@@ -391,8 +391,7 @@ func (s *Service) PurchaseDocs(from, to time.Time) ([]PurchaseDoc, []string, err
 		if d.Currency == "" {
 			d.Currency = "PEN"
 		}
-		// Las compras no guardan tipo de cambio: se avisa y se usa 1 (el registro muestra la moneda).
-		d.ExchangeRate = rateOrOne(d.Currency, nil, &warns, fmt.Sprintf("Compra %s-%s", r.Series, r.Number))
+		d.ExchangeRate = rateOrOne(d.Currency, r.ExchangeRate, &warns, fmt.Sprintf("Compra %s-%s", r.Series, r.Number))
 		d.PEN = b.scale(d.ExchangeRate)
 		out = append(out, d)
 	}

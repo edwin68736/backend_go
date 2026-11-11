@@ -240,6 +240,8 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 		Number        string `json:"number"`
 		IssueDate     string `json:"issue_date"`
 		Currency      string `json:"currency"`
+		// ExchangeRate: TC venta; obligatorio si currency = USD.
+		ExchangeRate *float64 `json:"exchange_rate"`
 		PaymentMethod string `json:"payment_method"`
 		Notes         string `json:"notes"`
 		// PriceIncludesIgv: criterio global de la compra (el costo tecleado ya trae IGV).
@@ -282,6 +284,7 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 		Number:           body.Number,
 		IssueDate:        issueDate,
 		Currency:         body.Currency,
+		ExchangeRate:     body.ExchangeRate,
 		PaymentMethod:    body.PaymentMethod,
 		Notes:            body.Notes,
 		PriceIncludesIgv: body.PriceIncludesIgv,

@@ -430,16 +430,19 @@ func (s *PurchaseOrderService) EnsureConvertible(id uint) (*database.TenantPurch
 // MarkReceivedTx enlaza la orden con la compra dentro de la transacción de la compra.
 // Falla si la orden ya fue recibida (evita dos compras sobre la misma orden, incluso con
 // peticiones concurrentes: el UPDATE condicional solo afecta a una).
-func MarkReceivedTx(tx *gorm.DB, orderID, purchaseID uint) error {
-	// Guarda temporal de la Fase 1: la compra aún es solo en soles (la multimoneda de compras
-	// —costo, caja y CxP con TC— es la Fase 2). Convertir una orden en USD registraría dólares
-	// como soles. Se retira cuando la compra soporte moneda y tipo de cambio.
+func MarkReceivedTx(tx *gorm.DB, orderID, purchaseID uint, purchaseCurrency string) error {
+	// La compra debe estar en la misma moneda que la orden: convertir una orden en USD con una compra
+	// en soles (o al revés) cambiaría el importe pactado con el proveedor. El TC sí puede diferir
+	// (el de la orden es el de su fecha; el de la compra, el de la fecha del comprobante).
 	var cur string
 	if err := tx.Model(&database.TenantPurchaseOrder{}).Where("id = ?", orderID).Select("currency").Scan(&cur).Error; err != nil {
 		return err
 	}
-	if cur != "" && cur != salecurrency.CurrencyPEN {
-		return errors.New("las órdenes en dólares aún no se pueden convertir en compra (próxima fase: compras multimoneda)")
+	if cur == "" {
+		cur = salecurrency.CurrencyPEN
+	}
+	if pc := strings.ToUpper(strings.TrimSpace(purchaseCurrency)); pc == "" && cur != salecurrency.CurrencyPEN || pc != "" && pc != cur {
+		return fmt.Errorf("la compra debe registrarse en la moneda de la orden (%s)", cur)
 	}
 	now := time.Now()
 	res := tx.Model(&database.TenantPurchaseOrder{}).

@@ -2122,6 +2122,10 @@ type TenantPurchase struct {
 	TaxAmount     float64    `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
 	Total         float64    `gorm:"type:decimal(15,2);not null" json:"total"`
 	Currency      string     `gorm:"size:10;default:'PEN'" json:"currency"`
+	// ExchangeRate: tipo de cambio (venta) de la compra en USD (V181); nil en soles. Los importes del
+	// documento, sus pagos y la CxP quedan en la moneda del documento; inventario y costos van en soles
+	// (costo × TC) y los totales consolidados convierten con este TC.
+	ExchangeRate  *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
 	PaymentMethod string     `gorm:"size:50" json:"payment_method"`
 	Notes         string     `gorm:"type:text" json:"notes"`
 	Status        string     `gorm:"size:30;default:'received'" json:"status"`

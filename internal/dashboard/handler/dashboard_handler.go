@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"tukifac/pkg/salecurrency"
 	"time"
 
 	"tukifac/config"
@@ -56,7 +57,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 	var monthPurchasesTotal float64
 	tdb.Model(&database.TenantPurchase{}).
 		Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).
-		Select("COALESCE(SUM(total), 0)").Scan(&monthPurchasesTotal)
+		Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&monthPurchasesTotal)
 
 	// Ventas por mes (últimos 6 meses)
 	type MonthStat struct {
