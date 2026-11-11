@@ -113,7 +113,11 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 			LinkedRetention: linked,
 		})
 	}
-	return c.JSON(fiber.Map{"data": out, "total": total})
+	totals, terr := service.NewPurchaseService(tdb).TotalsByCurrency(params)
+	if terr != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": terr.Error()})
+	}
+	return c.JSON(fiber.Map{"data": out, "total": total, "totals_by_currency": totals})
 }
 
 // GET /api/purchases/:id

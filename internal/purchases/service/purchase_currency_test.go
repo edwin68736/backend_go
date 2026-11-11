@@ -179,3 +179,50 @@ func TestPurchaseFromOrder_USDMustMatchOrderCurrency(t *testing.T) {
 		t.Errorf("la orden debe quedar recibida: %+v", got)
 	}
 }
+
+// Reporte de compras: totales por moneda sin mezclar dólares con soles; las anuladas no cuentan.
+func TestPurchaseTotalsByCurrency_SeparatesCurrenciesAndSkipsCancelled(t *testing.T) {
+	db := setupPurchaseServiceTestDB(t)
+	svc := NewPurchaseService(db)
+	newOpenCashSession(t, db, 1, 1)
+	pid := stockProduct(t, svc, "P-TOT")
+	rate := 3.5
+
+	pen := usdInput(pid, "1", nil)
+	pen.Currency = "PEN" // 2 × 10 → 20 + IGV 3.60 = 23.60 soles
+	if _, err := svc.Create(pen); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(usdInput(pid, "2", &rate)); err != nil { // 23.60 USD → S/ 82.60
+		t.Fatal(err)
+	}
+	cancelled, err := svc.Create(usdInput(pid, "3", &rate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Void(cancelled.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	totals, err := svc.TotalsByCurrency(PurchaseListParams{BranchID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]CurrencyTotal{}
+	for _, tt := range totals {
+		by[tt.Currency] = tt
+	}
+	if len(by) != 2 {
+		t.Fatalf("debe haber una fila por moneda: %+v", totals)
+	}
+	if p := by["PEN"]; p.Count != 1 || p.Total != 23.6 || p.TotalPEN != 23.6 {
+		t.Errorf("PEN: %+v", p)
+	}
+	if u := by["USD"]; u.Count != 1 || u.Total != 23.6 || u.TotalPEN != 82.6 { // 23.60 × 3.5
+		t.Errorf("USD (sin la anulada): %+v", u)
+	}
+	// Otra sucursal no ve nada.
+	if other, _ := svc.TotalsByCurrency(PurchaseListParams{BranchID: 2}); len(other) != 0 {
+		t.Errorf("otra sucursal: %+v", other)
+	}
+}

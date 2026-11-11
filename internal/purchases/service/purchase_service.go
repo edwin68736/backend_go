@@ -444,8 +444,8 @@ type PurchaseListParams struct {
 	Offset    int
 }
 
-func (s *PurchaseService) List(params PurchaseListParams) ([]database.TenantPurchase, int64, error) {
-	var purchases []database.TenantPurchase
+// filtered aplica los filtros del listado (sucursal, proveedor, tipo, texto y fechas) sin paginar.
+func (s *PurchaseService) filtered(params PurchaseListParams) *gorm.DB {
 	q := s.db.Model(&database.TenantPurchase{})
 	if params.BranchID > 0 {
 		q = q.Where("tenant_purchases.branch_id = ?", params.BranchID)
@@ -468,6 +468,44 @@ func (s *PurchaseService) List(params PurchaseListParams) ([]database.TenantPurc
 	if params.DateTo != nil {
 		q = q.Where("tenant_purchases.issue_date <= ?", params.DateTo)
 	}
+	return q
+}
+
+// CurrencyTotal total de las compras del filtro (sin anuladas) en UNA moneda. Los importes van en la moneda
+// del documento; TotalPEN es el equivalente en soles (USD × TC de cada compra).
+type CurrencyTotal struct {
+	Currency  string  `json:"currency"`
+	Count     int64   `json:"count"`
+	Subtotal  float64 `json:"subtotal"`
+	TaxAmount float64 `json:"tax_amount"`
+	Total     float64 `json:"total"`
+	TotalPEN  float64 `json:"total_pen"`
+}
+
+// TotalsByCurrency suma por moneda las compras del filtro, sin mezclar dólares con soles.
+func (s *PurchaseService) TotalsByCurrency(params PurchaseListParams) ([]CurrencyTotal, error) {
+	var rows []CurrencyTotal
+	err := s.filtered(params).
+		Where("tenant_purchases.status != ?", StatusCancelled).
+		Select("COALESCE(NULLIF(tenant_purchases.currency, ''), 'PEN') AS currency, COUNT(*) AS count, " +
+			"COALESCE(SUM(tenant_purchases.subtotal), 0) AS subtotal, COALESCE(SUM(tenant_purchases.tax_amount), 0) AS tax_amount, " +
+			"COALESCE(SUM(tenant_purchases.total), 0) AS total, " +
+			"COALESCE(SUM(" + salecurrency.TotalPENSQL("tenant_purchases", "tenant_purchases.total") + "), 0) AS total_pen").
+		Group("COALESCE(NULLIF(tenant_purchases.currency, ''), 'PEN')").
+		Order("currency").
+		Scan(&rows).Error
+	for i := range rows {
+		rows[i].Subtotal = money.RoundDisplay(rows[i].Subtotal)
+		rows[i].TaxAmount = money.RoundDisplay(rows[i].TaxAmount)
+		rows[i].Total = money.RoundDisplay(rows[i].Total)
+		rows[i].TotalPEN = money.RoundDisplay(rows[i].TotalPEN)
+	}
+	return rows, err
+}
+
+func (s *PurchaseService) List(params PurchaseListParams) ([]database.TenantPurchase, int64, error) {
+	var purchases []database.TenantPurchase
+	q := s.filtered(params)
 
 	var total int64
 	if params.Limit > 0 {
