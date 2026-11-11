@@ -62,9 +62,9 @@ func (s *CashBankService) enrichMovementRowsCurrency(rows []MovementReportRow) {
 			ids = append(ids, id)
 		}
 		var docs []database.TenantPurchase
-		if s.db.Unscoped().Select("id", "currency", "issue_date").Where("id IN ?", ids).Find(&docs).Error == nil {
+		if s.db.Unscoped().Select("id", "currency", "exchange_rate", "issue_date").Where("id IN ?", ids).Find(&docs).Error == nil {
 			for _, d := range docs {
-				purchases[d.ID] = movementDocCurrency{currency: normCurrency(d.Currency), issued: d.IssueDate}
+				purchases[d.ID] = movementDocCurrency{currency: normCurrency(d.Currency), rate: d.ExchangeRate, issued: d.IssueDate}
 			}
 		}
 	}

@@ -101,11 +101,7 @@ func (s *PurchaseOrderService) validateHeader(in SaveInput) (string, *float64, e
 	if n == 0 {
 		return "", nil, errors.New("el proveedor seleccionado no existe")
 	}
-	cur, err := salecurrency.NormalizeCurrency(in.Currency)
-	if err != nil {
-		return "", nil, err
-	}
-	rate, err := salecurrency.NormalizeExchangeRate(cur, in.ExchangeRate)
+	cur, rate, _, err := salecurrency.ResolveDocumentRate(in.Currency, in.ExchangeRate, in.IssueDate)
 	if err != nil {
 		return "", nil, err
 	}

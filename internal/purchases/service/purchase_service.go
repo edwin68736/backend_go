@@ -78,12 +78,9 @@ type CreatePurchaseInput struct {
 }
 
 // normalizePurchaseCurrency valida moneda (PEN/USD) y TC: USD exige TC > 0; PEN lo descarta.
-func normalizePurchaseCurrency(raw string, rate *float64) (string, *float64, error) {
-	cur, err := salecurrency.NormalizeCurrency(raw)
-	if err != nil {
-		return "", nil, err
-	}
-	r, err := salecurrency.NormalizeExchangeRate(cur, rate)
+func normalizePurchaseCurrency(raw string, rate *float64, issue time.Time) (string, *float64, error) {
+	// USD sin TC: se completa con el TC guardado de la fecha de emisión (ResolveDocumentRate).
+	cur, r, _, err := salecurrency.ResolveDocumentRate(raw, rate, issue)
 	if err != nil {
 		return "", nil, err
 	}
@@ -164,7 +161,7 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	if len(input.Items) == 0 {
 		return nil, errors.New("la compra debe tener al menos un ítem")
 	}
-	currency, exchangeRate, err := normalizePurchaseCurrency(input.Currency, input.ExchangeRate)
+	currency, exchangeRate, err := normalizePurchaseCurrency(input.Currency, input.ExchangeRate, input.IssueDate)
 	if err != nil {
 		return nil, err
 	}

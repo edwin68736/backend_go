@@ -6,6 +6,7 @@ import (
 	"time"
 
 	posvc "tukifac/internal/purchaseorders/service"
+	"tukifac/pkg/dailyfx"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 )
@@ -224,5 +225,28 @@ func TestPurchaseTotalsByCurrency_SeparatesCurrenciesAndSkipsCancelled(t *testin
 	// Otra sucursal no ve nada.
 	if other, _ := svc.TotalsByCurrency(PurchaseListParams{BranchID: 2}); len(other) != 0 {
 		t.Errorf("otra sucursal: %+v", other)
+	}
+}
+
+// Toda compra en USD queda con el TC de su fecha de emisión: si no se envía, se completa con el TC guardado del día.
+func TestPurchaseUSD_FillsExchangeRateFromSavedDailyRate(t *testing.T) {
+	db := setupPurchaseServiceTestDB(t)
+	svc := NewPurchaseService(db)
+	newOpenCashSession(t, db, 1, 1)
+	pid := stockProduct(t, svc, "P-DAY")
+	prev := dailyfx.Lookup
+	dailyfx.Lookup = func(day string) (float64, bool, bool) { return 3.44, false, true }
+	t.Cleanup(func() { dailyfx.Lookup = prev })
+
+	p, err := svc.Create(usdInput(pid, "50", nil))
+	if err != nil {
+		t.Fatalf("USD sin TC con TC del día guardado debe completarse: %v", err)
+	}
+	if p.ExchangeRate == nil || *p.ExchangeRate != 3.44 {
+		t.Errorf("TC de la compra = %v, quiere 3.44 (el guardado del día)", p.ExchangeRate)
+	}
+	dailyfx.Lookup = func(string) (float64, bool, bool) { return 0, false, false }
+	if _, err := svc.Create(usdInput(pid, "51", nil)); err == nil {
+		t.Error("sin TC del día y sin TC enviado debe rechazarse")
 	}
 }
