@@ -142,3 +142,28 @@ func TestMovementSnapshot_StoredAtCreationAndStableAfterDocumentEdit(t *testing.
 		t.Errorf("esperado = %v, quiere 140 (100 + 40) aunque el TC del documento cambió", got)
 	}
 }
+
+// La cuenta bancaria (siempre en soles) sube por el equivalente en soles de un cobro en USD, y la anulación lo devuelve igual.
+func TestBankAccountBalance_UsesSolesEquivalentForUSD(t *testing.T) {
+	db := setupCashReportPhysicalBalanceTestDB(t)
+	svc := NewCashBankService(db)
+	seedReportPaymentMethods(t, db)
+	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open", OpenedAt: time.Now()}
+	db.Create(session)
+	rate := 4.0
+	createReportSaleCur(t, db, svc, 1, session.ID, map[string]float64{"yape": 10}, "USD", &rate)
+	var acc database.TenantBankAccount
+	db.Where("name = ?", "Yape").First(&acc)
+	if acc.Balance != 40 {
+		t.Fatalf("saldo Yape = %v, quiere 40 (US$10 × 4)", acc.Balance)
+	}
+	var mv database.TenantBankMovement
+	db.Where("bank_account_id = ?", acc.ID).First(&mv)
+	if err := svc.CreateBankReversal(db, mv, "anulación", "ref", "Anulación venta", "", 1); err != nil {
+		t.Fatal(err)
+	}
+	db.First(&acc, acc.ID)
+	if acc.Balance != 0 {
+		t.Fatalf("saldo tras la reversión = %v, quiere 0", acc.Balance)
+	}
+}

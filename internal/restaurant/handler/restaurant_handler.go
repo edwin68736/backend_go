@@ -626,7 +626,7 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		SeriesID:        body.SeriesID,
 		DocType:         body.DocType,
 		IssueDate:       issueDate,
-		Currency:        body.Currency,
+		Currency:        "PEN", // Tukichef solo opera en soles
 		ContactID:       body.ContactID,
 		Payments:        body.Payments,
 		CashSessionID:   body.CashSessionID,
@@ -763,7 +763,7 @@ func (h *RestaurantHandler) POSCheckout(c fiber.Ctx) error {
 		Items:             body.Items,
 		SeriesID:        body.SeriesID,
 		DocType:         body.DocType,
-		Currency:        body.Currency,
+		Currency:        "PEN", // Tukichef solo opera en soles
 		IssueDate:       issueDate,
 		CashSessionID:   body.CashSessionID,
 		DiscountMode:    body.DiscountMode,

@@ -443,8 +443,8 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 		}
 		return q
 	}
-	cashBase().Select("COALESCE(SUM(CASE WHEN m.type = 'income' THEN m.amount ELSE 0 END),0)").Scan(&cashIncome)
-	cashBase().Select("COALESCE(SUM(CASE WHEN m.type = 'expense' THEN m.amount ELSE 0 END),0)").Scan(&cashExpense)
+	cashBase().Select("COALESCE(SUM(CASE WHEN m.type = 'income' THEN COALESCE(m.amount_pen, m.amount) ELSE 0 END),0)").Scan(&cashIncome)
+	cashBase().Select("COALESCE(SUM(CASE WHEN m.type = 'expense' THEN COALESCE(m.amount_pen, m.amount) ELSE 0 END),0)").Scan(&cashExpense)
 
 	// Sesiones de caja abiertas: con el mismo filtro de sucursal/usuario que el resto del dashboard
 	// (antes contaba todas las sucursales y no coincidía con el módulo Caja, que lista la activa).
@@ -606,9 +606,11 @@ func computeSalesByPaymentMethod(tdb *gorm.DB, from, toExclusive time.Time, bran
 		ID            uint
 		Total         float64
 		PaymentMethod string
+		Currency      string
+		ExchangeRate  *float64
 	}
 	if err := analyticsSaleScope(tdb, from, toExclusive, branchID, userID, restrictUser).
-		Select("id, total, payment_method").Scan(&sales).Error; err != nil {
+		Select("id, total, payment_method, currency, exchange_rate").Scan(&sales).Error; err != nil {
 		return nil, err
 	}
 
@@ -639,13 +641,18 @@ func computeSalesByPaymentMethod(tdb *gorm.DB, from, toExclusive time.Time, bran
 	totals := make(map[string]float64)
 	counts := make(map[string]int64)
 	for _, sale := range sales {
+		// Todo se agrega en SOLES: una venta en USD con TC aporta sus importes × TC (mismo criterio que las tarjetas de ventas).
+		factor := 1.0
+		if strings.EqualFold(strings.TrimSpace(sale.Currency), "USD") && sale.ExchangeRate != nil && *sale.ExchangeRate > 0 {
+			factor = *sale.ExchangeRate
+		}
 		rows := paysBySale[sale.ID]
 		if len(rows) == 0 {
 			method := strings.ToLower(strings.TrimSpace(sale.PaymentMethod))
 			if method == "" {
 				method = "sin_definir"
 			}
-			totals[method] += sale.Total
+			totals[method] += sale.Total * factor
 			counts[method]++
 			continue
 		}
@@ -664,7 +671,7 @@ func computeSalesByPaymentMethod(tdb *gorm.DB, from, toExclusive time.Time, bran
 			if method == "" {
 				method = "sin_definir"
 			}
-			totals[method] += amount
+			totals[method] += amount * factor
 			if _, ok := seen[method]; !ok {
 				seen[method] = struct{}{}
 				counts[method]++

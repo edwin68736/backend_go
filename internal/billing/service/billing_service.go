@@ -650,6 +650,7 @@ func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint, reason stri
 		TaxAmount:      orig.TaxAmount,
 		Total:          orig.Total,
 		Currency:       orig.Currency,
+		ExchangeRate:   orig.ExchangeRate,
 		PaymentMethod:  orig.PaymentMethod,
 		Notes:          reason,
 		NoteReasonCode: reasonCode,

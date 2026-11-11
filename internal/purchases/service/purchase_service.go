@@ -471,7 +471,7 @@ func (s *PurchaseService) filtered(params PurchaseListParams) *gorm.DB {
 // CurrencyTotal total de las compras del filtro (sin anuladas) en UNA moneda. Los importes van en la moneda
 // del documento; TotalPEN es el equivalente en soles (USD × TC de cada compra).
 type CurrencyTotal struct {
-	Currency  string  `json:"currency"`
+	Currency  string  `json:"currency" gorm:"column:cur_code"`
 	Count     int64   `json:"count"`
 	Subtotal  float64 `json:"subtotal"`
 	TaxAmount float64 `json:"tax_amount"`
@@ -484,12 +484,12 @@ func (s *PurchaseService) TotalsByCurrency(params PurchaseListParams) ([]Currenc
 	var rows []CurrencyTotal
 	err := s.filtered(params).
 		Where("tenant_purchases.status != ?", StatusCancelled).
-		Select("COALESCE(NULLIF(tenant_purchases.currency, ''), 'PEN') AS currency, COUNT(*) AS count, " +
+		Select("COALESCE(NULLIF(tenant_purchases.currency, ''), 'PEN') AS cur_code, COUNT(*) AS count, " +
 			"COALESCE(SUM(tenant_purchases.subtotal), 0) AS subtotal, COALESCE(SUM(tenant_purchases.tax_amount), 0) AS tax_amount, " +
 			"COALESCE(SUM(tenant_purchases.total), 0) AS total, " +
 			"COALESCE(SUM(" + salecurrency.TotalPENSQL("tenant_purchases", "tenant_purchases.total") + "), 0) AS total_pen").
-		Group("COALESCE(NULLIF(tenant_purchases.currency, ''), 'PEN')").
-		Order("currency").
+		Group("cur_code").
+		Order("cur_code").
 		Scan(&rows).Error
 	for i := range rows {
 		rows[i].Subtotal = money.RoundDisplay(rows[i].Subtotal)

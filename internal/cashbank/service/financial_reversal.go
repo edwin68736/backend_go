@@ -72,13 +72,17 @@ func (s *CashBankService) CreateBankReversal(tx *gorm.DB, original database.Tena
 		Category:      category,
 		Notes:         notes,
 		CreatedAt:     now,
+		// Snapshot del original: la reversión vale lo mismo aunque el TC del documento o el del día cambien.
+		Currency:     original.Currency,
+		ExchangeRate: original.ExchangeRate,
+		AmountPEN:    original.AmountPEN,
 	}
 	if err := exec.Create(&rev).Error; err != nil {
 		return err
 	}
 	return exec.Model(&database.TenantBankAccount{}).
 		Where("id = ?", original.BankAccountID).
-		Update("balance", gorm.Expr("balance + ?", delta)).Error
+		Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&rev, delta))).Error
 }
 
 // ReverseBankMovementsByReference revierte movimientos bancarios del tipo indicado que comparten referencia.
@@ -139,6 +143,9 @@ func (s *CashBankService) CreateCashReversal(tx *gorm.DB, original database.Tena
 		Notes:         notes,
 		UserID:        uid,
 		CreatedAt:     now,
+		Currency:      original.Currency,
+		ExchangeRate:  original.ExchangeRate,
+		AmountPEN:     original.AmountPEN,
 	}
 	return exec.Create(&rev).Error
 }
@@ -245,4 +252,18 @@ func (s *CashBankService) reverseManualBankMovement(tx *gorm.DB, movementID, use
 		desc = category
 	}
 	return s.CreateBankReversal(exec, original, desc, original.Reference, category, notes, userID)
+}
+
+// bankDeltaPEN devuelve el cambio de saldo de una cuenta bancaria (siempre en soles: no hay cuentas en dólares) para un
+// movimiento ya creado. delta llega con el signo correcto y en la moneda del movimiento; si el movimiento se valuó (AmountPEN, lo
+// completa el hook de snapshot) se usa su equivalente en soles; si no, queda el importe tal cual (soles o sin TC conocido).
+func bankDeltaPEN(m *database.TenantBankMovement, delta float64) float64 {
+	if m == nil || m.AmountPEN == nil || m.Amount == 0 {
+		return delta
+	}
+	pen := *m.AmountPEN
+	if delta < 0 {
+		return -pen
+	}
+	return pen
 }

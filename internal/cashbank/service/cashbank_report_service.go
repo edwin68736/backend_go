@@ -1,6 +1,7 @@
 package service
 
 import (
+	"tukifac/pkg/salecurrency"
 	"errors"
 	"fmt"
 	"sort"
@@ -1920,7 +1921,7 @@ func (s *CashBankService) GetSessionProductsReport(sessionID uint) ([]SessionPro
 	var rows []SessionProductSoldRow
 	err := s.db.Table("tenant_sale_items").
 		Select(`tenant_sale_items.product_id, tenant_sale_items.code, tenant_sale_items.description, tenant_sale_items.unit,
-			SUM(tenant_sale_items.quantity) AS quantity, SUM(tenant_sale_items.total) AS total`).
+			SUM(tenant_sale_items.quantity) AS quantity, SUM(` + salecurrency.TotalPENSQL("tenant_sales", "tenant_sale_items.total") + `) AS total`).
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id").
 		Scopes(salescope.ScopeCommercialNoNotes("tenant_sales")).
 		Where("tenant_sales.cash_session_id = ? AND tenant_sales.status NOT IN ?", sessionID, []string{"cancelled", "draft"}).

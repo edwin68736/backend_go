@@ -370,6 +370,9 @@ func (s *QuotationService) checkAuthorizedPrices(
 	if canOverride {
 		return nil
 	}
+	if err := salecurrency.EnsureRateNearOfficial(currency, exchangeRate, time.Now()); err != nil {
+		return err
+	}
 	items := make([]salessvc.SaleItemInput, 0, len(inputs))
 	for _, in := range inputs {
 		unchanged := false

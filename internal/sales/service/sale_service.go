@@ -294,6 +294,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// vetadas por código de confianza (item.PriceAuthorized=true) no se reevalúan de todos modos.
 	// Ver sale_price_authorization.go.
 	if !input.UserCanOverridePrice {
+		if err := salecurrency.EnsureRateNearOfficial(input.Currency, input.ExchangeRate, input.IssueDate); err != nil {
+			return nil, err
+		}
 		// Documento en USD: el precio autorizado es el de catálogo (soles) convertido con el TC del documento.
 		if err := validateAuthorizedPricesFX(s.db, input.BranchID, input.Items, input.Currency, input.ExchangeRate); err != nil {
 			return nil, err
@@ -355,6 +358,16 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 		if sunatCode := strings.TrimSpace(series.SunatCode); sunatCode != "01" && sunatCode != "03" {
 			return nil, errors.New("la deducción de anticipos solo aplica a factura (01) o boleta (03)")
+		}
+		// Un anticipo se deduce en su misma moneda: restar un saldo en soles de un total en dólares (o al revés) descuadra el documento.
+		for _, d := range input.Prepayment.Deductions {
+			var srcCur string
+			if err := s.db.Model(&database.TenantSale{}).Where("id = ?", d.SourceSaleID).Select("currency").Scan(&srcCur).Error; err != nil {
+				return nil, err
+			}
+			if !strings.EqualFold(strings.TrimSpace(srcCur), strings.TrimSpace(input.Currency)) && !(strings.TrimSpace(srcCur) == "" && input.Currency == salecurrency.CurrencyPEN) {
+				return nil, errors.New("el anticipo está en una moneda distinta a la de esta venta: solo se puede deducir en la misma moneda")
+			}
 		}
 		plan, err := prepaymentsvc.NewService(s.db).PlanDeductions(
 			input.ContactID,
@@ -1659,7 +1672,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 	out.CountActive = row.CountActive
 
 	type curAggRow struct {
-		Currency       string  `gorm:"column:currency"`
+		Currency       string  `gorm:"column:cur_code"`
 		SumTotal       float64 `gorm:"column:sum_total"`
 		SumSubtotal    float64 `gorm:"column:sum_subtotal"`
 		SumTax         float64 `gorm:"column:sum_tax"`
@@ -1674,7 +1687,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 	var curRows []curAggRow
 	if err := sc.sales(s.db.Model(&database.TenantSale{})).
 		Where("tenant_sales.id IN (?)", idSub).
-		Select(saleCurrencySQL + ` AS currency,
+		Select(saleCurrencySQL + ` AS cur_code,
 			COALESCE(SUM(` + netTotal + `), 0) AS sum_total,
 			COALESCE(SUM(` + netSubtotal + `), 0) AS sum_subtotal,
 			COALESCE(SUM(` + netTax + `), 0) AS sum_tax,
@@ -1684,8 +1697,8 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_active,
 			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND tenant_sales.exchange_rate > 0 THEN ` + netTotal + ` * tenant_sales.exchange_rate ELSE 0 END), 0) AS sum_active_pen_known,
 			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` AND (tenant_sales.exchange_rate IS NULL OR tenant_sales.exchange_rate <= 0) THEN 1 ELSE 0 END), 0) AS count_missing_rate`).
-		Group(saleCurrencySQL).
-		Order("currency ASC").
+		Group("cur_code").
+		Order("cur_code ASC").
 		Scan(&curRows).Error; err != nil {
 		return out, err
 	}
@@ -1756,7 +1769,7 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 	// Totales por método: si hay filas en tenant_sale_pagos, usar montos por línea; si no, el campo cabecera payment_method.
 	type payRow struct {
 		Method   string  `gorm:"column:method"`
-		Currency string  `gorm:"column:currency"`
+		Currency string  `gorm:"column:cur_code"`
 		Total    float64 `gorm:"column:total"`
 	}
 	type methodCur struct{ method, currency string }
@@ -1896,11 +1909,11 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 
 	var fromHeader []payRow
 	err = sc.sales(s.db.Model(&database.TenantSale{})).
-		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, `+saleCurrencySQL+` AS currency, COALESCE(SUM(`+netTotal+`), 0) AS total`).
+		Select(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))) AS method, `+saleCurrencySQL+` AS cur_code, COALESCE(SUM(`+netTotal+`), 0) AS total`).
 		Where("tenant_sales.id IN (?)", idSub).
 		Where("tenant_sales.status != ?", "cancelled").
 		Where("NOT EXISTS (SELECT 1 FROM tenant_sale_payments tsp WHERE tsp.sale_id = tenant_sales.id)").
-		Group(`LOWER(TRIM(COALESCE(NULLIF(tenant_sales.payment_method, ''), 'sin_definir'))), ` + saleCurrencySQL).
+		Group("method, cur_code").
 		Scan(&fromHeader).Error
 	if err != nil {
 		return out, err
@@ -2084,7 +2097,7 @@ func (s *SaleService) SalesByProduct(params SalesByProductParams) ([]SalesByProd
 			tenant_sale_items.sale_unit_id as sale_unit_id,
 			COALESCE(MAX(NULLIF(TRIM(p.unit), '')), MAX(tenant_sale_items.unit)) as unit,
 			SUM(tenant_sale_items.quantity) as quantity_sold,
-			SUM(tenant_sale_items.total) as total_amount,
+			SUM(` + salecurrency.TotalPENSQL("tenant_sales", "tenant_sale_items.total") + `) as total_amount,
 			COUNT(*) as lines_count,
 			COUNT(DISTINCT tenant_sale_items.sale_id) as sales_count`).
 		Group("tenant_sale_items.product_id, tenant_sale_items.sale_unit_id")
@@ -2221,7 +2234,9 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 			tenant_sale_items.unit_price as sale_price,
 			tenant_sale_items.subtotal as line_subtotal,
 			tenant_sale_items.line_discount_subtotal as line_discount_subtotal,
-			tenant_sale_items.global_discount_subtotal as global_discount_subtotal`).
+			tenant_sale_items.global_discount_subtotal as global_discount_subtotal,
+			tenant_sales.currency as currency,
+			tenant_sales.exchange_rate as exchange_rate`).
 		Joins("INNER JOIN tenant_sales ON tenant_sales.id = tenant_sale_items.sale_id AND tenant_sales.status != 'cancelled'").
 		Joins("LEFT JOIN tenant_products p ON p.id = tenant_sale_items.product_id").
 		Joins("LEFT JOIN tenant_contacts ct ON ct.id = tenant_sales.contact_id").
@@ -2266,6 +2281,8 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 		LineSubtotal           float64
 		LineDiscountSubtotal   float64
 		GlobalDiscountSubtotal float64
+		Currency               string
+		ExchangeRate           *float64
 	}
 	var raw []row
 	if err := q.Scan(&raw).Error; err != nil {
@@ -2275,6 +2292,7 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 	out := make([]ProfitDetailRow, len(raw))
 	var summary ProfitDetailSummary
 	distinctSales := map[uint]struct{}{}
+	rateCache := dayRateCache{}
 	for i, r := range raw {
 		// SalePrice es el precio de lista de la línea; lo realmente cobrado descuenta los
 		// descuentos de línea y el descuento global de la venta (ya prorrateado por línea en
@@ -2284,6 +2302,19 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 		// columnas decimal puede truncarse a entero.
 		if listSubtotal := r.LineSubtotal + r.LineDiscountSubtotal + r.GlobalDiscountSubtotal; listSubtotal > 0 && r.LineSubtotal > 0 && r.LineSubtotal < listSubtotal {
 			r.SalePrice = money.RoundSunat(r.SalePrice * (r.LineSubtotal / listSubtotal))
+		}
+		// El costo (purchase_price) siempre está en soles; el precio de una venta en USD se lleva a soles con el TC de su
+		// venta (si no lo guardó, el del día de emisión) para que la utilidad no reste soles a dólares.
+		if strings.ToUpper(strings.TrimSpace(r.Currency)) == salecurrency.CurrencyUSD {
+			factor := 0.0
+			if r.ExchangeRate != nil && *r.ExchangeRate > 0 {
+				factor = *r.ExchangeRate
+			} else if v := rateCache.get(salecurrency.DayOf(r.IssueDate)); v != nil {
+				factor = *v
+			}
+			if factor > 0 {
+				r.SalePrice = money.RoundSunat(r.SalePrice * factor)
+			}
 		}
 		unitProfit := r.SalePrice - r.PurchasePrice
 		totalProfit := unitProfit * r.Quantity

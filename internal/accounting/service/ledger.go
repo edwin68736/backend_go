@@ -57,7 +57,7 @@ func (s *Service) activity(from, to time.Time) (map[string]dc, map[string]string
 		Type string
 		Sum  float64
 	}
-	if err := s.db.Table("tenant_cash_movements").Select("type, SUM(amount) AS sum").
+	if err := s.db.Table("tenant_cash_movements").Select("type, SUM(COALESCE(amount_pen, amount)) AS sum").
 		Where("created_at >= ? AND created_at < ?", from, to).Group("type").Scan(&cash).Error; err != nil {
 		return nil, nil, nil, err
 	}
@@ -80,7 +80,7 @@ func (s *Service) activity(from, to time.Time) (map[string]dc, map[string]string
 		Type          string
 		Sum           float64
 	}
-	if err := s.db.Table("tenant_bank_movements").Select("bank_account_id, type, SUM(amount) AS sum").
+	if err := s.db.Table("tenant_bank_movements").Select("bank_account_id, type, SUM(COALESCE(amount_pen, amount)) AS sum").
 		Where("date >= ? AND date < ?", from, to).Group("bank_account_id, type").Scan(&bm).Error; err != nil {
 		return nil, nil, nil, err
 	}
@@ -121,7 +121,7 @@ func (s *Service) activity(from, to time.Time) (map[string]dc, map[string]string
 	s.db.Table("tenant_sale_payments").
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_payments.sale_id").
 		Where("tenant_sales.payment_condition_code = ? AND tenant_sales.deleted_at IS NULL AND tenant_sale_payments.created_at >= ? AND tenant_sale_payments.created_at < ?", "credit", from, to).
-		Select("COALESCE(SUM(tenant_sale_payments.amount),0)").Scan(&collected)
+		Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("tenant_sales", "tenant_sale_payments.amount") + "),0)").Scan(&collected)
 	add("1.1.2", 0, collected)
 
 	// Compras: IGV crédito fiscal y compras netas (las notas de crédito restan).

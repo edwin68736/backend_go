@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -332,6 +333,12 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 	var storedItems []database.TenantQuotationItem
 	if err := s.db.Where("quotation_id = ?", id).Find(&storedItems).Error; err != nil {
 		return nil, err
+	}
+	// Los precios guardados solo cuentan como "sin cambios" si la cotización sigue en la misma moneda y TC; si cambió (p. ej.
+	// de soles a dólares con el mismo número), cada línea se vuelve a validar contra el catálogo.
+	if !strings.EqualFold(strings.TrimSpace(q.Currency), currency) || (q.ExchangeRate == nil) != (exchangeRate == nil) ||
+		(q.ExchangeRate != nil && exchangeRate != nil && math.Abs(*q.ExchangeRate-*exchangeRate) > 1e-9) {
+		storedItems = nil
 	}
 	if err := s.checkAuthorizedPrices(q.BranchID, input.Items, input.UserCanOverridePrice, storedItems, currency, exchangeRate); err != nil {
 		return nil, err

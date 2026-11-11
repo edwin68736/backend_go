@@ -43,3 +43,24 @@ func ResolveDocumentRate(rawCurrency string, rate *float64, issueDate time.Time)
 
 // DayOf formatea una fecha de emisión como día de Lima (yyyy-mm-dd).
 func DayOf(t time.Time) string { return strings.TrimSpace(t.In(datespe.Location()).Format("2006-01-02")) }
+
+// MaxRateDeviation es cuánto puede apartarse el TC de un documento del TC oficial guardado del día para un usuario SIN permiso de
+// editar precios. Un TC libre permitiría fijar un precio distinto al del catálogo (precio catálogo ÷ TC cuadra siempre con el TC
+// que se escribió), así que el TC editable queda acotado.
+const MaxRateDeviation = 0.05
+
+// EnsureRateNearOfficial rechaza un TC (documento en USD) que se aparta más de MaxRateDeviation del TC guardado del día de
+// emisión. No hace nada si el documento no es USD, si no hay proveedor de TC (pruebas) o si ese día no hay TC guardado.
+func EnsureRateNearOfficial(currency string, rate *float64, issueDate time.Time) error {
+	if currency != CurrencyUSD || rate == nil || *rate <= 0 || !dailyfx.Configured() {
+		return nil
+	}
+	official, _, ok := dailyfx.SaleRate(DayOf(issueDate))
+	if !ok || official <= 0 {
+		return nil
+	}
+	if dev := *rate/official - 1; dev > MaxRateDeviation || dev < -MaxRateDeviation {
+		return fmt.Errorf("el tipo de cambio %.3f se aparta más de %.0f%% del tipo de cambio oficial del día (%.3f); corríjalo o pida a un administrador que lo autorice", *rate, MaxRateDeviation*100, official)
+	}
+	return nil
+}

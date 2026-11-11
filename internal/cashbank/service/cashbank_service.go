@@ -393,7 +393,7 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 			delta = amount
 		}
 		now := time.Now()
-		if err := s.db.Create(&database.TenantBankMovement{
+		bm := database.TenantBankMovement{
 			BankAccountID: acc.ID,
 			Type:          movType2,
 			Amount:        amount,
@@ -406,12 +406,13 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 			CashSessionID: &sessionID,
 			ContactID:     contactID,
 			CreatedAt:     now,
-		}).Error; err != nil {
+		}
+		if err := s.db.Create(&bm).Error; err != nil {
 			return err
 		}
 		return s.db.Model(&database.TenantBankAccount{}).
 			Where("id = ?", acc.ID).
-			Update("balance", gorm.Expr("balance + ?", delta)).Error
+			Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&bm, delta))).Error
 	}
 	return s.db.Create(&database.TenantCashMovement{
 		CashSessionID: sessionID,
@@ -676,7 +677,7 @@ func (s *CashBankService) RecordPaymentToAccount(db *gorm.DB, paymentMethod stri
 		delta = amount
 	}
 	now := time.Now()
-	if err := exec.Create(&database.TenantBankMovement{
+	bm := database.TenantBankMovement{
 		BankAccountID: acc.ID,
 		Type:          movType,
 		Amount:        amount,
@@ -688,12 +689,13 @@ func (s *CashBankService) RecordPaymentToAccount(db *gorm.DB, paymentMethod stri
 		PurchaseID:    purchaseID,
 		CashSessionID: cashSessionID,
 		CreatedAt:     now,
-	}).Error; err != nil {
+	}
+	if err := exec.Create(&bm).Error; err != nil {
 		return err
 	}
 	return exec.Model(&database.TenantBankAccount{}).
 		Where("id = ?", acc.ID).
-		Update("balance", gorm.Expr("balance + ?", delta)).Error
+		Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&bm, delta))).Error
 }
 
 func (s *CashBankService) ListBankAccounts() ([]database.TenantBankAccount, error) {
@@ -1125,7 +1127,7 @@ func (s *CashBankService) recordDirectedPayment(tx *gorm.DB, in directedPaymentI
 		if !isCredit {
 			delta = -in.amount
 		}
-		if err := exec.Create(&database.TenantBankMovement{
+		bm := database.TenantBankMovement{
 			BankAccountID: bankAccID,
 			Type:          in.bankType,
 			Amount:        in.amount,
@@ -1137,12 +1139,13 @@ func (s *CashBankService) recordDirectedPayment(tx *gorm.DB, in directedPaymentI
 			PurchaseID:    in.purchaseID,
 			CashSessionID: in.cashSessionID,
 			CreatedAt:     time.Now(),
-		}).Error; err != nil {
+		}
+		if err := exec.Create(&bm).Error; err != nil {
 			return err
 		}
 		return exec.Model(&database.TenantBankAccount{}).
 			Where("id = ?", bankAccID).
-			Update("balance", gorm.Expr("balance + ?", delta)).Error
+			Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&bm, delta))).Error
 	default:
 		return nil
 	}
@@ -1298,8 +1301,8 @@ func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMove
 		SumDebit  float64
 	}
 	sumQ := q.Session(&gorm.Session{}).Select(`
-		COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) AS sum_credit,
-		COALESCE(SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END), 0) AS sum_debit`)
+		COALESCE(SUM(CASE WHEN type = 'credit' THEN COALESCE(amount_pen, amount) ELSE 0 END), 0) AS sum_credit,
+		COALESCE(SUM(CASE WHEN type = 'debit' THEN COALESCE(amount_pen, amount) ELSE 0 END), 0) AS sum_debit`)
 	if err := sumQ.Scan(&summaryRow).Error; err != nil {
 		return nil, 0, BankMovementListSummary{}, err
 	}

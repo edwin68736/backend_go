@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"tukifac/pkg/dailyfx"
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
 )
@@ -85,5 +86,26 @@ func TestPENSale_PriceValidationUnchanged(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("venta en soles con el precio de catálogo: %v", err)
+	}
+}
+
+// Sin sales.override_price el TC editable queda acotado al oficial del día: con TC=10 el producto de S/ 100 saldría a US$ 10
+// y pasaría la validación de precio (catálogo ÷ el TC escrito), cobrando en realidad unos S/ 34.
+func TestUSDSale_RateFarFromOfficialRejectedWithoutOverride(t *testing.T) {
+	old := dailyfx.Lookup
+	defer func() { dailyfx.Lookup = old }()
+	dailyfx.Lookup = func(day string) (float64, bool, bool) { return 3.5, false, true }
+
+	far := 10.0
+	err := usdSale(t, 100.0/far, &far, false)
+	if err == nil || !strings.Contains(err.Error(), "tipo de cambio oficial") {
+		t.Errorf("TC=10 sin override debe rechazarse, err=%v", err)
+	}
+	near := 3.55
+	if err := usdSale(t, 100.0/near, &near, false); err != nil {
+		t.Errorf("TC cercano al oficial debe pasar: %v", err)
+	}
+	if err := usdSale(t, 100.0/far, &far, true); err != nil {
+		t.Errorf("con override el TC no se acota: %v", err)
 	}
 }

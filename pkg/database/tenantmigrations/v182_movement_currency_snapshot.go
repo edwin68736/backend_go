@@ -30,12 +30,20 @@ func (V182MovementCurrencySnapshot) Up(db *gorm.DB) error {
 	}
 	sys := branchscope.System(db, "V182 backfill de moneda de movimientos")
 	for _, table := range []string{"tenant_cash_movements", "tenant_bank_movements"} {
-		// 1) Soles: sin documento o con documento en PEN/sin moneda.
-		if err := sys.Exec(`UPDATE ` + table + ` SET currency = 'PEN', amount_pen = amount
-			WHERE amount_pen IS NULL
-			  AND (sale_id IS NULL OR sale_id = 0 OR sale_id IN (SELECT id FROM tenant_sales WHERE currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) <> 'USD'))
-			  AND (purchase_id IS NULL OR purchase_id = 0 OR purchase_id IN (SELECT id FROM tenant_purchases WHERE currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) <> 'USD'))`).Error; err != nil {
+		// 1) Soles: sin documento o con documento en PEN/sin moneda. Por tramos de id: un único UPDATE sobre toda la tabla tomaría
+		// bloqueos de fila/hueco sobre millones de filas y detendría los cobros concurrentes del tenant.
+		var maxID uint64
+		if err := sys.Table(table).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error; err != nil {
 			return err
+		}
+		const chunk = 5000
+		for lo := uint64(1); lo <= maxID; lo += chunk {
+			if err := sys.Exec(`UPDATE ` + table + ` SET currency = 'PEN', amount_pen = amount
+				WHERE id BETWEEN ? AND ? AND amount_pen IS NULL
+				  AND (sale_id IS NULL OR sale_id = 0 OR sale_id IN (SELECT id FROM tenant_sales WHERE currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) <> 'USD'))
+				  AND (purchase_id IS NULL OR purchase_id = 0 OR purchase_id IN (SELECT id FROM tenant_purchases WHERE currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) <> 'USD'))`, lo, lo+chunk-1).Error; err != nil {
+				return err
+			}
 		}
 		// 2) Dólares: pocas filas; una por una con el TC del documento o el del día.
 		if err := backfillUSDMovements(sys, table); err != nil {

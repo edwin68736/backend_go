@@ -334,7 +334,11 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 		return errors.New("el monto a cobrar debe ser mayor a cero")
 	}
 	if money.RoundDisplay(directPaid+newDirect) > money.RoundDisplay(directTarget)+money.PaymentTolerance {
-		return fmt.Errorf("el cobro (S/ %.2f) supera el saldo directo (S/ %.2f)", money.RoundDisplay(newDirect), money.RoundDisplay(directDue))
+		sym := "S/"
+		if strings.EqualFold(strings.TrimSpace(sale.Currency), "USD") {
+			sym = "US$"
+		}
+		return fmt.Errorf("el cobro (%s %.2f) supera el saldo directo (%s %.2f)", sym, money.RoundDisplay(newDirect), sym, money.RoundDisplay(directDue))
 	}
 
 	cbSvc := cashbanksvc.NewCashBankService(s.db)
