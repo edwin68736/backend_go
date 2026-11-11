@@ -273,6 +273,10 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			if strings.TrimSpace(l.Method) == "" || l.Amount <= 0 {
 				return nil, errors.New("cada línea de pago debe tener método y monto mayor a cero")
 			}
+			// Cada línea debe ser un método real de cobro/pago (efectivo o cuenta): crédito, detracción o códigos desconocidos no mueven dinero.
+			if pm, perr := cbSvcResolve.GetPaymentMethodByCode(l.Method); perr != nil || pm == nil || (pm.DestinationType != "cash" && pm.DestinationType != "bank_account") {
+				return nil, fmt.Errorf("el método de pago «%s» no es válido para pagar una compra", strings.TrimSpace(l.Method))
+			}
 			sum += l.Amount
 			refLines = append(refLines, cashbanksvc.PaymentRefLine{Method: l.Method, Reference: l.Reference})
 		}

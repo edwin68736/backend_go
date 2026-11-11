@@ -387,6 +387,9 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 	// efectivo con los mismos datos que uno en efectivo) — se crea aquí mismo para no forzar esos
 	// dos campos, ajenos a un pago de venta/compra, en la firma compartida por esos otros casos.
 	if acc, err := s.resolveAccountForPaymentMethod(paymentMethod); err == nil && acc != nil {
+		if err := requireRateForManualUSD(acc, time.Now()); err != nil {
+			return err
+		}
 		movType2 := "debit"
 		delta := -amount
 		if movType == "income" {
@@ -408,10 +411,12 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 			ContactID:     contactID,
 			CreatedAt:     now,
 		}
-		if err := s.db.Create(&bm).Error; err != nil {
-			return err
-		}
-		return applyBankDelta(s.db, acc.ID, &bm, delta, true)
+		return s.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&bm).Error; err != nil {
+				return err
+			}
+			return applyBankDelta(tx, acc.ID, &bm, delta, true)
+		})
 	}
 	return s.db.Create(&database.TenantCashMovement{
 		CashSessionID: sessionID,
@@ -1262,6 +1267,9 @@ func (s *CashBankService) AddBankMovement(accountID, userID uint, movType, descr
 		}
 		if !acc.Active {
 			return errors.New("la cuenta bancaria está inactiva")
+		}
+		if err := requireRateForManualUSD(&acc, date); err != nil {
+			return err
 		}
 		// Registrar movimiento
 		if err := tx.Create(&database.TenantBankMovement{

@@ -12,6 +12,7 @@ import (
 	"tukifac/pkg/money"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Transferencias entre la caja y las cuentas bancarias/billeteras (o entre dos cuentas).
@@ -145,13 +146,18 @@ func (s *CashBankService) CreateTransfer(in TransferInput) (*database.TenantAcco
 			}
 			sid := sess.ID
 			sessionID = &sid
+			var lockRow database.TenantCashSession
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockRow, sid).Error; err != nil {
+				return err
+			}
 			if from.kind == TransferKindCash && s.getExpectedBalance(sid) < amount-money.PaymentTolerance {
 				return errors.New("la caja no tiene efectivo suficiente para esta transferencia")
 			}
 		}
 		if from.kind == TransferKindBank {
 			var cur database.TenantBankAccount
-			if err := tx.First(&cur, from.acc.ID).Error; err != nil {
+			// FOR UPDATE: dos transferencias simultáneas desde la misma cuenta se serializan y la segunda ve el saldo ya descontado.
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cur, from.acc.ID).Error; err != nil {
 				return err
 			}
 			if cur.Balance < amount-money.PaymentTolerance {
@@ -198,6 +204,14 @@ func (s *CashBankService) CreateTransfer(in TransferInput) (*database.TenantAcco
 // transferLeg crea UN movimiento de la transferencia (entrada o salida) y actualiza el saldo de la cuenta.
 // isVoid marca un movimiento inverso (anulación de la transferencia).
 func (s *CashBankService) transferLeg(tx *gorm.DB, tr *database.TenantAccountTransfer, side *transferSide, inbound bool, amount float64, rate *float64, ref, desc string, userID uint, sessionID *uint, date time.Time, isVoid bool) error {
+	// En una anulación, el equivalente en soles y el TC del movimiento inverso se copian del movimiento original de esa cuenta.
+	var origPEN, origRate *float64
+	if isVoid && side.kind == TransferKindBank {
+		var o database.TenantBankMovement
+		if tx.Where("transfer_id = ? AND bank_account_id = ? AND category = ?", tr.ID, side.acc.ID, "Transferencia").First(&o).Error == nil {
+			origPEN, origRate = o.AmountPEN, o.ExchangeRate
+		}
+	}
 	trID := tr.ID
 	cat := "Transferencia"
 	if isVoid {
@@ -236,6 +250,9 @@ func (s *CashBankService) transferLeg(tx *gorm.DB, tr *database.TenantAccountTra
 			pen = money.RoundDisplay(amount * r)
 		}
 	}
+	if origPEN != nil {
+		pen, rateCopy = *origPEN, origRate
+	}
 	acct := amount
 	bm := database.TenantBankMovement{
 		BankAccountID: side.acc.ID, Type: typ, Amount: amount, Description: desc, Reference: ref, Date: date, UserID: userID,
@@ -257,10 +274,21 @@ func (s *CashBankService) VoidTransfer(id, userID, branchID uint, reason string)
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var tr database.TenantAccountTransfer
-		if err := tx.First(&tr, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&tr, id).Error; err != nil {
 			return errors.New("transferencia no encontrada")
 		}
 		if tr.Status == "voided" {
+			return errors.New("la transferencia ya fue anulada")
+		}
+		// Se marca como anulada ANTES de crear los movimientos inversos, con un UPDATE condicional: una segunda anulación simultánea
+		// (doble clic, reintento) no encuentra la transferencia activa y no duplica los inversos.
+		now0 := time.Now()
+		res := tx.Model(&database.TenantAccountTransfer{}).Where("id = ? AND status = ?", id, "active").
+			Updates(map[string]interface{}{"status": "voided", "voided_at": now0, "voided_by": userID, "void_reason": reason})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return errors.New("la transferencia ya fue anulada")
 		}
 		from, err := s.resolveVoidSide(tx, tr.FromKind, tr.FromAccountID)
@@ -286,7 +314,7 @@ func (s *CashBankService) VoidTransfer(id, userID, branchID uint, reason string)
 		}
 		if tr.ToKind == TransferKindBank {
 			var cur database.TenantBankAccount
-			if err := tx.First(&cur, *tr.ToAccountID).Error; err == nil && cur.Balance < tr.AmountTo-money.PaymentTolerance {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&cur, *tr.ToAccountID).Error; err == nil && cur.Balance < tr.AmountTo-money.PaymentTolerance {
 				return fmt.Errorf("la cuenta %s no tiene saldo suficiente para devolver la transferencia", cur.Name)
 			}
 		}
@@ -299,8 +327,7 @@ func (s *CashBankService) VoidTransfer(id, userID, branchID uint, reason string)
 		if err := s.transferLeg(tx, &tr, from, true, tr.AmountFrom, tr.ExchangeRate, ref, "Anulación de transferencia", userID, sessionID, now, true); err != nil {
 			return err
 		}
-		uid := userID
-		return tx.Model(&tr).Updates(map[string]interface{}{"status": "voided", "voided_at": now, "voided_by": uid, "void_reason": reason}).Error
+		return nil
 	})
 }
 

@@ -41,7 +41,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 	tdb.Model(&database.TenantContact{}).Where("active = ?", true).Count(&contactsCount)
 	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Count(&productsCount)
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Where("status != ?", "cancelled").Count(&salesCount)
-	tdb.Model(&database.TenantPurchase{}).Count(&purchasesCount)
+	tdb.Model(&database.TenantPurchase{}).Where("status != ?", "cancelled").Count(&purchasesCount)
 
 	// Ventas del mes
 	var monthSalesTotal float64
@@ -56,7 +56,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 	// Compras del mes
 	var monthPurchasesTotal float64
 	tdb.Model(&database.TenantPurchase{}).
-		Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).
+		Where("status != ? AND issue_date >= ? AND issue_date < ?", "cancelled", monthStart, monthEnd).
 		Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&monthPurchasesTotal)
 
 	// Ventas por mes (últimos 6 meses)

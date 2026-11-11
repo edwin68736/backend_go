@@ -164,3 +164,12 @@ func (s *CashBankService) sessionCurrencySummary(session *database.TenantCashSes
 	out.PhysicalBalancePEN = money.RoundDisplay(session.OpeningBalance + out.CashIncomePEN - out.CashExpensePEN)
 	return out
 }
+
+// movementPEN importe en SOLES de un movimiento bancario sin documento (manual o de transferencia): el snapshot si existe (cuentas en
+// dólares guardan su equivalente), o el importe tal cual (soles).
+func movementPEN(m database.TenantBankMovement) float64 {
+	if m.AmountPEN != nil {
+		return *m.AmountPEN
+	}
+	return m.Amount
+}

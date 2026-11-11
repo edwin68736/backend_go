@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"tukifac/pkg/dailyfx"
+	"tukifac/pkg/datespe"
 
 	"tukifac/pkg/database"
 
@@ -184,6 +186,9 @@ func (s *CashBankService) reverseManualCashMovement(tx *gorm.DB, movementID, use
 	if original.SaleID != nil || original.PurchaseID != nil {
 		return errors.New("este movimiento pertenece a una venta o compra; anúlela desde ahí")
 	}
+	if original.TransferID != nil {
+		return errors.New("este movimiento forma parte de una transferencia; anúlela desde Cuentas / Bancos → Transferencias recientes")
+	}
 	if original.ReversalOfID != nil {
 		return errors.New("no se puede revertir una reversión")
 	}
@@ -220,6 +225,9 @@ func (s *CashBankService) reverseManualBankMovement(tx *gorm.DB, movementID, use
 	}
 	if original.SaleID != nil || original.PurchaseID != nil {
 		return errors.New("este movimiento pertenece a una venta o compra; anúlela desde ahí")
+	}
+	if original.TransferID != nil {
+		return errors.New("este movimiento forma parte de una transferencia; anúlela desde Cuentas / Bancos → Transferencias recientes")
 	}
 	if original.ReversalOfID != nil {
 		return errors.New("no se puede revertir una reversión")
@@ -276,4 +284,21 @@ func applyBankDelta(db *gorm.DB, accountID uint, m *database.TenantBankMovement,
 		d = delta
 	}
 	return db.Model(&database.TenantBankAccount{}).Where("id = ?", accountID).Update("balance", gorm.Expr("balance + ?", d)).Error
+}
+
+// requireRateForManualUSD un movimiento manual en una cuenta en dólares necesita el TC del día para valuarse en soles (reportes,
+// arqueo); sin TC se rechaza en vez de contarse como soles.
+func requireRateForManualUSD(acc *database.TenantBankAccount, when time.Time) error {
+	if acc == nil || !strings.EqualFold(strings.TrimSpace(acc.Currency), "USD") {
+		return nil
+	}
+	if when.IsZero() {
+		when = time.Now()
+	}
+	if r, _, ok := dailyfx.SaleRate(when.In(datespe.Location()).Format("2006-01-02")); !ok || r <= 0 {
+		if dailyfx.Configured() {
+			return errors.New("no hay tipo de cambio guardado para esa fecha: no se puede registrar un movimiento en una cuenta en dólares")
+		}
+	}
+	return nil
 }

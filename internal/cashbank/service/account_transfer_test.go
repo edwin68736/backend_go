@@ -143,3 +143,71 @@ func TestAccountInUSD_ReceivesPENPaymentConverted(t *testing.T) {
 		t.Fatalf("saldo cuenta USD = %v, quiere 100 (S/350 ÷ 3.5)", balanceOf(t, svc, usd))
 	}
 }
+
+// Una pata de transferencia no se puede revertir suelta como movimiento manual (descuadraría los saldos).
+func TestTransfer_LegCannotBeReversedAlone(t *testing.T) {
+	svc, ses, ids := destSetup(t)
+	svc.db.Model(ses).Update("opening_balance", 500)
+	tr, err := svc.CreateTransfer(TransferInput{From: TransferEndpoint{Kind: "cash"}, To: TransferEndpoint{Kind: "bank", AccountID: ids["Yape"]}, Amount: 100, UserID: 1, BranchID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cashLeg database.TenantCashMovement
+	var bankLeg database.TenantBankMovement
+	svc.db.Where("transfer_id = ?", tr.ID).First(&cashLeg)
+	svc.db.Where("transfer_id = ?", tr.ID).First(&bankLeg)
+	if err := svc.ReverseManualMovement(nil, "cash", cashLeg.ID, 1, "x"); err == nil || !strings.Contains(err.Error(), "transferencia") {
+		t.Errorf("revertir la pata de caja debe rechazarse, err=%v", err)
+	}
+	if err := svc.ReverseManualMovement(nil, "bank", bankLeg.ID, 1, "x"); err == nil || !strings.Contains(err.Error(), "transferencia") {
+		t.Errorf("revertir la pata bancaria debe rechazarse, err=%v", err)
+	}
+	if balanceOf(t, svc, ids["Yape"]) != 100 {
+		t.Errorf("los saldos no cambian: %v", balanceOf(t, svc, ids["Yape"]))
+	}
+}
+
+// La anulación de una transferencia en dólares conserva el equivalente en soles de los movimientos originales.
+func TestTransfer_VoidKeepsOriginalPENAndRate(t *testing.T) {
+	svc, _, ids := destSetup(t)
+	pen, usd := ids["Yape"], ids["BCP"]
+	setBalance(t, svc, pen, 1000, "PEN")
+	setBalance(t, svc, usd, 0, "USD")
+	rate := 3.5
+	tr, err := svc.CreateTransfer(TransferInput{From: TransferEndpoint{"bank", pen}, To: TransferEndpoint{"bank", usd}, Amount: 350, ExchangeRate: &rate, UserID: 1, BranchID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.VoidTransfer(tr.ID, 1, 1, "prueba"); err != nil {
+		t.Fatal(err)
+	}
+	var legs []database.TenantBankMovement
+	svc.db.Where("transfer_id = ? AND bank_account_id = ?", tr.ID, usd).Order("id").Find(&legs)
+	if len(legs) != 2 || legs[0].AmountPEN == nil || legs[1].AmountPEN == nil || *legs[0].AmountPEN != *legs[1].AmountPEN || *legs[1].AmountPEN != 350 {
+		t.Fatalf("el inverso debe valer lo mismo en soles que el original: %+v", legs)
+	}
+	if balanceOf(t, svc, usd) != 0 || balanceOf(t, svc, pen) != 1000 {
+		t.Errorf("saldos tras anular: usd=%v pen=%v", balanceOf(t, svc, usd), balanceOf(t, svc, pen))
+	}
+}
+
+// Un movimiento manual en una cuenta en dólares sin TC del día se rechaza (no se contaría como soles).
+func TestManualMovementInUSDAccount_RequiresRate(t *testing.T) {
+	old := dailyfx.Lookup
+	defer func() { dailyfx.Lookup = old }()
+	dailyfx.Lookup = func(day string) (float64, bool, bool) { return 0, false, false }
+	svc, _, ids := destSetup(t)
+	setBalance(t, svc, ids["BCP"], 0, "USD")
+	if err := svc.AddBankMovement(ids["BCP"], 1, "credit", "x", "r", 100, time.Now()); err == nil || !strings.Contains(err.Error(), "tipo de cambio") {
+		t.Errorf("sin TC debe rechazarse, err=%v", err)
+	}
+	dailyfx.Lookup = func(day string) (float64, bool, bool) { return 3.5, false, true }
+	if err := svc.AddBankMovement(ids["BCP"], 1, "credit", "x", "r", 100, time.Now()); err != nil {
+		t.Fatalf("con TC debe pasar: %v", err)
+	}
+	var mv database.TenantBankMovement
+	svc.db.Where("bank_account_id = ?", ids["BCP"]).First(&mv)
+	if balanceOf(t, svc, ids["BCP"]) != 100 || mv.AmountPEN == nil || *mv.AmountPEN != 350 {
+		t.Errorf("manual en USD: saldo=%v pen=%v", balanceOf(t, svc, ids["BCP"]), mv.AmountPEN)
+	}
+}

@@ -620,22 +620,24 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			}
 			method := normalizeReportMethod(code)
 			if m.Type == "credit" {
-				row := IncomeDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference, Category: m.Category}
+				penAmt := movementPEN(m)
+				row := IncomeDetailRow{Date: m.CreatedAt, Amount: penAmt, PaymentMethod: method, Reference: m.Reference, Category: m.Category}
 				if m.Category == "ingreso_manual" || m.Category == "Ingreso manual" {
 					row.Type = "ingreso_manual"
 				} else {
 					row.Type = "otro"
 				}
-				manualIncomeByMethod[method] += m.Amount
+				manualIncomeByMethod[method] += penAmt
 				report.IncomeDetail = append(report.IncomeDetail, row)
 			} else {
-				row := ExpenseDetailRow{Date: m.CreatedAt, Amount: m.Amount, PaymentMethod: method, Reference: m.Reference, Category: m.Category}
+				penAmt := movementPEN(m)
+				row := ExpenseDetailRow{Date: m.CreatedAt, Amount: penAmt, PaymentMethod: method, Reference: m.Reference, Category: m.Category}
 				if m.Category == "gasto" || m.Category == "Gasto" {
 					row.Type = "gasto"
 				} else {
 					row.Type = "egreso_manual"
 				}
-				manualExpenseByMethod[method] += m.Amount
+				manualExpenseByMethod[method] += penAmt
 				report.ExpenseDetail = append(report.ExpenseDetail, row)
 			}
 		}
@@ -1633,7 +1635,7 @@ func (s *CashBankService) buildManualBankMovementRows(f MovementReportFilters) (
 		if wantMethod != "" && method != wantMethod {
 			continue
 		}
-		amount := m.Amount
+		amount := movementPEN(m)
 		typ := "ingreso"
 		if m.Type == "debit" {
 			amount = -amount

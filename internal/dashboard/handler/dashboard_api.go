@@ -52,8 +52,8 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 	}
 salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select(sumSalesPENSelect()).Scan(&salesTodayTotal)
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select(sumSalesPENSelect()).Scan(&salesMonthTotal)
-	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&purchasesTodayTotal)
-	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&purchasesMonthTotal)
+	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("status != ?", "cancelled").Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&purchasesTodayTotal)
+	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("status != ?", "cancelled").Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&purchasesMonthTotal)
 
 	// Ventas del mes en curso vs los MISMOS días del mes anterior (no contra el mes anterior completo,
 	// que a inicios de mes mostraba una caída falsa).
@@ -75,7 +75,7 @@ salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branc
 	tdb.Model(&database.TenantContact{}).Where("active = ?", true).Count(&contactsCount)
 	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Count(&productsCount)
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where("status != ?", "cancelled").Count(&salesCount)
-	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Count(&purchasesCount)
+	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where("status != ?", "cancelled").Count(&purchasesCount)
 
 	var monthSalesTotal, monthPurchasesTotal float64
 	var monthSalesCount int64
@@ -86,7 +86,7 @@ salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branc
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
 		Select(sumSalesPENSelect()).Scan(&monthSalesTotal)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).
-		Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).
+		Where("status != ? AND issue_date >= ? AND issue_date < ?", "cancelled", monthStart, monthEnd).
 		Select("COALESCE(SUM(" + salecurrency.TotalPENSQL("", "total") + "), 0)").Scan(&monthPurchasesTotal)
 
 	type MonthAmount struct {
