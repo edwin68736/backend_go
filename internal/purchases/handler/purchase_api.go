@@ -79,12 +79,15 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 		// PaymentMethod: método con el que se pagó al registrar; vacío = compra a crédito.
 		PaymentMethod   string                             `json:"payment_method"`
 		LinkedRetention *billingsvc.LinkedFiscalDocSummary `json:"linked_retention,omitempty"`
+		// PaymentsUpfront: pagos del pago mixto al registrar (vacío en el resto).
+		PaymentsUpfront []service.UpfrontPaymentSummary `json:"payments_upfront,omitempty"`
 	}
 	purchaseIDs := make([]uint, 0, len(purchases))
 	for _, p := range purchases {
 		purchaseIDs = append(purchaseIDs, p.ID)
 	}
 	linkedByPurchase := billingsvc.NewBillingService(tdb).BatchLinkedRetentionsByPurchaseIDs(purchaseIDs)
+	upfrontByPurchase := service.NewPurchaseService(tdb).UpfrontPaymentsByPurchase(purchaseIDs)
 	out := make([]PurchaseItem, 0, len(purchases))
 	for _, p := range purchases {
 		sname := ""
@@ -111,6 +114,7 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 			Status:          p.Status,
 			PaymentMethod:   p.PaymentMethod,
 			LinkedRetention: linked,
+			PaymentsUpfront: upfrontByPurchase[p.ID],
 		})
 	}
 	totals, terr := service.NewPurchaseService(tdb).TotalsByCurrency(params)
@@ -223,6 +227,7 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 			"total":              p.Total,
 			"status":             p.Status,
 			"payment_method":     p.PaymentMethod,
+			"payments_upfront":   service.NewPurchaseService(tdb).UpfrontPaymentsByPurchase([]uint{p.ID})[p.ID],
 			"notes":              p.Notes,
 			"price_includes_igv": p.PriceIncludesIgv,
 			"items":              itemsWithSerials,
@@ -251,7 +256,9 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 		// ExchangeRate: TC venta; obligatorio si currency = USD.
 		ExchangeRate  *float64 `json:"exchange_rate"`
 		PaymentMethod string   `json:"payment_method"`
-		Notes         string   `json:"notes"`
+		// Payments: pago mixto (2 o más métodos); debe sumar el total.
+		Payments []service.PurchasePaymentLine `json:"payments"`
+		Notes    string                        `json:"notes"`
 		// PriceIncludesIgv: criterio global de la compra (el costo tecleado ya trae IGV).
 		PriceIncludesIgv bool                        `json:"price_includes_igv"`
 		Items            []service.PurchaseItemInput `json:"items"`
@@ -294,6 +301,7 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 		Currency:         body.Currency,
 		ExchangeRate:     body.ExchangeRate,
 		PaymentMethod:    body.PaymentMethod,
+		Payments:         body.Payments,
 		Notes:            body.Notes,
 		PriceIncludesIgv: body.PriceIncludesIgv,
 		Items:            body.Items,

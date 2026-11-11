@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 	posvc "tukifac/internal/purchaseorders/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
-	"tukifac/pkg/saleunit"
 	"tukifac/pkg/salecurrency"
+	"tukifac/pkg/saleunit"
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
@@ -53,20 +54,24 @@ type PurchaseItemInput struct {
 }
 
 type CreatePurchaseInput struct {
-	BranchID      uint
-	ContactID     *uint
-	UserID        uint
-	DocType       string
-	Series        string
-	Number        string
-	IssueDate     time.Time
-	DueDate       *time.Time
-	Currency string
+	BranchID  uint
+	ContactID *uint
+	UserID    uint
+	DocType   string
+	Series    string
+	Number    string
+	IssueDate time.Time
+	DueDate   *time.Time
+	Currency  string
 	// ExchangeRate: TC (venta) obligatorio cuando Currency es USD; se ignora en PEN.
 	ExchangeRate  *float64
 	PaymentMethod string
-	Status        string
-	Notes         string
+	// Payments: pago MIXTO al registrar (2 o más métodos). Debe sumar exactamente el total. La compra queda como cuenta por pagar
+	// saldada con un pago por cada línea (mismo registro que los pagos a proveedor), de modo que caja, bancos, reportes y la
+	// anulación funcionan igual que para cualquier pago a proveedor. Con una sola línea equivale a PaymentMethod.
+	Payments []PurchasePaymentLine
+	Status   string
+	Notes    string
 	// PriceIncludesIgv: criterio global elegido en el formulario. Se guarda como referencia
 	// de cómo se registró la compra; el cálculo real usa el flag de cada ítem.
 	PriceIncludesIgv bool
@@ -254,10 +259,39 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	// su última rama — GetOpenSession del usuario, exigida sin importar el método — exactamente
 	// el mismo camino que ya usa una compra al contado.
 	cbSvcResolve := cashbanksvc.NewCashBankService(s.db)
-	cashSessionID, err := cbSvcResolve.ResolveCashSessionForPurchase(
-		input.BranchID, input.UserID, nil,
-		[]cashbanksvc.PaymentLineInput{{Method: input.PaymentMethod, Amount: total}},
-	)
+	// Pago mixto: una línea equivale al método único; dos o más se registran como pagos a proveedor.
+	var mixed []PurchasePaymentLine
+	if len(input.Payments) == 1 {
+		input.PaymentMethod = strings.TrimSpace(input.Payments[0].Method)
+	} else if len(input.Payments) >= 2 {
+		if strings.TrimSpace(input.PaymentMethod) != "" {
+			return nil, errors.New("indique el método de pago o las líneas de pago mixto, no ambos")
+		}
+		var sum float64
+		refLines := make([]cashbanksvc.PaymentRefLine, 0, len(input.Payments))
+		for _, l := range input.Payments {
+			if strings.TrimSpace(l.Method) == "" || l.Amount <= 0 {
+				return nil, errors.New("cada línea de pago debe tener método y monto mayor a cero")
+			}
+			sum += l.Amount
+			refLines = append(refLines, cashbanksvc.PaymentRefLine{Method: l.Method, Reference: l.Reference})
+		}
+		if math.Abs(money.RoundDisplay(sum)-money.RoundDisplay(total)) > money.PaymentTolerance {
+			return nil, fmt.Errorf("la suma de los pagos (%.2f) debe ser igual al total de la compra (%.2f)", money.RoundDisplay(sum), money.RoundDisplay(total))
+		}
+		if err := cbSvcResolve.ValidatePaymentReferences(refLines); err != nil {
+			return nil, err
+		}
+		mixed = input.Payments
+	}
+	sessionLines := []cashbanksvc.PaymentLineInput{{Method: input.PaymentMethod, Amount: total}}
+	if len(mixed) > 0 {
+		sessionLines = sessionLines[:0]
+		for _, l := range mixed {
+			sessionLines = append(sessionLines, cashbanksvc.PaymentLineInput{Method: l.Method, Amount: l.Amount})
+		}
+	}
+	cashSessionID, err := cbSvcResolve.ResolveCashSessionForPurchase(input.BranchID, input.UserID, nil, sessionLines)
 	if err != nil {
 		return nil, err
 	}
@@ -314,13 +348,32 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			// PayableService.Pay — misma llamada que un pago posterior cualquiera, exactamente
 			// igual que un cobro inmediato de una venta a crédito no se distingue de uno
 			// posterior desde receivables.Collect.
-			if err := tx.Create(&database.TenantPurchasePayable{
+			payable := database.TenantPurchasePayable{
 				PurchaseID:     purchase.ID,
 				OriginalAmount: total,
 				PaidAmount:     0,
 				Status:         "pending",
-			}).Error; err != nil {
+			}
+			if err := tx.Create(&payable).Error; err != nil {
 				return err
+			}
+			if len(mixed) > 0 {
+				cbSvc := cashbanksvc.NewCashBankService(tx)
+				purchaseID := purchase.ID
+				for _, l := range mixed {
+					if err := tx.Create(&database.TenantPurchasePayment{
+						PurchaseID: purchaseID, Method: strings.TrimSpace(l.Method), Amount: l.Amount,
+						Reference: strings.TrimSpace(l.Reference), Notes: PurchaseUpfrontPaymentNote, CashSessionID: cashSessionID,
+					}).Error; err != nil {
+						return err
+					}
+					if err := cbSvc.RecordExpensePayment(tx, l.Method, l.Amount, cashSessionID, docNumber, "Compra "+docNumber, &purchaseID, input.UserID); err != nil {
+						return err
+					}
+				}
+				if err := tx.Model(&payable).Updates(map[string]interface{}{"paid_amount": total, "status": "paid"}).Error; err != nil {
+					return err
+				}
 			}
 		}
 		// Actualizar precios de catálogo, ingresar stock y registrar seriales por cada ítem
@@ -668,4 +721,38 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 
 		return tx.Model(&database.TenantPurchase{}).Where("id = ?", purchaseID).Update("status", StatusCancelled).Error
 	})
+}
+
+// PurchasePaymentLine una línea del pago mixto de una compra.
+type PurchasePaymentLine struct {
+	Method    string  `json:"method"`
+	Amount    float64 `json:"amount"`
+	Reference string  `json:"reference,omitempty"`
+}
+
+// PurchaseUpfrontPaymentNote marca (en tenant_purchase_payments.notes) los pagos hechos al registrar la compra con pago mixto, para
+// distinguirlos de los pagos a proveedor posteriores.
+const PurchaseUpfrontPaymentNote = "Pago al registrar la compra"
+
+// UpfrontPaymentSummary pago al registrar de una compra con pago mixto.
+type UpfrontPaymentSummary struct {
+	Method    string  `json:"method"`
+	Amount    float64 `json:"amount"`
+	Reference string  `json:"reference,omitempty"`
+}
+
+// UpfrontPaymentsByPurchase devuelve, por compra, sus pagos al registrar (solo las que se pagaron con pago mixto).
+func (s *PurchaseService) UpfrontPaymentsByPurchase(purchaseIDs []uint) map[uint][]UpfrontPaymentSummary {
+	out := map[uint][]UpfrontPaymentSummary{}
+	if len(purchaseIDs) == 0 {
+		return out
+	}
+	var rows []database.TenantPurchasePayment
+	if err := s.db.Where("purchase_id IN ? AND notes = ?", purchaseIDs, PurchaseUpfrontPaymentNote).Order("id ASC").Find(&rows).Error; err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[r.PurchaseID] = append(out[r.PurchaseID], UpfrontPaymentSummary{Method: r.Method, Amount: r.Amount, Reference: r.Reference})
+	}
+	return out
 }
