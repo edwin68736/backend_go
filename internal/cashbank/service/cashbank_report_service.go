@@ -29,6 +29,10 @@ type SessionReport struct {
 	Detraction           SessionDetraction       `json:"detraction"`
 	CreditGenerated      SessionCreditGenerated  `json:"credit_generated"`
 	PayableGenerated     SessionPayableGenerated `json:"payable_generated"`
+	// Currency: cuando la sesión tuvo documentos en dólares, el saldo y los totales EN SOLES (cada USD al TC de su documento)
+	// y los montos por moneda. Vacío (has_foreign=false) si todo fue en soles. Los demás campos del reporte conservan los
+	// importes tal como se registraron (en la moneda de cada documento).
+	Currency SessionCurrencySummary `json:"currency"`
 }
 
 // SessionPayableGenerated compras a crédito (CxP — Fase 2) REGISTRADAS en esta sesión, con su
@@ -737,6 +741,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 
 	populateSessionReportSections(report)
 	ensureSessionReportLists(report)
+	report.Currency = s.sessionCurrencySummary(&session)
 	return report, nil
 }
 

@@ -179,14 +179,18 @@ func (s *CashBankService) cashOnlyMovementTotals(sessionID uint) (income, expens
 	var movements []database.TenantCashMovement
 	s.db.Where("cash_session_id = ? AND type IN ?", sessionID, []string{"income", "expense"}).
 		Find(&movements)
+	// Los movimientos de un documento en USD se llevan a SOLES con el TC del documento: el esperado del arqueo se compara contra
+	// lo contado en soles. En una sesión solo en soles es exactamente la suma de siempre.
+	pen := s.penAmounts(movements, nil)
 	for _, m := range movements {
 		if !IsCashPaymentMethod(m.PaymentMethod) {
 			continue
 		}
+		v := pen.cash[m.ID]
 		if m.Type == "income" {
-			income += m.Amount
+			income += v
 		} else {
-			expense += m.Amount
+			expense += v
 		}
 	}
 	return
