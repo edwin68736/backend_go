@@ -201,6 +201,7 @@ func seedDocumentSeries(tx *gorm.DB, branchID uint) error {
 		// V073 la siembra para tenants existentes; aquí, porque esa migración corre antes
 		// de que exista la sucursal y no alcanza a crearla en un tenant nuevo.
 		{BranchID: branchID, DocType: "Cotización", SunatCode: "QT", Category: "cotizacion", Series: "COT01", Correlative: 1, Active: true},
+		{BranchID: branchID, DocType: "Orden de compra", SunatCode: "OC", Category: "orden_compra", Series: "OC01", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "NOTA_CREDITO", SunatCode: "07", Category: "nota_credito", Series: "FC01", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "NOTA_CREDITO", SunatCode: "07", Category: "nota_credito", Series: "BC01", Correlative: 1, Active: true},
 		{BranchID: branchID, DocType: "NOTA_DEBITO", SunatCode: "08", Category: "nota_debito", Series: "FD01", Correlative: 1, Active: true},

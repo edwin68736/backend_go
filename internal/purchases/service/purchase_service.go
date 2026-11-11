@@ -8,6 +8,7 @@ import (
 
 	cashbanksvc "tukifac/internal/cashbank/service"
 	invsvc "tukifac/internal/inventory/service"
+	posvc "tukifac/internal/purchaseorders/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/saleunit"
@@ -68,6 +69,9 @@ type CreatePurchaseInput struct {
 	PriceIncludesIgv bool
 	Items            []PurchaseItemInput
 	TaxConfig        tax.Config
+	// PurchaseOrderID: orden de compra (V180) que origina esta compra. La orden pasa a
+	// "received" en la MISMA transacción; 1 orden → 1 compra.
+	PurchaseOrderID *uint
 }
 
 // validatePurchaseItems valida reglas de negocio de ítems antes de persistir la compra.
@@ -256,12 +260,18 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		PriceIncludesIgv: input.PriceIncludesIgv,
 		Status:           status,
 		CashSessionID:    cashSessionID,
+		PurchaseOrderID:  input.PurchaseOrderID,
 	}
 	docNumber := input.Series + "-" + input.Number
 
 	return purchase, s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(purchase).Error; err != nil {
 			return err
+		}
+		if input.PurchaseOrderID != nil && *input.PurchaseOrderID > 0 {
+			if err := posvc.MarkReceivedTx(tx, *input.PurchaseOrderID, purchase.ID); err != nil {
+				return err
+			}
 		}
 		for i := range purchaseItems {
 			purchaseItems[i].PurchaseID = purchase.ID
@@ -483,6 +493,12 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 	docNumber := p.Series + "-" + p.Number
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Si la compra venía de una orden de compra, la orden vuelve a quedar disponible.
+		if p.PurchaseOrderID != nil {
+			if err := posvc.ReleaseOnPurchaseVoidTx(tx, purchaseID); err != nil {
+				return err
+			}
+		}
 		// p.Total > 0 basta como condición (ya no se exige PaymentMethod != "" aquí): una compra
 		// a crédito (Fase 2 — CxP) no tiene pago al registrarse, pero puede tener uno o más pagos
 		// a proveedor posteriores (TenantPurchasePayment vía PayableService.Pay), cada uno con la

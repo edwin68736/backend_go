@@ -506,7 +506,7 @@ func MigrateModuleKeySaasToMemberships() error {
 // moduleCodeMeta: hechos de código de un módulo (si existe/usable y sus dependencias). Es la
 // fuente de verdad de implemented/requires/category; name/description/icon los edita el superadmin.
 type moduleCodeMeta struct {
-	Key         string
+	Key string
 	// Name, Description e Icon solo se usan al CREAR el módulo en BD (después los edita el superadmin).
 	Name        string
 	Description string
@@ -993,11 +993,11 @@ type TenantContactPerson struct {
 }
 
 type TenantCategory struct {
-	ID          uint           `gorm:"primaryKey" json:"id"`
-	Name        string         `gorm:"size:255;not null" json:"name"`
-	Description string         `gorm:"size:255" json:"description"`
-	ParentID    *uint          `gorm:"index" json:"parent_id"`
-	SortOrder   int            `gorm:"default:0;index" json:"sort_order"`
+	ID          uint   `gorm:"primaryKey" json:"id"`
+	Name        string `gorm:"size:255;not null" json:"name"`
+	Description string `gorm:"size:255" json:"description"`
+	ParentID    *uint  `gorm:"index" json:"parent_id"`
+	SortOrder   int    `gorm:"default:0;index" json:"sort_order"`
 	// ImageURL imagen de la categoría (se muestra en la tienda virtual).
 	ImageURL  string         `gorm:"size:255" json:"image_url"`
 	Active    bool           `gorm:"default:true" json:"active"`
@@ -1570,10 +1570,10 @@ type TenantSale struct {
 	PaymentMethod        string     `gorm:"size:50" json:"payment_method"`
 	PaymentConditionCode string     `gorm:"size:20;default:cash;index" json:"payment_condition_code"`
 	Notes                string     `gorm:"type:text" json:"notes"`
-	Status               string     `gorm:"size:30;default:'paid'" json:"status"`            // draft, paid, cancelled, credit
+	Status               string     `gorm:"size:30;default:'paid'" json:"status"`                  // draft, paid, cancelled, credit
 	BillingStatus        string     `gorm:"size:30;default:'pending';index" json:"billing_status"` // pending, sent, accepted, rejected
-	RestaurantSessionID  *uint      `gorm:"index" json:"restaurant_session_id,omitempty"`    // pedido restaurante que originó la venta
-	OriginalSaleID       *uint      `gorm:"index" json:"original_sale_id"`                   // Si es NOTA_CREDITO: venta que se anuló
+	RestaurantSessionID  *uint      `gorm:"index" json:"restaurant_session_id,omitempty"`          // pedido restaurante que originó la venta
+	OriginalSaleID       *uint      `gorm:"index" json:"original_sale_id"`                         // Si es NOTA_CREDITO: venta que se anuló
 	// Motivo SUNAT elegido al emitir la nota (catálogo 09 para NC, catálogo 10 para ND).
 	// Vacío en notas emitidas antes de existir este campo — se interpreta como "01" (NC) /
 	// "02" (ND), el único motivo que el sistema podía emitir hasta ahora.
@@ -1838,27 +1838,27 @@ func (TenantSalePrepaymentApplication) TableName() string {
 
 // TenantQuotation — cotización comercial (pre venta); no afecta inventario ni caja.
 type TenantQuotation struct {
-	ID                  uint       `gorm:"primaryKey" json:"id"`
-	BranchID            uint       `gorm:"not null;index" json:"branch_id"`
-	ContactID           *uint      `gorm:"index" json:"contact_id"`
-	UserID              uint       `gorm:"not null;index" json:"user_id"`
-	SeriesID            uint       `gorm:"not null;index" json:"series_id"`
-	Series              string     `gorm:"size:10;not null" json:"series"`
-	Correlative         uint       `gorm:"not null" json:"correlative"`
-	Number              string     `gorm:"size:20;not null;index" json:"number"`
-	IssueDate           time.Time  `gorm:"not null;index" json:"issue_date"`
-	ValidUntil          *time.Time `json:"valid_until,omitempty"`
-	Subtotal            float64    `gorm:"type:decimal(15,2);not null" json:"subtotal"`
-	TaxAmount           float64    `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
-	Total               float64    `gorm:"type:decimal(15,2);not null" json:"total"`
+	ID          uint       `gorm:"primaryKey" json:"id"`
+	BranchID    uint       `gorm:"not null;index" json:"branch_id"`
+	ContactID   *uint      `gorm:"index" json:"contact_id"`
+	UserID      uint       `gorm:"not null;index" json:"user_id"`
+	SeriesID    uint       `gorm:"not null;index" json:"series_id"`
+	Series      string     `gorm:"size:10;not null" json:"series"`
+	Correlative uint       `gorm:"not null" json:"correlative"`
+	Number      string     `gorm:"size:20;not null;index" json:"number"`
+	IssueDate   time.Time  `gorm:"not null;index" json:"issue_date"`
+	ValidUntil  *time.Time `json:"valid_until,omitempty"`
+	Subtotal    float64    `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount   float64    `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total       float64    `gorm:"type:decimal(15,2);not null" json:"total"`
 	// Descuento global tal como lo tecleó el usuario (modo percent|amount + valor) y el monto en
 	// base imponible que resultó. Sin esto, al editar o convertir solo se podía reconstruir el
 	// reparto por línea y se perdía el "15 %" original (ver v151).
-	GlobalDiscountMode   string     `gorm:"size:20" json:"global_discount_mode,omitempty"`
-	GlobalDiscountValue  float64    `gorm:"type:decimal(15,4);default:0" json:"global_discount_value"`
-	GlobalDiscountAmount float64    `gorm:"type:decimal(15,2);default:0" json:"global_discount_amount"`
-	Currency            string     `gorm:"size:10;default:'PEN'" json:"currency"`
-	ExchangeRate        *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
+	GlobalDiscountMode   string   `gorm:"size:20" json:"global_discount_mode,omitempty"`
+	GlobalDiscountValue  float64  `gorm:"type:decimal(15,4);default:0" json:"global_discount_value"`
+	GlobalDiscountAmount float64  `gorm:"type:decimal(15,2);default:0" json:"global_discount_amount"`
+	Currency             string   `gorm:"size:10;default:'PEN'" json:"currency"`
+	ExchangeRate         *float64 `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
 	// PaymentMethodsJSON: métodos de pago de REFERENCIA (cómo piensa pagar el cliente), lista JSON de
 	// {method, amount, reference}. No es un cobro: no afecta caja ni saldos (v154).
 	PaymentMethodsJSON  string     `gorm:"type:text" json:"payment_methods_json,omitempty"`
@@ -1876,28 +1876,28 @@ type TenantQuotation struct {
 func (TenantQuotation) TableName() string { return "tenant_quotations" }
 
 type TenantQuotationItem struct {
-	ID                 uint    `gorm:"primaryKey" json:"id"`
-	QuotationID        uint    `gorm:"not null;index" json:"quotation_id"`
-	ProductID          *uint   `gorm:"index" json:"product_id"`
-	PresentationID     *uint   `gorm:"index" json:"presentation_id"`
-	Code               string  `gorm:"size:100" json:"code"`
-	Description        string  `gorm:"size:255;not null" json:"description"`
-	Unit               string  `gorm:"size:50" json:"unit"`
-	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitPrice          float64 `gorm:"type:decimal(15,6);not null" json:"unit_price"`
+	ID             uint    `gorm:"primaryKey" json:"id"`
+	QuotationID    uint    `gorm:"not null;index" json:"quotation_id"`
+	ProductID      *uint   `gorm:"index" json:"product_id"`
+	PresentationID *uint   `gorm:"index" json:"presentation_id"`
+	Code           string  `gorm:"size:100" json:"code"`
+	Description    string  `gorm:"size:255;not null" json:"description"`
+	Unit           string  `gorm:"size:50" json:"unit"`
+	Quantity       float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitPrice      float64 `gorm:"type:decimal(15,6);not null" json:"unit_price"`
 	// Discount: monto en formato CalcItem (resta del bruto qty*precio). Se conserva para ventas y
 	// consumidores que no conocen LineDiscountMode; el dato de verdad es LineDiscountMode/Value.
 	Discount float64 `gorm:"type:decimal(15,2);default:0" json:"discount"`
 	// LineDiscountMode/Value: el descuento de la línea como lo tecleó el usuario (percent|amount
 	// sobre la base imponible). Vacío en cotizaciones anteriores a v151.
-	LineDiscountMode   string  `gorm:"size:20" json:"line_discount_mode,omitempty"`
-	LineDiscountValue  float64 `gorm:"type:decimal(15,4);default:0" json:"line_discount_value"`
+	LineDiscountMode  string  `gorm:"size:20" json:"line_discount_mode,omitempty"`
+	LineDiscountValue float64 `gorm:"type:decimal(15,4);default:0" json:"line_discount_value"`
 	// SaleUnitID: unidad de venta elegida (ej. "Caja x12"). Sin ella la conversión vendía 2 cajas
 	// y descontaba 2 unidades del inventario en vez de 24. ComboJSON / SerialsJSON: elección del
 	// combo y números de serie, que la conversión también debe respetar (v152).
-	SaleUnitID  *uint  `gorm:"index" json:"sale_unit_id,omitempty"`
-	ComboJSON   string `gorm:"type:text" json:"combo_json,omitempty"`
-	SerialsJSON string `gorm:"type:text" json:"serials_json,omitempty"`
+	SaleUnitID         *uint   `gorm:"index" json:"sale_unit_id,omitempty"`
+	ComboJSON          string  `gorm:"type:text" json:"combo_json,omitempty"`
+	SerialsJSON        string  `gorm:"type:text" json:"serials_json,omitempty"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
 	// Sin `default:true` a propósito: con ese tag GORM reemplaza un false explícito por true al
@@ -2144,10 +2144,12 @@ type TenantPurchase struct {
 	CashSessionID *uint `gorm:"index" json:"cash_session_id,omitempty"`
 	// PriceIncludesIgv: criterio con el que se registró la compra. Si es true, los unit_cost
 	// tecleados ya traían IGV y se desagregó; si es false, el IGV se sumó encima.
-	PriceIncludesIgv bool           `gorm:"default:false" json:"price_includes_igv"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	DeletedAt        gorm.DeletedAt `gorm:"index" json:"-"`
+	PriceIncludesIgv bool `gorm:"default:false" json:"price_includes_igv"`
+	// PurchaseOrderID: orden de compra (V180) que originó esta compra; nil = compra directa.
+	PurchaseOrderID *uint          `gorm:"index" json:"purchase_order_id,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // TenantPurchasePayable cuenta por pagar (CxP) de una compra a crédito — 1:1 con TenantPurchase,
@@ -2200,6 +2202,61 @@ type TenantPurchaseItem struct {
 	// PresentationID: presentación/variante comprada (ej. "Talla M") cuando el producto maneja
 	// stock por presentación (product.HasVariants). nil = producto sin variantes.
 	PresentationID     *uint   `gorm:"index" json:"presentation_id,omitempty"`
+	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
+	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
+	PriceIncludesIgv   bool    `gorm:"default:false" json:"price_includes_igv"`
+	Subtotal           float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount          float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total              float64 `gorm:"type:decimal(15,2);not null" json:"total"`
+}
+
+// TenantPurchaseOrder orden de compra al proveedor (V180). NO mueve stock, caja ni cuentas por
+// pagar: es un compromiso previo a la compra. Se convierte (1 OC → 1 compra) y queda "received".
+// Estados: draft → sent → received | cancelled. Moneda PEN/USD con tipo de cambio (TC venta).
+type TenantPurchaseOrder struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	BranchID    uint      `gorm:"not null;index" json:"branch_id"`
+	ContactID   *uint     `gorm:"index" json:"contact_id"`
+	UserID      uint      `gorm:"not null;index" json:"user_id"`
+	SeriesID    uint      `gorm:"not null;index" json:"series_id"`
+	Series      string    `gorm:"size:10;not null" json:"series"`
+	Correlative uint      `gorm:"not null" json:"correlative"`
+	Number      string    `gorm:"size:20;not null;index" json:"number"`
+	IssueDate   time.Time `gorm:"not null;index" json:"issue_date"`
+	// ExpectedDate: fecha de entrega esperada por el proveedor.
+	ExpectedDate *time.Time `json:"expected_date,omitempty"`
+	Currency     string     `gorm:"size:10;default:'PEN'" json:"currency"`
+	ExchangeRate *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
+	// PaymentCondition: condición de pago de REFERENCIA (texto libre, ej. "Crédito 30 días").
+	PaymentCondition string  `gorm:"size:120" json:"payment_condition"`
+	Subtotal         float64 `gorm:"type:decimal(15,2);not null" json:"subtotal"`
+	TaxAmount        float64 `gorm:"type:decimal(15,2);not null" json:"tax_amount"`
+	Total            float64 `gorm:"type:decimal(15,2);not null" json:"total"`
+	PriceIncludesIgv bool    `gorm:"default:false" json:"price_includes_igv"`
+	Notes            string  `gorm:"type:text" json:"notes"`
+	Status           string  `gorm:"size:20;default:'draft';index" json:"status"`
+	// PurchaseID: compra que recibió esta orden (nil mientras no se convierta).
+	PurchaseID *uint          `gorm:"index" json:"purchase_id,omitempty"`
+	ReceivedAt *time.Time     `json:"received_at,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
+	// ContactName: solo lectura (se resuelve al listar), no es columna.
+	ContactName string `gorm:"-" json:"contact_name"`
+}
+
+// TenantPurchaseOrderItem línea de una orden de compra; mismos campos comerciales que la compra.
+type TenantPurchaseOrderItem struct {
+	ID                 uint    `gorm:"primaryKey" json:"id"`
+	PurchaseOrderID    uint    `gorm:"not null;index" json:"purchase_order_id"`
+	ProductID          *uint   `gorm:"index" json:"product_id"`
+	PresentationID     *uint   `gorm:"index" json:"presentation_id,omitempty"`
+	SaleUnitID         *uint   `gorm:"index" json:"sale_unit_id,omitempty"`
+	Code               string  `gorm:"size:100" json:"code"`
+	Description        string  `gorm:"size:255;not null" json:"description"`
+	Unit               string  `gorm:"size:50" json:"unit"`
+	Quantity           float64 `gorm:"type:decimal(15,3);not null" json:"quantity"`
+	UnitCost           float64 `gorm:"type:decimal(15,6);not null" json:"unit_cost"`
 	TaxRate            float64 `gorm:"type:decimal(5,2);default:0" json:"tax_rate"`
 	IgvAffectationType string  `gorm:"size:10;default:'10'" json:"igv_affectation_type"`
 	PriceIncludesIgv   bool    `gorm:"default:false" json:"price_includes_igv"`
@@ -2304,13 +2361,13 @@ type TenantTaxPaymentType struct {
 }
 
 type TenantBankAccount struct {
-	ID            uint           `gorm:"primaryKey" json:"id"`
-	Name          string         `gorm:"size:255;not null" json:"name"`
-	BankName      string         `gorm:"size:255" json:"bank_name"`
-	AccountNumber string         `gorm:"size:100" json:"account_number"`
+	ID            uint   `gorm:"primaryKey" json:"id"`
+	Name          string `gorm:"size:255;not null" json:"name"`
+	BankName      string `gorm:"size:255" json:"bank_name"`
+	AccountNumber string `gorm:"size:100" json:"account_number"`
 	// CCI: Código de Cuenta Interbancario (20 dígitos), opcional; se imprime en comprobantes y cotizaciones.
-	CCI      string         `gorm:"column:cci;size:40" json:"cci"`
-	Currency string         `gorm:"size:10;default:'PEN'" json:"currency"`
+	CCI           string         `gorm:"column:cci;size:40" json:"cci"`
+	Currency      string         `gorm:"size:10;default:'PEN'" json:"currency"`
 	Balance       float64        `gorm:"type:decimal(15,2);default:0" json:"balance"`
 	Type          string         `gorm:"size:30;default:'bank'" json:"type"`  // bank, wallet, cash
 	PaymentMethod string         `gorm:"size:50;index" json:"payment_method"` // legacy: efectivo, yape, etc.; preferir tenant_payment_methods

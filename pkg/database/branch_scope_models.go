@@ -27,6 +27,7 @@ func BranchScopedModels() []interface{} {
 		&TenantQuotation{},
 		&TenantDespatch{},
 		&TenantPurchase{},
+		&TenantPurchaseOrder{},
 		&TenantCashSession{},
 		&TenantRestaurantFloor{},
 		&TenantRestaurantTable{},

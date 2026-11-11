@@ -5,6 +5,7 @@ import (
 	"time"
 
 	billingsvc "tukifac/internal/billing/service"
+	posvc "tukifac/internal/purchaseorders/service"
 	"tukifac/internal/purchases/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
@@ -62,17 +63,17 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 	}
 
 	type PurchaseItem struct {
-		ID              uint                               `json:"id"`
-		DocType         string                             `json:"doc_type"`
-		Series          string                             `json:"series"`
-		Number          string                             `json:"number"`
-		IssueDate       string                             `json:"issue_date"`
-		SupplierName    string                             `json:"supplier_name"`
-		Currency        string                             `json:"currency"`
-		Subtotal        float64                            `json:"subtotal"`
-		TaxAmount       float64                            `json:"tax_amount"`
-		Total           float64                            `json:"total"`
-		Status          string                             `json:"status"`
+		ID           uint    `json:"id"`
+		DocType      string  `json:"doc_type"`
+		Series       string  `json:"series"`
+		Number       string  `json:"number"`
+		IssueDate    string  `json:"issue_date"`
+		SupplierName string  `json:"supplier_name"`
+		Currency     string  `json:"currency"`
+		Subtotal     float64 `json:"subtotal"`
+		TaxAmount    float64 `json:"tax_amount"`
+		Total        float64 `json:"total"`
+		Status       string  `json:"status"`
 		// PaymentMethod: método con el que se pagó al registrar; vacío = compra a crédito.
 		PaymentMethod   string                             `json:"payment_method"`
 		LinkedRetention *billingsvc.LinkedFiscalDocSummary `json:"linked_retention,omitempty"`
@@ -244,6 +245,8 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 		// PriceIncludesIgv: criterio global de la compra (el costo tecleado ya trae IGV).
 		PriceIncludesIgv bool                        `json:"price_includes_igv"`
 		Items            []service.PurchaseItemInput `json:"items"`
+		// PurchaseOrderID: orden de compra de origen (opcional).
+		PurchaseOrderID *uint `json:"purchase_order_id"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -284,6 +287,13 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 		PriceIncludesIgv: body.PriceIncludesIgv,
 		Items:            body.Items,
 		TaxConfig:        taxCfg,
+		PurchaseOrderID:  body.PurchaseOrderID,
+	}
+	// La orden debe ser de la misma sucursal en la que se registra la compra.
+	if body.PurchaseOrderID != nil && *body.PurchaseOrderID > 0 {
+		if bid, berr := posvc.NewPurchaseOrderService(tdb).BranchOf(*body.PurchaseOrderID); berr != nil || bid != branchID {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "La orden de compra no existe en esta sucursal"})
+		}
 	}
 
 	purchase, err := service.NewPurchaseService(tdb).Create(input)
