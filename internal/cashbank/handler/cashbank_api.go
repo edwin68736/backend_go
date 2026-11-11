@@ -466,6 +466,7 @@ func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
 		SumExpense:  split.Cash.Summary.SumExpense + split.Electronic.Summary.SumExpense,
 		NetMovement: split.Cash.Summary.NetMovement + split.Electronic.Summary.NetMovement,
 	}
+	service.ApplyCurrencySummary(&legacySummary, legacyAll)
 	return c.JSON(fiber.Map{
 		"cash":       split.Cash,
 		"electronic": split.Electronic,

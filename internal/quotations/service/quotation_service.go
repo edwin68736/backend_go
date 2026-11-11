@@ -157,7 +157,7 @@ func (s *QuotationService) Create(input CreateQuotationInput) (*database.TenantQ
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkAuthorizedPrices(input.BranchID, input.Items, input.UserCanOverridePrice, nil); err != nil {
+	if err := s.checkAuthorizedPrices(input.BranchID, input.Items, input.UserCanOverridePrice, nil, currency, exchangeRate); err != nil {
 		return nil, err
 	}
 	items := calc.items
@@ -333,7 +333,7 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 	if err := s.db.Where("quotation_id = ?", id).Find(&storedItems).Error; err != nil {
 		return nil, err
 	}
-	if err := s.checkAuthorizedPrices(q.BranchID, input.Items, input.UserCanOverridePrice, storedItems); err != nil {
+	if err := s.checkAuthorizedPrices(q.BranchID, input.Items, input.UserCanOverridePrice, storedItems, currency, exchangeRate); err != nil {
 		return nil, err
 	}
 	items := calc.items

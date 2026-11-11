@@ -276,6 +276,13 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	if err := validateSaleUnits(s.db, input.Items); err != nil {
 		return nil, err
 	}
+	// Tipo de cambio: toda venta en USD queda registrada con el TC de su fecha de emisión; si el cliente no lo envía se
+	// completa con el TC guardado del día (y sin ninguno, se rechaza). Antes un USD sin TC quedaba con exchange_rate NULL.
+	if cur, rate, _, rerr := salecurrency.ResolveDocumentRate(input.Currency, input.ExchangeRate, input.IssueDate); rerr != nil {
+		return nil, rerr
+	} else {
+		input.Currency, input.ExchangeRate = cur, rate
+	}
 	// Precio autorizado: el unit_price de cada línea con producto real debe coincidir con el
 	// catálogo (o su presentación + extras, o el Price1 de su unidad de venta), SALVO que el
 	// usuario autenticado tenga el permiso sales.override_price (UserCanOverridePrice, resuelto
@@ -287,7 +294,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// vetadas por código de confianza (item.PriceAuthorized=true) no se reevalúan de todos modos.
 	// Ver sale_price_authorization.go.
 	if !input.UserCanOverridePrice {
-		if err := validateAuthorizedPrices(s.db, input.BranchID, input.Items); err != nil {
+		// Documento en USD: el precio autorizado es el de catálogo (soles) convertido con el TC del documento.
+		if err := validateAuthorizedPricesFX(s.db, input.BranchID, input.Items, input.Currency, input.ExchangeRate); err != nil {
 			return nil, err
 		}
 	}
@@ -1268,6 +1276,11 @@ type SaleListSummary struct {
 	// Vuelto total entregado en las ventas del filtro (ver enrichSalesWithChangeAmount): suma de
 	// pagos directos por encima del importe cobrable de cada venta, nunca negativo por venta.
 	SumChangeAmount float64 `json:"sum_change_amount"`
+	// SumActivePEN: ventas vigentes de TODAS las monedas convertidas a soles (USD × TC de cada venta). RateEstimatedCount /
+	// RateMissingCount: ventas en USD sin TC guardado (estimadas con el TC del día / sin poder convertirse).
+	SumActivePEN       float64 `json:"sum_active_pen"`
+	RateEstimatedCount int64   `json:"rate_estimated_count"`
+	RateMissingCount   int64   `json:"rate_missing_count"`
 	// PaymentTotals: monto por método y MONEDA (una entrada por método+moneda; los montos de
 	// monedas distintas nunca se suman entre sí). La detracción SPOT va siempre en PEN.
 	PaymentTotals []SaleListPaymentTotal `json:"payment_totals"`
@@ -1293,6 +1306,12 @@ type SaleListCurrencySummary struct {
 	CountCancelled  int64   `json:"count_cancelled"`
 	CountActive     int64   `json:"count_active"`
 	SumChangeAmount float64 `json:"sum_change_amount"`
+	// SumActivePEN: ventas vigentes de esta moneda convertidas a SOLES con el TC de cada venta (en PEN = SumActive).
+	// RateEstimatedCount: ventas en USD sin TC guardado cuyo equivalente usa el TC del día de emisión.
+	// RateMissingCount: ventas en USD sin TC guardado ni TC del día (no entran en SumActivePEN).
+	SumActivePEN       float64 `json:"sum_active_pen"`
+	RateEstimatedCount int64   `json:"rate_estimated_count"`
+	RateMissingCount   int64   `json:"rate_missing_count"`
 }
 
 // saleCurrencySQL normaliza la moneda de cabecera: vacío = PEN (ventas antiguas sin moneda).
@@ -1446,6 +1465,7 @@ func (s *SaleService) List(params SaleListParams) (sales []database.TenantSale, 
 		return sales, total, summary, err
 	}
 	billingstate.EnrichSalesBillingStatus(s.db, sales)
+	fillSalesPEN(sales)
 	// Rellenar nombre del cliente (contact_name)
 	if len(sales) > 0 {
 		ids := make(map[uint]struct{})
@@ -1647,6 +1667,9 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 		SumActive      float64 `gorm:"column:sum_active"`
 		CountCancelled int64   `gorm:"column:count_cancelled"`
 		CountActive    int64   `gorm:"column:count_active"`
+		// Ventas vigentes con TC guardado ya en soles (USD × TC) y cuántas vigentes no tienen TC guardado.
+		SumActivePENKnown float64 `gorm:"column:sum_active_pen_known"`
+		CountMissingRate  int64   `gorm:"column:count_missing_rate"`
 	}
 	var curRows []curAggRow
 	if err := sc.sales(s.db.Model(&database.TenantSale{})).
@@ -1658,11 +1681,51 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' THEN tenant_sales.total ELSE 0 END), 0) AS sum_cancelled,
 			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN ` + netTotal + ` ELSE 0 END), 0) AS sum_active,
 			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_cancelled,
-			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_active`).
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_active,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND tenant_sales.exchange_rate > 0 THEN ` + netTotal + ` * tenant_sales.exchange_rate ELSE 0 END), 0) AS sum_active_pen_known,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` AND (tenant_sales.exchange_rate IS NULL OR tenant_sales.exchange_rate <= 0) THEN 1 ELSE 0 END), 0) AS count_missing_rate`).
 		Group(saleCurrencySQL).
 		Order("currency ASC").
 		Scan(&curRows).Error; err != nil {
 		return out, err
+	}
+	// Equivalente en SOLES por moneda: PEN = su propio total; USD = suma de (total × TC de cada venta) + las ventas sin TC
+	// guardado convertidas con el TC del día de emisión (si existe).
+	penByCurrency := map[string]struct {
+		pen                  float64
+		estimated, missing   int64
+	}{}
+	for _, c := range curRows {
+		if c.Currency != salecurrency.CurrencyUSD {
+			penByCurrency[c.Currency] = struct {
+				pen                float64
+				estimated, missing int64
+			}{pen: c.SumActive}
+			continue
+		}
+		pen := c.SumActivePENKnown
+		var est, miss int64
+		if c.CountMissingRate > 0 {
+			var pending []struct {
+				IssueDate time.Time
+				Total     float64
+			}
+			if err := sc.sales(s.db.Model(&database.TenantSale{})).
+				Where("tenant_sales.id IN (?)", idSub).
+				Where(saleCurrencySQL+" = ?", salecurrency.CurrencyUSD).
+				Where("tenant_sales.status != 'cancelled' AND NOT "+isNote+" AND (tenant_sales.exchange_rate IS NULL OR tenant_sales.exchange_rate <= 0)").
+				Select("tenant_sales.issue_date AS issue_date, tenant_sales.total AS total").
+				Limit(5000).Scan(&pending).Error; err != nil {
+				return out, err
+			}
+			add, e, m := estimateMissingRatePEN(pending)
+			pen += add
+			est, miss = e, m
+		}
+		penByCurrency[c.Currency] = struct {
+			pen                float64
+			estimated, missing int64
+		}{pen: money.RoundDisplay(pen), estimated: est, missing: miss}
 	}
 	changeByCurrency := map[string]float64{}
 	currencyOfSale := map[uint]string{}
@@ -1878,8 +1941,14 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 			Currency: c.Currency, SumTotal: c.SumTotal, SumSubtotal: c.SumSubtotal, SumTax: c.SumTax,
 			SumCancelled: c.SumCancelled, SumActive: c.SumActive, CountCancelled: c.CountCancelled,
 			CountActive: c.CountActive, SumChangeAmount: changeByCurrency[c.Currency],
+			SumActivePEN: penByCurrency[c.Currency].pen, RateEstimatedCount: penByCurrency[c.Currency].estimated,
+			RateMissingCount: penByCurrency[c.Currency].missing,
 		})
+		out.SumActivePEN += penByCurrency[c.Currency].pen
+		out.RateEstimatedCount += penByCurrency[c.Currency].estimated
+		out.RateMissingCount += penByCurrency[c.Currency].missing
 	}
+	out.SumActivePEN = money.RoundDisplay(out.SumActivePEN)
 	return out, nil
 }
 

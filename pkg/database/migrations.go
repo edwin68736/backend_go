@@ -1609,6 +1609,11 @@ type TenantSale struct {
 
 	// ContactName se rellena al listar (join con tenant_contacts), no es columna en BD
 	ContactName string `gorm:"-" json:"contact_name"`
+	// Equivalente en SOLES (solo lectura, lo calcula el listado): total × TC de la venta. En PEN es el mismo total; en USD usa
+	// el TC guardado de la venta o, si faltara, el TC del día de emisión (RateEstimated = true). nil si no hay ningún TC.
+	TotalPEN      *float64 `gorm:"-" json:"total_pen,omitempty"`
+	RateEffective *float64 `gorm:"-" json:"rate_effective,omitempty"`
+	RateEstimated bool     `gorm:"-" json:"rate_estimated,omitempty"`
 	// ContactDocNumber (RUC/DNI del cliente) se rellena al listar, no es columna en BD.
 	ContactDocNumber string `gorm:"-" json:"contact_doc_number,omitempty"`
 	// UserName se rellena al listar (usuario que registró la venta).

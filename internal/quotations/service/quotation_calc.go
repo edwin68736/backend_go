@@ -364,6 +364,8 @@ func (s *QuotationService) checkAuthorizedPrices(
 	inputs []QuotationItemInput,
 	canOverride bool,
 	existing []database.TenantQuotationItem,
+	currency string,
+	exchangeRate *float64,
 ) error {
 	if canOverride {
 		return nil
@@ -390,7 +392,8 @@ func (s *QuotationService) checkAuthorizedPrices(
 			PriceAuthorized: unchanged,
 		})
 	}
-	return salessvc.ValidateAuthorizedPrices(s.db, branchID, items)
+	// Cotización en USD: el precio autorizado es el de catálogo (soles) convertido con el TC de la cotización.
+	return salessvc.ValidateAuthorizedPricesInCurrency(s.db, branchID, items, currency, exchangeRate)
 }
 
 func serialsToJSON(serials []string) string {
@@ -457,11 +460,8 @@ func (s *QuotationService) validateHeader(
 			return "", nil, errors.New("el contacto seleccionado no es un cliente válido")
 		}
 	}
-	cur, err = salecurrency.NormalizeCurrency(currency)
-	if err != nil {
-		return "", nil, err
-	}
-	rate, err = salecurrency.NormalizeExchangeRate(cur, exchangeRate)
+	// Moneda y TC: en USD sin TC se completa con el TC guardado de la fecha de emisión (ResolveDocumentRate).
+	cur, rate, _, err = salecurrency.ResolveDocumentRate(currency, exchangeRate, issueDate)
 	if err != nil {
 		return "", nil, err
 	}

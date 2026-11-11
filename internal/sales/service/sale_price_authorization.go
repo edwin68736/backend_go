@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"tukifac/pkg/money"
 	"tukifac/pkg/productprice"
 	"tukifac/pkg/saleunit"
+	"tukifac/pkg/salecurrency"
 
 	"gorm.io/gorm"
 )
@@ -57,7 +59,30 @@ func ValidateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput)
 	return validateAuthorizedPrices(db, branchID, items)
 }
 
+// ValidateAuthorizedPricesInCurrency igual que ValidateAuthorizedPrices para un documento en otra moneda: el catálogo
+// está en soles, así que con un documento en USD el precio autorizado es el de catálogo convertido con el TC del
+// documento (precio ÷ TC). Con PEN (o sin TC válido) es idéntico a ValidateAuthorizedPrices.
+func ValidateAuthorizedPricesInCurrency(db *gorm.DB, branchID uint, items []SaleItemInput, currency string, exchangeRate *float64) error {
+	return validateAuthorizedPricesFX(db, branchID, items, currency, exchangeRate)
+}
+
 func validateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput) error {
+	return validateAuthorizedPricesFX(db, branchID, items, salecurrency.CurrencyPEN, nil)
+}
+
+// catalogToDocPrice lleva un precio de catálogo (soles) a la moneda del documento. ok=false si el documento está en
+// USD pero no hay un TC válido (no se puede autorizar un precio convertido sin TC).
+func catalogToDocPrice(pen float64, currency string, rate *float64) (price float64, converted bool, ok bool) {
+	if !strings.EqualFold(strings.TrimSpace(currency), salecurrency.CurrencyUSD) {
+		return pen, false, true
+	}
+	if rate == nil || *rate <= 0 {
+		return 0, true, false
+	}
+	return pen / *rate, true, true
+}
+
+func validateAuthorizedPricesFX(db *gorm.DB, branchID uint, items []SaleItemInput, currency string, exchangeRate *float64) error {
 	for _, item := range items {
 		if item.PriceAuthorized {
 			continue
@@ -122,7 +147,25 @@ func validateAuthorizedPrices(db *gorm.DB, branchID uint, items []SaleItemInput)
 		if usesSaleUnit {
 			round = money.RoundSunat
 		}
-		expected := round(basePrice + extrasSum)
+		docPrice, converted, ok := catalogToDocPrice(basePrice+extrasSum, currency, exchangeRate)
+		if !ok {
+			return fmt.Errorf("'%s': falta el tipo de cambio para validar el precio en dólares", saleItemLabel(item))
+		}
+		if converted {
+			// Documento en USD: el precio de catálogo (S/) se divide entre el TC. El cliente lo calcula con muchos
+			// decimales o lo teclea redondeado a centavos, así que se admite el redondeo: ±0.005 US$ por unidad; en
+			// unidades de venta fraccionarias (gramo, mililitro: precios de milésimas) el margen es relativo (0.1 %).
+			tol := 0.005 + 1e-6
+			if usesSaleUnit {
+				tol = 1e-6 + 0.001*docPrice
+			}
+			if math.Abs(item.UnitPrice-docPrice) > tol {
+				return fmt.Errorf("'%s' no tiene un precio autorizado (precio de catálogo: S/ %s = US$ %s al TC %s)",
+					saleItemLabel(item), formatCatalogPrice(round(basePrice+extrasSum)), formatCatalogPrice(round(docPrice)), formatCatalogPrice(*exchangeRate))
+			}
+			continue
+		}
+		expected := round(docPrice)
 		got := round(item.UnitPrice)
 		if got != expected {
 			return fmt.Errorf("'%s' no tiene un precio autorizado (precio de catálogo: S/ %s)", saleItemLabel(item), formatCatalogPrice(expected))
