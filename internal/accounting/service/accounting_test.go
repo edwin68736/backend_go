@@ -436,6 +436,10 @@ func TestSire_TicketFlowAndComparison(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/consultaestadotickets"):
 			w.Write([]byte(`{"registros":[{"numTicket":"T-123","codEstadoProceso":"06","desEstadoProceso":"Terminado","archivoReporte":[{"nomArchivoReporte":"RVIE.zip"}]}]}`))
 		case strings.HasSuffix(r.URL.Path, "/archivoreporte"):
+			if r.URL.Query().Get("codLibro") != "140000" || r.URL.Query().Get("codTipoArchivoReporte") != "01" || r.Header.Get("Content-Type") != "application/json" {
+				w.WriteHeader(422)
+				return
+			}
 			w.Write(sireZip(t,
 				sireLineSale("10/03/2026", "01", "F001", "00000001", 118), // coincide
 				sireLineSale("10/03/2026", "01", "F001", "00000002", 200), // difiere (168 local)
