@@ -200,6 +200,10 @@ type MovementChannelSummary struct {
 	NetMovementPEN     float64                 `json:"net_movement_pen"`
 	RateEstimatedCount int64                   `json:"rate_estimated_count"`
 	RateMissingCount   int64                   `json:"rate_missing_count"`
+	// TransfersInPEN/TransfersOutPEN: transferencias internas (caja ↔ cuentas) y sus anulaciones. NO son ingresos ni egresos del
+	// negocio, así que no entran en SumIncome/SumExpense; sí en NetMovementPEN y el saldo físico (el efectivo realmente se mueve).
+	TransfersInPEN  float64 `json:"transfers_in_pen"`
+	TransfersOutPEN float64 `json:"transfers_out_pen"`
 }
 
 // MovementChannelBlock filas paginadas y resumen de un canal.
@@ -916,8 +920,16 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 
 func buildMovementChannelBlock(rows []MovementReportRow, limit, offset int, opening *float64) MovementChannelBlock {
 	salesByMethod := make(map[string]float64)
-	var sumIn, sumEx float64
+	var sumIn, sumEx, trIn, trOut float64
 	for _, r := range rows {
+		if isTransferRow(r) {
+			if r.Amount >= 0 {
+				trIn += r.Amount
+			} else {
+				trOut += -r.Amount
+			}
+			continue
+		}
 		if r.Amount >= 0 {
 			sumIn += r.Amount
 			if r.Type == "venta" {
@@ -927,7 +939,7 @@ func buildMovementChannelBlock(rows []MovementReportRow, limit, offset int, open
 			sumEx += -r.Amount
 		}
 	}
-	net := sumIn - sumEx
+	net := sumIn - sumEx + trIn - trOut
 	summary := MovementChannelSummary{
 		TotalRows:     int64(len(rows)),
 		SumIncome:     sumIn,

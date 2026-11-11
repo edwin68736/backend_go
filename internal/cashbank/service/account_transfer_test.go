@@ -211,3 +211,27 @@ func TestManualMovementInUSDAccount_RequiresRate(t *testing.T) {
 		t.Errorf("manual en USD: saldo=%v pen=%v", balanceOf(t, svc, ids["BCP"]), mv.AmountPEN)
 	}
 }
+
+// Las transferencias internas no cuentan como ingreso ni egreso del reporte de caja, pero sí en el neto y el saldo físico.
+func TestMovementSummary_TransfersExcludedFromIncomeExpenseButInNet(t *testing.T) {
+	rows := []MovementReportRow{
+		{Type: "venta", Amount: 100, Currency: "PEN", AmountPEN: 100, PaymentMethod: "efectivo"},
+		{Type: "egreso", Amount: -40, Currency: "PEN", AmountPEN: -40, Category: "Gasto"},
+		{Type: "egreso", Amount: -30, Currency: "PEN", AmountPEN: -30, Category: "Transferencia"},          // caja → banco
+		{Type: "ingreso", Amount: 30, Currency: "PEN", AmountPEN: 30, Category: "Anulación transferencia"}, // vuelve
+		{Type: "egreso", Amount: -20, Currency: "PEN", AmountPEN: -20, Category: "Transferencia"},
+	}
+	opening := 10.0
+	b := buildMovementChannelBlock(rows, 0, 0, &opening)
+	s := b.Summary
+	if s.SumIncomePEN != 100 || s.SumExpensePEN != 40 || s.TransfersInPEN != 30 || s.TransfersOutPEN != 50 {
+		t.Fatalf("totales: ingresos=%v egresos=%v tIn=%v tOut=%v", s.SumIncomePEN, s.SumExpensePEN, s.TransfersInPEN, s.TransfersOutPEN)
+	}
+	// neto = 100 - 40 + 30 - 50 = 40; saldo físico = apertura 10 + neto 40
+	if s.NetMovementPEN != 40 || s.PhysicalBalance == nil || *s.PhysicalBalance != 50 {
+		t.Errorf("neto=%v físico=%v", s.NetMovementPEN, s.PhysicalBalance)
+	}
+	if s.TotalRows != 5 {
+		t.Errorf("las filas de transferencia siguen listadas: %d", s.TotalRows)
+	}
+}

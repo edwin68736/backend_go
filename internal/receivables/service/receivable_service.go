@@ -15,6 +15,7 @@ import (
 	"tukifac/pkg/taxpayment"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ReceivableService struct {
@@ -86,9 +87,9 @@ type Summary struct {
 	RateEstimatedCount int64   `json:"rate_estimated_count"`
 	RateMissingCount   int64   `json:"rate_missing_count"`
 	TotalSpotPending   float64 `json:"total_spot_pending"`
-	CountOpen        int64   `json:"count_open"`
-	CountOverdue     int64   `json:"count_overdue"`
-	CountBnPending   int64   `json:"count_bn_pending"`
+	CountOpen          int64   `json:"count_open"`
+	CountOverdue       int64   `json:"count_overdue"`
+	CountBnPending     int64   `json:"count_bn_pending"`
 }
 
 type CollectPaymentInput struct {
@@ -117,7 +118,7 @@ type StatementLine struct {
 	DebitPEN     float64  `json:"debit_pen"`
 	CreditPEN    float64  `json:"credit_pen"`
 	Balance      float64  `json:"balance"`
-	SaleID      uint      `json:"sale_id,omitempty"`
+	SaleID       uint     `json:"sale_id,omitempty"`
 	// CashSessionID: Caja donde OCURRIÓ el cobro (TenantSalePayment.CashSessionID) — solo en
 	// líneas type="payment"; nil en "invoice" (esa línea es el registro del documento, cuya
 	// propia Caja es TenantSale.CashSessionID, un dato distinto que este estado de cuenta no
@@ -367,6 +368,30 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Bloqueo de la venta y nueva lectura del saldo DENTRO de la transacción: la validación de arriba se hizo sin bloqueo, así que
+		// dos cobros simultáneos (doble clic) podían pasar ambos y superar el saldo. El segundo espera aquí y ve el saldo ya cobrado.
+		var locked database.TenantSale
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, saleID).Error; err != nil {
+			return errors.New("venta no encontrada")
+		}
+		if locked.Status == "cancelled" {
+			return errors.New("no se puede cobrar una venta anulada")
+		}
+		var fresh []database.TenantSalePayment
+		if err := tx.Where("sale_id = ?", saleID).Find(&fresh).Error; err != nil {
+			return err
+		}
+		freshTarget, freshPaid, freshDue, _, _, _ := SaleBalance(sale, det, fresh)
+		if freshDue < money.PaymentTolerance {
+			return errors.New("esta venta no tiene saldo directo pendiente")
+		}
+		if money.RoundDisplay(freshPaid+newDirect) > money.RoundDisplay(freshTarget)+money.PaymentTolerance {
+			sym := "S/"
+			if strings.EqualFold(strings.TrimSpace(sale.Currency), "USD") {
+				sym = "US$"
+			}
+			return fmt.Errorf("el cobro (%s %.2f) supera el saldo directo (%s %.2f)", sym, money.RoundDisplay(newDirect), sym, money.RoundDisplay(freshDue))
+		}
 		var collected float64
 		for _, p := range in.Payments {
 			if p.Amount <= 0 || p.Method == "" {

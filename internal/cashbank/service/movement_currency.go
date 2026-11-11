@@ -130,6 +130,14 @@ type MovementCurrencyTotal struct {
 	SumIncomePEN  float64 `json:"sum_income_pen"`
 	SumExpensePEN float64 `json:"sum_expense_pen"`
 	NetPEN        float64 `json:"net_pen"`
+	// Transferencias internas (no son ingreso ni egreso; sí cuentan en el neto): entradas y salidas, en soles.
+	TransfersInPEN  float64 `json:"transfers_in_pen"`
+	TransfersOutPEN float64 `json:"transfers_out_pen"`
+}
+
+// isTransferRow movimiento que forma parte de una transferencia entre caja y cuentas (o de su anulación).
+func isTransferRow(r MovementReportRow) bool {
+	return r.Category == "Transferencia" || r.Category == "Anulación transferencia"
 }
 
 // movementTotalsByCurrency separa los movimientos por moneda (sin mezclar) y suma sus equivalentes en soles.
@@ -144,6 +152,14 @@ func movementTotalsByCurrency(rows []MovementReportRow) []MovementCurrencyTotal 
 		}
 		t.Rows++
 		pen := movementAmountPEN(r)
+		if isTransferRow(r) {
+			if r.Amount >= 0 {
+				t.TransfersInPEN += pen
+			} else {
+				t.TransfersOutPEN += -pen
+			}
+			continue
+		}
 		if r.Amount >= 0 {
 			t.SumIncome += r.Amount
 			t.SumIncomePEN += pen
@@ -156,10 +172,12 @@ func movementTotalsByCurrency(rows []MovementReportRow) []MovementCurrencyTotal 
 	for _, t := range by {
 		t.SumIncome = money.RoundDisplay(t.SumIncome)
 		t.SumExpense = money.RoundDisplay(t.SumExpense)
-		t.NetMovement = money.RoundDisplay(t.SumIncome - t.SumExpense)
+		t.TransfersInPEN = money.RoundDisplay(t.TransfersInPEN)
+		t.TransfersOutPEN = money.RoundDisplay(t.TransfersOutPEN)
+		t.NetMovement = money.RoundDisplay(t.SumIncome - t.SumExpense + t.TransfersInPEN - t.TransfersOutPEN)
 		t.SumIncomePEN = money.RoundDisplay(t.SumIncomePEN)
 		t.SumExpensePEN = money.RoundDisplay(t.SumExpensePEN)
-		t.NetPEN = money.RoundDisplay(t.SumIncomePEN - t.SumExpensePEN)
+		t.NetPEN = money.RoundDisplay(t.SumIncomePEN - t.SumExpensePEN + t.TransfersInPEN - t.TransfersOutPEN)
 		out = append(out, *t)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -178,14 +196,19 @@ func movementTotalsByCurrency(rows []MovementReportRow) []MovementCurrencyTotal 
 // las filas (ya enriquecidas). Lo usan los bloques por canal y el resumen plano del reporte de movimientos.
 func ApplyCurrencySummary(summary *MovementChannelSummary, rows []MovementReportRow) {
 	summary.ByCurrency = movementTotalsByCurrency(rows)
-	summary.SumIncomePEN, summary.SumExpensePEN = 0, 0
+	summary.SumIncomePEN, summary.SumExpensePEN, summary.TransfersInPEN, summary.TransfersOutPEN = 0, 0, 0, 0
 	for _, c := range summary.ByCurrency {
 		summary.SumIncomePEN += c.SumIncomePEN
 		summary.SumExpensePEN += c.SumExpensePEN
+		summary.TransfersInPEN += c.TransfersInPEN
+		summary.TransfersOutPEN += c.TransfersOutPEN
 	}
 	summary.SumIncomePEN = money.RoundDisplay(summary.SumIncomePEN)
 	summary.SumExpensePEN = money.RoundDisplay(summary.SumExpensePEN)
-	summary.NetMovementPEN = money.RoundDisplay(summary.SumIncomePEN - summary.SumExpensePEN)
+	summary.TransfersInPEN = money.RoundDisplay(summary.TransfersInPEN)
+	summary.TransfersOutPEN = money.RoundDisplay(summary.TransfersOutPEN)
+	// El neto (y por tanto el saldo físico) SÍ incluye las transferencias: el efectivo realmente entra o sale de la caja.
+	summary.NetMovementPEN = money.RoundDisplay(summary.SumIncomePEN - summary.SumExpensePEN + summary.TransfersInPEN - summary.TransfersOutPEN)
 	summary.RateEstimatedCount, summary.RateMissingCount = 0, 0
 	for _, r := range rows {
 		if r.RateEstimated {
