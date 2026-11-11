@@ -434,7 +434,8 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	cashBase := func() *gorm.DB {
 		q := tdb.Table("tenant_cash_movements m").
 			Joins("JOIN tenant_cash_sessions cs ON cs.id = m.cash_session_id").
-			Where("m.created_at >= ? AND m.created_at < ?", from, toExclusive)
+			Where("m.created_at >= ? AND m.created_at < ?", from, toExclusive).
+			Where("COALESCE(m.category, '') NOT IN ('Transferencia', 'Anulación transferencia')")
 		if branchID > 0 {
 			q = q.Where("cs.branch_id = ?", branchID)
 		}

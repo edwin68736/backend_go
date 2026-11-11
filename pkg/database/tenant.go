@@ -40,7 +40,11 @@ func tenantGormConfig() *gorm.Config {
 }
 
 func openTenantDB(dbName string) (*gorm.DB, error) {
-	db, err := gorm.Open(mysql.Open(tenantDSN(dbName)), tenantGormConfig())
+	return openTenantDBWithDSN(dbName, tenantDSN(dbName))
+}
+
+func openTenantDBWithDSN(dbName, dsn string) (*gorm.DB, error) {
+	db, err := gorm.Open(mysql.Open(dsn), tenantGormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("conectando BD tenant %s: %w", dbName, err)
 	}

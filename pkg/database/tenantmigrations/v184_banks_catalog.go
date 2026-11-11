@@ -33,7 +33,7 @@ var bankAliases = map[string]string{
 }
 
 func (V184BanksCatalog) Up(db *gorm.DB) error {
-	if err := db.AutoMigrate(&database.TenantBank{}, &database.TenantBankAccount{}, &database.TenantPaymentMethod{}); err != nil {
+	if err := db.AutoMigrate(&database.TenantBank{}, &v184BankAccount{}, &v184PaymentMethod{}); err != nil {
 		return err
 	}
 	sys := branchscope.System(db, "V184 catálogo de bancos")

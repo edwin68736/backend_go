@@ -21,7 +21,7 @@ func (V180PurchaseOrders) Up(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&database.TenantPurchaseOrder{},
 		&database.TenantPurchaseOrderItem{},
-		&database.TenantPurchase{},
+		&v180Purchase{},
 	); err != nil {
 		return err
 	}

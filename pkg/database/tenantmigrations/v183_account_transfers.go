@@ -19,7 +19,7 @@ func (V183AccountTransfers) Version() int { return 183 }
 func (V183AccountTransfers) Name() string { return "account_transfers" }
 
 func (V183AccountTransfers) Up(db *gorm.DB) error {
-	if err := db.AutoMigrate(&database.TenantBankMovement{}, &database.TenantCashMovement{}, &database.TenantAccountTransfer{}); err != nil {
+	if err := db.AutoMigrate(&v183BankMovement{}, &v183CashMovement{}, &database.TenantAccountTransfer{}); err != nil {
 		return err
 	}
 	sys := branchscope.System(db, "V183 backfill de importe en moneda de la cuenta")

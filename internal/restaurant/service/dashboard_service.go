@@ -187,7 +187,7 @@ func (s *DashboardService) loadSummary(branchID uint, from, toExclusive time.Tim
 	var agg salesAgg
 	err := restaurantSalesScope(s.db, branchID, from, toExclusive, filter).
 		Select(`
-			COALESCE(SUM(total), 0) AS total_sales,
+			COALESCE(SUM(CASE WHEN currency = 'USD' AND exchange_rate > 0 THEN total * exchange_rate ELSE total END), 0) AS total_sales,
 			COUNT(*) AS total_orders,
 			COUNT(DISTINCT CASE WHEN contact_id IS NOT NULL AND contact_id > 0 THEN contact_id END) AS clients_served
 		`).
@@ -434,7 +434,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 
 	var totalAmountAll float64
 	totalSQL := `
-		SELECT COALESCE(SUM(si.total), 0)
+		SELECT COALESCE(SUM(CASE WHEN s.currency = 'USD' AND s.exchange_rate > 0 THEN si.total * s.exchange_rate ELSE si.total END), 0)
 		FROM tenant_sale_items si
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
 		WHERE s.issue_date >= ? AND s.issue_date < ?
@@ -455,7 +455,7 @@ func (s *DashboardService) loadTopProducts(branchID uint, from, toExclusive time
 			COALESCE(si.product_id, 0) AS product_id,
 			COALESCE(NULLIF(TRIM(p.name), ''), NULLIF(TRIM(si.description), ''), 'Sin nombre') AS product_name,
 			COALESCE(SUM(si.quantity), 0) AS quantity_sold,
-			COALESCE(SUM(si.total), 0) AS total_amount
+			COALESCE(SUM(CASE WHEN s.currency = 'USD' AND s.exchange_rate > 0 THEN si.total * s.exchange_rate ELSE si.total END), 0) AS total_amount
 		FROM tenant_sale_items si
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
 		LEFT JOIN tenant_products p ON p.id = si.product_id
@@ -514,7 +514,7 @@ func (s *DashboardService) loadTopCategories(branchID uint, from, toExclusive ti
 		SELECT
 			COALESCE(NULLIF(TRIM(pc.name), ''), 'Sin categoría') AS category_name,
 			COALESCE(SUM(si.quantity), 0) AS quantity_sold,
-			COALESCE(SUM(si.total), 0) AS total_amount
+			COALESCE(SUM(CASE WHEN s.currency = 'USD' AND s.exchange_rate > 0 THEN si.total * s.exchange_rate ELSE si.total END), 0) AS total_amount
 		FROM tenant_sale_items si
 		INNER JOIN tenant_sales s ON s.id = si.sale_id
 		LEFT JOIN tenant_products p ON p.id = si.product_id
@@ -553,7 +553,7 @@ func (s *DashboardService) loadSalesLast30Days(branchID uint, filter DashboardFi
 		Count int64   `gorm:"column:count"`
 	}
 	q := restaurantSalesScope(s.db, branchID, from30, toExclusive, filter).
-		Select("DATE_FORMAT(issue_date, '%Y-%m-%d') AS day, COALESCE(SUM(total), 0) AS total, COUNT(*) AS count").
+		Select("DATE_FORMAT(issue_date, '%Y-%m-%d') AS day, COALESCE(SUM(CASE WHEN currency = 'USD' AND exchange_rate > 0 THEN total * exchange_rate ELSE total END), 0) AS total, COUNT(*) AS count").
 		Group("DATE_FORMAT(issue_date, '%Y-%m-%d')").
 		Order("day")
 	var rows []dayRow

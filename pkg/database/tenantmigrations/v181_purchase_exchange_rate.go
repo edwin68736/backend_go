@@ -1,8 +1,6 @@
 package tenantmigrations
 
 import (
-	"tukifac/pkg/database"
-
 	"gorm.io/gorm"
 )
 
@@ -14,8 +12,8 @@ func (V181PurchaseExchangeRate) Version() int { return 181 }
 func (V181PurchaseExchangeRate) Name() string { return "purchase_exchange_rate" }
 
 func (V181PurchaseExchangeRate) Up(db *gorm.DB) error {
-	if db.Migrator().HasColumn(&database.TenantPurchase{}, "exchange_rate") {
+	if db.Migrator().HasColumn(&v180Purchase{}, "exchange_rate") {
 		return nil
 	}
-	return db.Migrator().AddColumn(&database.TenantPurchase{}, "ExchangeRate")
+	return db.Migrator().AddColumn(&v180Purchase{}, "ExchangeRate")
 }

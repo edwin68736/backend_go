@@ -9,6 +9,14 @@
 --   parabrisasnegociaciones   cuenta 3 : +2 383.24
 --   sergenmecatronic          cuenta 1 : +2 442.33
 --
+-- ⚠ ORDEN SEGURO (revisión de despliegue, 11-nov-2026):
+--   * El backend NUEVO ya acredita las cuentas con el equivalente en soles. Si este script corre DESPUÉS del reinicio y hubo cobros USD por banco
+--     en el intervalo, esos cobros se contarían dos veces. Por eso TODAS las consultas llevan un tope de id: anote ANTES del reinicio del
+--     backend  SELECT MAX(id) FROM saas_tenant_<TENANT>.tenant_bank_movements;  y reemplace <MAX_ID> por ese valor.
+--   * Tras aplicarlo, el verificador GET /api/cashbank/bank-accounts/reconcile debe mostrar el mismo «inicial implícito» que antes del
+--     desvío (0 en cuentas creadas en cero). Esa es la comprobación definitiva, más que comparar contra las cifras de arriba.
+--   * NO incluir la cuenta «CTA BBVA DOLARES» de euro (cuenta 3) hasta decidir con el cliente si es una cuenta en dólares (ver doc finanzas).
+--
 -- USO (por tenant, UNA sola vez; hacer respaldo antes; ejecutar con un usuario con escritura, NO claude_ro):
 --   1) Ejecutar el bloque "A. SIMULACIÓN" y comparar con los valores de arriba. Si no coinciden, NO continuar.
 --   2) Ejecutar el bloque "B. APLICAR" dentro de la transacción; revisar el SELECT final y hacer COMMIT (o ROLLBACK).
@@ -26,7 +34,7 @@ SELECT m.bank_account_id,
 FROM saas_tenant_<TENANT>.tenant_bank_movements m
 JOIN saas_tenant_<TENANT>.tenant_sales s ON s.id = m.sale_id
 JOIN saas_tenant_<TENANT>.tenant_bank_accounts a ON a.id = m.bank_account_id
-WHERE UPPER(TRIM(s.currency)) = 'USD' AND s.exchange_rate > 0
+WHERE UPPER(TRIM(s.currency)) = 'USD' AND s.exchange_rate > 0 AND m.id <= <MAX_ID>
 GROUP BY m.bank_account_id, a.name, a.balance;
 -- Debe devolver UNA fila por cuenta afectada, con `movimientos_sin_tc` = 0.
 
@@ -39,7 +47,7 @@ JOIN (
            SUM(CASE WHEN m.type = 'credit' THEN 1 ELSE -1 END * (ROUND(m.amount * s.exchange_rate, 2) - m.amount)) AS ajuste
     FROM saas_tenant_<TENANT>.tenant_bank_movements m
     JOIN saas_tenant_<TENANT>.tenant_sales s ON s.id = m.sale_id
-    WHERE UPPER(TRIM(s.currency)) = 'USD' AND s.exchange_rate > 0
+    WHERE UPPER(TRIM(s.currency)) = 'USD' AND s.exchange_rate > 0 AND m.id <= <MAX_ID>
     GROUP BY m.bank_account_id
 ) d ON d.id = a.id
 SET a.balance = a.balance + d.ajuste;

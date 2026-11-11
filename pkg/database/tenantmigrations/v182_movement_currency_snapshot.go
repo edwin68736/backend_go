@@ -6,7 +6,6 @@ import (
 
 	"tukifac/pkg/branchscope"
 	"tukifac/pkg/dailyfx"
-	"tukifac/pkg/database"
 	"tukifac/pkg/datespe"
 
 	"gorm.io/gorm"
@@ -25,7 +24,7 @@ func (V182MovementCurrencySnapshot) Version() int { return 182 }
 func (V182MovementCurrencySnapshot) Name() string { return "movement_currency_snapshot" }
 
 func (V182MovementCurrencySnapshot) Up(db *gorm.DB) error {
-	if err := db.AutoMigrate(&database.TenantCashMovement{}, &database.TenantBankMovement{}); err != nil {
+	if err := db.AutoMigrate(&v182CashMovement{}, &v182BankMovement{}); err != nil {
 		return err
 	}
 	sys := branchscope.System(db, "V182 backfill de moneda de movimientos")
@@ -38,7 +37,7 @@ func (V182MovementCurrencySnapshot) Up(db *gorm.DB) error {
 		}
 		const chunk = 5000
 		for lo := uint64(1); lo <= maxID; lo += chunk {
-			if err := sys.Exec(`UPDATE ` + table + ` SET currency = 'PEN', amount_pen = amount
+			if err := sys.Exec(`UPDATE `+table+` SET currency = 'PEN', amount_pen = amount
 				WHERE id BETWEEN ? AND ? AND amount_pen IS NULL
 				  AND (sale_id IS NULL OR sale_id = 0 OR sale_id IN (SELECT id FROM tenant_sales WHERE currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) <> 'USD'))
 				  AND (purchase_id IS NULL OR purchase_id = 0 OR purchase_id IN (SELECT id FROM tenant_purchases WHERE currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) <> 'USD'))`, lo, lo+chunk-1).Error; err != nil {

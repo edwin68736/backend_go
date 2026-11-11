@@ -1575,6 +1575,12 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			}
 			if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID); err != nil {
 				log.Printf("[restaurant] ERROR al registrar el pago %s de %s en caja/banco: %v", p.Method, sale.Number, err)
+				// Antes el error se ignoraba y la venta quedaba cobrada SIN movimiento de caja/banco. Los errores de reglas (método solo de
+				// pagos, método sin cuenta, cuenta en dólares sin TC, esquema sin migrar) ahora revierten la venta con un mensaje claro; solo
+				// se tolera la falta de sesión de caja, como hasta ahora.
+				if !strings.Contains(err.Error(), "sesión de caja") {
+					return err
+				}
 			}
 		}
 
@@ -1806,6 +1812,12 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 			}
 			if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, sale.CashSessionID, sale.Number, desc, &sale.ID, userID); err != nil {
 				log.Printf("[restaurant] ERROR al registrar el pago %s de %s en caja/banco: %v", p.Method, sale.Number, err)
+				// Antes el error se ignoraba y la venta quedaba cobrada SIN movimiento de caja/banco. Los errores de reglas (método solo de
+				// pagos, método sin cuenta, cuenta en dólares sin TC, esquema sin migrar) ahora revierten la venta con un mensaje claro; solo
+				// se tolera la falta de sesión de caja, como hasta ahora.
+				if !strings.Contains(err.Error(), "sesión de caja") {
+					return err
+				}
 			}
 		}
 		// Actualizar método de pago principal en la venta
