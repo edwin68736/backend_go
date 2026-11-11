@@ -1187,8 +1187,15 @@ func (s *CashBankService) CreateBankAccount(name, bankName, accountNumber, cci, 
 	if name == "" {
 		return nil, errors.New("nombre de cuenta requerido")
 	}
+	currency = strings.ToUpper(strings.TrimSpace(currency))
 	if currency == "" {
 		currency = "PEN"
+	}
+	if currency != "PEN" && currency != "USD" {
+		return nil, errors.New("la moneda de la cuenta debe ser soles (PEN) o dólares (USD)")
+	}
+	if initialBalance < 0 {
+		return nil, errors.New("el saldo inicial no puede ser negativo")
 	}
 	if accountType == "" {
 		accountType = "bank"
@@ -1336,8 +1343,8 @@ func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMove
 		SumDebit  float64
 	}
 	sumQ := q.Session(&gorm.Session{}).Select(`
-		COALESCE(SUM(CASE WHEN type = 'credit' THEN COALESCE(amount_pen, amount) ELSE 0 END), 0) AS sum_credit,
-		COALESCE(SUM(CASE WHEN type = 'debit' THEN COALESCE(amount_pen, amount) ELSE 0 END), 0) AS sum_debit`)
+		COALESCE(SUM(CASE WHEN type = 'credit' THEN COALESCE(account_amount, amount_pen, amount) ELSE 0 END), 0) AS sum_credit,
+		COALESCE(SUM(CASE WHEN type = 'debit' THEN COALESCE(account_amount, amount_pen, amount) ELSE 0 END), 0) AS sum_debit`)
 	if err := sumQ.Scan(&summaryRow).Error; err != nil {
 		return nil, 0, BankMovementListSummary{}, err
 	}
@@ -1392,7 +1399,7 @@ func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMove
 }
 
 // ValidatePaymentDestinationAccount valida la cuenta que el cajero eligió como destino de un pago: debe existir, estar activa y
-// llevarse en soles (el saldo de la cuenta se mueve en soles; las cuentas en otra moneda aún no admiten cobros directos).
+// su saldo se mueve en la moneda de la cuenta (un cobro en otra moneda se convierte con el TC).
 func (s *CashBankService) ValidatePaymentDestinationAccount(db *gorm.DB, accountID uint) (*database.TenantBankAccount, error) {
 	if db == nil {
 		db = s.db
@@ -1403,9 +1410,6 @@ func (s *CashBankService) ValidatePaymentDestinationAccount(db *gorm.DB, account
 	}
 	if !acc.Active {
 		return nil, errors.New("la cuenta de destino elegida está inactiva")
-	}
-	if cur := strings.ToUpper(strings.TrimSpace(acc.Currency)); cur != "" && cur != "PEN" {
-		return nil, errors.New("las cuentas en moneda extranjera aún no admiten cobros directos: elija una cuenta en soles")
 	}
 	return &acc, nil
 }

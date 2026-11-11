@@ -2318,7 +2318,9 @@ type TenantCashMovement struct {
 	Currency     string   `gorm:"size:10;default:'PEN'" json:"currency"`
 	ExchangeRate *float64 `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
 	AmountPEN    *float64 `gorm:"type:decimal(15,2)" json:"amount_pen,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	// TransferID: transferencia entre cuentas/caja de la que forma parte este movimiento (V183). Nulo en el resto.
+	TransferID *uint     `gorm:"index" json:"transfer_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // TenantPaymentMethod medios reales de cobro (efectivo, Yape, Plin, etc.).
@@ -2427,7 +2429,37 @@ type TenantBankMovement struct {
 	Currency     string   `gorm:"size:10;default:'PEN'" json:"currency"`
 	ExchangeRate *float64 `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
 	AmountPEN    *float64 `gorm:"type:decimal(15,2)" json:"amount_pen,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	// AccountAmount (V183): importe que este movimiento suma/resta al SALDO de la cuenta, en la moneda de la cuenta (positivo; el signo
+	// lo da Type). Una cuenta en soles lo recibe en soles (AmountPEN); una cuenta en dólares, en dólares. Nulo = fila anterior a V183.
+	AccountAmount *float64 `gorm:"type:decimal(15,2)" json:"account_amount,omitempty"`
+	// TransferID: transferencia de la que forma parte este movimiento (V183). Nulo en el resto.
+	TransferID *uint     `gorm:"index" json:"transfer_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// TenantAccountTransfer traslado de dinero entre dos "lugares" del tenant: la caja (sesión abierta del usuario) o una cuenta bancaria/
+// billetera. Cada transferencia genera dos movimientos enlazados por TransferID (salida y entrada) y es anulable (Status = voided
+// genera los movimientos inversos). Si las monedas de origen y destino difieren, ExchangeRate es el TC aplicado (soles por dólar).
+type TenantAccountTransfer struct {
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	FromKind      string     `gorm:"size:10;not null" json:"from_kind"` // cash | bank
+	FromAccountID *uint      `gorm:"index" json:"from_account_id,omitempty"`
+	ToKind        string     `gorm:"size:10;not null" json:"to_kind"`
+	ToAccountID   *uint      `gorm:"index" json:"to_account_id,omitempty"`
+	AmountFrom    float64    `gorm:"type:decimal(15,2);not null" json:"amount_from"`
+	CurrencyFrom  string     `gorm:"size:10;default:'PEN'" json:"currency_from"`
+	AmountTo      float64    `gorm:"type:decimal(15,2);not null" json:"amount_to"`
+	CurrencyTo    string     `gorm:"size:10;default:'PEN'" json:"currency_to"`
+	ExchangeRate  *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
+	Date          time.Time  `gorm:"not null" json:"date"`
+	Notes         string     `gorm:"type:text" json:"notes"`
+	UserID        uint       `gorm:"not null" json:"user_id"`
+	CashSessionID *uint      `gorm:"index" json:"cash_session_id,omitempty"`
+	Status        string     `gorm:"size:20;default:'active';index" json:"status"` // active | voided
+	VoidedAt      *time.Time `json:"voided_at,omitempty"`
+	VoidedBy      *uint      `json:"voided_by,omitempty"`
+	VoidReason    string     `gorm:"type:text" json:"void_reason,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 type TenantExternalModule struct {

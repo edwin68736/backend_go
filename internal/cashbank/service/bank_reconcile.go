@@ -37,8 +37,8 @@ func (s *CashBankService) ReconcileBankAccounts() ([]BankAccountReconcileRow, er
 			NoPEN   int64
 		}
 		if err := s.db.Table("tenant_bank_movements").
-			Select(`COALESCE(SUM(CASE WHEN type = 'credit' THEN COALESCE(amount_pen, amount) ELSE 0 END), 0) AS credits,
-				COALESCE(SUM(CASE WHEN type = 'debit' THEN COALESCE(amount_pen, amount) ELSE 0 END), 0) AS debits,
+			Select(`COALESCE(SUM(CASE WHEN type = 'credit' THEN COALESCE(account_amount, amount_pen, amount) ELSE 0 END), 0) AS credits,
+				COALESCE(SUM(CASE WHEN type = 'debit' THEN COALESCE(account_amount, amount_pen, amount) ELSE 0 END), 0) AS debits,
 				COUNT(*) AS n,
 				COALESCE(SUM(CASE WHEN currency = 'USD' AND amount_pen IS NULL THEN 1 ELSE 0 END), 0) AS no_pen`).
 			Where("bank_account_id = ?", a.ID).Scan(&agg).Error; err != nil {

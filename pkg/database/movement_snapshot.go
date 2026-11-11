@@ -79,11 +79,66 @@ func (m *TenantCashMovement) BeforeCreate(tx *gorm.DB) error {
 
 // BeforeCreate completa el snapshot de moneda si quien crea el movimiento no lo trajo.
 func (m *TenantBankMovement) BeforeCreate(tx *gorm.DB) error {
-	if m.AmountPEN == nil {
+	if m.AmountPEN == nil && m.AccountAmount == nil {
 		cur, rate, pen := movementSnapshot(tx, m.SaleID, m.PurchaseID, m.Amount)
 		m.Currency, m.ExchangeRate, m.AmountPEN = cur, rate, pen
 	}
+	if m.AccountAmount == nil {
+		m.setAccountAmount(tx)
+	}
 	return nil
+}
+
+// officialRate devuelve el TC venta guardado para el día de la fecha dada (hoy si es cero).
+func officialRate(t time.Time) (float64, bool) {
+	if t.IsZero() {
+		t = time.Now()
+	}
+	r, _, ok := dailyfx.SaleRate(t.In(datespe.Location()).Format("2006-01-02"))
+	return r, ok && r > 0
+}
+
+// setAccountAmount calcula AccountAmount: lo que el movimiento suma al saldo de la cuenta, en la MONEDA DE LA CUENTA.
+//   - Movimiento manual (sin documento ni transferencia): el importe ya está en la moneda de la cuenta.
+//   - Con documento: cuenta en soles → equivalente en soles; cuenta en dólares → el importe si el documento es USD, o el importe en
+//     soles ÷ TC oficial del día si es PEN.
+//
+// Si no se puede convertir (falta el TC) queda nil y quien actualiza el saldo lo rechaza.
+func (m *TenantBankMovement) setAccountAmount(tx *gorm.DB) {
+	var accCur string
+	q := branchscope.System(tx.Session(&gorm.Session{NewDB: true}), "moneda de la cuenta del movimiento")
+	if err := q.Table("tenant_bank_accounts").Select("currency").Where("id = ?", m.BankAccountID).Scan(&accCur).Error; err != nil {
+		return
+	}
+	accCur = strings.ToUpper(strings.TrimSpace(accCur))
+	manual := (m.SaleID == nil || *m.SaleID == 0) && (m.PurchaseID == nil || *m.PurchaseID == 0) && m.TransferID == nil
+	if accCur != "USD" {
+		m.AccountAmount = m.AmountPEN // cuenta en soles (o etiqueta histórica sin efecto): el saldo va en soles
+		return
+	}
+	switch {
+	case manual:
+		// Movimiento manual en una cuenta en dólares: el importe tecleado ya está en dólares.
+		v := m.Amount
+		m.AccountAmount = &v
+		m.Currency = "USD"
+		m.ExchangeRate, m.AmountPEN = nil, nil
+		if r, ok := officialRate(m.Date); ok {
+			rr := r
+			p := roundCents(m.Amount * r)
+			m.ExchangeRate, m.AmountPEN = &rr, &p
+		}
+	case m.Currency == "USD":
+		v := m.Amount
+		m.AccountAmount = &v
+	default: // documento en soles hacia una cuenta en dólares: se divide por el TC oficial del día
+		if r, ok := officialRate(m.Date); ok && m.AmountPEN != nil {
+			v := roundCents(*m.AmountPEN / r)
+			m.AccountAmount = &v
+			rr := r
+			m.ExchangeRate = &rr
+		}
+	}
 }
 
 // BalanceDelta devuelve cuánto debe cambiar el saldo de la cuenta (siempre en soles) por este movimiento. delta llega con el signo
@@ -92,6 +147,12 @@ func (m *TenantBankMovement) BeforeCreate(tx *gorm.DB) error {
 func (m *TenantBankMovement) BalanceDelta(delta float64) (float64, bool) {
 	if m == nil || m.Amount == 0 {
 		return delta, true
+	}
+	if m.AccountAmount != nil { // V183: ya viene en la moneda de la cuenta
+		if delta < 0 {
+			return -*m.AccountAmount, true
+		}
+		return *m.AccountAmount, true
 	}
 	if m.AmountPEN == nil {
 		if m.Currency == "USD" {

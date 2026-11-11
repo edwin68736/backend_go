@@ -80,11 +80,6 @@ func TestRecordPaymentToDestination_InvalidDestinations(t *testing.T) {
 		t.Errorf("cuenta inactiva debe rechazarse, err=%v", err)
 	}
 	svc.db.Model(&database.TenantBankAccount{}).Where("id = ?", bcp).Update("active", true)
-	// Cuenta en dólares: aún no admite cobros directos
-	svc.db.Model(&database.TenantBankAccount{}).Where("id = ?", bcp).Update("currency", "USD")
-	if err := svc.RecordPaymentToDestination(nil, "yape", 10, &sid, "NV-6", "Venta", nil, 1, &bcp); err == nil || !strings.Contains(err.Error(), "moneda extranjera") {
-		t.Errorf("cuenta USD debe rechazarse, err=%v", err)
-	}
 	if balanceOf(t, svc, ids["BCP"]) != 0 || balanceOf(t, svc, ids["Yape"]) != 0 {
 		t.Errorf("ningún rechazo debe mover saldos")
 	}

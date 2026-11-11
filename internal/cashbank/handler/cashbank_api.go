@@ -722,3 +722,64 @@ func (h *CashBankHandler) ReconcileBankAccountsAPI(c fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"data": rows})
 }
+
+// CreateTransferAPI POST /cashbank/transfers — transferencia entre la caja y cuentas bancarias (o entre cuentas).
+func (h *CashBankHandler) CreateTransferAPI(c fiber.Ctx) error {
+	var body struct {
+		service.TransferInput
+		BranchID uint   `json:"branch_id"`
+		Date     string `json:"date"` // YYYY-MM-DD (opcional)
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	in := body.TransferInput
+	in.UserID, in.BranchID = userID(c), branchID
+	if body.Date != "" {
+		if d, err := time.ParseInLocation("2006-01-02", body.Date, time.Local); err == nil {
+			// Mediodía: evita que un cambio de huso lo corra al día anterior.
+			d = time.Date(d.Year(), d.Month(), d.Day(), 12, 0, 0, 0, d.Location())
+			in.Date = &d
+		}
+	}
+	tr, err := service.NewCashBankService(db(c)).CreateTransfer(in)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": tr})
+}
+
+// ListTransfersAPI GET /cashbank/transfers — transferencias recientes.
+func (h *CashBankHandler) ListTransfersAPI(c fiber.Ctx) error {
+	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	rows, err := service.NewCashBankService(db(c)).ListTransfers(limit)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// VoidTransferAPI POST /cashbank/transfers/:id/void — anula una transferencia (movimientos inversos).
+func (h *CashBankHandler) VoidTransferAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Reason   string `json:"reason"`
+		BranchID uint   `json:"branch_id"`
+	}
+	_ = c.Bind().JSON(&body)
+	branchID, err := branch.ResolveWriteBranchID(c, body.BranchID)
+	if err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	if err := service.NewCashBankService(db(c)).VoidTransfer(uint(id), userID(c), branchID, body.Reason); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}

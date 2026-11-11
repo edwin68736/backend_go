@@ -73,9 +73,10 @@ func (s *CashBankService) CreateBankReversal(tx *gorm.DB, original database.Tena
 		Notes:         notes,
 		CreatedAt:     now,
 		// Snapshot del original: la reversión vale lo mismo aunque el TC del documento o el del día cambien.
-		Currency:     original.Currency,
-		ExchangeRate: original.ExchangeRate,
-		AmountPEN:    original.AmountPEN,
+		Currency:      original.Currency,
+		ExchangeRate:  original.ExchangeRate,
+		AmountPEN:     original.AmountPEN,
+		AccountAmount: original.AccountAmount,
 	}
 	if err := exec.Create(&rev).Error; err != nil {
 		return err
@@ -253,12 +254,21 @@ func (s *CashBankService) reverseManualBankMovement(tx *gorm.DB, movementID, use
 }
 
 // errUSDSinTC: documento en dólares sin tipo de cambio: la cuenta (en soles) no se puede acreditar sin convertir.
-var errUSDSinTC = errors.New("el documento está en dólares y no tiene tipo de cambio: registre el tipo de cambio antes de cobrar a una cuenta bancaria")
+var errUSDSinTC = errors.New("no se puede convertir el importe a la moneda de la cuenta bancaria: falta el tipo de cambio (registre el del documento o el del día)")
 
 // applyBankDelta actualiza el saldo de la cuenta con el cambio del movimiento ya creado (en soles). strict=true rechaza un USD sin
 // TC (cobros nuevos); strict=false cae al importe tal cual (reversiones: no se bloquea una anulación).
 func applyBankDelta(db *gorm.DB, accountID uint, m *database.TenantBankMovement, delta float64, strict bool) error {
 	d, ok := m.BalanceDelta(delta)
+	if ok && m.AccountAmount == nil {
+		// Sin importe en moneda de cuenta: solo es válido el camino heredado para cuentas en soles; una cuenta en dólares no puede
+		// recibir el equivalente en soles como si fueran dólares.
+		var cur string
+		db.Model(&database.TenantBankAccount{}).Select("currency").Where("id = ?", accountID).Scan(&cur)
+		if strings.EqualFold(strings.TrimSpace(cur), "USD") {
+			ok = false
+		}
+	}
 	if !ok {
 		if strict {
 			return errUSDSinTC
