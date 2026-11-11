@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -410,9 +411,7 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 		if err := s.db.Create(&bm).Error; err != nil {
 			return err
 		}
-		return s.db.Model(&database.TenantBankAccount{}).
-			Where("id = ?", acc.ID).
-			Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&bm, delta))).Error
+		return applyBankDelta(s.db, acc.ID, &bm, delta, true)
 	}
 	return s.db.Create(&database.TenantCashMovement{
 		CashSessionID: sessionID,
@@ -693,9 +692,7 @@ func (s *CashBankService) RecordPaymentToAccount(db *gorm.DB, paymentMethod stri
 	if err := exec.Create(&bm).Error; err != nil {
 		return err
 	}
-	return exec.Model(&database.TenantBankAccount{}).
-		Where("id = ?", acc.ID).
-		Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&bm, delta))).Error
+	return applyBankDelta(exec, acc.ID, &bm, delta, true)
 }
 
 func (s *CashBankService) ListBankAccounts() ([]database.TenantBankAccount, error) {
@@ -786,6 +783,11 @@ func (s *CashBankService) CreatePaymentMethod(name, code, destinationType string
 		return nil, errors.New("debe indicar la cuenta bancaria cuando el destino es bank_account")
 	}
 	code = NormalizePaymentMethodCode(code)
+	// Los reportes y el arqueo reconocen "efectivo" por su código: un método personalizado enviado a caja crearía movimientos de caja
+	// que el arqueo no cuenta como efectivo.
+	if destinationType == "cash" && code != "cash" {
+		return nil, errors.New("solo el método Efectivo puede enviarse a caja; los demás deben ir a una cuenta bancaria")
+	}
 	// Evitar duplicados de código
 	var existing database.TenantPaymentMethod
 	if err := s.db.Where("code = ?", code).First(&existing).Error; err == nil {
@@ -829,6 +831,9 @@ func (s *CashBankService) UpdatePaymentMethod(id uint, name, code, destinationTy
 	if destinationType != "" && !pm.IsSystem {
 		if destinationType != "cash" && destinationType != "bank_account" {
 			return errors.New("destination_type debe ser cash o bank_account")
+		}
+		if destinationType == "cash" && pm.DestinationType != "cash" && NormalizePaymentMethodCode(pm.Code) != "cash" {
+			return errors.New("solo el método Efectivo puede enviarse a caja; los demás deben ir a una cuenta bancaria")
 		}
 		pm.DestinationType = destinationType
 		if destinationType == "bank_account" && (bankAccountID == nil || *bankAccountID == 0) {
@@ -1012,17 +1017,24 @@ func (s *CashBankService) ResolveCashSessionForPayments(
 // Firma y comportamiento sin cambios (Tukichef la llama directamente desde restaurant_service.go)
 // — es un wrapper fino sobre recordDirectedPayment con dirección "income"/"Venta".
 func (s *CashBankService) RecordPayment(tx *gorm.DB, paymentMethodCode string, amount float64, cashSessionID *uint, saleNumber, description string, saleID *uint, userID uint) error {
+	return s.RecordPaymentToDestination(tx, paymentMethodCode, amount, cashSessionID, saleNumber, description, saleID, userID, nil)
+}
+
+// RecordPaymentToDestination es RecordPayment con destino elegido por el cajero: destinationAccountID = cuenta bancaria que recibe
+// este pago (nil = la del método, como siempre). Solo aplica a métodos que van a una cuenta; el efectivo siempre va a la caja.
+func (s *CashBankService) RecordPaymentToDestination(tx *gorm.DB, paymentMethodCode string, amount float64, cashSessionID *uint, saleNumber, description string, saleID *uint, userID uint, destinationAccountID *uint) error {
 	return s.recordDirectedPayment(tx, directedPaymentInput{
-		paymentMethodCode: paymentMethodCode,
-		amount:            amount,
-		cashSessionID:     cashSessionID,
-		reference:         saleNumber,
-		description:       description,
-		saleID:            saleID,
-		userID:            userID,
-		cashType:          "income",
-		cashCategory:      "Venta",
-		bankType:          "credit",
+		destinationAccountID: destinationAccountID,
+		paymentMethodCode:    paymentMethodCode,
+		amount:               amount,
+		cashSessionID:        cashSessionID,
+		reference:            saleNumber,
+		description:          description,
+		saleID:               saleID,
+		userID:               userID,
+		cashType:             "income",
+		cashCategory:         "Venta",
+		bankType:             "credit",
 	})
 }
 
@@ -1050,17 +1062,18 @@ func (s *CashBankService) RecordExpensePayment(tx *gorm.DB, paymentMethodCode st
 }
 
 type directedPaymentInput struct {
-	paymentMethodCode string
-	amount            float64
-	cashSessionID     *uint
-	reference         string
-	description       string
-	saleID            *uint
-	purchaseID        *uint
-	userID            uint
-	cashType          string // "income" | "expense" (tenant_cash_movements.type)
-	cashCategory      string // "Venta" | "Compra" (tenant_cash_movements.category)
-	bankType          string // "credit" | "debit" (tenant_bank_movements.type)
+	destinationAccountID *uint // cuenta elegida para este pago (nil = la del método)
+	paymentMethodCode    string
+	amount               float64
+	cashSessionID        *uint
+	reference            string
+	description          string
+	saleID               *uint
+	purchaseID           *uint
+	userID               uint
+	cashType             string // "income" | "expense" (tenant_cash_movements.type)
+	cashCategory         string // "Venta" | "Compra" (tenant_cash_movements.category)
+	bankType             string // "credit" | "debit" (tenant_bank_movements.type)
 }
 
 // recordDirectedPayment enrutamiento compartido de RecordPayment/RecordExpensePayment: mismo
@@ -1081,6 +1094,9 @@ func (s *CashBankService) recordDirectedPayment(tx *gorm.DB, in directedPaymentI
 	if err != nil || pm == nil {
 		// Fallback legacy: intentar RecordPaymentToAccount (cuenta por payment_method en TenantBankAccount)
 		return s.RecordPaymentToAccount(tx, in.paymentMethodCode, in.amount, isCredit, in.reference, in.description, in.userID, in.saleID, in.purchaseID, in.cashSessionID)
+	}
+	if in.destinationAccountID != nil && *in.destinationAccountID > 0 && pm.DestinationType == "cash" {
+		return errors.New("el efectivo siempre se registra en la caja; no admite una cuenta bancaria de destino")
 	}
 	switch pm.DestinationType {
 	case "detraction", "receivable":
@@ -1115,12 +1131,23 @@ func (s *CashBankService) recordDirectedPayment(tx *gorm.DB, in directedPaymentI
 		// Cuenta explícita en el método de pago, o la primera cuenta activa con payment_method coincidente
 		// (misma lógica que Caja → Cuentas: muchos tenants vinculan solo TenantBankAccount.payment_method).
 		bankAccID := uint(0)
-		if pm.BankAccountID != nil && *pm.BankAccountID > 0 {
+		if in.destinationAccountID != nil && *in.destinationAccountID > 0 {
+			acc, err := s.ValidatePaymentDestinationAccount(exec, *in.destinationAccountID)
+			if err != nil {
+				return err
+			}
+			bankAccID = acc.ID
+		} else if pm.BankAccountID != nil && *pm.BankAccountID > 0 {
 			bankAccID = *pm.BankAccountID
 		} else if acc, err := s.GetAccountByPaymentMethod(pm.Code); err == nil && acc != nil {
 			bankAccID = acc.ID
 		}
 		if bankAccID == 0 {
+			// Antes se registraba el pago en silencio sin mover ninguna cuenta (el dinero "desaparecía" del saldo). Producción no tiene
+			// ningún método así (revisado en los 796 tenants), así que se convierte en error claro.
+			if acc, _ := s.resolveAccountForPaymentMethod(in.paymentMethodCode); acc == nil {
+				return fmt.Errorf("el método de pago «%s» no tiene una cuenta bancaria configurada: vincúlelo a una cuenta en Caja → Métodos de pago", pm.Name)
+			}
 			return s.RecordPaymentToAccount(tx, in.paymentMethodCode, in.amount, isCredit, in.reference, in.description, in.userID, in.saleID, in.purchaseID, in.cashSessionID)
 		}
 		delta := in.amount
@@ -1143,9 +1170,7 @@ func (s *CashBankService) recordDirectedPayment(tx *gorm.DB, in directedPaymentI
 		if err := exec.Create(&bm).Error; err != nil {
 			return err
 		}
-		return exec.Model(&database.TenantBankAccount{}).
-			Where("id = ?", bankAccID).
-			Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&bm, delta))).Error
+		return applyBankDelta(exec, bankAccID, &bm, delta, true)
 	default:
 		return nil
 	}
@@ -1212,8 +1237,18 @@ func (s *CashBankService) AddBankMovement(accountID, userID uint, movType, descr
 	if amount <= 0 {
 		return errors.New("monto inválido")
 	}
+	if movType != "credit" && movType != "debit" {
+		return errors.New("tipo de movimiento inválido: use credit o debit")
+	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var acc database.TenantBankAccount
+		if err := tx.First(&acc, accountID).Error; err != nil {
+			return errors.New("la cuenta bancaria no existe")
+		}
+		if !acc.Active {
+			return errors.New("la cuenta bancaria está inactiva")
+		}
 		// Registrar movimiento
 		if err := tx.Create(&database.TenantBankMovement{
 			BankAccountID: accountID,
@@ -1354,4 +1389,23 @@ func (s *CashBankService) ListBankMovementsPaged(accountID uint, params BankMove
 		}
 	}
 	return rows, total, summary, nil
+}
+
+// ValidatePaymentDestinationAccount valida la cuenta que el cajero eligió como destino de un pago: debe existir, estar activa y
+// llevarse en soles (el saldo de la cuenta se mueve en soles; las cuentas en otra moneda aún no admiten cobros directos).
+func (s *CashBankService) ValidatePaymentDestinationAccount(db *gorm.DB, accountID uint) (*database.TenantBankAccount, error) {
+	if db == nil {
+		db = s.db
+	}
+	var acc database.TenantBankAccount
+	if err := db.First(&acc, accountID).Error; err != nil {
+		return nil, errors.New("la cuenta de destino elegida no existe")
+	}
+	if !acc.Active {
+		return nil, errors.New("la cuenta de destino elegida está inactiva")
+	}
+	if cur := strings.ToUpper(strings.TrimSpace(acc.Currency)); cur != "" && cur != "PEN" {
+		return nil, errors.New("las cuentas en moneda extranjera aún no admiten cobros directos: elija una cuenta en soles")
+	}
+	return &acc, nil
 }

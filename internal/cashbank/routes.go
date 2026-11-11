@@ -48,6 +48,7 @@ func RegisterRoutes(api fiber.Router) {
 	api.Put("/cashbank/payment-methods/:id", mod, loadRest, middleware.RequireCashbankAccess("payment_methods_manage"), h.UpdatePaymentMethodAPI)
 	api.Delete("/cashbank/payment-methods/:id", mod, loadRest, middleware.RequireCashbankAccess("payment_methods_manage"), h.DeletePaymentMethodAPI)
 	api.Get("/cashbank/bank-accounts", mod, loadRest, middleware.RequireCashbankAccess("view"), h.ListBankAccountsAPI)
+	api.Get("/cashbank/bank-accounts/reconcile", mod, loadRest, middleware.RequireCashbankAccess("bank_manage"), h.ReconcileBankAccountsAPI)
 	api.Get("/cashbank/bank-accounts/:id", mod, loadRest, middleware.RequireCashbankAccess("view"), h.GetBankAccountAPI)
 	api.Post("/cashbank/bank-accounts", mod, loadRest, middleware.RequireCashbankAccess("bank_manage"), h.CreateBankAccountAPI)
 	api.Put("/cashbank/bank-accounts/:id", mod, loadRest, middleware.RequireCashbankAccess("bank_manage"), h.UpdateBankAccountAPI)

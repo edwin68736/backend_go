@@ -75,3 +75,11 @@ Se había decidido «solo cuentas en soles». El caso real de `euro` («CTA BBVA
 
 ## 5. Reglas del antiguo que se preservan
 Pagos mixtos con suma ≤ total; crédito/cuotas con cobros posteriores que eligen su destino; vuelto solo en efectivo y saldo por el neto; caja = sesión por usuario con apertura/arqueo/cierre; exclusión de documentos anulados sin borrar historial; notas de crédito restan; transferencias con trazabilidad; un libro único de movimientos para reportes; comprobantes que imprimen solo las cuentas marcadas; voucher por pago (pendiente en Tukifac).
+
+## 6. Estado de implementación (11-nov-2026)
+
+**Fase A (hecha):** método a banco sin cuenta resoluble → error claro (producción: 0 de 796 tenants afectados, revisado en solo lectura); Tukichef registra en log el error del pago en vez de ignorarlo; saldo de la cuenta nunca suma dólares como soles (USD sin TC se rechaza al cobrar; reversiones y devoluciones por nota de crédito usan el equivalente en soles); movimientos manuales de banco validan cuenta existente/activa y tipo; solo el método Efectivo puede enviarse a caja (producción: 2 tenants con un método personalizado a caja, no se tocan); verificador `GET /api/cashbank/bank-accounts/reconcile` (saldo guardado vs movimientos, con «saldo inicial implícito»).
+
+**Fase B (hecha):** cada pago acepta `destination_account_id` (ventas, POS y cobros de CxC); sin él se usa la cuenta del método. El servidor valida: el efectivo no admite cuenta, la cuenta debe existir, estar activa y llevarse en soles. La pantalla muestra «Destino» solo en métodos a cuenta y cuando hay más de una cuenta posible; preseleccionada con la cuenta del método.
+
+**Pendiente:** Fase C (cuentas con moneda real y transferencias) y Fase D (catálogos). Nota para el despliegue: la anulación de una venta histórica en USD cobrada a banco ANTES de la corrección restará el equivalente en soles de una cuenta a la que se sumaron dólares; aplicar primero el ajuste de saldos (`AJUSTE_SALDOS_BANCARIOS_USD.sql`) en esos tenants.

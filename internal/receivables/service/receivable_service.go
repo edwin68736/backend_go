@@ -375,7 +375,7 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 				return err
 			}
 			desc := "Cobro " + sale.Number
-			if err := cbSvc.RecordPayment(tx, p.Method, p.Amount, cashSessionID, sale.Number, desc, &sale.ID, in.UserID); err != nil {
+			if err := cbSvc.RecordPaymentToDestination(tx, p.Method, p.Amount, cashSessionID, sale.Number, desc, &sale.ID, in.UserID, p.DestinationAccountID); err != nil {
 				return err
 			}
 			collected += p.Amount

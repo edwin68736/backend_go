@@ -85,3 +85,22 @@ func (m *TenantBankMovement) BeforeCreate(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+// BalanceDelta devuelve cuánto debe cambiar el saldo de la cuenta (siempre en soles) por este movimiento. delta llega con el signo
+// correcto y en la moneda del documento. Si el movimiento se valuó (AmountPEN) se usa su equivalente en soles. ok=false cuando el
+// documento es USD y no se pudo valuar (sin TC): no se puede acreditar la cuenta sin sumar dólares como soles.
+func (m *TenantBankMovement) BalanceDelta(delta float64) (float64, bool) {
+	if m == nil || m.Amount == 0 {
+		return delta, true
+	}
+	if m.AmountPEN == nil {
+		if m.Currency == "USD" {
+			return delta, false
+		}
+		return delta, true
+	}
+	if delta < 0 {
+		return -*m.AmountPEN, true
+	}
+	return *m.AmountPEN, true
+}

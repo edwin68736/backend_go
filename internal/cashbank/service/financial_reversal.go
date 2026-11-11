@@ -80,9 +80,7 @@ func (s *CashBankService) CreateBankReversal(tx *gorm.DB, original database.Tena
 	if err := exec.Create(&rev).Error; err != nil {
 		return err
 	}
-	return exec.Model(&database.TenantBankAccount{}).
-		Where("id = ?", original.BankAccountID).
-		Update("balance", gorm.Expr("balance + ?", bankDeltaPEN(&rev, delta))).Error
+	return applyBankDelta(exec, original.BankAccountID, &rev, delta, false)
 }
 
 // ReverseBankMovementsByReference revierte movimientos bancarios del tipo indicado que comparten referencia.
@@ -254,16 +252,18 @@ func (s *CashBankService) reverseManualBankMovement(tx *gorm.DB, movementID, use
 	return s.CreateBankReversal(exec, original, desc, original.Reference, category, notes, userID)
 }
 
-// bankDeltaPEN devuelve el cambio de saldo de una cuenta bancaria (siempre en soles: no hay cuentas en dólares) para un
-// movimiento ya creado. delta llega con el signo correcto y en la moneda del movimiento; si el movimiento se valuó (AmountPEN, lo
-// completa el hook de snapshot) se usa su equivalente en soles; si no, queda el importe tal cual (soles o sin TC conocido).
-func bankDeltaPEN(m *database.TenantBankMovement, delta float64) float64 {
-	if m == nil || m.AmountPEN == nil || m.Amount == 0 {
-		return delta
+// errUSDSinTC: documento en dólares sin tipo de cambio: la cuenta (en soles) no se puede acreditar sin convertir.
+var errUSDSinTC = errors.New("el documento está en dólares y no tiene tipo de cambio: registre el tipo de cambio antes de cobrar a una cuenta bancaria")
+
+// applyBankDelta actualiza el saldo de la cuenta con el cambio del movimiento ya creado (en soles). strict=true rechaza un USD sin
+// TC (cobros nuevos); strict=false cae al importe tal cual (reversiones: no se bloquea una anulación).
+func applyBankDelta(db *gorm.DB, accountID uint, m *database.TenantBankMovement, delta float64, strict bool) error {
+	d, ok := m.BalanceDelta(delta)
+	if !ok {
+		if strict {
+			return errUSDSinTC
+		}
+		d = delta
 	}
-	pen := *m.AmountPEN
-	if delta < 0 {
-		return -pen
-	}
-	return pen
+	return db.Model(&database.TenantBankAccount{}).Where("id = ?", accountID).Update("balance", gorm.Expr("balance + ?", d)).Error
 }

@@ -1573,7 +1573,9 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 				recordAmt = netRecordAmounts[recordIdx]
 				recordIdx++
 			}
-			_ = cbSvc.RecordPayment(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID)
+			if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID); err != nil {
+				log.Printf("[restaurant] ERROR al registrar el pago %s de %s en caja/banco: %v", p.Method, sale.Number, err)
+			}
 		}
 
 		if input.CloseSession {
@@ -1802,7 +1804,9 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 				recordAmt = netRecordAmounts[recordIdx]
 				recordIdx++
 			}
-			_ = cbSvc.RecordPayment(tx, p.Method, recordAmt, sale.CashSessionID, sale.Number, desc, &sale.ID, userID)
+			if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, sale.CashSessionID, sale.Number, desc, &sale.ID, userID); err != nil {
+				log.Printf("[restaurant] ERROR al registrar el pago %s de %s en caja/banco: %v", p.Method, sale.Number, err)
+			}
 		}
 		// Actualizar método de pago principal en la venta
 		if len(payments) > 0 {

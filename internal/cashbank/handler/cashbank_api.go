@@ -713,3 +713,12 @@ func (h *CashBankHandler) AddBankMovementAPI(c fiber.Ctx) error {
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true})
 }
+
+// ReconcileBankAccountsAPI GET /cashbank/bank-accounts/reconcile — cuadre (solo lectura) del saldo de cada cuenta contra sus movimientos.
+func (h *CashBankHandler) ReconcileBankAccountsAPI(c fiber.Ctx) error {
+	rows, err := service.NewCashBankService(db(c)).ReconcileBankAccounts()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}

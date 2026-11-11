@@ -158,6 +158,8 @@ type PaymentInput struct {
 	Method    string  `json:"method"` // código: cash, yape, plin, etc.
 	Amount    float64 `json:"amount"`
 	Reference string  `json:"reference,omitempty"` // nro. transferencia, depósito, voucher, etc.
+	// DestinationAccountID: cuenta bancaria que recibe ESTE pago (nil = la del método de pago). No aplica al efectivo.
+	DestinationAccountID *uint `json:"destination_account_id,omitempty"`
 }
 
 type CreateSaleInput struct {
@@ -843,7 +845,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				desc := "Venta " + sale.Number
 				recordAmt := netRecordAmounts[recordIdx]
 				recordIdx++
-				if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID); err != nil {
+				if err := cbSvc.RecordPaymentToDestination(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID, p.DestinationAccountID); err != nil {
 					return err
 				}
 			}

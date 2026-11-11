@@ -57,7 +57,7 @@ func RestorePartialSaleBankRefundTx(tx *gorm.DB, noteSale *database.TenantSale, 
 		uid = noteSale.UserID
 	}
 	now := time.Now()
-	if err := tx.Create(&database.TenantBankMovement{
+	refund := database.TenantBankMovement{
 		BankAccountID: origCredit.BankAccountID,
 		Type:          "debit",
 		Amount:        noteSale.Total,
@@ -67,10 +67,13 @@ func RestorePartialSaleBankRefundTx(tx *gorm.DB, noteSale *database.TenantSale, 
 		UserID:        uid,
 		SaleID:        &origSaleID,
 		CreatedAt:     now,
-	}).Error; err != nil {
+	}
+	if err := tx.Create(&refund).Error; err != nil {
 		return err
 	}
+	// El saldo de la cuenta va en soles: una devolución de una venta en USD resta su equivalente (monto × TC de la venta).
+	delta, _ := refund.BalanceDelta(-noteSale.Total)
 	return tx.Model(&database.TenantBankAccount{}).
 		Where("id = ?", origCredit.BankAccountID).
-		Update("balance", gorm.Expr("balance - ?", noteSale.Total)).Error
+		Update("balance", gorm.Expr("balance + ?", delta)).Error
 }
