@@ -364,6 +364,8 @@ func (s *QuotationService) checkAuthorizedPrices(
 	inputs []QuotationItemInput,
 	canOverride bool,
 	existing []database.TenantQuotationItem,
+	currency string,
+	exchangeRate *float64,
 ) error {
 	if canOverride {
 		return nil
@@ -390,7 +392,8 @@ func (s *QuotationService) checkAuthorizedPrices(
 			PriceAuthorized: unchanged,
 		})
 	}
-	return salessvc.ValidateAuthorizedPrices(s.db, branchID, items)
+	// Cotización en USD: el precio autorizado es el de catálogo (soles) convertido con el TC de la cotización.
+	return salessvc.ValidateAuthorizedPricesInCurrency(s.db, branchID, items, currency, exchangeRate)
 }
 
 func serialsToJSON(serials []string) string {

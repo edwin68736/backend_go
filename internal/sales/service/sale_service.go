@@ -287,7 +287,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// vetadas por código de confianza (item.PriceAuthorized=true) no se reevalúan de todos modos.
 	// Ver sale_price_authorization.go.
 	if !input.UserCanOverridePrice {
-		if err := validateAuthorizedPrices(s.db, input.BranchID, input.Items); err != nil {
+		// Documento en USD: el precio autorizado es el de catálogo (soles) convertido con el TC del documento.
+		if err := validateAuthorizedPricesFX(s.db, input.BranchID, input.Items, input.Currency, input.ExchangeRate); err != nil {
 			return nil, err
 		}
 	}
