@@ -27,9 +27,10 @@ func (s *RestaurantPOSCheckoutService) checkoutDirect(
 	payments := make([]salesvc.PaymentInput, 0, len(in.Payments))
 	for _, p := range in.Payments {
 		payments = append(payments, salesvc.PaymentInput{
-			Method:    p.Method,
-			Amount:    p.Amount,
-			Reference: p.Reference,
+			Method:               p.Method,
+			Amount:               p.Amount,
+			Reference:            p.Reference,
+			DestinationAccountID: p.DestinationAccountID,
 		})
 	}
 

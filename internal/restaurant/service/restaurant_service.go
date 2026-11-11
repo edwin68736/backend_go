@@ -1129,6 +1129,8 @@ type PaymentInput struct {
 	Amount    float64 `json:"amount"`
 	Reference string  `json:"reference"`
 	Notes     string  `json:"notes"`
+	// DestinationAccountID: cuenta bancaria que recibe este pago (nil = la vinculada al método). No aplica al efectivo.
+	DestinationAccountID *uint `json:"destination_account_id,omitempty"`
 }
 
 // sumNonCashPayments suma los pagos que NO son efectivo — usado para bloquear el vuelto vía
@@ -1573,7 +1575,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 				recordAmt = netRecordAmounts[recordIdx]
 				recordIdx++
 			}
-			if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID); err != nil {
+			if err := cbSvc.RecordPaymentToDestination(tx, p.Method, recordAmt, input.CashSessionID, sale.Number, desc, &sale.ID, input.UserID, p.DestinationAccountID); err != nil {
 				log.Printf("[restaurant] ERROR al registrar el pago %s de %s en caja/banco: %v", p.Method, sale.Number, err)
 				// Antes el error se ignoraba y la venta quedaba cobrada SIN movimiento de caja/banco. Los errores de reglas (método solo de
 				// pagos, método sin cuenta, cuenta en dólares sin TC, esquema sin migrar) ahora revierten la venta con un mensaje claro; solo
@@ -1810,7 +1812,7 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 				recordAmt = netRecordAmounts[recordIdx]
 				recordIdx++
 			}
-			if err := cbSvc.RecordPayment(tx, p.Method, recordAmt, sale.CashSessionID, sale.Number, desc, &sale.ID, userID); err != nil {
+			if err := cbSvc.RecordPaymentToDestination(tx, p.Method, recordAmt, sale.CashSessionID, sale.Number, desc, &sale.ID, userID, p.DestinationAccountID); err != nil {
 				log.Printf("[restaurant] ERROR al registrar el pago %s de %s en caja/banco: %v", p.Method, sale.Number, err)
 				// Antes el error se ignoraba y la venta quedaba cobrada SIN movimiento de caja/banco. Los errores de reglas (método solo de
 				// pagos, método sin cuenta, cuenta en dólares sin TC, esquema sin migrar) ahora revierten la venta con un mensaje claro; solo
