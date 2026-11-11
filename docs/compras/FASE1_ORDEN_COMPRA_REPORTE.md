@@ -23,8 +23,9 @@ Rama **`feature/orden-compra`** en `backend_principal` (9dc159f) y `frontend_ten
 | **UI local**: menú y lista, formulario, USD autocompleta TC 3.421, "Registrar compra" precarga y registra; la orden queda "Recibida" | ✔ |
 
 ## No probado / riesgos pendientes
-- Aislamiento entre sucursales de la orden con un usuario de 2.ª sucursal (cubierto por el patrón y `BranchScopedModels`, sin prueba dedicada).
-- PDF/impresión y envío por correo de la orden (el antiguo los tiene): **fuera de esta entrega**, proponer como 1.1.
+- ~~Aislamiento entre sucursales~~ → **hecho (1.1)**: `internal/purchaseorders/handler/branch_isolation_test.go` (S2 no lee/edita/envía/anula una orden de S1: 404; serie de otra sucursal: 400; admin con activa S2 lee pero no opera: 403).
+- ~~PDF/impresión~~ → **hecho (1.1)**: `src/utils/purchaseOrderPdf.ts` (A4 con jsPDF, estilo del comprobante de transferencia; muestra moneda, TC y equivalente en soles), botones "Imprimir / PDF" y "Descargar" en el detalle. Verificado en pantalla con orden PEN y USD.
+- **Envío por correo** de la orden (el antiguo lo tiene): pendiente (1.2); requiere decidir si se adjunta el PDF generado en el navegador, como en cotizaciones.
 - Alta de la serie `OC` para tenants nuevos solo probada vía migración (el seed de provisión se agregó pero no se ejecutó).
 - Tukichef (restaurante) no usa órdenes de compra; no se tocó.
 - Orden de despliegue (cuando se apruebe): backend con `migrate-fleet` V180 primero, luego frontend tenant.
