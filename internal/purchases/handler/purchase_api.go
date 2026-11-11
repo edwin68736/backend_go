@@ -63,17 +63,19 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 	}
 
 	type PurchaseItem struct {
-		ID           uint    `json:"id"`
-		DocType      string  `json:"doc_type"`
-		Series       string  `json:"series"`
-		Number       string  `json:"number"`
-		IssueDate    string  `json:"issue_date"`
-		SupplierName string  `json:"supplier_name"`
-		Currency     string  `json:"currency"`
-		Subtotal     float64 `json:"subtotal"`
-		TaxAmount    float64 `json:"tax_amount"`
-		Total        float64 `json:"total"`
-		Status       string  `json:"status"`
+		ID           uint   `json:"id"`
+		DocType      string `json:"doc_type"`
+		Series       string `json:"series"`
+		Number       string `json:"number"`
+		IssueDate    string `json:"issue_date"`
+		SupplierName string `json:"supplier_name"`
+		Currency     string `json:"currency"`
+		// ExchangeRate: TC venta de la compra en USD (nil en soles).
+		ExchangeRate *float64 `json:"exchange_rate,omitempty"`
+		Subtotal     float64  `json:"subtotal"`
+		TaxAmount    float64  `json:"tax_amount"`
+		Total        float64  `json:"total"`
+		Status       string   `json:"status"`
 		// PaymentMethod: método con el que se pagó al registrar; vacío = compra a crédito.
 		PaymentMethod   string                             `json:"payment_method"`
 		LinkedRetention *billingsvc.LinkedFiscalDocSummary `json:"linked_retention,omitempty"`
@@ -102,6 +104,7 @@ func (h *PurchaseHandler) ListAPI(c fiber.Ctx) error {
 			IssueDate:       p.IssueDate.Format("2006-01-02"),
 			SupplierName:    sname,
 			Currency:        p.Currency,
+			ExchangeRate:    p.ExchangeRate,
 			Subtotal:        p.Subtotal,
 			TaxAmount:       p.TaxAmount,
 			Total:           p.Total,
@@ -210,6 +213,7 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 			"contact_id":         p.ContactID,
 			"supplier_name":      supplierName,
 			"currency":           p.Currency,
+			"exchange_rate":      p.ExchangeRate,
 			"subtotal":           p.Subtotal,
 			"tax_amount":         p.TaxAmount,
 			"total":              p.Total,
@@ -233,17 +237,17 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 	tdb := db(c)
 
 	var body struct {
-		BranchID      uint   `json:"branch_id"`
-		ContactID     *uint  `json:"contact_id"`
-		DocType       string `json:"doc_type"`
-		Series        string `json:"series"`
-		Number        string `json:"number"`
-		IssueDate     string `json:"issue_date"`
-		Currency      string `json:"currency"`
+		BranchID  uint   `json:"branch_id"`
+		ContactID *uint  `json:"contact_id"`
+		DocType   string `json:"doc_type"`
+		Series    string `json:"series"`
+		Number    string `json:"number"`
+		IssueDate string `json:"issue_date"`
+		Currency  string `json:"currency"`
 		// ExchangeRate: TC venta; obligatorio si currency = USD.
-		ExchangeRate *float64 `json:"exchange_rate"`
-		PaymentMethod string `json:"payment_method"`
-		Notes         string `json:"notes"`
+		ExchangeRate  *float64 `json:"exchange_rate"`
+		PaymentMethod string   `json:"payment_method"`
+		Notes         string   `json:"notes"`
 		// PriceIncludesIgv: criterio global de la compra (el costo tecleado ya trae IGV).
 		PriceIncludesIgv bool                        `json:"price_includes_igv"`
 		Items            []service.PurchaseItemInput `json:"items"`
