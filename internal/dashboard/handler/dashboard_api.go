@@ -49,8 +49,8 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 		purchasesCond = "user_id = ?"
 		purchasesArgs = append(purchasesArgs, userID)
 	}
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(total), 0)").Scan(&salesTodayTotal)
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(total), 0)").Scan(&salesMonthTotal)
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select(sumSalesPENSelect()).Scan(&salesTodayTotal)
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select(sumSalesPENSelect()).Scan(&salesMonthTotal)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", todayStart, todayEnd).Select("COALESCE(SUM(total), 0)").Scan(&purchasesTodayTotal)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where(purchasesCond, purchasesArgs...).Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).Select("COALESCE(SUM(total), 0)").Scan(&purchasesMonthTotal)
 
@@ -58,7 +58,7 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 	// que a inicios de mes mostraba una caída falsa).
 	monthCmpHome := comparisonWindow(monthStart, monthEnd, now)
 	var salesPrevSameDays float64
-	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthCmpHome.From, monthCmpHome.ToExclusive).Select("COALESCE(SUM(total), 0)").Scan(&salesPrevSameDays)
+	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where(salesCond, salesArgs...).Where("issue_date >= ? AND issue_date < ?", monthCmpHome.From, monthCmpHome.ToExclusive).Select(sumSalesPENSelect()).Scan(&salesPrevSameDays)
 
 	homeKPIs := fiber.Map{
 		"sales_prev_month_same_days": salesPrevSameDays,
@@ -83,7 +83,7 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 		Count(&monthSalesCount)
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
-		Select("COALESCE(SUM(total), 0)").Scan(&monthSalesTotal)
+		Select(sumSalesPENSelect()).Scan(&monthSalesTotal)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).
 		Where("issue_date >= ? AND issue_date < ?", monthStart, monthEnd).
 		Select("COALESCE(SUM(total), 0)").Scan(&monthPurchasesTotal)
@@ -100,7 +100,7 @@ func (h *DashboardHandler) StatsAPI(c fiber.Ctx) error {
 		var sum float64
 		salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).
 			Where("issue_date >= ? AND issue_date < ? AND status != ?", s, e, "cancelled").
-			Select("COALESCE(SUM(total), 0)").Scan(&sum)
+			Select(sumSalesPENSelect()).Scan(&sum)
 		monthly[i-1] = MonthAmount{Month: i, Year: now.Year(), Amount: sum}
 	}
 

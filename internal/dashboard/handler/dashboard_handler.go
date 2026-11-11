@@ -50,7 +50,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 		Count(&monthSalesCount)
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 		Where("issue_date >= ? AND issue_date < ? AND status != ?", monthStart, monthEnd, "cancelled").
-		Select("COALESCE(SUM(total), 0)").Scan(&monthSalesTotal)
+		Select(sumSalesPENSelect()).Scan(&monthSalesTotal)
 
 	// Compras del mes
 	var monthPurchasesTotal float64
@@ -74,7 +74,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 		var sum float64
 		salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
 			Where("issue_date >= ? AND issue_date < ? AND status != ?", start, end, "cancelled").
-			Select("COALESCE(SUM(total), 0)").Scan(&sum)
+			Select(sumSalesPENSelect()).Scan(&sum)
 		monthly[i-1] = MonthStat{Label: labels[i-1], Amount: sum}
 		if sum > maxAmount {
 			maxAmount = sum

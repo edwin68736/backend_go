@@ -41,7 +41,7 @@ func computeTopProducts(tdb *gorm.DB, from, toExclusive time.Time, branchID uint
 	var rows []dashboardTopProductRow
 	err := tdb.Table("tenant_sale_items si").
 		Select(`si.product_id, p.name, si.sale_unit_id as sale_unit_id,
-			COALESCE(SUM(si.quantity),0) as qty, COALESCE(SUM(si.total),0) as total`).
+			COALESCE(SUM(si.quantity),0) as qty, COALESCE(SUM(` + saleLineTotalPEN + `),0) as total`).
 		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
 		Scopes(salescope.ScopeCommercialNoNotes("s")).
 		Joins("JOIN tenant_products p ON p.id = si.product_id").
@@ -103,7 +103,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	// --- Resumen período actual (ventas no anuladas)
 	var salesTotal float64
 	var salesCount int64
-	analyticsSaleScope(tdb, from, toExclusive, branchID, userID, restrictUser).Select("COALESCE(SUM(total), 0)").Scan(&salesTotal)
+	analyticsSaleScope(tdb, from, toExclusive, branchID, userID, restrictUser).Select(sumSalesPENSelect()).Scan(&salesTotal)
 	analyticsSaleScope(tdb, from, toExclusive, branchID, userID, restrictUser).Count(&salesCount)
 
 	avgTicket := float64(0)
@@ -113,7 +113,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 
 	var prevSalesTotal float64
 	qPrev := analyticsSaleScope(tdb, prevFrom, prevToExclusive, branchID, userID, restrictUser)
-	qPrev.Select("COALESCE(SUM(total), 0)").Scan(&prevSalesTotal)
+	qPrev.Select(sumSalesPENSelect()).Scan(&prevSalesTotal)
 
 	changePct := float64(0)
 	if prevSalesTotal > 0 {
@@ -129,10 +129,10 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	var salesToday float64
 	var salesMonthCalendar float64
 	var salesTodayCount int64
-	analyticsSaleScope(tdb, todayStart, todayEnd, branchID, userID, restrictUser).Select("COALESCE(SUM(total), 0)").Scan(&salesToday)
+	analyticsSaleScope(tdb, todayStart, todayEnd, branchID, userID, restrictUser).Select(sumSalesPENSelect()).Scan(&salesToday)
 	analyticsSaleScope(tdb, todayStart, todayEnd, branchID, userID, restrictUser).Count(&salesTodayCount)
 
-	analyticsSaleScope(tdb, monthStart, monthEnd, branchID, userID, restrictUser).Select("COALESCE(SUM(total), 0)").Scan(&salesMonthCalendar)
+	analyticsSaleScope(tdb, monthStart, monthEnd, branchID, userID, restrictUser).Select(sumSalesPENSelect()).Scan(&salesMonthCalendar)
 
 	// Clientes nuevos (clientes tipo customer/both creados en el rango)
 	var newContacts int64
@@ -183,7 +183,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	// Serie diaria: ventas + cantidad documentos (no anulados)
 	var daily []dailyRow
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
-		Select("DATE(issue_date) as day, COALESCE(SUM(total),0) as sales, COUNT(*) as docs").
+		Select("DATE(issue_date) as day, " + sumSalesPENSelect() + " as sales, COUNT(*) as docs").
 		Where("issue_date >= ? AND issue_date < ?", from, toExclusive).
 		Where("status != ?", "cancelled").
 		Scopes(branchScope(branchID)).
@@ -199,7 +199,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	prevMonthStart, prevMonthEnd := monthCmp.From, monthCmp.ToExclusive
 	var salesPrevMonth float64
 	qPM := analyticsSaleScope(tdb, prevMonthStart, prevMonthEnd, branchID, userID, restrictUser)
-	qPM.Select("COALESCE(SUM(total), 0)").Scan(&salesPrevMonth)
+	qPM.Select(sumSalesPENSelect()).Scan(&salesPrevMonth)
 	monthOverMonthPct := float64(0)
 	if salesPrevMonth > 0 {
 		monthOverMonthPct = (salesMonthCalendar - salesPrevMonth) / salesPrevMonth * 100
@@ -213,7 +213,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	}
 	var byBranch []namedTotal
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
-		Select("tenant_branches.id, tenant_branches.name, COALESCE(SUM(tenant_sales.total),0) as total").
+		Select("tenant_branches.id, tenant_branches.name, " + sumSalesPENSelect() + " as total").
 		Joins("JOIN tenant_branches ON tenant_branches.id = tenant_sales.branch_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
 		Where("tenant_sales.status != ?", "cancelled").
@@ -226,7 +226,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	// Por vendedor
 	var bySeller []namedTotal
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
-		Select("tenant_users.id, tenant_users.name, COALESCE(SUM(tenant_sales.total),0) as total").
+		Select("tenant_users.id, tenant_users.name, " + sumSalesPENSelect() + " as total").
 		Joins("JOIN tenant_users ON tenant_users.id = tenant_sales.user_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
 		Where("tenant_sales.status != ?", "cancelled").
@@ -246,7 +246,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	}
 	var topContacts []contactTotal
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
-		Select("tenant_contacts.id, COALESCE(NULLIF(TRIM(tenant_contacts.trade_name),''), tenant_contacts.business_name) as name, COALESCE(SUM(tenant_sales.total),0) as total, COUNT(tenant_sales.id) as sales_count").
+		Select("tenant_contacts.id, COALESCE(NULLIF(TRIM(tenant_contacts.trade_name),''), tenant_contacts.business_name) as name, " + sumSalesPENSelect() + " as total, COUNT(tenant_sales.id) as sales_count").
 		Joins("JOIN tenant_contacts ON tenant_contacts.id = tenant_sales.contact_id").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
 		Where("tenant_sales.status != ?", "cancelled").
@@ -266,7 +266,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	}
 	var byDocType []kvFloat
 	salescope.CommercialSalesNoNotes(tdb.Model(&database.TenantSale{})).
-		Select("COALESCE(fe.doc_type, tenant_sales.doc_type) as `key`, COALESCE(SUM(tenant_sales.total),0) as total, COUNT(*) as count").
+		Select("COALESCE(fe.doc_type, tenant_sales.doc_type) as `key`, " + sumSalesPENSelect() + " as total, COUNT(*) as count").
 		Joins("LEFT JOIN tenant_sales fe ON fe.issued_from_nota_sale_id = tenant_sales.id AND fe.deleted_at IS NULL").
 		Where("tenant_sales.issue_date >= ? AND tenant_sales.issue_date < ?", from, toExclusive).
 		Where("tenant_sales.status != ?", "cancelled").
@@ -307,7 +307,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	}
 	var byCategory []catRow
 	tdb.Table("tenant_sale_items si").
-		Select("COALESCE(tc.name, 'Sin categoría') as name, COALESCE(SUM(si.total),0) as total").
+		Select("COALESCE(tc.name, 'Sin categoría') as name, COALESCE(SUM(" + saleLineTotalPEN + "),0) as total").
 		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
 		Scopes(salescope.ScopeCommercialNoNotes("s")).
 		Joins("LEFT JOIN tenant_products p ON p.id = si.product_id").
@@ -336,7 +336,7 @@ func (h *DashboardHandler) AnalyticsAPI(c fiber.Ctx) error {
 	// se muestra como filas de ajuste en vez de dejar una diferencia sin explicar.
 	var linesAll float64
 	tdb.Table("tenant_sale_items si").
-		Select("COALESCE(SUM(si.total),0)").
+		Select("COALESCE(SUM(" + saleLineTotalPEN + "),0)").
 		Joins("JOIN tenant_sales s ON s.id = si.sale_id").
 		Scopes(salescope.ScopeCommercialNoNotes("s")).
 		Where("s.issue_date >= ? AND s.issue_date < ?", from, toExclusive).

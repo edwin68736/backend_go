@@ -89,7 +89,7 @@ func computeProfit(tdb *gorm.DB, from, toExclusive time.Time, branchID uint, us 
 		// ventas vigentes): así las dos cifras de la misma pantalla coinciden. Con producto, lo vendido
 		// de ese producto (no hay total de venta por producto).
 		var sales float64
-		analyticsSaleScope(tdb, from, toExclusive, branchID, us.UserID, us.Restrict).Select("COALESCE(SUM(total), 0)").Scan(&sales)
+		analyticsSaleScope(tdb, from, toExclusive, branchID, us.UserID, us.Restrict).Select(sumSalesPENSelect()).Scan(&sales)
 		res.Income = sales
 		res.Expenses = sumManualExpenses(tdb, from, toExclusive, branchID, us.UserID, us.Restrict)
 		res.ExpensesIncluded = includeExpenses
