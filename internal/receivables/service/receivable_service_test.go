@@ -265,3 +265,58 @@ func TestReceivableService_ListAndSummary_SeparaMonedas(t *testing.T) {
 		t.Fatalf("by_currency = %+v, quería PEN=150 y USD=200 sin mezclar", sum.ByCurrency)
 	}
 }
+
+// Cuentas por cobrar: el saldo consolidado va en SOLES (cada USD al TC de su documento) y el estado de cuenta no mezcla dólares con soles.
+func TestReceivableService_SummaryAndStatement_InSoles(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:recv_pen?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&database.TenantSale{}, &database.TenantSaleDetraccion{},
+		&database.TenantSalePayment{}, &database.TenantSaleCreditInstallment{}, &database.TenantContact{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	contact := database.TenantContact{BusinessName: "Cliente SAC", Type: "customer", Active: true}
+	db.Create(&contact)
+	cid := contact.ID
+	rate := 3.5
+	for _, s := range []database.TenantSale{
+		{Number: "F001-1", DocType: "FACTURA", Status: "credit", Total: 100, Currency: "PEN", ContactID: &cid},
+		{Number: "F001-2", DocType: "FACTURA", Status: "credit", Total: 200, Currency: "USD", ExchangeRate: &rate, ContactID: &cid}, // S/ 700
+	} {
+		s := s
+		if err := db.Create(&s).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewReceivableService(db)
+	sum, err := svc.Summary(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]CurrencySummary{}
+	for _, c := range sum.ByCurrency {
+		by[c.Currency] = c
+	}
+	if by["PEN"].DirectDuePEN != 100 || by["USD"].DirectDue != 200 || by["USD"].DirectDuePEN != 700 || sum.TotalDirectDuePEN != 800 {
+		t.Errorf("resumen en soles: PEN=%+v USD=%+v total=%v", by["PEN"], by["USD"], sum.TotalDirectDuePEN)
+	}
+	st, err := svc.Statement(cid, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TotalDue != 800 || len(st.TotalDueByCurrency) != 2 {
+		t.Errorf("estado de cuenta: total_due=%v por moneda=%+v", st.TotalDue, st.TotalDueByCurrency)
+	}
+	var usdLine *StatementLine
+	for i := range st.Lines {
+		if st.Lines[i].Reference == "F001-2" {
+			usdLine = &st.Lines[i]
+		}
+	}
+	if usdLine == nil || usdLine.Currency != "USD" || usdLine.Debit != 200 || usdLine.DebitPEN != 700 || usdLine.Balance != 800 {
+		t.Errorf("línea USD: %+v", usdLine)
+	}
+}

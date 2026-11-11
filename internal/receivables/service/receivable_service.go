@@ -72,13 +72,20 @@ type CurrencySummary struct {
 	DirectDue    float64 `json:"direct_due"`
 	CountOpen    int64   `json:"count_open"`
 	CountOverdue int64   `json:"count_overdue"`
+	// DirectDuePEN: este saldo convertido a soles con el TC de cada documento (en PEN = DirectDue).
+	DirectDuePEN float64 `json:"direct_due_pen"`
 }
 
 type Summary struct {
 	ByCurrency []CurrencySummary `json:"by_currency"`
 	// TotalDirectDue suma los saldos de TODAS las monedas tal cual (legado): usar ByCurrency.
-	TotalDirectDue   float64 `json:"total_direct_due"`
-	TotalSpotPending float64 `json:"total_spot_pending"`
+	TotalDirectDue float64 `json:"total_direct_due"`
+	// TotalDirectDuePEN: saldo directo de todas las monedas EN SOLES (cada USD al TC de su documento). RateEstimatedCount:
+	// documentos en USD sin TC guardado (convertidos con el TC del día de emisión); RateMissingCount: sin ningún TC (no incluidos).
+	TotalDirectDuePEN  float64 `json:"total_direct_due_pen"`
+	RateEstimatedCount int64   `json:"rate_estimated_count"`
+	RateMissingCount   int64   `json:"rate_missing_count"`
+	TotalSpotPending   float64 `json:"total_spot_pending"`
 	CountOpen        int64   `json:"count_open"`
 	CountOverdue     int64   `json:"count_overdue"`
 	CountBnPending   int64   `json:"count_bn_pending"`
@@ -101,9 +108,15 @@ type StatementLine struct {
 	Type        string    `json:"type"`
 	Reference   string    `json:"reference"`
 	Description string    `json:"description"`
-	Debit       float64   `json:"debit"`
-	Credit      float64   `json:"credit"`
-	Balance     float64   `json:"balance"`
+	// Debit/Credit: importe en la moneda del documento (Currency). Balance: saldo corriente EN SOLES (cada USD al TC de su
+	// documento); DebitPEN/CreditPEN: el importe de esta línea en soles. En un contacto solo en soles todo es igual que siempre.
+	Debit        float64  `json:"debit"`
+	Credit       float64  `json:"credit"`
+	Currency     string   `json:"currency"`
+	ExchangeRate *float64 `json:"exchange_rate,omitempty"`
+	DebitPEN     float64  `json:"debit_pen"`
+	CreditPEN    float64  `json:"credit_pen"`
+	Balance      float64  `json:"balance"`
 	SaleID      uint      `json:"sale_id,omitempty"`
 	// CashSessionID: Caja donde OCURRIÓ el cobro (TenantSalePayment.CashSessionID) — solo en
 	// líneas type="payment"; nil en "invoice" (esa línea es el registro del documento, cuya
@@ -116,8 +129,13 @@ type StatementResult struct {
 	ContactID   uint            `json:"contact_id"`
 	ContactName string          `json:"contact_name"`
 	Lines       []StatementLine `json:"lines"`
-	TotalDue    float64         `json:"total_due"`
-	SpotPending float64         `json:"spot_pending"`
+	// TotalDue: saldo directo EN SOLES (cada USD al TC de su documento); TotalDueByCurrency: el mismo saldo en la moneda de cada
+	// documento. RateEstimatedCount / RateMissingCount: documentos en USD sin TC guardado.
+	TotalDue           float64           `json:"total_due"`
+	TotalDueByCurrency []CurrencySummary `json:"total_due_by_currency,omitempty"`
+	RateEstimatedCount int64             `json:"rate_estimated_count"`
+	RateMissingCount   int64             `json:"rate_missing_count"`
+	SpotPending        float64           `json:"spot_pending"`
 }
 
 func (s *ReceivableService) List(f ListFilter) ([]ReceivableRow, int64, error) {
@@ -219,6 +237,7 @@ func (s *ReceivableService) Summary(branchID uint) (*Summary, error) {
 	out := &Summary{ByCurrency: []CurrencySummary{}}
 	byCur := map[string]*CurrencySummary{}
 	var order []string
+	conv := newPENConverter()
 	for _, r := range rows {
 		cs := byCur[r.Currency]
 		if cs == nil {
@@ -227,6 +246,14 @@ func (s *ReceivableService) Summary(branchID uint) (*Summary, error) {
 			order = append(order, r.Currency)
 		}
 		cs.DirectDue += r.DirectDue
+		if f, est, ok := conv.factor(r.Currency, r.ExchangeRate, r.IssueDate); ok {
+			cs.DirectDuePEN += r.DirectDue * f
+			if est && r.DirectDue > 0 {
+				out.RateEstimatedCount++
+			}
+		} else if r.DirectDue > 0 {
+			out.RateMissingCount++
+		}
 		cs.CountOpen++
 		if r.IsOverdue && r.DirectDue > 0 {
 			cs.CountOverdue++
@@ -244,8 +271,11 @@ func (s *ReceivableService) Summary(branchID uint) (*Summary, error) {
 	for _, c := range order {
 		cs := byCur[c]
 		cs.DirectDue = money.RoundDisplay(cs.DirectDue)
+		cs.DirectDuePEN = money.RoundDisplay(cs.DirectDuePEN)
+		out.TotalDirectDuePEN += cs.DirectDuePEN
 		out.ByCurrency = append(out.ByCurrency, *cs)
 	}
+	out.TotalDirectDuePEN = money.RoundDisplay(out.TotalDirectDuePEN)
 	out.TotalDirectDue = money.RoundDisplay(out.TotalDirectDue)
 	out.TotalSpotPending = money.RoundDisplay(out.TotalSpotPending)
 	return out, nil
@@ -453,6 +483,9 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 	res := &StatementResult{ContactID: contactID, ContactName: name, Lines: []StatementLine{}}
 	var running float64
 	var totalSpot float64
+	conv := newPENConverter()
+	dueByCur := map[string]*CurrencySummary{}
+	var dueOrder []string
 
 	for _, sale := range sales {
 		det := detBySale[sale.ID]
@@ -464,34 +497,60 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 		if target <= 0 && paid <= 0 {
 			continue
 		}
-		running += target
+		cur := strings.ToUpper(strings.TrimSpace(sale.Currency))
+		if cur == "" {
+			cur = "PEN"
+		}
+		factor, est, ok := conv.factor(cur, sale.ExchangeRate, sale.IssueDate)
+		if !ok {
+			factor = 0 // USD sin ningún TC: el documento se lista pero no entra en el saldo en soles
+			res.RateMissingCount++
+		} else if est {
+			res.RateEstimatedCount++
+		}
+		running += target * factor
 		res.Lines = append(res.Lines, StatementLine{
-			Date:        sale.IssueDate,
-			Type:        "invoice",
-			Reference:   sale.Number,
-			Description: "Documento " + sale.Number,
-			Debit:       target,
-			Balance:     money.RoundDisplay(running),
-			SaleID:      sale.ID,
+			Date:         sale.IssueDate,
+			Type:         "invoice",
+			Reference:    sale.Number,
+			Description:  "Documento " + sale.Number,
+			Debit:        target,
+			Currency:     cur,
+			ExchangeRate: sale.ExchangeRate,
+			DebitPEN:     money.RoundDisplay(target * factor),
+			Balance:      money.RoundDisplay(running),
+			SaleID:       sale.ID,
 		})
 		for _, p := range payments {
 			if taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 				continue
 			}
-			running -= p.Amount
+			running -= p.Amount * factor
 			res.Lines = append(res.Lines, StatementLine{
 				Date:          p.CreatedAt,
 				Type:          "payment",
 				Reference:     p.Reference,
 				Description:   "Cobro " + sale.Number + " (" + p.Method + ")",
 				Credit:        p.Amount,
+				Currency:      cur,
+				ExchangeRate:  sale.ExchangeRate,
+				CreditPEN:     money.RoundDisplay(p.Amount * factor),
 				Balance:       money.RoundDisplay(running),
 				SaleID:        sale.ID,
 				CashSessionID: p.CashSessionID,
 			})
 		}
 		if due > 0 {
-			res.TotalDue += due
+			res.TotalDue += due * factor
+			cs := dueByCur[cur]
+			if cs == nil {
+				cs = &CurrencySummary{Currency: cur}
+				dueByCur[cur] = cs
+				dueOrder = append(dueOrder, cur)
+			}
+			cs.DirectDue += due
+			cs.DirectDuePEN += due * factor
+			cs.CountOpen++
 		}
 		if spotPending > 0 {
 			totalSpot += spotPending
@@ -500,6 +559,12 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 		}
 	}
 	res.TotalDue = money.RoundDisplay(res.TotalDue)
+	for _, c := range dueOrder {
+		cs := dueByCur[c]
+		cs.DirectDue = money.RoundDisplay(cs.DirectDue)
+		cs.DirectDuePEN = money.RoundDisplay(cs.DirectDuePEN)
+		res.TotalDueByCurrency = append(res.TotalDueByCurrency, *cs)
+	}
 	res.SpotPending = money.RoundDisplay(totalSpot)
 	return res, nil
 }
