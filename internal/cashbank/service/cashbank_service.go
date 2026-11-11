@@ -1095,6 +1095,13 @@ func (s *CashBankService) recordDirectedPayment(tx *gorm.DB, in directedPaymentI
 		// Fallback legacy: intentar RecordPaymentToAccount (cuenta por payment_method en TenantBankAccount)
 		return s.RecordPaymentToAccount(tx, in.paymentMethodCode, in.amount, isCredit, in.reference, in.description, in.userID, in.saleID, in.purchaseID, in.cashSessionID)
 	}
+	// El método puede estar reservado para cobros (income) o para pagos (expense).
+	if isCredit && pm.AppliesTo == "expense" {
+		return fmt.Errorf("el método «%s» solo sirve para pagos (egresos), no para cobros", pm.Name)
+	}
+	if !isCredit && pm.AppliesTo == "income" {
+		return fmt.Errorf("el método «%s» solo sirve para cobros (ingresos), no para pagos", pm.Name)
+	}
 	if in.destinationAccountID != nil && *in.destinationAccountID > 0 && pm.DestinationType == "cash" {
 		return errors.New("el efectivo siempre se registra en la caja; no admite una cuenta bancaria de destino")
 	}

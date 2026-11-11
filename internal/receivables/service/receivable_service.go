@@ -342,6 +342,15 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 	}
 
 	cbSvc := cashbanksvc.NewCashBankService(s.db)
+	refLines := make([]cashbanksvc.PaymentRefLine, 0, len(in.Payments))
+	for _, p := range in.Payments {
+		if p.Amount > 0 && p.Method != "" {
+			refLines = append(refLines, cashbanksvc.PaymentRefLine{Method: p.Method, Reference: p.Reference})
+		}
+	}
+	if err := cbSvc.ValidatePaymentReferences(refLines); err != nil {
+		return err
+	}
 	payLines := make([]cashbanksvc.PaymentLineInput, 0, len(in.Payments))
 	for _, p := range in.Payments {
 		if p.Amount <= 0 {
@@ -370,6 +379,7 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 				SaleID:        saleID,
 				Method:        p.Method,
 				Amount:        p.Amount,
+				Reference:     strings.TrimSpace(p.Reference),
 				CashSessionID: cashSessionID,
 			}).Error; err != nil {
 				return err

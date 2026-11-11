@@ -2333,6 +2333,10 @@ type TenantPaymentMethod struct {
 	IsSystem      bool   `gorm:"default:false" json:"is_system"`
 	SortOrder     int    `gorm:"default:0" json:"sort_order"`
 	Active        bool   `gorm:"default:true" json:"active"`
+	// AppliesTo (V184): en qué sentido se puede usar el método — income (cobros), expense (pagos/compras/gastos) o both.
+	AppliesTo string `gorm:"size:10;default:'both'" json:"applies_to"`
+	// RequiresReference (V184): el cobro/pago exige un N° de operación o referencia (transferencias, tarjetas).
+	RequiresReference bool `gorm:"default:false" json:"requires_reference"`
 	// Legacy column — se elimina en v075; GORM lo omite en BD nueva sin la columna.
 	DestinationType string         `gorm:"size:20" json:"destination_type,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`
@@ -2376,10 +2380,20 @@ type TenantTaxPaymentType struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// TenantBank catálogo de bancos/cajas/billeteras (V184). Las cuentas se enlazan con BankID.
+type TenantBank struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"size:150;not null;uniqueIndex" json:"name"`
+	Active    bool      `gorm:"default:true" json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type TenantBankAccount struct {
 	ID            uint   `gorm:"primaryKey" json:"id"`
 	Name          string `gorm:"size:255;not null" json:"name"`
 	BankName      string `gorm:"size:255" json:"bank_name"`
+	// BankID (V184): banco del catálogo; BankName conserva su nombre para impresión y datos antiguos.
+	BankID        *uint  `gorm:"index" json:"bank_id,omitempty"`
 	AccountNumber string `gorm:"size:100" json:"account_number"`
 	// CCI: Código de Cuenta Interbancario (20 dígitos), opcional; se imprime en comprobantes y cotizaciones.
 	CCI           string         `gorm:"column:cci;size:40" json:"cci"`

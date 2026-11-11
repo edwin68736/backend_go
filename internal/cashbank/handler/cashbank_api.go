@@ -533,17 +533,26 @@ func (h *CashBankHandler) CreatePaymentMethodAPI(c fiber.Ctx) error {
 	var body struct {
 		Name            string `json:"name"`
 		Code            string `json:"code"`
-		DestinationType string `json:"destination_type"` // cash | bank_account
-		BankAccountID   *uint  `json:"bank_account_id"`
+		DestinationType   string `json:"destination_type"` // cash | bank_account
+		BankAccountID     *uint  `json:"bank_account_id"`
+		AppliesTo         string `json:"applies_to"`
+		RequiresReference bool   `json:"requires_reference"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	pm, err := service.NewCashBankService(db(c)).CreatePaymentMethod(
+	svc := service.NewCashBankService(db(c))
+	pm, err := svc.CreatePaymentMethod(
 		body.Name, body.Code, body.DestinationType, body.BankAccountID,
 	)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if body.AppliesTo != "" || body.RequiresReference {
+		if err := svc.SetPaymentMethodOptions(pm.ID, body.AppliesTo, body.RequiresReference); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		pm.AppliesTo, pm.RequiresReference = body.AppliesTo, body.RequiresReference
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": pm})
 }
@@ -557,17 +566,35 @@ func (h *CashBankHandler) UpdatePaymentMethodAPI(c fiber.Ctx) error {
 	var body struct {
 		Name            string `json:"name"`
 		Code            string `json:"code"`
-		DestinationType string `json:"destination_type"`
-		BankAccountID   *uint  `json:"bank_account_id"`
-		Active          bool   `json:"active"`
+		DestinationType   string `json:"destination_type"`
+		BankAccountID     *uint  `json:"bank_account_id"`
+		Active            bool   `json:"active"`
+		AppliesTo         *string `json:"applies_to"`
+		RequiresReference *bool   `json:"requires_reference"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
 	}
-	if err := service.NewCashBankService(db(c)).UpdatePaymentMethod(
+	svc := service.NewCashBankService(db(c))
+	if err := svc.UpdatePaymentMethod(
 		uint(id), body.Name, body.Code, body.DestinationType, body.BankAccountID, body.Active,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if body.AppliesTo != nil || body.RequiresReference != nil {
+		var cur database.TenantPaymentMethod
+		if err := db(c).First(&cur, id).Error; err == nil {
+			applies, req := cur.AppliesTo, cur.RequiresReference
+			if body.AppliesTo != nil {
+				applies = *body.AppliesTo
+			}
+			if body.RequiresReference != nil {
+				req = *body.RequiresReference
+			}
+			if err := svc.SetPaymentMethodOptions(uint(id), applies, req); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			}
+		}
 	}
 	return c.JSON(fiber.Map{"success": true})
 }
@@ -608,6 +635,7 @@ func (h *CashBankHandler) CreateBankAccountAPI(c fiber.Ctx) error {
 		Type           string  `json:"type"`
 		PaymentMethod  string  `json:"payment_method"`
 		InitialBalance float64 `json:"initial_balance"`
+		BankID         *uint   `json:"bank_id"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -615,11 +643,21 @@ func (h *CashBankHandler) CreateBankAccountAPI(c fiber.Ctx) error {
 	if body.Type == "" {
 		body.Type = "bank"
 	}
-	acc, err := service.NewCashBankService(db(c)).CreateBankAccount(
+	svc := service.NewCashBankService(db(c))
+	acc, err := svc.CreateBankAccount(
 		body.Name, body.BankName, body.AccountNumber, body.CCI, body.Currency, body.Type, body.PaymentMethod, body.InitialBalance,
 	)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if body.BankID != nil && *body.BankID > 0 {
+		if err := svc.SetBankAccountBank(acc.ID, body.BankID); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		acc.BankID = body.BankID
+		if fresh, err := svc.GetBankAccountByID(acc.ID); err == nil {
+			acc = fresh
+		}
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": acc})
 }
@@ -638,6 +676,7 @@ func (h *CashBankHandler) UpdateBankAccountAPI(c fiber.Ctx) error {
 		Type          string `json:"type"`
 		PaymentMethod string `json:"payment_method"`
 		Active        bool   `json:"active"`
+		BankID        *uint  `json:"bank_id"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -645,8 +684,14 @@ func (h *CashBankHandler) UpdateBankAccountAPI(c fiber.Ctx) error {
 	if body.Type == "" {
 		body.Type = "bank"
 	}
-	if err := service.NewCashBankService(db(c)).UpdateBankAccount(uint(id), body.Name, body.BankName, body.AccountNumber, body.CCI, body.Type, body.PaymentMethod, body.Active); err != nil {
+	svc := service.NewCashBankService(db(c))
+	if err := svc.UpdateBankAccount(uint(id), body.Name, body.BankName, body.AccountNumber, body.CCI, body.Type, body.PaymentMethod, body.Active); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if body.BankID != nil {
+		if err := svc.SetBankAccountBank(uint(id), body.BankID); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	return c.JSON(fiber.Map{"success": true})
 }
@@ -779,6 +824,49 @@ func (h *CashBankHandler) VoidTransferAPI(c fiber.Ctx) error {
 		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
 	}
 	if err := service.NewCashBankService(db(c)).VoidTransfer(uint(id), userID(c), branchID, body.Reason); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+// GET /api/cashbank/banks — catálogo de bancos (?all=1 incluye inactivos).
+func (h *CashBankHandler) ListBanksAPI(c fiber.Ctx) error {
+	rows, err := service.NewCashBankService(db(c)).ListBanks(c.Query("all") == "1")
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
+// POST /api/cashbank/banks
+func (h *CashBankHandler) CreateBankAPI(c fiber.Ctx) error {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	b, err := service.NewCashBankService(db(c)).CreateBank(body.Name)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": b})
+}
+
+// PUT /api/cashbank/banks/:id
+func (h *CashBankHandler) UpdateBankAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Name   string `json:"name"`
+		Active bool   `json:"active"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	if err := service.NewCashBankService(db(c)).UpdateBank(uint(id), body.Name, body.Active); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"success": true})

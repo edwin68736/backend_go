@@ -819,6 +819,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				return err
 			}
 		}
+		refLines := make([]cashbanksvc.PaymentRefLine, 0, len(payments))
+		for _, p := range payments {
+			if p.Amount > 0 && p.Method != "" {
+				refLines = append(refLines, cashbanksvc.PaymentRefLine{Method: p.Method, Reference: p.Reference})
+			}
+		}
+		if err := cbSvc.ValidatePaymentReferences(refLines); err != nil {
+			return err
+		}
 		var recordLines []money.SalePaymentLine
 		for _, p := range payments {
 			if p.Amount <= 0 || p.Method == "" {
