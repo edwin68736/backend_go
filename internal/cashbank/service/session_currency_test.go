@@ -1,10 +1,13 @@
 package service
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"tukifac/pkg/database"
+
+	"gorm.io/gorm"
 )
 
 // Cierre/arqueo en soles: el efectivo de una venta en USD entra a la sesión con su equivalente (monto × TC del documento).
@@ -18,16 +21,9 @@ func TestSessionClose_UsesSolesEquivalentForUSDDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 	rate := 4.0
-	markUSD := func(saleID uint) {
-		if err := db.Model(&database.TenantSale{}).Where("id = ?", saleID).Updates(map[string]interface{}{"currency": "USD", "exchange_rate": rate}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	createReportSale(t, db, svc, 1, session.ID, map[string]float64{"cash": 27}) // US$ 27 → S/ 108 en efectivo
-	markUSD(1)
-	createReportSale(t, db, svc, 2, session.ID, map[string]float64{"cash": 50}) // S/ 50 en efectivo
-	createReportSale(t, db, svc, 3, session.ID, map[string]float64{"yape": 10}) // US$ 10 → S/ 40 por Yape
-	markUSD(3)
+	createReportSaleCur(t, db, svc, 1, session.ID, map[string]float64{"cash": 27}, "USD", &rate) // US$ 27 → S/ 108 en efectivo
+	createReportSale(t, db, svc, 2, session.ID, map[string]float64{"cash": 50})                  // S/ 50 en efectivo
+	createReportSaleCur(t, db, svc, 3, session.ID, map[string]float64{"yape": 10}, "USD", &rate) // US$ 10 → S/ 40 por Yape
 
 	// Esperado del arqueo: 100 + 108 + 50 = 258 (antes: 100 + 27 + 50 = 177, mezclando dólares como soles).
 	if got := svc.getExpectedBalance(session.ID); got != 258 {
@@ -91,5 +87,58 @@ func TestSessionClose_PENOnlySessionUnchanged(t *testing.T) {
 	}
 	if sum, _ := svc.GetSessionBalanceSummary(session.ID); sum.HasForeign {
 		t.Error("el resumen no debe marcar moneda extranjera")
+	}
+}
+
+// createReportSaleCur como createReportSale pero con la venta ya en la moneda indicada al registrar los pagos (así el snapshot
+// de cada movimiento nace con su moneda y TC).
+func createReportSaleCur(t *testing.T, db *gorm.DB, svc *CashBankService, saleID, sessionID uint, lines map[string]float64, currency string, rate *float64) {
+	t.Helper()
+	var total float64
+	for _, amt := range lines {
+		total += amt
+	}
+	sale := &database.TenantSale{
+		ID: saleID, BranchID: 1, UserID: 1, CashSessionID: &sessionID, SeriesID: 1, DocType: "boleta", Series: "B001", Correlative: saleID,
+		Number: fmt.Sprintf("B001-%d", saleID), IssueDate: time.Now(), Total: total, Status: "paid", CreatedAt: time.Now(),
+		Currency: currency, ExchangeRate: rate,
+	}
+	if err := db.Create(sale).Error; err != nil {
+		t.Fatal(err)
+	}
+	for method, amt := range lines {
+		if err := db.Create(&database.TenantSalePayment{SaleID: saleID, Method: method, Amount: amt, CashSessionID: &sessionID, CreatedAt: time.Now()}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RecordPayment(db, method, amt, &sessionID, sale.Number, "Venta "+sale.Number, &saleID, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Snapshot (V182): el movimiento guarda su moneda, TC y equivalente al crearse; si luego se edita el TC del documento, el saldo
+// de la sesión NO cambia.
+func TestMovementSnapshot_StoredAtCreationAndStableAfterDocumentEdit(t *testing.T) {
+	db := setupCashReportPhysicalBalanceTestDB(t)
+	svc := NewCashBankService(db)
+	seedReportPaymentMethods(t, db)
+	session := &database.TenantCashSession{BranchID: 1, UserID: 1, OpenedBy: 1, Status: "open", OpeningBalance: 0, OpenedAt: time.Now()}
+	db.Create(session)
+	rate := 4.0
+	createReportSaleCur(t, db, svc, 1, session.ID, map[string]float64{"cash": 25}, "USD", &rate)
+	createReportSale(t, db, svc, 2, session.ID, map[string]float64{"cash": 40})
+
+	var mv []database.TenantCashMovement
+	db.Order("id").Find(&mv)
+	if len(mv) != 2 || mv[0].Currency != "USD" || mv[0].ExchangeRate == nil || *mv[0].ExchangeRate != 4 || mv[0].AmountPEN == nil || *mv[0].AmountPEN != 100 {
+		t.Fatalf("snapshot USD: %+v", mv)
+	}
+	if mv[1].Currency != "PEN" || mv[1].ExchangeRate != nil || mv[1].AmountPEN == nil || *mv[1].AmountPEN != 40 {
+		t.Fatalf("snapshot PEN: %+v", mv[1])
+	}
+	// Si el documento cambia después de cobrado, el esperado de caja no se mueve (usa el snapshot, no el TC actual).
+	db.Model(&database.TenantSale{}).Where("id = ?", 1).Update("exchange_rate", 9.9)
+	if got := svc.getExpectedBalance(session.ID); got != 140 {
+		t.Errorf("esperado = %v, quiere 140 (100 + 40) aunque el TC del documento cambió", got)
 	}
 }

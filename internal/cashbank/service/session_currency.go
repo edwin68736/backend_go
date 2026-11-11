@@ -39,7 +39,33 @@ func (s *CashBankService) penAmounts(cash []database.TenantCashMovement, bank []
 		}
 		rows = append(rows, MovementReportRow{Amount: amt, SaleID: m.SaleID, PurchaseID: m.PurchaseID})
 	}
-	s.enrichMovementRowsCurrency(rows)
+	// Snapshot (V182): si el movimiento ya guarda su moneda/TC/equivalente se usa tal cual (no cambia aunque luego se edite el
+	// documento); solo los que no lo tienen (anteriores a V182 sin TC, o sin ningún TC al crearse) se derivan del documento.
+	var derive []int
+	for i, m := range cash {
+		if m.AmountPEN != nil {
+			rows[i].Currency, rows[i].ExchangeRate, rows[i].AmountPEN = normCurrency(m.Currency), m.ExchangeRate, signedLike(rows[i].Amount, *m.AmountPEN)
+		} else {
+			derive = append(derive, i)
+		}
+	}
+	for j, m := range bank {
+		if m.AmountPEN != nil {
+			rows[len(cash)+j].Currency, rows[len(cash)+j].ExchangeRate, rows[len(cash)+j].AmountPEN = normCurrency(m.Currency), m.ExchangeRate, signedLike(rows[len(cash)+j].Amount, *m.AmountPEN)
+		} else {
+			derive = append(derive, len(cash)+j)
+		}
+	}
+	if len(derive) > 0 {
+		sub := make([]MovementReportRow, len(derive))
+		for k, idx := range derive {
+			sub[k] = rows[idx]
+		}
+		s.enrichMovementRowsCurrency(sub)
+		for k, idx := range derive {
+			rows[idx] = sub[k]
+		}
+	}
 	abs := func(v float64) float64 {
 		if v < 0 {
 			return -v
@@ -58,6 +84,14 @@ func (s *CashBankService) penAmounts(cash []database.TenantCashMovement, bank []
 	}
 	out.byCurrency = movementTotalsByCurrency(rows)
 	return out
+}
+
+// signedLike devuelve pen con el mismo signo que ref (los importes del snapshot se guardan en positivo).
+func signedLike(ref, pen float64) float64 {
+	if ref < 0 {
+		return -pen
+	}
+	return pen
 }
 
 func (p *sessionPEN) note(r MovementReportRow) {

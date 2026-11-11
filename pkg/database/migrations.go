@@ -2313,6 +2313,11 @@ type TenantCashMovement struct {
 	// egreso a un proveedor sin compra registrada todavía. Nulo en movimientos de venta/compra
 	// (esos ya se vinculan por SaleID/PurchaseID → tenant_sales.contact_id / tenant_purchases.contact_id).
 	ContactID *uint     `gorm:"index" json:"contact_id,omitempty"`
+	// Snapshot de moneda (V182): Amount está en la moneda del documento de origen (Currency); ExchangeRate es el TC con el que se
+	// valuó y AmountPEN el equivalente en soles (nil = no se pudo valuar: lectores derivan del documento). Ver movement_snapshot.go.
+	Currency     string   `gorm:"size:10;default:'PEN'" json:"currency"`
+	ExchangeRate *float64 `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
+	AmountPEN    *float64 `gorm:"type:decimal(15,2)" json:"amount_pen,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -2417,6 +2422,11 @@ type TenantBankMovement struct {
 	// criterio que TenantCashMovement.ContactID (nulo en movimientos de venta/compra, que ya se
 	// vinculan por SaleID/PurchaseID).
 	ContactID *uint     `gorm:"index" json:"contact_id,omitempty"`
+	// Snapshot de moneda (V182): Amount está en la moneda del documento de origen (Currency); ExchangeRate es el TC con el que se
+	// valuó y AmountPEN el equivalente en soles (nil = no se pudo valuar: lectores derivan del documento). Ver movement_snapshot.go.
+	Currency     string   `gorm:"size:10;default:'PEN'" json:"currency"`
+	ExchangeRate *float64 `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
+	AmountPEN    *float64 `gorm:"type:decimal(15,2)" json:"amount_pen,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
