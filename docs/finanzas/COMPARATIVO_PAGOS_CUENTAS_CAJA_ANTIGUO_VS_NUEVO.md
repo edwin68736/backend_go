@@ -1,0 +1,77 @@
+# Métodos de pago, cuentas bancarias y caja: sistema antiguo vs Tukifac (análisis y propuesta)
+
+Fecha: 11-nov-2026. Solo lectura de ambos códigos; nada implementado. Fuentes: `C:\xampp\htdocs\facturador-tukifac` (`modules/Finance`, `Facturalo::savePayments`, `invoice.vue`) y `backend_principal/internal/cashbank` + `frontend_tenant`.
+
+## 1. Cómo funciona el sistema antiguo
+
+**Idea central:** el *método de pago* solo clasifica («cómo pagó»); el *destino* decide qué saldo sube («adónde fue el dinero»).
+
+- Cada línea de pago de un comprobante lleva: método, **destino** (Caja general = la sesión de caja abierta del usuario, o una cuenta bancaria), referencia, fecha, monto, voucher adjunto.
+- Todo movimiento de dinero se registra en un libro único polimórfico `global_payments` (destino Caja o BankAccount + el pago de origen).
+- **El saldo no se guarda: se calcula** (`FinanceTrait`): saldo inicial + ingresos − egresos ± transferencias, convirtiendo cada pago a la moneda pedida con el TC del documento.
+- Dos catálogos de métodos: `payment_method_types` (ventas/compras/ingresos; flags `is_cash`, `is_credit`, `number_days`) y `expense_method_types` (gastos: «Caja chica», tarjeta crédito, tarjeta débito). «Caja chica» fuerza destino Caja.
+- Cuenta bancaria: banco (catálogo), descripción, número, CCI, **moneda**, saldo inicial, `show_in_documents` (imprimir en el PDF), establecimiento opcional.
+- Transferencias entre Caja↔Banco↔Banco (dos filas en `transfer_account_payments`, montos origen/destino independientes → permite entre monedas).
+- Condición de pago separada del método: contado / crédito / crédito en cuotas; los créditos se cobran después con pagos que eligen su propio destino.
+- La moneda de la cuenta solo sirve para filtrar el reporte de balance y como etiqueta; al cobrar nunca se compara con la moneda del documento.
+
+**Defectos del antiguo (no copiar):** `charge`/`has_card`/`status` sin efecto; el destino no depende del método (efectivo→banco, transferencia→caja sin aviso) y se ofrecen cuentas inactivas, de otra moneda o sucursal; validaciones casi solo en el navegador; el POST que vincula la venta con la caja es aparte y puede fallar en silencio; efectivo = método `'01'` o el texto «Efectivo» hardcodeado; cierre de caja calculado con totales de documentos (infla el efectivo con ventas a banco o crédito); balance por período pierde el saldo previo; dos implementaciones de saldo que no coinciden; transferencias sin validar saldo, sin transacción y sin anulación; sin conciliación; TC del día de emisión en vez del del cobro.
+
+## 2. Cómo funciona Tukifac hoy
+
+- El usuario elige **solo el método**; el método fija el destino de forma global (`tenant_payment_methods.destination_type` = caja | cuenta, + `bank_account_id`). Todo cobro exige una sesión de caja abierta del propio usuario.
+- Efectivo → `TenantCashMovement` de la sesión; cuenta → `TenantBankMovement` + `balance` de la cuenta **guardado e incremental** (ya en soles tras la auditoría), con snapshot de moneda/TC/soles, reversiones atómicas en el mismo servidor, arqueo y cierre de sesión en soles.
+- Sin transferencias, sin conciliación, sin catálogo de bancos, un solo método por compra, mismo catálogo de métodos para ingresos y egresos, moneda de cuenta solo etiqueta.
+
+## 3. Brechas y riesgos de Tukifac (ordenados por gravedad)
+
+| # | Brecha / riesgo | Dónde |
+|---|---|---|
+| 1 | **Movimiento perdido en silencio**: método de banco sin cuenta resoluble → el pago queda en `tenant_sale_payments` pero sin movimiento ni saldo (devuelve `nil`); Tukichef además ignora el error (`_ =`) | `cashbank_service.go:670`, `restaurant_service.go:1576,1805` |
+| 2 | Doble fuente de verdad del destino: FK `bank_account_id` vs texto legado `payment_method` | `resolveAccountForPaymentMethod` |
+| 3 | «Efectivo» se detecta por nombre en reportes pero por `destination_type` al registrar: un método personalizado con destino caja crea movimiento de caja que el arqueo no cuenta | `payment_method_report.go:91` vs `recordDirectedPayment` |
+| 4 | `bankDeltaPEN` con `AmountPEN` nulo (USD sin TC) suma dólares como soles | `financial_reversal.go` |
+| 5 | `AddBankMovement` no valida que la cuenta exista/esté activa ni va en transacción | `cashbank_service.go:1211` |
+| 6 | Saldo solo incremental, sin saldo inicial como movimiento ni forma de detectar desvíos | — |
+| 7 | **No se puede elegir destino por pago** (con 2 cuentas BCP/BBVA todas las transferencias van a una) | método→cuenta global |
+| 8 | **No hay transferencias** ni depósito de caja a banco ni entre cuentas | — |
+| 9 | Moneda de cuenta decorativa (la UI permite USD/EUR pero el saldo va en soles) — caso real: «CTA BBVA DOLARES» de `euro` | `BankPage.tsx:441` |
+| 10 | Métodos sin distinción ingreso/egreso, sin «requiere referencia», sin comisión | — |
+| 11 | Pago de compra con un solo método; cobro de CxC sin referencia/vuelto; pagos digitales exigen sesión de caja | — |
+| 12 | Sin catálogo de bancos, sin «mostrar en comprobantes» por cuenta (el CCI se imprime siempre) | — |
+
+## 4. Propuesta (mejorar sin empeorar)
+
+**Principios:** (a) conservar lo mejor de Tukifac: saldo guardado (rápido), todo en el servidor y transaccional, snapshot de moneda, reversión por movimiento; (b) tomar del antiguo lo valioso: *destino por pago*, *transferencias*, *cuenta con moneda real*, *banco enlazado*, *mostrar en comprobantes*; (c) no copiar sus defectos (destino libre sin reglas, validación en el navegador, efectivo por nombre, saldo calculado al vuelo).
+
+### Fase A — Integridad (bajo riesgo, sin cambios visibles)
+1. Un método con destino banco sin cuenta resoluble **falla con error claro** (no devuelve `nil`); Tukichef deja de ignorar el error.
+2. Una sola fuente de verdad: el FK `bank_account_id`; el texto legado queda solo como respaldo de lectura y se migra.
+3. «Efectivo» se define por el destino del método (`destination_type = cash`), no por el nombre, en arqueo y reportes.
+4. `bankDeltaPEN` con TC desconocido: error o marca explícita, nunca dólares como soles.
+5. `AddBankMovement` valida cuenta existente/activa dentro de una transacción.
+6. **Verificador de cuadre** (solo lectura): compara `balance` de cada cuenta contra saldo inicial + suma de sus movimientos, para detectar desvíos antes de que el cliente los vea.
+
+### Fase B — Destino por pago (lo más pedido)
+- `payments[]` acepta opcionalmente `destination` (caja o id de cuenta). Si no viene, se usa el destino por defecto del método (comportamiento actual: nada se rompe).
+- La pantalla muestra «Destino» **preseleccionado** con el del método y solo ofrece destinos válidos (a diferencia del antiguo): cuentas activas de la sucursal; Caja solo para métodos que admiten efectivo; filtro por moneda compatible.
+- Validado en el servidor.
+
+### Fase C — Cuentas con moneda real + transferencias
+- El saldo de la cuenta se mueve **en la moneda de la cuenta** (lógica del antiguo, pero guardada): misma moneda → monto tal cual; USD→cuenta PEN: × TC; PEN→cuenta USD: ÷ TC del día. El snapshot en soles se mantiene para reportes; los consolidados convierten con el TC.
+- Transferencias Caja↔Banco y Banco↔Banco: una operación atómica con dos movimientos enlazados (`transfer_id`), validación de saldo y de cuentas distintas, TC si cambian de moneda, **anulable** (reversión enlazada). Incluye «depositar la recaudación al banco» al cerrar caja.
+- Saldo inicial como movimiento de apertura tipado.
+
+### Fase D — Catálogos y configuración
+- Catálogo de bancos y vínculo cuenta→banco; «mostrar en comprobantes» y sucursal por cuenta.
+- Un solo catálogo de métodos con «aplica a: ingresos / egresos / ambos» (en lugar de dos tablas), y flags opcionales: requiere referencia, comisión (para tarjetas/pasarelas).
+- Pago mixto en compras; referencia y vuelto en cobros de CxC.
+
+### Orden recomendado y riesgo
+A (1–2 días, sin riesgo funcional) → B (visible, retrocompatible) → C (toca saldos: exige migración y pruebas en MySQL; hacerla después del despliegue de la multimoneda y con el script de saldos resuelto) → D.
+
+### Decisión que cambia respecto a lo anterior
+Se había decidido «solo cuentas en soles». El caso real de `euro` («CTA BBVA DOLARES») y el comportamiento del antiguo (cuenta con moneda) indican pasar a **cuentas con moneda real** (Fase C). Las cuentas existentes quedan en PEN; cada cliente decide cuáles marcar como USD (sin migrar saldos automáticamente).
+
+## 5. Reglas del antiguo que se preservan
+Pagos mixtos con suma ≤ total; crédito/cuotas con cobros posteriores que eligen su destino; vuelto solo en efectivo y saldo por el neto; caja = sesión por usuario con apertura/arqueo/cierre; exclusión de documentos anulados sin borrar historial; notas de crédito restan; transferencias con trazabilidad; un libro único de movimientos para reportes; comprobantes que imprimen solo las cuentas marcadas; voucher por pago (pendiente en Tukifac).
