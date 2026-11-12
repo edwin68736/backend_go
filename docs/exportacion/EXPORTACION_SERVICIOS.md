@@ -17,7 +17,11 @@ No incluye la exportación de bienes (0200: requiere DAM e Incoterm) ni la 0401 
 ## Cómo se usa
 1. **Ajustes → Comprobantes → Exportación de servicios**: activar el interruptor (apagado por defecto; `tenant_company_configs.exports_enabled`).
 2. **Nuevo comprobante** (factura o boleta): en «Tipo operación» aparecen tres opciones «Exportación – …».
-3. Un solo recuadro con los datos de esa operación. Las líneas pasan solas a **afectación 40** (IGV 0) y la factura no exige RUC.
+3. Un solo recuadro con lo mínimo de esa operación. Las líneas pasan solas a **afectación 40** (IGV 0) y la factura no exige RUC.
+   - **0201/0208:** un dato, el país donde se usa el servicio.
+   - **0202 (hospedaje):** el **cliente elegido es el huésped**: su nombre, tipo y número de documento salen del cliente (pasaporte o carné de
+     extranjería; no sirve «Clientes varios»), no se vuelven a pedir. Solo se piden el país del pasaporte (la residencia es la misma salvo que se indique
+     otra), la fecha de ingreso al Perú y las fechas de entrada y salida del hotel (los días se calculan).
 
 ## Base legal (leída de fuentes oficiales, 12-nov-2026)
 - Ley del IGV (TUO, DS 055-99-EF) **art. 33.4**: el hospedaje con alimentación a no domiciliados es exportación si no pasa de **60 días** por cada ingreso al país y

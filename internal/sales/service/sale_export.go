@@ -36,7 +36,14 @@ func (s *SaleService) prepareExport(input *CreateSaleInput, sunatCode string) (*
 	if input.Detraccion != nil || (input.Prepayment != nil && (input.Prepayment.Emit || len(input.Prepayment.Deductions) > 0)) {
 		return nil, errors.New("una exportación no se puede combinar con detracción ni con anticipos")
 	}
-	row, err := exportacion.Normalize(op, input.Export)
+	var contact *database.TenantContact
+	if input.ContactID != nil && *input.ContactID > 0 {
+		var c database.TenantContact
+		if s.db.First(&c, *input.ContactID).Error == nil {
+			contact = &c
+		}
+	}
+	row, err := exportacion.Normalize(op, input.Export, contact)
 	if err != nil {
 		return nil, err
 	}

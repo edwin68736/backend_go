@@ -62,8 +62,32 @@ func parseDate(label, raw string) (*time.Time, error) {
 
 func daysBetween(from, to time.Time) int { return int(to.Sub(from).Hours() / 24) }
 
+// GuestFromContact nombre, tipo y número de documento del huésped tomados del cliente de la venta: el cliente ES el huésped, así que no se
+// vuelven a pedir. Acepta pasaporte (7) o carné de extranjería (4); con cualquier otro documento (RUC, DNI, «Clientes varios») devuelve error.
+func GuestFromContact(c *database.TenantContact) (name, docType, docNumber string, err error) {
+	if c == nil || c.ID == 0 {
+		return "", "", "", errors.New("elija el cliente: el huésped debe estar registrado como cliente con su pasaporte")
+	}
+	switch strings.ToUpper(strings.TrimSpace(c.DocType)) {
+	case "7", "PASAPORTE":
+		docType = "7"
+	case "4", "CE", "CARNET", "CARNET EXTRANJERIA", "CARNÉ DE EXTRANJERÍA":
+		docType = "4"
+	default:
+		return "", "", "", errors.New("para el hospedaje a extranjeros el cliente debe tener pasaporte o carné de extranjería: elija o cree el cliente con ese documento")
+	}
+	name = strings.Join(strings.Fields(c.BusinessName), " ")
+	docNumber = strings.TrimSpace(c.DocNumber)
+	if len([]rune(name)) < 3 || len(docNumber) < 4 {
+		return "", "", "", errors.New("el cliente no tiene nombre o número de documento completos")
+	}
+	return name, docType, docNumber, nil
+}
+
 // Normalize valida los datos según la operación y devuelve la fila a guardar (sin SaleID). Los mensajes están pensados para el cajero.
-func Normalize(opCode string, in *SaleInput) (*database.TenantSaleExport, error) {
+// contact es el cliente de la venta; en el hospedaje (0202) de él salen el nombre y el documento del huésped. Si la petición trae
+// guest_name/guest_doc_*, esos valores mandan (uso por API).
+func Normalize(opCode string, in *SaleInput, contact *database.TenantContact) (*database.TenantSaleExport, error) {
 	if !salecurrency.IsExportService(opCode) {
 		return nil, fmt.Errorf("la operación %s no es una exportación de servicios", opCode)
 	}
@@ -86,24 +110,35 @@ func Normalize(opCode string, in *SaleInput) (*database.TenantSaleExport, error)
 
 	// 0202: hospedaje a no domiciliados.
 	row.GuestName = strings.Join(strings.Fields(in.GuestName), " ")
-	if len([]rune(row.GuestName)) < 3 {
-		return nil, errors.New("indique el nombre del huésped")
-	}
 	row.GuestDocType = strings.ToUpper(strings.TrimSpace(in.GuestDocType))
+	row.GuestDocNumber = strings.TrimSpace(in.GuestDocNumber)
+	if row.GuestName == "" && row.GuestDocNumber == "" {
+		name, docType, docNumber, err := GuestFromContact(contact)
+		if err != nil {
+			return nil, err
+		}
+		row.GuestName, row.GuestDocType, row.GuestDocNumber = name, docType, docNumber
+	}
 	if row.GuestDocType == "" {
 		row.GuestDocType = "7"
 	}
-	row.GuestDocNumber = strings.TrimSpace(in.GuestDocNumber)
+	if len([]rune(row.GuestName)) < 3 {
+		return nil, errors.New("indique el nombre del huésped")
+	}
 	if len(row.GuestDocNumber) < 4 {
 		return nil, errors.New("indique el número de pasaporte (o documento) del huésped")
 	}
 	row.PassportCountry = normCountry(in.PassportCountry)
 	if !countryRe.MatchString(row.PassportCountry) {
-		return nil, errors.New("indique el país que emitió el pasaporte")
+		return nil, errors.New("indique el país del pasaporte del huésped")
 	}
+	// Lo habitual: reside en el país que emitió su pasaporte. Solo se pide aparte si es distinto.
 	row.ResidenceCountry = normCountry(in.ResidenceCountry)
+	if row.ResidenceCountry == "" {
+		row.ResidenceCountry = row.PassportCountry
+	}
 	if !countryRe.MatchString(row.ResidenceCountry) {
-		return nil, errors.New("indique el país de residencia del huésped")
+		return nil, errors.New("el país de residencia no es válido")
 	}
 	if row.ResidenceCountry == "PE" {
 		return nil, errors.New("el huésped reside en el Perú: no es un no domiciliado, así que el hospedaje no es una exportación (emita una factura o boleta normal con IGV)")

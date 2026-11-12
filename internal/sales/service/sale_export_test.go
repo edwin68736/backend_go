@@ -122,3 +122,38 @@ func TestExport_soloFacturaOBoleta_yNoEnVentaNormal(t *testing.T) {
 		t.Fatalf("0201 en boleta debe permitirse: %v", err)
 	}
 }
+
+// El cliente de la venta ES el huésped: su nombre y su pasaporte salen del contacto, sin volver a escribirlos. Con un cliente que no tiene
+// pasaporte o carné (RUC, DNI, «Clientes varios») no se puede emitir el hospedaje.
+func TestExport_0202TomaAlHuespedDelCliente(t *testing.T) {
+	db, varios, f := setupExportTestDB(t, true)
+	svc := NewSaleService(db)
+	guest := database.TenantContact{DocType: "7", DocNumber: "AB123456", BusinessName: "  Ann   Lee  ", Type: "customer"}
+	if err := db.Create(&guest).Error; err != nil {
+		t.Fatal(err)
+	}
+	dates := exportacion.SaleInput{PassportCountry: "us", EntryDate: "2026-11-01", CheckIn: "2026-11-02", CheckOut: "2026-11-05"}
+
+	ok := exportInput(guest.ID, f, salecurrency.OpExportHospedaje, &dates)
+	sale, err := svc.Create(ok)
+	if err != nil {
+		t.Fatalf("hospedaje con cliente pasaporte: %v", err)
+	}
+	row, _ := exportacion.LoadBySaleID(db, sale.ID)
+	if row == nil || row.GuestName != "Ann Lee" || row.GuestDocType != "7" || row.GuestDocNumber != "AB123456" || row.PassportCountry != "US" || row.ResidenceCountry != "US" {
+		t.Fatalf("el huésped debe salir del cliente y la residencia igualar al pasaporte: %+v", row)
+	}
+
+	if _, err := svc.Create(exportInput(varios, f, salecurrency.OpExportHospedaje, &dates)); err == nil || !strings.Contains(err.Error(), "pasaporte o carné") {
+		t.Fatalf("«Clientes varios» no sirve de huésped: %v", err)
+	}
+	other := dates
+	other.ResidenceCountry = "ca"
+	sale2, err := svc.Create(exportInput(guest.ID, f, salecurrency.OpExportHospedaje, &other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2, _ := exportacion.LoadBySaleID(db, sale2.ID); r2 == nil || r2.ResidenceCountry != "CA" {
+		t.Fatalf("residencia distinta al pasaporte: %+v", r2)
+	}
+}

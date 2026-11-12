@@ -83,37 +83,37 @@ func TestApply_0202_atributosDelCatalogo55YLeyenda(t *testing.T) {
 
 func TestNormalize_reglasDeHospedaje(t *testing.T) {
 	ok := SaleInput{GuestName: "Ana Perez", GuestDocNumber: "P-998877", PassportCountry: "ar", ResidenceCountry: "ar", EntryDate: "2026-10-01", CheckIn: "2026-10-01", CheckOut: "2026-11-29"}
-	row, err := Normalize(salecurrency.OpExportHospedaje, &ok)
+	row, err := Normalize(salecurrency.OpExportHospedaje, &ok, nil)
 	if err != nil || row.StayDays != 59 || row.PassportCountry != "AR" {
 		t.Fatalf("59 días desde el ingreso debe calificar: %+v err=%v", row, err)
 	}
 	over := ok
 	over.CheckOut = "2026-12-01" // 61 días desde el ingreso al país
-	if _, err := Normalize(salecurrency.OpExportHospedaje, &over); err == nil {
+	if _, err := Normalize(salecurrency.OpExportHospedaje, &over, nil); err == nil {
 		t.Fatal("61 días debió rechazarse")
 	}
 	badOrder := ok
 	badOrder.CheckIn, badOrder.CheckOut = "2026-10-10", "2026-10-09"
-	if _, err := Normalize(salecurrency.OpExportHospedaje, &badOrder); err == nil {
+	if _, err := Normalize(salecurrency.OpExportHospedaje, &badOrder, nil); err == nil {
 		t.Fatal("salida anterior al ingreso debió rechazarse")
 	}
 	beforeEntry := ok
 	beforeEntry.CheckIn = "2026-09-30"
-	if _, err := Normalize(salecurrency.OpExportHospedaje, &beforeEntry); err == nil {
+	if _, err := Normalize(salecurrency.OpExportHospedaje, &beforeEntry, nil); err == nil {
 		t.Fatal("ingreso al hotel anterior al ingreso al país debió rechazarse")
 	}
 	sameDay := ok
 	sameDay.CheckOut = "2026-10-01"
-	if r, err := Normalize(salecurrency.OpExportHospedaje, &sameDay); err != nil || r.StayDays != 1 {
+	if r, err := Normalize(salecurrency.OpExportHospedaje, &sameDay, nil); err != nil || r.StayDays != 1 {
 		t.Fatalf("mismo día cuenta 1 día: %+v err=%v", r, err)
 	}
 }
 
 func TestNormalize_0208ExigePaisDeUso(t *testing.T) {
-	if _, err := Normalize(salecurrency.OpExportParcial, &SaleInput{}); err == nil {
+	if _, err := Normalize(salecurrency.OpExportParcial, &SaleInput{}, nil); err == nil {
 		t.Fatal("0208 sin país debió rechazarse")
 	}
-	if _, err := Normalize(salecurrency.OpVentaInterna, &SaleInput{CountryUse: "US"}); err == nil {
+	if _, err := Normalize(salecurrency.OpVentaInterna, &SaleInput{CountryUse: "US"}, nil); err == nil {
 		t.Fatal("una operación que no es exportación debió rechazarse")
 	}
 }
