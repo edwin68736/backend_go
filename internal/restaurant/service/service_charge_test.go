@@ -96,3 +96,13 @@ func TestGetPrecuenta_EstimaElRecargo(t *testing.T) {
 		t.Fatalf("precuenta: %+v", p)
 	}
 }
+
+// Al cobrar parte de la mesa, la sesión solo descuenta el consumo: el recargo va encima (98.07 − 54.77 con recargo 4.28 = 47.58, no 43.30).
+func TestBilledConsumption_NoDescuentaElRecargo(t *testing.T) {
+	if got := 98.07 - billedConsumption(54.77, 4.28); math.Abs(got-47.58) > 0.005 {
+		t.Fatalf("quedan %v en la mesa, quiere 47.58", got)
+	}
+	if billedConsumption(50.49, 0) != 50.49 {
+		t.Fatal("sin recargo no cambia")
+	}
+}

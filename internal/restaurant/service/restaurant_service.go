@@ -1625,7 +1625,8 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 				Update("status", sessionStatusOpen).Error; err != nil {
 				return err
 			}
-			tx.Model(&lockedSess).UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", total))
+			// total_amount de la sesión es lo consumido en comandas: el recargo al consumo se cobra encima y no forma parte de él.
+			tx.Model(&lockedSess).UpdateColumn("total_amount", gorm.Expr("GREATEST(0, total_amount - ?)", billedConsumption(total, serviceChargeAmount)))
 			// Marcar solo las comandas facturadas en este cobro (evita doble facturación en cobros
 			// parciales); billed_at, no status — status sigue siendo 100% de cocina.
 			billedIDs := make([]uint, 0, len(comandas))
@@ -1880,4 +1881,9 @@ func (s *RestaurantService) resolveCashSessionForSale(
 		}
 	}
 	return cbSvc.ResolveCashSessionForSale(branchID, userID, cashSessionID, payLines)
+}
+
+// billedConsumption parte del total cobrado que sale del consumo de la sesión: el recargo al consumo se cobra encima de las comandas y no se descuenta de ellas.
+func billedConsumption(total, serviceCharge float64) float64 {
+	return money.RoundSunat(total - serviceCharge)
 }
