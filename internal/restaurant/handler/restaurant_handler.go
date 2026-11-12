@@ -81,7 +81,13 @@ func (h *RestaurantHandler) GetSettings(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"has_deletion_pin": hasPin})
+	// Recargo al consumo: el POS de PIN no puede leer /api/company/config, así que su activación y % viajan aquí. Solo lectura; el % que se cobra
+	// siempre lo vuelve a leer el servidor al cobrar.
+	scEnabled, scRate := tax.LoadServiceChargeFromDB(db(c))
+	if !tax.ValidServiceChargeRate(scRate) {
+		scEnabled, scRate = false, 0
+	}
+	return c.JSON(fiber.Map{"has_deletion_pin": hasPin, "service_charge_enabled": scEnabled, "service_charge_rate": scRate})
 }
 
 // PUT /api/restaurant/settings  — guarda el PIN de anulación (desde panel tenant)
