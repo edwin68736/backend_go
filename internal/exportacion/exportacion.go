@@ -132,9 +132,13 @@ func Normalize(opCode string, in *SaleInput, contact *database.TenantContact) (*
 	if len(row.GuestDocNumber) < 4 {
 		return nil, errors.New("indique el número de pasaporte (o documento) del huésped")
 	}
+	// País del pasaporte: el indicado en la venta o, si no, el de la ficha del cliente (se registra una sola vez al crear al cliente).
 	row.PassportCountry = normCountry(in.PassportCountry)
+	if row.PassportCountry == "" && contact != nil {
+		row.PassportCountry = normCountry(contact.Country)
+	}
 	if !countryRe.MatchString(row.PassportCountry) {
-		return nil, errors.New("indique el país del pasaporte del huésped")
+		return nil, errors.New("indique el país del pasaporte del huésped (o regístrelo en la ficha del cliente)")
 	}
 	// Lo habitual: reside en el país que emitió su pasaporte. Solo se pide aparte si es distinto.
 	row.ResidenceCountry = normCountry(in.ResidenceCountry)
@@ -147,15 +151,27 @@ func Normalize(opCode string, in *SaleInput, contact *database.TenantContact) (*
 	if row.ResidenceCountry == "PE" {
 		return nil, errors.New("el huésped reside en el Perú: no es un no domiciliado, así que el hospedaje no es una exportación (emita una factura o boleta normal con IGV)")
 	}
-	entry, err := parseDate("la fecha de ingreso al país", in.EntryDate)
+	// Fechas opcionales: lo habitual es que el huésped entre y salga el día de la emisión. Sin fechas se asume hoy (hora de Perú) para el ingreso
+	// y la salida del hotel; el ingreso al país se asume igual al ingreso al hotel (el turista ya está en el país; si necesita otra, se indica).
+	inCheckIn, inCheckOut, inEntry := strings.TrimSpace(in.CheckIn), strings.TrimSpace(in.CheckOut), strings.TrimSpace(in.EntryDate)
+	if inCheckIn == "" {
+		inCheckIn = time.Now().In(time.FixedZone("PET", -5*3600)).Format("2006-01-02")
+	}
+	if inCheckOut == "" {
+		inCheckOut = inCheckIn
+	}
+	if inEntry == "" {
+		inEntry = inCheckIn
+	}
+	entry, err := parseDate("la fecha de ingreso al país", inEntry)
 	if err != nil {
 		return nil, err
 	}
-	checkIn, err := parseDate("la fecha de ingreso al hotel", in.CheckIn)
+	checkIn, err := parseDate("la fecha de ingreso al hotel", inCheckIn)
 	if err != nil {
 		return nil, err
 	}
-	checkOut, err := parseDate("la fecha de salida del hotel", in.CheckOut)
+	checkOut, err := parseDate("la fecha de salida del hotel", inCheckOut)
 	if err != nil {
 		return nil, err
 	}

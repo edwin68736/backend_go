@@ -972,6 +972,8 @@ type TenantContact struct {
 	TradeName                       string         `gorm:"size:255" json:"trade_name"`
 	Address                         string         `gorm:"size:255" json:"address"`
 	Ubigeo                          string         `gorm:"size:6;index" json:"ubigeo"` // código 6 dígitos del distrito (SUNAT)
+	// Country: país (ISO 3166-1 alfa-2) de un cliente extranjero; vacío = Perú. Lo usa la exportación de servicios (el hospedaje toma de aquí el país del pasaporte).
+	Country                         string         `gorm:"column:country;size:2" json:"country"`
 	Phone                           string         `gorm:"size:50" json:"phone"`
 	Email                           string         `gorm:"size:255" json:"email"`
 	PhotoURL                        string         `gorm:"size:500" json:"photo_url"`

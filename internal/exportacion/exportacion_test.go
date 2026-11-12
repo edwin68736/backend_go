@@ -149,3 +149,31 @@ func TestApply_0202_fechasAMediodiaPeru(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalize_0202PaisDelPasaporteSaleDelCliente(t *testing.T) {
+	c := &database.TenantContact{ID: 1, DocType: "7", DocNumber: "AB123456", BusinessName: "John Smith", Country: "US"}
+	in := &SaleInput{EntryDate: "2026-11-01", CheckIn: "2026-11-02", CheckOut: "2026-11-05"}
+	r, err := Normalize(salecurrency.OpExportHospedaje, in, c)
+	if err != nil || r.PassportCountry != "US" || r.ResidenceCountry != "US" {
+		t.Fatalf("debe tomar el país del cliente: %+v err=%v", r, err)
+	}
+	in2 := &SaleInput{PassportCountry: "CO", EntryDate: "2026-11-01", CheckIn: "2026-11-02", CheckOut: "2026-11-05"}
+	if r, _ = Normalize(salecurrency.OpExportHospedaje, in2, c); r == nil || r.PassportCountry != "CO" {
+		t.Fatalf("el país indicado en la venta manda: %+v", r)
+	}
+	c.Country = ""
+	if _, err := Normalize(salecurrency.OpExportHospedaje, &SaleInput{EntryDate: "2026-11-01", CheckIn: "2026-11-02", CheckOut: "2026-11-05"}, c); err == nil {
+		t.Fatal("sin país en la venta ni en el cliente debió rechazarse")
+	}
+}
+
+func TestNormalize_0202SinFechasUsaElDiaDeEmision(t *testing.T) {
+	c := &database.TenantContact{ID: 1, DocType: "7", DocNumber: "AB123456", BusinessName: "John Smith", Country: "US"}
+	r, err := Normalize(salecurrency.OpExportHospedaje, &SaleInput{}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.CheckIn == nil || r.CheckOut == nil || r.EntryDate == nil || !r.CheckIn.Equal(*r.CheckOut) || !r.CheckIn.Equal(*r.EntryDate) || r.StayDays != 1 {
+		t.Fatalf("sin fechas debe asumir un solo día: %+v", r)
+	}
+}

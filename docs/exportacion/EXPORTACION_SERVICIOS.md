@@ -78,3 +78,8 @@ SUNAT rechazó tres cosas que las pruebas locales no podían ver, ya corregidas:
 4. Decidir qué hacer con la operación **0401** existente (factura sin RUC a no domiciliados): no se encontró norma que la respalde y nunca se emitió con éxito en producción.
 5. Antes de que un hotel real use el 0202: inscripción en el Registro Especial de SUNAT, certificado de categorización y archivo de copias del pasaporte/TAM.
 6. MySQL 8 (producción): V186 es un `AutoMigrate` de una tabla nueva y una columna; solo se probó en MariaDB.
+
+## Simplificación (12-nov-2026): país en el cliente y fechas por defecto
+
+- `tenant_contacts.country` (V187, opcional, ISO alfa-2; vacío = Perú). Se registra al crear al cliente con pasaporte/carné de extranjería. El hospedaje (0202) toma de ahí el país del pasaporte, así que el formulario de venta ya no lo pide (solo si el cliente no lo tiene).
+- Las fechas del hospedaje son opcionales: vacías = día de la emisión (ingreso y salida del hotel hoy; ingreso al país = ingreso al hotel). SUNAT exige los atributos 4002-4009, por eso siempre se envían, con esos valores por defecto. Quien necesite otras fechas usa «Cambiar fechas». La regla de 60 días solo se puede validar con la fecha real de ingreso al país; con el valor por defecto queda bajo responsabilidad del hotel.

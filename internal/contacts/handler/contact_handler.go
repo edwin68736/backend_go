@@ -159,6 +159,7 @@ type contactBody struct {
 	TradeName                       string              `json:"trade_name"`
 	Address                         string              `json:"address"`
 	Ubigeo                          string              `json:"ubigeo"`
+	Country                         string              `json:"country"`
 	Phone                           string              `json:"phone"`
 	Email                           string              `json:"email"`
 	PhotoURL                        string              `json:"photo_url"`
@@ -187,6 +188,7 @@ func bodyToInput(b contactBody) service.ContactInput {
 		TradeName:                       b.TradeName,
 		Address:                         b.Address,
 		Ubigeo:                          b.Ubigeo,
+		Country:                         b.Country,
 		Phone:                           b.Phone,
 		Email:                           b.Email,
 		PhotoURL:                        b.PhotoURL,
