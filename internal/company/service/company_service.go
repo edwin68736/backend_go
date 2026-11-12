@@ -71,6 +71,7 @@ type CompanyConfigPatch struct {
 	AdditionalNotes                *string  `json:"additional_notes"`
 	TermsAndConditions             *string  `json:"terms_and_conditions"`
 	ShowTermsConditions            *bool    `json:"show_terms_conditions"`
+	ExportsEnabled                 *bool    `json:"exports_enabled"`
 	ShowBusinessNameOnSaleNote     *bool    `json:"show_business_name_on_sale_note"`
 	ShowIgvBreakdownOnSaleNote     *bool    `json:"show_igv_breakdown_on_sale_note"`
 	LogoSizeTicket                 *string  `json:"logo_size_ticket"`
@@ -125,6 +126,9 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 	}
 	if patch.ShowTermsConditions != nil {
 		updates["show_terms_conditions"] = *patch.ShowTermsConditions
+	}
+	if patch.ExportsEnabled != nil {
+		updates["exports_enabled"] = *patch.ExportsEnabled
 	}
 	if patch.ShowBusinessNameOnSaleNote != nil {
 		updates["show_business_name_on_sale_note"] = *patch.ShowBusinessNameOnSaleNote

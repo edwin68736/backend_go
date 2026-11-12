@@ -16,6 +16,7 @@ import (
 	salecontext "tukifac/internal/fiscal/salecontext"
 	invsvc "tukifac/internal/inventory/service"
 	prepaymentsvc "tukifac/internal/prepayment"
+	"tukifac/internal/exportacion"
 	"tukifac/internal/sales/nvdisplay"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
@@ -196,6 +197,8 @@ type CreateSaleInput struct {
 	FiscalContext           *salecontext.FiscalContextInput
 	Detraccion              *detraccionsvc.SaleInput
 	Prepayment              *prepaymentsvc.SaleInput
+	// Export: datos de la exportación de servicios (operaciones 0201/0202/0208); nil en cualquier otra operación.
+	Export *exportacion.SaleInput
 	// UserCanOverridePrice: resuelto por el HANDLER contra los permisos del JWT del usuario
 	// autenticado (middleware.HasPermission(claims, "sales.override_price")) — nunca un valor que
 	// pueda mandar el cliente en el body. true exime a TODA la venta de validateAuthorizedPrices,
@@ -310,6 +313,12 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		return nil, err
 	}
 	if err := docusage.GuardCountableSunatQuota(input.CentralTenantID, series.SunatCode); err != nil {
+		return nil, err
+	}
+
+	// Exportación de servicios (0201/0202/0208): valida, y fuerza IGV 0 (afectación 40) antes de calcular los totales.
+	exportRow, err := s.prepareExport(&input, strings.TrimSpace(series.SunatCode))
+	if err != nil {
 		return nil, err
 	}
 
@@ -463,7 +472,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		// 0401 (ventas no domiciliados): el cliente no tiene RUC peruano —extranjero sin RUC,
 		// pasaporte, carné de extranjería—, así que no se exige RUC. Cualquier otro tipo de
 		// operación en factura sigue exigiéndolo (mismo comportamiento de siempre).
-		if opCode != salecurrency.OpVentasNoDomiciliados {
+		if opCode != salecurrency.OpVentasNoDomiciliados && !salecurrency.IsExportService(opCode) {
 			if contact.DocType != "6" {
 				return nil, errors.New("la factura solo puede emitirse a clientes con RUC (tipo de documento 6). El cliente seleccionado no tiene RUC")
 			}
@@ -873,6 +882,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			if err := s.persistPrepaymentDeductionTx(tx, sale.ID, prepaymentDeductionPlan); err != nil {
 				return err
 			}
+			if err := exportacion.Persist(tx, sale.ID, exportRow); err != nil {
+				return err
+			}
 			return nil
 		}
 
@@ -1017,6 +1029,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			return err
 		}
 		if err := s.persistPrepaymentDeductionTx(tx, sale.ID, prepaymentDeductionPlan); err != nil {
+			return err
+		}
+		if err := exportacion.Persist(tx, sale.ID, exportRow); err != nil {
 			return err
 		}
 		if input.OnCreatedTx != nil {

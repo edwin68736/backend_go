@@ -16,6 +16,7 @@ import (
 	"tukifac/config"
 	detraccionsvc "tukifac/internal/detraccion"
 	"tukifac/internal/fiscal/salecontext"
+	"tukifac/internal/exportacion"
 	prepaymentsvc "tukifac/internal/prepayment"
 	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/billingstate"
@@ -364,6 +365,10 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 	}
 	if voucher, err := prepaymentsvc.NewService(s.db).LoadBySaleID(saleID); err == nil && voucher != nil {
 		prepaymentsvc.ApplyEmitToInvoicePayload(payload, voucher)
+	}
+	// Exportación de servicios (0201/0202/0208): adquirente con guion, datos del huésped o país de uso, leyenda.
+	if exp, err := exportacion.LoadBySaleID(s.db, saleID); err == nil && exp != nil {
+		exportacion.ApplyToInvoicePayload(payload, exp)
 	}
 	if apps, grossTotals, applyRes, ok, err := prepaymentsvc.NewService(s.db).DeductionFiscalContext(saleID, items, companyTaxRate); err == nil && ok {
 		prepaymentsvc.ApplyDeductionToInvoicePayload(payload, apps, applyRes, grossTotals, prepaymentsvc.SaleDeductionNet{
