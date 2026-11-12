@@ -580,6 +580,7 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		DiscountAmount float64                `json:"discount_amount"`
 		DiscountMode   string                 `json:"discount_mode"`
 		DiscountValue  float64                `json:"discount_value"`
+		ApplyServiceCharge bool                `json:"apply_service_charge"`
 		// ComandaIDs: dividir cuenta — factura solo estas comandas (deben estar pendientes en la
 		// sesión). Vacío = cobra todo lo pendiente (comportamiento clásico).
 		ComandaIDs []uint `json:"comanda_ids"`
@@ -634,6 +635,7 @@ func (h *RestaurantHandler) BillSession(c fiber.Ctx) error {
 		DiscountAmount:  body.DiscountAmount,
 		DiscountMode:    body.DiscountMode,
 		DiscountValue:   body.DiscountValue,
+		ApplyServiceCharge: body.ApplyServiceCharge,
 		CentralTenantID: centralTenantID,
 		ComandaIDs:      body.ComandaIDs,
 		ComandaSplits:   body.ComandaSplits,
@@ -700,6 +702,7 @@ func (h *RestaurantHandler) POSCheckout(c fiber.Ctx) error {
 		DiscountMode   string                 `json:"discount_mode"`
 		DiscountValue  float64                `json:"discount_value"`
 		DiscountAmount float64                `json:"discount_amount"`
+		ApplyServiceCharge bool                `json:"apply_service_charge"`
 		Payments       []service.PaymentInput `json:"payments"`
 		// IdempotencyKey: UUID por intento de cobro; el reintento devuelve la venta ya creada.
 		IdempotencyKey string `json:"idempotency_key"`
@@ -769,6 +772,7 @@ func (h *RestaurantHandler) POSCheckout(c fiber.Ctx) error {
 		DiscountMode:    body.DiscountMode,
 		DiscountValue:   body.DiscountValue,
 		DiscountAmount:  body.DiscountAmount,
+		ApplyServiceCharge: body.ApplyServiceCharge,
 		Payments:        body.Payments,
 		CentralTenantID: centralTenantID,
 		IdempotencyKey:  body.IdempotencyKey,

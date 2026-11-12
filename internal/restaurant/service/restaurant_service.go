@@ -1097,6 +1097,8 @@ type BillInput struct {
 	DiscountAmount  float64 // descuento global en moneda sobre base imponible (subtotal)
 	DiscountMode    string  // "percent" | "amount" (opcional; recalcula descuento en servidor)
 	DiscountValue   float64 // valor del descuento (% o monto según DiscountMode)
+	// ApplyServiceCharge cobra el recargo al consumo de la empresa (% de la configuración, calculado en servidor).
+	ApplyServiceCharge bool
 	CentralTenantID uint    // tenant SaaS (cupo documentos electrónicos)
 	// ComandaIDs: dividir cuenta — factura solo estas comandas (deben estar pendientes de cobro
 	// en la sesión) en vez de todo lo pendiente. Vacío = comportamiento clásico (todo lo
@@ -1402,6 +1404,15 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 	taxAmount := calcResult.TaxAmount
 	total := calcResult.Total
 	discountAmount := calcResult.GlobalDiscountAmount
+	// Recargo al consumo: sobre el valor de venta sin IGV (tras el descuento global); no integra la base del IGV y suma al total a pagar.
+	serviceChargeRate, scErr := tax.ResolveServiceChargeRate(s.db, input.ApplyServiceCharge)
+	if scErr != nil {
+		return nil, scErr
+	}
+	var serviceChargeAmount float64
+	if serviceChargeRate > 0 {
+		serviceChargeAmount, total = tax.AddServiceCharge(subtotal, total, serviceChargeRate)
+	}
 
 	var totalPaid float64
 	for _, p := range input.Payments {
@@ -1444,6 +1455,8 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		GlobalDiscountAmount: money.RoundSunat(discountAmount),
 		GlobalDiscountMode:   globalMode,
 		GlobalDiscountValue:  globalValue,
+		ServiceChargeRate:    serviceChargeRate,
+		ServiceChargeAmount:  serviceChargeAmount,
 		Currency:             currency,
 		PaymentMethod:        input.Payments[0].Method, // método principal
 		Status:               "paid",

@@ -42,6 +42,8 @@ type POSCheckoutInput struct {
 	DiscountMode    string
 	DiscountValue   float64
 	DiscountAmount  float64
+	// ApplyServiceCharge cobra el recargo al consumo de la empresa (% de la configuración, calculado en servidor).
+	ApplyServiceCharge bool
 	Payments        []PaymentInput
 	CentralTenantID uint
 	// IdempotencyKey: UUID por intento de cobro; un reintento devuelve la venta ya creada.
@@ -142,6 +144,7 @@ func (s *RestaurantPOSCheckoutService) Checkout(in POSCheckoutInput, taxCfg tax.
 		DiscountAmount:  in.DiscountAmount,
 		DiscountMode:    in.DiscountMode,
 		DiscountValue:   in.DiscountValue,
+		ApplyServiceCharge: in.ApplyServiceCharge,
 		CentralTenantID: in.CentralTenantID,
 		IdempotencyKey:  in.IdempotencyKey,
 	}, taxCfg)

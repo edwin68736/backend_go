@@ -56,6 +56,7 @@ func (s *RestaurantPOSCheckoutService) checkoutDirect(
 		Payments:            payments,
 		GlobalDiscountMode:  discountMode,
 		GlobalDiscountValue: discountValue,
+		ApplyServiceCharge:  in.ApplyServiceCharge,
 		TaxConfig:           taxCfg,
 		ExtraStockMovements: extraStock,
 		CentralTenantID:     in.CentralTenantID,

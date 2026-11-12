@@ -151,6 +151,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Notes                string                           `json:"notes"`
 		Items                []service.SaleItemInput          `json:"items"`
 		GlobalDiscountMode   string                           `json:"global_discount_mode"`
+		ApplyServiceCharge   bool                             `json:"apply_service_charge"`
 		GlobalDiscountValue  float64                          `json:"global_discount_value"`
 		FiscalContext        *salecontext.FiscalContextInput  `json:"fiscal_context"`
 		Detraccion           *detraccionsvc.SaleInput         `json:"detraccion"`
@@ -231,6 +232,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		Notes:                 body.Notes,
 		Items:                 body.Items,
 		GlobalDiscountMode:    body.GlobalDiscountMode,
+		ApplyServiceCharge:    body.ApplyServiceCharge,
 		GlobalDiscountValue:   body.GlobalDiscountValue,
 		TaxConfig:             taxCfg,
 		CentralTenantID:       centralTenantID,

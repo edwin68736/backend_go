@@ -172,6 +172,9 @@ type CreateSaleInput struct {
 	IssueDate            time.Time
 	DueDate              *time.Time
 	Currency             string
+	// ApplyServiceCharge cobra el recargo al consumo de la empresa (el % sale de la configuración, no de la petición). Exige que el tenant lo
+	// tenga activado; no se combina con anticipos ni detracción.
+	ApplyServiceCharge bool
 	OperationTypeCode    string
 	ExchangeRate         *float64
 	PaymentMethod        string                   // legacy: si Payments vacío, se usa para el total
@@ -385,6 +388,19 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		subtotal = plan.AdjustedSubtotal
 		taxAmount = plan.AdjustedTax
 		total = plan.AdjustedTotal
+	}
+
+	// Recargo al consumo: cargo global fuera de la base del IGV que suma al total a pagar (DL 25988, 5.ª disp. compl.).
+	serviceChargeRate, err := tax.ResolveServiceChargeRate(s.db, input.ApplyServiceCharge)
+	if err != nil {
+		return nil, err
+	}
+	var serviceChargeAmount float64
+	if serviceChargeRate > 0 {
+		if input.Prepayment != nil || input.Detraccion != nil {
+			return nil, errors.New("el recargo al consumo no se puede combinar con anticipos ni con detracción")
+		}
+		serviceChargeAmount, total = tax.AddServiceCharge(subtotal, total, serviceChargeRate)
 	}
 
 	// Un total negativo (descuentos mayores al subtotal, p. ej.) nunca es una venta válida: antes se
@@ -755,6 +771,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		GlobalDiscountAmount:  money.RoundSunat(globalDiscAmt),
 		GlobalDiscountMode:    globalDiscMode,
 		GlobalDiscountValue:   globalDiscValue,
+		ServiceChargeRate:     serviceChargeRate,
+		ServiceChargeAmount:   serviceChargeAmount,
 		Currency:              currency,
 		OperationTypeCode:     opCode,
 		ExchangeRate:          exchangeRate,
