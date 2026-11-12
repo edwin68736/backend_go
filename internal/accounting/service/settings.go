@@ -19,6 +19,9 @@ type Accounts struct {
 	Exonerated, Unaffected       string
 	Exportation, Icbper          string
 	SubdiarioSales               string
+	// ServiceCharge cuenta del recargo al consumo cobrado: no es ingreso del negocio sino un pasivo con los trabajadores (PCGE 41, remuneraciones
+	// por pagar). Por ahora es la cuenta por defecto, sin edición por tenant: confirmar con el contador antes de usarla.
+	ServiceCharge string
 }
 
 // DefaultAccounts valores PCGE usados cuando el tenant no configuró la cuenta (los mismos que traía el
@@ -30,6 +33,10 @@ var DefaultAccounts = Accounts{
 	Exonerated: "70111", Unaffected: "70111", Exportation: "70121", Icbper: "40199",
 	SubdiarioSales: "05",
 }
+
+// ServiceChargeAccount cuenta por defecto del recargo al consumo (pasivo con los trabajadores). Fuera de DefaultAccounts a propósito: no se siembra
+// en la base ni se edita por tenant todavía.
+const ServiceChargeAccount = "41199"
 
 var accountRe = regexp.MustCompile(`^[0-9A-Za-z.\-]{1,20}$`)
 
@@ -63,6 +70,7 @@ func (s *Service) ResolvedAccounts() (Accounts, error) {
 		Exonerated: pick(st.Exonerated, d.Exonerated), Unaffected: pick(st.Unaffected, d.Unaffected),
 		Exportation: pick(st.Exportation, d.Exportation), Icbper: pick(st.Icbper, d.Icbper),
 		SubdiarioSales: pick(st.SubdiarioSales, d.SubdiarioSales),
+		ServiceCharge:  ServiceChargeAccount,
 	}, nil
 }
 

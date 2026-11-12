@@ -16,6 +16,8 @@ const (
 	ConceptUnaffected  Concept = "unaffected"
 	ConceptExportation Concept = "exportation"
 	ConceptIcbper      Concept = "icbper"
+	// ConceptServiceCharge recargo al consumo: va al pasivo con los trabajadores, nunca a ingresos.
+	ConceptServiceCharge Concept = "service_charge"
 )
 
 // VoucherLine una línea Debe/Haber de un asiento. Amount es POSITIVO y está en la moneda del
@@ -73,7 +75,7 @@ func SalesVouchers(docs []SaleDoc, acc Accounts) ([]Voucher, []string) {
 			{ConceptIcbper, acc.Icbper, b.Icbper},
 		}
 		// Cuadre: total = Σ ingresos + IGV (+ISC). Si no, la diferencia (redondeo) va a la línea mayor.
-		sum := b.Igv + b.Isc
+		sum := b.Igv + b.Isc + b.OtherCharges
 		big := 0
 		for k, r := range revs {
 			sum += r.amt
@@ -98,6 +100,9 @@ func SalesVouchers(docs []SaleDoc, acc Accounts) ([]Voucher, []string) {
 				continue
 			}
 			v.Lines = append(v.Lines, VoucherLine{r.c, r.acc, creditSide, round2(r.amt)})
+		}
+		if b.OtherCharges != 0 {
+			v.Lines = append(v.Lines, VoucherLine{ConceptServiceCharge, pick(acc.ServiceCharge, ServiceChargeAccount), creditSide, round2(b.OtherCharges)})
 		}
 		out = append(out, v)
 	}

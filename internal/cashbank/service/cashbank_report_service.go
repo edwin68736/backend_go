@@ -29,6 +29,7 @@ type SessionReport struct {
 	Electronic           SessionElectronic       `json:"electronic"`
 	Detraction           SessionDetraction       `json:"detraction"`
 	CreditGenerated      SessionCreditGenerated  `json:"credit_generated"`
+	ServiceCharge        SessionServiceCharge    `json:"service_charge"`
 	PayableGenerated     SessionPayableGenerated `json:"payable_generated"`
 	// Currency: cuando la sesión tuvo documentos en dólares, el saldo y los totales EN SOLES (cada USD al TC de su documento)
 	// y los montos por moneda. Vacío (has_foreign=false) si todo fue en soles. Los demás campos del reporte conservan los
@@ -44,6 +45,13 @@ type SessionReport struct {
 type SessionPayableGenerated struct {
 	Total     float64            `json:"total"`
 	Purchases []ExpenseDetailRow `json:"purchases"`
+}
+
+// SessionServiceCharge recargo al consumo cobrado en las ventas de la sesión (en soles). Informativo, sin impacto en arqueo: el dinero ya está
+// dentro de lo cobrado por cada método de pago. No es ingreso del negocio sino de los trabajadores: este renglón es lo que hay que repartirles.
+type SessionServiceCharge struct {
+	Total float64 `json:"total"`
+	Sales int     `json:"sales"`
 }
 
 // SessionCreditGenerated ventas registradas a crédito (condición "credito"/"credit") sin cobrar
@@ -360,6 +368,12 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 	for _, sale := range sessionSales {
 		salesMap[sale.ID] = sale
 		saleIDs = append(saleIDs, sale.ID)
+	}
+	for _, sale := range sessionSales {
+		if sale.ServiceChargeAmount > 0 {
+			report.ServiceCharge.Total = money.RoundDisplay(report.ServiceCharge.Total + sale.ServiceChargeAmount*docPENFactor(sale.Currency, sale.ExchangeRate, sale.IssueDate))
+			report.ServiceCharge.Sales++
+		}
 	}
 	displayDocNumbers := nvdisplay.LoadDisplayNumbersBySaleID(s.db, saleIDs)
 	// (1) SOLO para "crédito generado" y detracción SPOT: TODOS los pagos de las ventas

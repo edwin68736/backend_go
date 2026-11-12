@@ -1,6 +1,6 @@
 # Recargo al consumo (hoteles, restaurantes)
 
-Estado: fases 1–3 en la rama `feature/recargo-consumo` (backend). Faltan reportes/caja (fase 4) y pantallas de Tukifac y Tukichef (fase 5). **No activar en producción hasta tener pantallas**: el backend ya cobra y emite, pero nadie puede marcar «cobrar recargo» ni configurarlo desde la interfaz.
+Estado: fases 1–4 en la rama `feature/recargo-consumo` (backend). Falta solo la fase 5 (pantallas de Tukifac y Tukichef). **No activar en producción hasta tener pantallas**: el backend ya cobra y emite, pero nadie puede marcar «cobrar recargo» ni configurarlo desde la interfaz.
 
 ## Norma (verificada en SUNAT, 12-nov-2026)
 - Quinta Disposición Complementaria del DL 25988: los establecimientos de hospedaje o expendio de comidas y bebidas, **en acuerdo con sus trabajadores**, pueden fijar un recargo al consumo **no mayor al 13 %** del valor de los servicios que prestan (no hay norma de 10 %; ese es solo uso común).
@@ -24,8 +24,20 @@ Estado: fases 1–3 en la rama `feature/recargo-consumo` (backend). Faltan repor
 ## Pruebas en SUNAT beta (12-nov-2026), todas aceptadas
 Factura F001-25 (2 líneas, recargo 20 sobre 200) y F001-26; boleta B001-55; NC parcial FC01-7 (recargo 5), NC total FC01-8, NC de boleta BC01-11.
 
+## Fase 4 — reportes (hecha)
+- **Registro de ventas 14.1**: el recargo va en la columna «otros tributos y cargos» (antes siempre 0); base e IGV no cambian y el total lo incluye. Las notas de crédito lo restan.
+- **Asientos contables** (Concar/Siscont TXT): el recargo va al **pasivo con los trabajadores** (cuenta por defecto `41199`, PCGE 41 remuneraciones por pagar: confirmar con el contador; aún no editable por tenant), nunca a ingresos (70). Sin esto el cuadre del asiento lo habría absorbido en ventas.
+- **Reporte de caja** (`GetSessionReport`): bloque `service_charge {total, sales}` informativo (en soles); el efectivo esperado no cambia.
+- **Resumen de ventas** (`SummaryStats`): `service_charge_total` aparte, incluido dentro de `total`.
+- **Impresión** (`print_data`): `service_charge_amount` y `service_charge_rate`; `total` ya lo incluye.
+- **Precuenta** (restaurante): `service_charge_enabled/rate/amount` y `total_with_service_charge` (estimado; el cobro real lo recalcula el servidor).
+- **Nota de venta → factura/boleta**: el comprobante conserva el recargo y el % que ya cobró la nota, aunque el tenant lo haya apagado después.
+- Notas de crédito: `service_charge_*` se guardan en la nota (total = recargo completo; parcial = proporcional).
+
+### Decisión abierta
+Los **dashboards** y listados de ventas siguen sumando `total` (lo que dice el comprobante), es decir, **incluyen** el recargo. Para no mostrar como ingreso lo que se reparte a los trabajadores habría que restarlo en cada gráfico; hoy solo el reporte de caja y el resumen de ventas lo separan. Los formatos Excel de otros sistemas contables (Siscont Excel, Foxcont, Contasis, Adsoft, Sumerius) no tienen columna para el recargo y no lo muestran.
+
 ## Pendiente
-- Fase 4: reportes y caja (renglón aparte «recargo al consumo», no es ingreso), registro de ventas/PLE (columna de otros cargos), print_data/tickets, dashboards.
 - Fase 5: ajustes en Tukifac y Tukichef, línea de recargo en cobro/precuenta/ticket, `GET` de la configuración con PIN en Tukichef, retirar el placeholder «Propina» del producto manual.
 - Notas de débito con recargo, resumen diario contra SUNAT, detracción/percepción/anticipos con recargo (hoy se rechaza la combinación).
-- Reporte de reparto a trabajadores (opcional).
+- Reporte de reparto a trabajadores (opcional), cuenta contable editable, dashboards netos del recargo.

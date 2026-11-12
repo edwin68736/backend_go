@@ -70,3 +70,29 @@ func TestBillTable_RecargoConTenantApagado_SeRechaza(t *testing.T) {
 		t.Fatalf("esperaba ErrServiceChargeDisabled, got %v", err)
 	}
 }
+
+// La precuenta estima el recargo con el mismo criterio del cobro (sobre el valor de venta sin IGV) y deja Total sin él.
+func TestGetPrecuenta_EstimaElRecargo(t *testing.T) {
+	db, table := setupTableSessionTestDB(t)
+	if err := db.AutoMigrate(&database.TenantCompanyConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	db.Create(&database.TenantCompanyConfig{ID: 1, TaxRate: 18, ServiceChargeEnabled: true, ServiceChargeRate: 10})
+	svc := New(db)
+	sess, err := svc.OpenTableExtended(openInput(table.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ord := database.TenantTableOrder{SessionID: sess.ID, UserID: 1, OrderNumber: 1, Status: "active"}
+	if err := db.Create(&ord).Error; err != nil {
+		t.Fatal(err)
+	}
+	db.Create(&database.TenantComanda{SessionID: sess.ID, OrderID: ord.ID, ProductCode: "P1", ProductName: "Lomo", Quantity: 1, UnitPrice: 30, Status: "pendiente", IgvAffectationType: "10"})
+	p, err := svc.GetPrecuenta(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.ServiceChargeEnabled || math.Abs(p.ServiceChargeAmount-2.54) > 0.005 || math.Abs(p.Total-30) > 0.005 || math.Abs(p.TotalWithServiceCharge-32.54) > 0.005 {
+		t.Fatalf("precuenta: %+v", p)
+	}
+}

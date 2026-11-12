@@ -60,6 +60,9 @@ type PrintData struct {
 	Total                float64 `json:"total"`
 	GlobalDiscountAmount float64 `json:"global_discount_amount,omitempty"`
 	LineDiscountTotal    float64 `json:"line_discount_total,omitempty"`
+	// Recargo al consumo (cat. 53, código 46): ya está incluido en Total, pero no en Subtotal ni en el IGV. El impreso lo muestra aparte.
+	ServiceChargeAmount float64 `json:"service_charge_amount,omitempty"`
+	ServiceChargeRate   float64 `json:"service_charge_rate,omitempty"`
 
 	// Leyenda en letras (mismo texto que se envía a Lycet/SUNAT en legends code 1000)
 	LegendText string `json:"legend_text,omitempty"`
@@ -321,6 +324,8 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		TaxAmount:            sale.TaxAmount,
 		Total:                sale.Total,
 		GlobalDiscountAmount: sale.GlobalDiscountAmount,
+		ServiceChargeAmount:  sale.ServiceChargeAmount,
+		ServiceChargeRate:    sale.ServiceChargeRate,
 		SunatHash:            sunatHash,
 	}
 

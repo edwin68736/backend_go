@@ -31,6 +31,9 @@ type Breakdown struct {
 	Isc         float64
 	Igv         float64
 	Icbper      float64
+	// OtherCharges otros cargos que no forman parte de la base imponible (recargo al consumo, cat. 53 código 46). Suman al total pero
+	// no a la base ni al IGV; en el registro de ventas van en «otros tributos y cargos».
+	OtherCharges float64
 	Total       float64
 }
 
@@ -38,7 +41,7 @@ func (b Breakdown) scale(f float64) Breakdown {
 	return Breakdown{
 		Exportation: round2(b.Exportation * f), Taxed: round2(b.Taxed * f), Exonerated: round2(b.Exonerated * f),
 		Unaffected: round2(b.Unaffected * f), Isc: round2(b.Isc * f), Igv: round2(b.Igv * f),
-		Icbper: round2(b.Icbper * f), Total: round2(b.Total * f),
+		Icbper: round2(b.Icbper * f), OtherCharges: round2(b.OtherCharges * f), Total: round2(b.Total * f),
 	}
 }
 
@@ -284,7 +287,7 @@ func (s *Service) SalesDocs(from, to time.Time) ([]SaleDoc, []string, error) {
 			continue
 		}
 		cl := splitByAffectation(items[r.ID], r.Subtotal, r.TaxAmount)
-		b := Breakdown{Taxed: round2(cl.taxed), Exonerated: round2(cl.exo), Unaffected: round2(cl.unaf), Exportation: round2(cl.exp), Igv: round2(cl.tax), Total: round2(r.Total)}
+		b := Breakdown{Taxed: round2(cl.taxed), Exonerated: round2(cl.exo), Unaffected: round2(cl.unaf), Exportation: round2(cl.exp), Igv: round2(cl.tax), OtherCharges: round2(r.ServiceChargeAmount), Total: round2(r.Total)}
 		d := SaleDoc{
 			ID: r.ID, SunatCode: code, Series: r.Series, Number: fmt.Sprintf("%d", r.Correlative),
 			FullNumber: fmt.Sprintf("%s-%d", r.Series, r.Correlative), IssueDate: r.IssueDate, DueDate: r.DueDate,

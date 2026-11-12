@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/tax"
@@ -112,5 +113,45 @@ func TestCreate_RecargoEnNotaDeVenta(t *testing.T) {
 	}
 	if !near(sale.ServiceChargeAmount, 10) || !near(sale.Total, 128) {
 		t.Errorf("nota de venta con recargo: %+v", sale)
+	}
+}
+
+// Una nota de venta que ya cobró recargo conserva el mismo recargo al emitir su factura/boleta electrónica, aunque el tenant lo haya apagado
+// desde entonces: el comprobante debe coincidir con lo que el cliente ya pagó.
+func TestIssueElectronicFromNota_ConservaElRecargoCobrado(t *testing.T) {
+	db := setupIssueElectronicFromNotaTestDB(t)
+	notaID, boletaSeriesID := seedNotaVentaUSD(t, db, true)
+	if err := db.Model(&database.TenantSale{}).Where("id = ?", notaID).Updates(map[string]interface{}{
+		"currency": "PEN", "exchange_rate": nil, "total": 128, "service_charge_rate": 10, "service_charge_amount": 10,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	db.Model(&database.TenantSalePayment{}).Where("sale_id = ?", notaID).Update("amount", 128)
+
+	child, err := NewSaleService(db).IssueElectronicFromNota(notaID, boletaSeriesID, 1, "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(child.ServiceChargeAmount, 10) || !near(child.ServiceChargeRate, 10) || !near(child.Total, 128) || !near(child.TaxAmount, 18) {
+		t.Fatalf("la boleta debe repetir el recargo de la nota: %+v", child)
+	}
+}
+
+// El resumen de ventas informa aparte el recargo incluido en el total.
+func TestSummaryStats_InformaElRecargoAparte(t *testing.T) {
+	db := setupMaxMontoTestDB(t)
+	svc := NewSaleService(db)
+	contactID := seedClienteConRUC(t, db)
+	seriesID := seedSeries(t, db, "Factura", "01", "F001")
+	setServiceCharge(t, db, true, 10)
+	in := maxMontoSaleInput(contactID, seriesID, "01", 118)
+	in.Payments = []PaymentInput{{Method: "cash", Amount: 128}}
+	in.ApplyServiceCharge = true
+	if _, err := svc.Create(in); err != nil {
+		t.Fatal(err)
+	}
+	st := svc.SummaryStats(0, time.Now().Add(-24*time.Hour), time.Now().Add(24*time.Hour))
+	if st["count"].(int64) != 1 || !near(st["total"].(float64), 128) || !near(st["service_charge_total"].(float64), 10) {
+		t.Fatalf("resumen: %+v", st)
 	}
 }

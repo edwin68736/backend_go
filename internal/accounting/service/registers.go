@@ -103,7 +103,7 @@ func (s *Service) SalesRegister(month string, withStatus bool) (*Table, error) {
 		row := []any{
 			i + 1, ymd(d.IssueDate), datePtr(d.DueDate), d.SunatCode, d.Series, d.Number,
 			d.ContactDocType, d.ContactDocNumber, d.ContactName,
-			sg * p.Exportation, sg * p.Taxed, sg * p.Exonerated, sg * p.Unaffected, sg * p.Isc, sg * p.Igv, sg * p.Icbper, 0.0, sg * p.Total,
+			sg * p.Exportation, sg * p.Taxed, sg * p.Exonerated, sg * p.Unaffected, sg * p.Isc, sg * p.Igv, sg * p.Icbper, sg * p.OtherCharges, sg * p.Total,
 			d.Currency, d.ExchangeRate, sg * d.Orig.Total,
 		}
 		if d.Affected != nil {
@@ -123,13 +123,14 @@ func (s *Service) SalesRegister(month string, withStatus bool) (*Table, error) {
 		tot.Isc += sg * p.Isc
 		tot.Igv += sg * p.Igv
 		tot.Icbper += sg * p.Icbper
+		tot.OtherCharges += sg * p.OtherCharges
 		tot.Total += sg * p.Total
 	}
 	foot := make([]any, len(cols))
 	foot[0] = "TOTALES"
 	foot[8] = fmt.Sprintf("%d comprobante(s)", len(docs))
 	foot[9], foot[10], foot[11], foot[12] = round2(tot.Exportation), round2(tot.Taxed), round2(tot.Exonerated), round2(tot.Unaffected)
-	foot[13], foot[14], foot[15], foot[17] = round2(tot.Isc), round2(tot.Igv), round2(tot.Icbper), round2(tot.Total)
+	foot[13], foot[14], foot[15], foot[16], foot[17] = round2(tot.Isc), round2(tot.Igv), round2(tot.Icbper), round2(tot.OtherCharges), round2(tot.Total)
 	t.Footer = [][]any{foot}
 	return t, nil
 }

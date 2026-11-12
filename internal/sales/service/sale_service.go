@@ -175,6 +175,9 @@ type CreateSaleInput struct {
 	// ApplyServiceCharge cobra el recargo al consumo de la empresa (el % sale de la configuración, no de la petición). Exige que el tenant lo
 	// tenga activado; no se combina con anticipos ni detracción.
 	ApplyServiceCharge bool
+	// PresetServiceChargeRate: solo para uso interno (emisión electrónica desde una nota de venta que ya cobró recargo): usa ese % en vez del de la
+	// configuración, aunque el tenant lo haya apagado desde entonces, para que el comprobante coincida con lo que el cliente ya pagó. Nunca viene de la petición.
+	PresetServiceChargeRate float64
 	OperationTypeCode    string
 	ExchangeRate         *float64
 	PaymentMethod        string                   // legacy: si Payments vacío, se usa para el total
@@ -391,9 +394,15 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 
 	// Recargo al consumo: cargo global fuera de la base del IGV que suma al total a pagar (DL 25988, 5.ª disp. compl.).
-	serviceChargeRate, err := tax.ResolveServiceChargeRate(s.db, input.ApplyServiceCharge)
+	serviceChargeRate, err := tax.ResolveServiceChargeRate(s.db, input.ApplyServiceCharge && input.PresetServiceChargeRate <= 0)
 	if err != nil {
 		return nil, err
+	}
+	if input.PresetServiceChargeRate > 0 {
+		if !tax.ValidServiceChargeRate(input.PresetServiceChargeRate) {
+			return nil, errors.New("el recargo al consumo de la nota de venta no es válido")
+		}
+		serviceChargeRate = input.PresetServiceChargeRate
 	}
 	var serviceChargeAmount float64
 	if serviceChargeRate > 0 {
@@ -2720,6 +2729,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		SkipPaymentDistribution: true,
 		IssuedFromNotaSaleID:    &nvID,
 		CentralTenantID:         centralTenantID,
+		PresetServiceChargeRate: nota.ServiceChargeRate * boolToFloat(nota.ServiceChargeAmount > 0),
 	})
 	if err != nil {
 		return nil, err
@@ -2757,12 +2767,23 @@ func (s *SaleService) SummaryStats(branchID uint, from, to time.Time) map[string
 	}
 
 	var count int64
-	var totalAmount float64
+	var totalAmount, serviceCharge float64
+	q = q.Session(&gorm.Session{})
 	q.Count(&count)
 	q.Select("COALESCE(SUM(total), 0)").Scan(&totalAmount)
+	// Recargo al consumo incluido en «total»: no es ingreso del negocio (va a los trabajadores); se informa aparte para poder restarlo.
+	q.Select("COALESCE(SUM(service_charge_amount), 0)").Scan(&serviceCharge)
 
 	return map[string]interface{}{
-		"count": count,
-		"total": totalAmount,
+		"count":                count,
+		"total":                totalAmount,
+		"service_charge_total": serviceCharge,
 	}
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
