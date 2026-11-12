@@ -109,9 +109,23 @@ func TestNormalize_reglasDeHospedaje(t *testing.T) {
 	}
 }
 
-func TestNormalize_0208ExigePaisDeUso(t *testing.T) {
-	if _, err := Normalize(salecurrency.OpExportParcial, &SaleInput{}, nil); err == nil {
-		t.Fatal("0208 sin país debió rechazarse")
+func TestNormalize_paisDeUsoEsOpcionalEn0201y0208(t *testing.T) {
+	for _, op := range []string{salecurrency.OpExportServicios, salecurrency.OpExportParcial} {
+		if r, err := Normalize(op, &SaleInput{}, nil); err != nil || r.CountryUse != "" {
+			t.Fatalf("%s sin país debe permitirse: %+v err=%v", op, r, err)
+		}
+		if _, err := Normalize(op, &SaleInput{CountryUse: "PE"}, nil); err == nil {
+			t.Fatalf("%s con país Perú debió rechazarse", op)
+		}
+		if _, err := Normalize(op, &SaleInput{CountryUse: "xx1"}, nil); err == nil {
+			t.Fatalf("%s con país inválido debió rechazarse", op)
+		}
+	}
+	// Sin país no se envía ningún atributo reservado al facturador.
+	p := basePayload("01")
+	ApplyToInvoicePayload(p, &database.TenantSaleExport{OperationTypeCode: salecurrency.OpExportServicios})
+	if len(p.Details[0].Atributos) != 0 {
+		t.Fatalf("sin país no debe haber atributos: %+v", p.Details[0].Atributos)
 	}
 	if _, err := Normalize(salecurrency.OpVentaInterna, &SaleInput{CountryUse: "US"}, nil); err == nil {
 		t.Fatal("una operación que no es exportación debió rechazarse")

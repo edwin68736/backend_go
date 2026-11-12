@@ -42,8 +42,8 @@ func TestExport_apagadoPorDefecto(t *testing.T) {
 func TestExport_0201SinIGVYConDatos(t *testing.T) {
 	db, c, s := setupExportTestDB(t, true)
 	svc := NewSaleService(db)
-	if _, err := svc.Create(exportInput(c, s, salecurrency.OpExportServicios, &exportacion.SaleInput{})); err == nil {
-		t.Fatal("0201 sin país de uso debió rechazarse")
+	if _, err := svc.Create(exportInput(c, s, salecurrency.OpExportServicios, &exportacion.SaleInput{})); err != nil {
+		t.Fatalf("0201 sin país de uso debe permitirse (es opcional): %v", err)
 	}
 	if _, err := svc.Create(exportInput(c, s, salecurrency.OpExportServicios, &exportacion.SaleInput{CountryUse: "PE"})); err == nil {
 		t.Fatal("0201 con país Perú debió rechazarse")

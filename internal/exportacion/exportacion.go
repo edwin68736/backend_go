@@ -97,12 +97,16 @@ func Normalize(opCode string, in *SaleInput, contact *database.TenantContact) (*
 	row := &database.TenantSaleExport{OperationTypeCode: opCode}
 
 	if opCode != salecurrency.OpExportHospedaje {
+		// El país donde se usa el servicio es OPCIONAL: la guía de SUNAT lo marca obligatorio para 0201/0208, pero el ambiente beta acepta factura y
+		// boleta sin él (probado 12-nov-2026). Si se indica, se envía; si no, no se pide nada más.
 		c := normCountry(in.CountryUse)
-		if !countryRe.MatchString(c) {
-			return nil, errors.New("indique el país donde se usa el servicio")
-		}
-		if c == "PE" {
-			return nil, errors.New("en una exportación el servicio se usa fuera del Perú: elija un país del exterior")
+		if c != "" {
+			if !countryRe.MatchString(c) {
+				return nil, errors.New("el país donde se usa el servicio no es válido")
+			}
+			if c == "PE" {
+				return nil, errors.New("en una exportación el servicio se usa fuera del Perú: elija un país del exterior")
+			}
 		}
 		row.CountryUse = c
 		return row, nil
