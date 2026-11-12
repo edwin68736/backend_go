@@ -256,7 +256,7 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 	}
 	var legends []facturador.InvoiceLegend
 	facturador.SetSUNATLegend1000(&legends, sunatTotals.MtoImpVenta, tipoMoneda)
-	return &facturador.NotePayload{
+	notePayload := &facturador.NotePayload{
 		UBLVersion:   "2.1",
 		TipoDoc:      tipoDoc,
 		Serie:        noteSale.Series,
@@ -285,7 +285,9 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 		MtoImpVenta:       sunatTotals.MtoImpVenta,
 		Details:           details,
 		Legends:           legends,
-	}, nil
+	}
+	applyServiceChargeToNotePayload(notePayload, &noteSale)
+	return notePayload, nil
 }
 
 // buildCreditNotePayload compatibilidad interna.

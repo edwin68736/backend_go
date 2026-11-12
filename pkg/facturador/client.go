@@ -278,6 +278,9 @@ type InvoicePayload struct {
 	MtoImpVenta     float64            `json:"mtoImpVenta"`
 	Descuentos      []InvoiceCharge    `json:"descuentos,omitempty"`
 	SumOtrosDescuentos float64         `json:"sumOtrosDescuentos,omitempty"`
+	// Cargos globales que no afectan la base del IGV (cat. 53, p. ej. 46 recargo al consumo) y su sumatoria (ChargeTotalAmount).
+	Cargos          []InvoiceCharge    `json:"cargos,omitempty"`
+	SumOtrosCargos  float64            `json:"sumOtrosCargos,omitempty"`
 	Details         []InvoiceDetail    `json:"details"`
 	Observacion     string             `json:"observacion,omitempty"` // Leyenda en letras sin languageLocaleID (ver SetSUNATLegendViaObservacion)
 	Legends         []InvoiceLegend    `json:"legends,omitempty"`
@@ -434,6 +437,8 @@ type NotePayload struct {
 	ValorVenta      float64            `json:"valorVenta"`
 	SubTotal        float64            `json:"subTotal"`
 	MtoImpVenta     float64            `json:"mtoImpVenta"`
+	// SumOtrosCargos: ChargeTotalAmount de la nota (la NC/ND no lleva nodo de cargo global, solo este total; guía UBL 2.1 de SUNAT).
+	SumOtrosCargos  float64            `json:"sumOtrosCargos,omitempty"`
 	Details         []InvoiceDetail    `json:"details"`
 	Observacion     string             `json:"observacion,omitempty"`
 	Legends         []InvoiceLegend    `json:"legends,omitempty"`
@@ -839,6 +844,8 @@ type SummaryDetail struct {
 	Total          float64 `json:"total"`
 	MtoOperGravadas float64 `json:"mtoOperGravadas"`
 	MtoIGV         float64 `json:"mtoIGV"`
+	// MtoOtrosCargos: otros cargos de la boleta (p. ej. recargo al consumo); Total ya los incluye.
+	MtoOtrosCargos float64 `json:"mtoOtrosCargos,omitempty"`
 }
 
 // SummaryPayload es el body para POST /summary/send.

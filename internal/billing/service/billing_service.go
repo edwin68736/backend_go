@@ -22,6 +22,7 @@ import (
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
+	"tukifac/pkg/money"
 	"tukifac/pkg/saas/docusage"
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/sunat"
@@ -356,6 +357,7 @@ func (s *BillingService) emitInvoiceDocument(saleID uint, companyCfg *database.T
 		Details:            details,
 		Legends:            legends,
 	}
+	applyServiceChargeToInvoicePayload(payload, &sale)
 	if fiscalEnrich, err := salecontext.LoadInvoiceEnrichment(s.db, saleID, sale.Total); err == nil && fiscalEnrich != nil {
 		salecontext.ApplyToInvoicePayload(payload, fiscalEnrich)
 	}
@@ -497,6 +499,8 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 		partial := IsPartialCreditNoteReason(reasonCode) && len(selections) > 0
 		var partialItems []database.TenantSaleItem
 		subtotal, taxAmount, total := orig.Subtotal, orig.TaxAmount, orig.Total
+		// Recargo al consumo: la nota total devuelve el de la venta (orig.Total ya lo incluye); la parcial, su parte proporcional.
+		ncServiceCharge, ncServiceChargeRate := orig.ServiceChargeAmount, orig.ServiceChargeRate
 		if partial {
 			ids := make([]uint, len(selections))
 			for i, sel := range selections {
@@ -510,6 +514,11 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 			if err != nil {
 				return err
 			}
+			ncServiceCharge, err = partialNoteServiceCharge(tx, &orig, origItems, selections, subtotal)
+			if err != nil {
+				return err
+			}
+			total = money.RoundSunat(total + ncServiceCharge)
 		}
 
 		ncSale = database.TenantSale{
@@ -533,6 +542,9 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 			Status:         "paid",
 			BillingStatus:  "pending",
 			OriginalSaleID: &origIDRef,
+
+			ServiceChargeAmount: ncServiceCharge,
+			ServiceChargeRate:   ncServiceChargeRate,
 		}
 		if err := tx.Create(&ncSale).Error; err != nil {
 			return fmt.Errorf("crear venta nota de crédito: %w", err)
@@ -1216,6 +1228,7 @@ func (s *BillingService) CreateSummary(fecResumen time.Time) (*database.TenantSu
 			Total:           sale.Total,
 			MtoOperGravadas: sale.Subtotal,
 			MtoIGV:          sale.TaxAmount,
+			MtoOtrosCargos:  sale.ServiceChargeAmount,
 		})
 	}
 
