@@ -97,7 +97,7 @@ func (s *BillingService) resolveUbigeoToAddress(ubigeo string) (dep, prov, dist 
 	}
 	var distrito database.UbiDistrito
 	if err := s.db.Where("id = ?", ubigeo).First(&distrito).Error; err != nil || distrito.ID == "" {
-		return "", "", "", fmt.Errorf("ubigeo %s no encontrado en catálogo; configure un distrito válido", ubigeo)
+		return "", "", "", fmt.Errorf("ubigeo %s no encontrado en el catálogo de distritos; si es un distrito nuevo, agréguelo en Ajustes → Empresa (opción «Agregar distrito») o elija otro distrito válido", ubigeo)
 	}
 	var provincia database.UbiProvincia
 	if err := s.db.Where("id = ?", distrito.ProvinciaID).First(&provincia).Error; err != nil || provincia.ID == "" {

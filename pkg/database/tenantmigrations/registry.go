@@ -156,6 +156,7 @@ var TenantMigrations = []TenantMigration{
 	V182MovementCurrencySnapshot{},
 	V183AccountTransfers{},
 	V184BanksCatalog{},
+	V185UbigeoDistritosUpdate{},
 }
 
 // ByVersion mapa versión → migración.

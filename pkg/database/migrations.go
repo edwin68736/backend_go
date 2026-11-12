@@ -768,6 +768,13 @@ func SeedCentral() error {
 		return err
 	}
 	_ = SeedUbigeoDistritos(CentralDB, UbigeoDistritosCSVPath())
+	// Provincias y distritos que faltaban o se crearon después de la carga inicial (la siembra de arriba solo corre con la tabla vacía).
+	if err := UpsertUbigeoRegionesProvincias(CentralDB); err != nil {
+		return err
+	}
+	if _, err := UpsertUbigeoDistritos(CentralDB); err != nil {
+		return err
+	}
 
 	// Ajustes centrales (una sola fila)
 	var ajusteCount int64

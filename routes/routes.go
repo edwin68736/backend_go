@@ -228,6 +228,8 @@ func Setup(app *fiber.App) {
 	tenantAPI.Get("/ubigeo/regiones", ubigeoTenant.RegionesAPI)
 	tenantAPI.Get("/ubigeo/provincias", ubigeoTenant.ProvinciasAPI)
 	tenantAPI.Get("/ubigeo/distritos", ubigeoTenant.DistritosAPI)
+	// Agregar un distrito que el catálogo aún no tiene (distritos creados por ley recientemente).
+	tenantAPI.Post("/ubigeo/distritos", middleware.RequirePermission("company.edit"), ubigeoTenant.CreateDistritoAPI)
 
 	tenantAPI.Get("/consulta/tipo-cambio", consultaH.TipoCambioAPI)
 	catalogs.RegisterRoutes(tenantAPI)
