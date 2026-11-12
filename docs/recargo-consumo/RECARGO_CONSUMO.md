@@ -34,8 +34,8 @@ Factura F001-25 (2 líneas, recargo 20 sobre 200) y F001-26; boleta B001-55; NC 
 - **Nota de venta → factura/boleta**: el comprobante conserva el recargo y el % que ya cobró la nota, aunque el tenant lo haya apagado después.
 - Notas de crédito: `service_charge_*` se guardan en la nota (total = recargo completo; parcial = proporcional).
 
-### Decisión abierta
-Los **dashboards** y listados de ventas siguen sumando `total` (lo que dice el comprobante), es decir, **incluyen** el recargo. Para no mostrar como ingreso lo que se reparte a los trabajadores habría que restarlo en cada gráfico; hoy solo el reporte de caja y el resumen de ventas lo separan. Los formatos Excel de otros sistemas contables (Siscont Excel, Foxcont, Contasis, Adsoft, Sumerius) no tienen columna para el recargo y no lo muestran.
+### Dashboards (decidido: se resta)
+Los dashboards de Tukifac y de Tukichef (ventas, ticket promedio, por sucursal/usuario/cliente/tipo de documento, utilidad) suman el total **neto del recargo**: está dentro de `total` porque el cliente lo paga, pero no es ingreso del negocio. Se mantienen con el recargo incluido, a propósito: «ventas por método de pago» (es dinero cobrado), el listado de ventas (el total es el del comprobante; la fila trae `service_charge_amount`) y el resumen de boletas de SUNAT. Los formatos Excel de otros sistemas contables (Siscont Excel, Foxcont, Contasis, Adsoft, Sumerius) no tienen columna para el recargo y no lo muestran.
 
 ## Pendiente
 - Fase 5: ajustes en Tukifac y Tukichef, línea de recargo en cobro/precuenta/ticket, `GET` de la configuración con PIN en Tukichef, retirar el placeholder «Propina» del producto manual.

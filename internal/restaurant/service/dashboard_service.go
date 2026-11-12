@@ -187,7 +187,7 @@ func (s *DashboardService) loadSummary(branchID uint, from, toExclusive time.Tim
 	var agg salesAgg
 	err := restaurantSalesScope(s.db, branchID, from, toExclusive, filter).
 		Select(`
-			COALESCE(SUM(CASE WHEN currency = 'USD' AND exchange_rate > 0 THEN total * exchange_rate ELSE total END), 0) AS total_sales,
+			COALESCE(SUM(CASE WHEN currency = 'USD' AND exchange_rate > 0 THEN (total - COALESCE(service_charge_amount, 0)) * exchange_rate ELSE (total - COALESCE(service_charge_amount, 0)) END), 0) AS total_sales,
 			COUNT(*) AS total_orders,
 			COUNT(DISTINCT CASE WHEN contact_id IS NOT NULL AND contact_id > 0 THEN contact_id END) AS clients_served
 		`).

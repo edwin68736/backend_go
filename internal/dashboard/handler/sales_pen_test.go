@@ -27,3 +27,25 @@ func TestDashboardSales_SumUSDSalesInSoles(t *testing.T) {
 		t.Errorf("ventas en soles = %v, quiere 450", got)
 	}
 }
+
+// El recargo al consumo cobrado dentro del total no es ingreso del negocio: el dashboard lo resta (en soles y en dólares).
+func TestDashboardSales_RestaElRecargoAlConsumo(t *testing.T) {
+	db := setupTopProductsDB(t)
+	now := time.Now()
+	rate := 3.5
+	for _, s := range []database.TenantSale{
+		{Number: "1", Currency: "PEN", Total: 128, ServiceChargeAmount: 10, ServiceChargeRate: 10}, // 118 de ventas
+		{Number: "2", Currency: "USD", ExchangeRate: &rate, Total: 100, ServiceChargeAmount: 10},   // 90 × 3.5 = 315
+		{Number: "3", Currency: "PEN", Total: 50},                                                  // sin recargo
+	} {
+		s.BranchID, s.UserID, s.DocType, s.Series, s.IssueDate, s.Subtotal, s.Status = 1, 1, "NOTA_VENTA", "NV01", now, s.Total, "paid"
+		if err := db.Create(&s).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got float64
+	analyticsSaleScope(db, now.Add(-24*time.Hour), now.Add(24*time.Hour), 0, 0, false).Select(sumSalesPENSelect()).Scan(&got)
+	if got != 118+315+50 {
+		t.Errorf("ventas netas del recargo = %v, quiere 483", got)
+	}
+}
