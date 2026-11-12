@@ -106,6 +106,9 @@ func BuildPrintDataForOrder(db *gorm.DB, orderID uint) (*salessvc.PrintData, err
 			if addr := strings.TrimSpace(branch.Address); addr != "" {
 				pd.Company.Address = addr
 			}
+			if ph := strings.TrimSpace(branch.Phone); ph != "" {
+				pd.Company.Phone = ph
+			}
 			pd.Company.LogoURL = branchlogo.ResolveURL(branch.LogoURL, pd.Company.LogoURL)
 			// Embebido como data: URL (mismo motivo que en cotizaciones): evita que el navegador
 			// tenga que pedir /uploads/* en vivo al armar el PDF.

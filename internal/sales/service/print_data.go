@@ -456,6 +456,10 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 		if addr := strings.TrimSpace(branch.Address); addr != "" {
 			pd.Company.Address = addr
 		}
+		// Teléfono: el de la sucursal si tiene uno propio (igual que dirección y logo); si no, el de la empresa.
+		if ph := strings.TrimSpace(branch.Phone); ph != "" {
+			pd.Company.Phone = ph
+		}
 		pd.Company.LogoURL = branchlogo.ResolveURL(branch.LogoURL, pd.Company.LogoURL)
 		// Embebido como data: URL — sin esto el frontend necesita un fetch en vivo a /uploads/*
 		// al generar el PDF (CORS/alcanzabilidad, puede fallar en producción); embebido de una,

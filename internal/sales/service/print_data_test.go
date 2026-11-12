@@ -134,6 +134,42 @@ func TestBuildPrintData_issuerAddressBranchFirstThenCompany(t *testing.T) {
 	}
 }
 
+// El teléfono del emisor sigue la misma regla: el de la sucursal si lo tiene; si no, el de la empresa.
+func TestBuildPrintData_issuerPhoneBranchFirstThenCompany(t *testing.T) {
+	db := setupPrintDataTestDB(t)
+	if err := db.AutoMigrate(&database.TenantCompanyConfig{}, &database.TenantBranch{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantCompanyConfig{RUC: "20000000001", BusinessName: "ACME SAC", Phone: "111 111 111"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	withPhone := database.TenantBranch{Name: "Sucursal Norte", Phone: "983 545 104", Active: true}
+	noPhone := database.TenantBranch{Name: "Sucursal Sur", Phone: "  ", Active: true}
+	if err := db.Create(&withPhone).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&noPhone).Error; err != nil {
+		t.Fatal(err)
+	}
+	build := func(branchID uint) string {
+		sale := &database.TenantSale{
+			ID: 1, BranchID: branchID, DocType: "03", Series: "B001", Number: "B001-1",
+			IssueDate: time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC), Currency: "PEN", Total: 10,
+		}
+		pd, err := BuildPrintData(db, sale, nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pd.Company.Phone
+	}
+	if got := build(withPhone.ID); got != "983 545 104" {
+		t.Fatalf("sucursal con teléfono: got %q, want el de la sucursal", got)
+	}
+	if got := build(noPhone.ID); got != "111 111 111" {
+		t.Fatalf("sucursal sin teléfono: got %q, want el de la empresa como respaldo", got)
+	}
+}
+
 func TestPrintableSaleNotes_quitaElRegistroDeAnulacion(t *testing.T) {
 	cases := map[string]string{
 		"Entregar mañana":                                 "Entregar mañana",

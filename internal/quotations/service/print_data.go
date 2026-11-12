@@ -118,6 +118,9 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 		if addr := strings.TrimSpace(branch.Address); addr != "" {
 			pd.Company.Address = addr
 		}
+		if ph := strings.TrimSpace(branch.Phone); ph != "" {
+			pd.Company.Phone = ph
+		}
 		pd.Company.LogoURL = branchlogo.ResolveURL(branch.LogoURL, pd.Company.LogoURL)
 		// Embebido como data: URL — mismo motivo que en sales/print_data.go: sin esto el
 		// frontend necesita un fetch en vivo a /uploads/* al generar el PDF, que puede fallar en
