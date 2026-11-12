@@ -105,4 +105,20 @@ func TestExport_soloFacturaOBoleta_yNoEnVentaNormal(t *testing.T) {
 	if _, err := svc.Create(exportInput(c, s, salecurrency.OpVentaInterna, &exportacion.SaleInput{CountryUse: "US"})); err == nil {
 		t.Fatal("datos de exportación en una venta interna debieron rechazarse")
 	}
+	// SUNAT (cat. 51): el hospedaje 0202 no admite boleta (error 3206); 0201 sí.
+	bol := seedSeries(t, db, "Boleta", "03", "B001")
+	hosp := exportacion.SaleInput{
+		GuestName: "John Smith", GuestDocNumber: "X1234567", PassportCountry: "US", ResidenceCountry: "US",
+		EntryDate: "2026-11-01", CheckIn: "2026-11-02", CheckOut: "2026-11-05",
+	}
+	in0202 := exportInput(c, bol, salecurrency.OpExportHospedaje, &hosp)
+	in0202.DocType = "BOLETA"
+	if _, err := svc.Create(in0202); err == nil || !strings.Contains(err.Error(), "solo se emite en factura") {
+		t.Fatalf("0202 en boleta debió rechazarse: %v", err)
+	}
+	in0201 := exportInput(c, bol, salecurrency.OpExportServicios, &exportacion.SaleInput{CountryUse: "US"})
+	in0201.DocType = "BOLETA"
+	if _, err := svc.Create(in0201); err != nil {
+		t.Fatalf("0201 en boleta debe permitirse: %v", err)
+	}
 }

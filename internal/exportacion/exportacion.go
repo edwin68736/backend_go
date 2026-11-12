@@ -219,7 +219,8 @@ func hospedajeAttributes(r *database.TenantSaleExport) []facturador.DetailAttrib
 		out = append(out, facturador.DetailAttribute{Code: "4003", Name: "Beneficio Hospedajes: Fecha de Ingreso al Establecimiento", FecInicio: noonPeru(r.CheckIn)})
 	}
 	if r.CheckOut != nil {
-		out = append(out, facturador.DetailAttribute{Code: "4004", Name: "Beneficio Hospedajes: Fecha de Salida del Establecimiento", FecFin: noonPeru(r.CheckOut)})
+		// SUNAT (beta, 12-nov-2026) rechaza 3065 si la fecha de salida va solo en cbc:EndDate: la espera en cbc:StartDate, como las demás fechas.
+		out = append(out, facturador.DetailAttribute{Code: "4004", Name: "Beneficio Hospedajes: Fecha de Salida del Establecimiento", FecInicio: noonPeru(r.CheckOut)})
 	}
 	days := r.StayDays
 	out = append(out, facturador.DetailAttribute{Code: "4005", Name: "Beneficio Hospedajes: Número de Días de Permanencia", Duracion: days})

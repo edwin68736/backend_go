@@ -36,16 +36,40 @@ No incluye la exportación de bienes (0200: requiere DAM e Incoterm) ni la 0401 
 Backend (migración **V186**: `tenant_sale_exports` + `exports_enabled`) → facturador Lycet (otro VPS) → frontend. Sin el cambio de Lycet, 0201/0208 enviarían
 el atributo reservado como propiedad del ítem y SUNAT lo rechazaría; 0202 funciona sin tocar Lycet.
 
+## Pruebas en SUNAT beta (12-nov-2026, RUC de pruebas 10726187938 con MODDATOS)
+Se levantó el facturador local con el código de la rama y se emitió contra el ambiente de pruebas de SUNAT, primero con un arnés directo y luego por el
+sistema completo (backend → facturador → SUNAT). **Todas aceptadas con CDR 0:**
+
+| Comprobante | Resultado |
+|---|---|
+| Factura 0201 (servicio al exterior, país de uso) | aceptada |
+| Factura 0202 (hospedaje, datos del huésped) | aceptada |
+| Factura 0208 (parcialmente en el extranjero) | aceptada |
+| Boleta 0201 y boleta 0208 | aceptadas |
+| Nota de crédito de una factura 0201, de una factura 0202 y de una boleta de exportación | aceptadas |
+
+SUNAT rechazó tres cosas que las pruebas locales no podían ver, ya corregidas:
+1. **3107** (código de tributo global inválido para el tipo de operación): Greenter escribe siempre un subtotal de IGV (1000) con 0; en una exportación debe ir
+   solo 9995/EXP. Lycet lo quita (`TukifacInvoiceBuilder::stripIgvTaxSubtotal`). `TukifacSee` ahora también aplica el ajuste a toda exportación (antes solo con atributos reservados).
+2. **3065** (falta el tag de la fecha del concepto 4004): la fecha de salida del hotel debe ir en `cbc:StartDate`, no solo en `cbc:EndDate`.
+3. **3206** (catálogo 51): **la operación 0202 no existe para boleta**. Solo se emite en factura (backend y pantalla lo impiden).
+   Además SUNAT exige el concepto 4002 (ingreso al país): sin él rechaza con 3141.
+
+## Reportes
+- Registro de ventas (formato 14.1): las ventas de exportación salen en la columna «Exportación» sin IGV; el hospedaje 0202 muestra al huésped (nombre y pasaporte)
+  como adquirente en lugar del cliente genérico; las notas de crédito entran en negativo.
+- Reporte de ventas y dashboard: incluyen las exportaciones con IGV 0 (verificado por API).
+
 ## Verificado
-- Go: reglas de validación, venta (0201/0202, IGV 0, rechazos), payload, fechas, migración V186 en MariaDB y por el runner de la flota.
-- PHP (Lycet): XML con país de uso, orden UBL, atributos 4000–4009, XML idéntico a Greenter sin atributo reservado; deserialización JSON → JMS → XML con el contrato real.
-- En pantalla (local): activar el interruptor, emitir boleta 0202 y facturas 0201/0202; el payload capturado hacia el facturador sale como se describe arriba.
+- Go: reglas de validación, venta (0201/0202/0208, IGV 0, rechazos, 0202 solo en factura), payload, fechas, registro de ventas, migración V186 en MariaDB y por el runner de la flota.
+- PHP (Lycet): 7 pruebas del XML (país de uso, orden UBL, atributos 4000–4009, sin IGV 1000, XML idéntico a Greenter fuera de exportaciones).
+- En pantalla (local): interruptor, formulario, boleta/factura; el selector de boleta no ofrece 0202.
+- SUNAT beta: ver arriba.
 
 ## Pendiente
-1. **Probar en el ambiente beta de SUNAT** (no se hizo): confirmar el adquirente «-», la leyenda y los atributos; en boleta se mantiene la identificación del cliente (a confirmar).
-2. Notas de crédito/débito sobre una exportación.
-3. Reportes contables (registro de ventas / PLE / SIRE) para ventas de exportación.
-4. Boleta 0202/0201: confirmar con SUNAT el tipo de documento del adquirente.
-5. Decidir qué hacer con la operación **0401** existente (factura sin RUC a no domiciliados): no se encontró norma que la respalde y nunca se emitió con éxito en producción.
-6. Antes de que un hotel real use el 0202: inscripción en el Registro Especial de SUNAT, certificado de categorización y archivo de copias del pasaporte/TAM.
-7. En el XAMPP local no se probó MySQL 8 (producción): V186 es un `AutoMigrate` de una tabla nueva y una columna.
+1. Probar contra SUNAT **producción** con un caso real controlado antes de abrirlo a clientes (el beta no valida todo lo que valida producción).
+2. Notas de débito de exportación (no se probaron; las de crédito sí).
+3. Resumen diario / comunicación de baja de boletas de exportación (no se probó).
+4. Decidir qué hacer con la operación **0401** existente (factura sin RUC a no domiciliados): no se encontró norma que la respalde y nunca se emitió con éxito en producción.
+5. Antes de que un hotel real use el 0202: inscripción en el Registro Especial de SUNAT, certificado de categorización y archivo de copias del pasaporte/TAM.
+6. MySQL 8 (producción): V186 es un `AutoMigrate` de una tabla nueva y una columna; solo se probó en MariaDB.

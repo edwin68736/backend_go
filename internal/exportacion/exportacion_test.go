@@ -66,7 +66,7 @@ func TestApply_0202_atributosDelCatalogo55YLeyenda(t *testing.T) {
 		if got["4000"].Value != "US" || got["4001"].Value != "CA" || got["4009"].Value != "X1234567" || got["4005"].Duracion != 3 {
 			t.Errorf("línea %d valores incorrectos: %+v", i, got)
 		}
-		if got["4003"].FecInicio == nil || got["4004"].FecFin == nil {
+		if got["4003"].FecInicio == nil || got["4004"].FecInicio == nil {
 			t.Errorf("línea %d fechas faltantes", i)
 		}
 	}

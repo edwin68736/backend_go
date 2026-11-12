@@ -251,6 +251,18 @@ func (s *Service) SalesDocs(from, to time.Time) ([]SaleDoc, []string, error) {
 			items[l.SaleID] = append(items[l.SaleID], lineRow{ParentID: l.SaleID, Affectation: l.IgvAffectationType, Subtotal: l.Subtotal, TaxAmount: l.TaxAmount})
 		}
 	}
+	// Hospedaje a no domiciliados (0202): el adquirente real es el huésped, no el cliente genérico de la venta. El registro lo muestra con su
+	// nombre y su pasaporte (o carné de extranjería). La tabla puede no existir en un tenant sin la migración V186.
+	guests := map[uint]database.TenantSaleExport{}
+	if len(ids) > 0 && s.db.Migrator().HasTable(&database.TenantSaleExport{}) {
+		var ex []database.TenantSaleExport
+		if err := s.db.Where("sale_id IN ? AND operation_type_code = ?", ids, "0202").Find(&ex).Error; err != nil {
+			return nil, nil, err
+		}
+		for _, e := range ex {
+			guests[e.SaleID] = e
+		}
+	}
 	// Una venta «anulada» que tiene una nota de crédito vigente NO está dada de baja: el comprobante
 	// original conserva sus importes y es la nota (en negativo) la que lo revierte. Poner en cero el
 	// original Y restar la nota duplicaría la reversión.
@@ -297,6 +309,9 @@ func (s *Service) SalesDocs(from, to time.Time) ([]SaleDoc, []string, error) {
 		}
 		if d.Currency == "" {
 			d.Currency = "PEN"
+		}
+		if g, ok := guests[r.ID]; ok && strings.TrimSpace(g.GuestName) != "" {
+			d.ContactName, d.ContactDocType, d.ContactDocNumber = g.GuestName, g.GuestDocType, g.GuestDocNumber
 		}
 		d.ExchangeRate = rateOrOne(d.Currency, r.ExchangeRate, &warns, d.FullNumber)
 		d.PEN = b.scale(d.ExchangeRate)

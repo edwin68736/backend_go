@@ -23,6 +23,9 @@ func (s *SaleService) prepareExport(input *CreateSaleInput, sunatCode string) (*
 	if sunatCode != "01" && sunatCode != "03" {
 		return nil, errors.New("la exportación de servicios solo aplica a factura (01) o boleta (03)")
 	}
+	if op == salecurrency.OpExportHospedaje && sunatCode != "01" {
+		return nil, errors.New("el hospedaje a no domiciliados (0202) solo se emite en factura: SUNAT no lo admite en boleta")
+	}
 	var enabled bool
 	if err := s.db.Model(&database.TenantCompanyConfig{}).Select("exports_enabled").Limit(1).Scan(&enabled).Error; err != nil {
 		return nil, err
