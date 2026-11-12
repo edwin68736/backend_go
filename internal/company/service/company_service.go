@@ -11,6 +11,7 @@ import (
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/facturador"
 	"tukifac/pkg/receiptdesign"
+	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
 )
@@ -73,6 +74,8 @@ type CompanyConfigPatch struct {
 	ShowTermsConditions            *bool    `json:"show_terms_conditions"`
 	ShowBusinessNameOnSaleNote     *bool    `json:"show_business_name_on_sale_note"`
 	ShowIgvBreakdownOnSaleNote     *bool    `json:"show_igv_breakdown_on_sale_note"`
+	ServiceChargeEnabled           *bool    `json:"service_charge_enabled"`
+	ServiceChargeRate              *float64 `json:"service_charge_rate"`
 	LogoSizeTicket                 *string  `json:"logo_size_ticket"`
 	LogoSizeA4                     *string  `json:"logo_size_a4"`
 	PdfA4Design                    *string  `json:"pdf_a4_design"`
@@ -88,6 +91,9 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 		return errors.New("configure primero los datos generales de la empresa")
 	}
 	updates := map[string]interface{}{}
+	if patch.ServiceChargeRate != nil && !tax.ValidServiceChargeRate(*patch.ServiceChargeRate) {
+		return fmt.Errorf("el recargo al consumo debe ser mayor que 0 y no pasar de %.0f%% (tope legal, DL 25988)", tax.MaxServiceChargeRate)
+	}
 	if patch.TradeName != nil {
 		updates["trade_name"] = strings.TrimSpace(*patch.TradeName)
 	}
@@ -131,6 +137,12 @@ func (s *CompanyService) ApplyConfigPatch(patch CompanyConfigPatch) error {
 	}
 	if patch.ShowIgvBreakdownOnSaleNote != nil {
 		updates["show_igv_breakdown_on_sale_note"] = *patch.ShowIgvBreakdownOnSaleNote
+	}
+	if patch.ServiceChargeEnabled != nil {
+		updates["service_charge_enabled"] = *patch.ServiceChargeEnabled
+	}
+	if patch.ServiceChargeRate != nil {
+		updates["service_charge_rate"] = *patch.ServiceChargeRate
 	}
 	if patch.LogoSizeTicket != nil {
 		updates["logo_size_ticket"] = normalizeLogoSize(*patch.LogoSizeTicket)

@@ -918,6 +918,10 @@ type TenantCompanyConfig struct {
 	// comportamiento previo. Si se desactiva, la nota de venta muestra solo el total (los descuentos,
 	// si los hay, se siguen mostrando). No afecta boleta ni factura.
 	ShowIgvBreakdownOnSaleNote bool `gorm:"default:true" json:"show_igv_breakdown_on_sale_note"`
+	// Recargo al consumo (DL 25988, 5.ª disp. compl.): lo activa el propio tenant (hoteles/restaurantes). Es un % sobre el valor de venta
+	// (sin IGV) que no integra la base del IGV y se reparte entre los trabajadores. Tope legal 13 %. Default apagado.
+	ServiceChargeEnabled bool    `gorm:"column:service_charge_enabled;default:false" json:"service_charge_enabled"`
+	ServiceChargeRate    float64 `gorm:"column:service_charge_rate;type:decimal(5,2);default:10" json:"service_charge_rate"`
 	// Tamaño del logo en TODOS los comprobantes (factura/boleta/NV), separado por formato
 	// porque ticket (rollo térmico) y A4 tienen proporciones muy distintas.
 	// Valores: pequeno | mediano | grande.
@@ -1571,6 +1575,9 @@ type TenantSale struct {
 	GlobalDiscountAmount float64    `gorm:"type:decimal(15,2);default:0" json:"global_discount_amount"`
 	GlobalDiscountMode   string     `gorm:"size:20" json:"global_discount_mode,omitempty"`
 	GlobalDiscountValue  float64    `gorm:"type:decimal(15,2);default:0" json:"global_discount_value"`
+	// Recargo al consumo cobrado en esta venta (cargo global, cat. 53 código 46): fuera de la base del IGV; suma a Total. Base: Subtotal.
+	ServiceChargeRate    float64    `gorm:"column:service_charge_rate;type:decimal(5,2);default:0" json:"service_charge_rate"`
+	ServiceChargeAmount  float64    `gorm:"column:service_charge_amount;type:decimal(15,2);default:0" json:"service_charge_amount"`
 	Currency             string     `gorm:"size:10;default:'PEN'" json:"currency"`
 	OperationTypeCode    string     `gorm:"size:10;default:'0101'" json:"operation_type_code"`
 	ExchangeRate         *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`
