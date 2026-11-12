@@ -156,7 +156,7 @@ func (s *PayableService) List(f ListFilter) ([]PayableRow, int64, error) {
 	err := s.listQuery(f).
 		Select(`p.id AS purchase_id, p.series AS purchase_series, p.number AS purchase_number, p.doc_type,
 			p.issue_date, p.due_date, p.contact_id,
-			COALESCE(c.trade_name, c.business_name, '') AS contact_name,
+			COALESCE(NULLIF(TRIM(c.business_name), ''), NULLIF(TRIM(c.trade_name), ''), '') AS contact_name,
 			COALESCE(c.doc_number, '') AS contact_doc_number,
 			pay.original_amount, pay.paid_amount, pay.status, p.currency, p.exchange_rate`).
 		Joins("LEFT JOIN tenant_contacts AS c ON c.id = p.contact_id").
