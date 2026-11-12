@@ -54,6 +54,9 @@ func parseDate(label, raw string) (*time.Time, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s no es una fecha válida (use AAAA-MM-DD)", label)
 	}
+	// Fecha de calendario: se guarda a mediodía UTC para que ninguna conversión de zona horaria del driver (UTC, hora local del servidor
+	// o Perú) la corra a otro día al escribirla en una columna DATE (a medianoche UTC se guardaba el día anterior en un servidor UTC-5).
+	t = time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, time.UTC)
 	return &t, nil
 }
 
