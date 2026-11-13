@@ -699,6 +699,7 @@ func (s *BillingService) CreateDebitNoteForSale(originalSaleID uint, reason stri
 			Subtotal:           it.Subtotal,
 			TaxAmount:          it.TaxAmount,
 			Total:              it.Total,
+			PackLabel:          it.PackLabel,
 		}
 		s.db.Create(&ndItem)
 	}

@@ -351,6 +351,7 @@ func buildQuotationItemRow(
 		Total:              total,
 		ModifiersJSON:      it.ModifiersJSON,
 		ItemNote:           it.ItemNote,
+		PackLabel:          salessvc.ResolvePackLabel(db, it.ProductID, it.SaleUnitID),
 	}
 }
 

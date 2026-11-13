@@ -185,6 +185,7 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 			IgvAffectationType:     it.IgvAffectationType,
 			ModifiersJSON:          it.ModifiersJSON,
 			ItemNote:               it.ItemNote,
+			PackLabel:              it.PackLabel,
 			ProductID:              it.ProductID,
 			SaleUnitID:             it.SaleUnitID,
 		}

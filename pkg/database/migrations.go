@@ -1703,6 +1703,10 @@ type TenantSaleItem struct {
 	// ItemNote nota libre de esta línea (p. ej. "segundo uso"). Queda en el snapshot de la
 	// venta; NO modifica el producto del catálogo.
 	ItemNote string `gorm:"size:255" json:"item_note"`
+	// PackLabel (V191): contenido de la unidad de venta usada, p. ej. "12 UND" cuando se vende por caja de 12. Se congela al crear la
+	// línea (el factor de la unidad de venta puede cambiar después) y se imprime entre paréntesis junto a la descripción. Vacío en
+	// líneas sin unidad de venta con factor > 1 y en todo documento anterior a V191 (no se reconstruye).
+	PackLabel string `gorm:"size:60" json:"pack_label,omitempty"`
 	// OriginalSaleItemID: en una línea de nota de crédito parcial, la línea de la venta
 	// original de la que nace (para revertir stock exacto vía tenant_stock_movements.sale_item_id).
 	// NULL en cualquier otro caso (venta normal, o nota que copia el 100%).
@@ -1954,6 +1958,8 @@ type TenantQuotationItem struct {
 	ModifiersJSON    string  `gorm:"type:text" json:"modifiers_json"`
 	// ItemNote nota libre de esta línea; queda en el snapshot de la cotización.
 	ItemNote string `gorm:"size:255" json:"item_note"`
+	// PackLabel (V191): contenido de la unidad de venta ("12 UND"); ver TenantSaleItem.PackLabel.
+	PackLabel string `gorm:"size:60" json:"pack_label,omitempty"`
 }
 
 func (TenantQuotationItem) TableName() string { return "tenant_quotation_items" }

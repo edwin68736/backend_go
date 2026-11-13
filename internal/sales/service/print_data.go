@@ -281,6 +281,8 @@ type PrintItem struct {
 	IgvAffectationType     string  `json:"igv_affectation_type,omitempty"`
 	ModifiersJSON          string  `json:"modifiers_json,omitempty"`
 	ItemNote               string  `json:"item_note,omitempty"`
+	// PackLabel: contenido de la unidad de venta ("12 UND"), congelado al emitir; el comprobante lo imprime entre paréntesis.
+	PackLabel string `json:"pack_label,omitempty"`
 	// ProductID + SaleUnitID: referencia para que el frontend resuelva y muestre el NOMBRE
 	// comercial de la SaleUnit usada en esta línea (ej. "Caja"), vía productsService.getSaleUnit.
 	// `Unit` arriba sigue siendo el código fiscal SUNAT (ej. "BX") — ambos conceptos no se mezclan.
@@ -505,6 +507,7 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 			IgvAffectationType:     it.IgvAffectationType,
 			ModifiersJSON:          it.ModifiersJSON,
 			ItemNote:               it.ItemNote,
+			PackLabel:              it.PackLabel,
 			ProductID:              it.ProductID,
 			SaleUnitID:             it.SaleUnitID,
 		}

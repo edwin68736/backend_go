@@ -96,6 +96,7 @@ func buildFullNoteItems(noteSaleID uint, origItems []database.TenantSaleItem) []
 			Subtotal:           it.Subtotal,
 			TaxAmount:          it.TaxAmount,
 			Total:              it.Total,
+			PackLabel:          it.PackLabel,
 		}
 	}
 	return items
@@ -168,6 +169,7 @@ func buildPartialNoteItems(originalSaleID uint, origItems []database.TenantSaleI
 			TaxAmount:              itTax,
 			Total:                  itTot,
 			OriginalSaleItemID:     &origItemID,
+			PackLabel:              orig.PackLabel,
 		})
 		subtotal = money.RoundSunat(subtotal + itSub)
 		taxAmount = money.RoundSunat(taxAmount + itTax)

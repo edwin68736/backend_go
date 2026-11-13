@@ -134,6 +134,9 @@ type SaleItemInput struct {
 	PriceIncludesIgv   bool    `json:"price_includes_igv"`   // si el precio ya incluye IGV
 	ModifiersJSON      string  `json:"modifiers_json"`       // detalle de modificadores para ticket
 	ItemNote           string  `json:"item_note"`            // nota libre de la línea; no toca el catálogo
+	// PackLabel: contenido de la unidad de venta ("12 UND"). Vacío = se calcula de la unidad de venta de la línea; al emitir un
+	// comprobante desde una nota de venta se copia el de la nota para que ambos digan lo mismo.
+	PackLabel string `json:"pack_label,omitempty"`
 	// ComboJSON: elección del cliente cuando el producto es un combo/promoción.
 	// [{ group_id, items: [{ product_id, quantity }] }]. El servicio resuelve el precio,
 	// valida la selección y descuenta el stock de los componentes.
@@ -2641,6 +2644,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 			PriceIncludesIgv:   inferPriceIncludesIgvFromSaleItem(s.db, it, taxCfg),
 			ModifiersJSON:      it.ModifiersJSON,
 			ItemNote:           it.ItemNote,
+			PackLabel:          it.PackLabel,
 			// Precio ya vetado cuando se creó la nota de venta original (pasó por
 			// validateAuthorizedPrices en ese momento); esto es un snapshot de datos ya
 			// persistidos, no un precio nuevo enviado por el cliente en esta llamada.
