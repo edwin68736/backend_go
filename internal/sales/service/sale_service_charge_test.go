@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"tukifac/internal/exportacion"
 	"tukifac/pkg/database"
+	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
@@ -153,5 +155,16 @@ func TestSummaryStats_InformaElRecargoAparte(t *testing.T) {
 	st := svc.SummaryStats(0, time.Now().Add(-24*time.Hour), time.Now().Add(24*time.Hour))
 	if st["count"].(int64) != 1 || !near(st["total"].(float64), 128) || !near(st["service_charge_total"].(float64), 10) {
 		t.Fatalf("resumen: %+v", st)
+	}
+}
+
+// El recargo al consumo no se combina con la exportación de servicios (todavía sin probar ese cruce contra SUNAT).
+func TestCreate_RecargoConExportacion_SeRechaza(t *testing.T) {
+	db, c, s := setupExportTestDB(t, true)
+	setServiceCharge(t, db, true, 10)
+	in := exportInput(c, s, salecurrency.OpExportServicios, &exportacion.SaleInput{CountryUse: "US"})
+	in.ApplyServiceCharge = true
+	if _, err := NewSaleService(db).Create(in); err == nil {
+		t.Fatal("recargo + exportación debió rechazarse")
 	}
 }

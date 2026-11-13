@@ -415,8 +415,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	var serviceChargeAmount float64
 	if serviceChargeRate > 0 {
-		if input.Prepayment != nil || input.Detraccion != nil {
-			return nil, errors.New("el recargo al consumo no se puede combinar con anticipos ni con detracción")
+		if input.Prepayment != nil || input.Detraccion != nil || salecurrency.IsExportService(input.OperationTypeCode) {
+			return nil, errors.New("el recargo al consumo no se puede combinar con anticipos, detracción ni exportación de servicios")
 		}
 		serviceChargeAmount, total = tax.AddServiceCharge(subtotal, total, serviceChargeRate)
 	}
