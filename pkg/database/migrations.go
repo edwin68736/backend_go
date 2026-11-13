@@ -2376,6 +2376,8 @@ type TenantPaymentMethod struct {
 	AppliesTo string `gorm:"size:10;default:'both'" json:"applies_to"`
 	// RequiresReference (V184): el cobro/pago exige un N° de operación o referencia (transferencias, tarjetas).
 	RequiresReference bool `gorm:"default:false" json:"requires_reference"`
+	// LogoURL (V189): icono propio del método (data URL ya reducido por el panel). Vacío = se usa el icono por defecto según el código.
+	LogoURL string `gorm:"type:text" json:"logo_url"`
 	// Legacy column — se elimina en v075; GORM lo omite en BD nueva sin la columna.
 	DestinationType string         `gorm:"size:20" json:"destination_type,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`

@@ -540,9 +540,13 @@ func (h *CashBankHandler) CreatePaymentMethodAPI(c fiber.Ctx) error {
 		BankAccountID     *uint  `json:"bank_account_id"`
 		AppliesTo         string `json:"applies_to"`
 		RequiresReference bool   `json:"requires_reference"`
+		LogoURL           string `json:"logo_url"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	if err := service.ValidatePaymentMethodLogo(body.LogoURL); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	svc := service.NewCashBankService(db(c))
 	pm, err := svc.CreatePaymentMethod(
@@ -556,6 +560,12 @@ func (h *CashBankHandler) CreatePaymentMethodAPI(c fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		pm.AppliesTo, pm.RequiresReference = body.AppliesTo, body.RequiresReference
+	}
+	if body.LogoURL != "" {
+		if err := svc.SetPaymentMethodLogo(pm.ID, body.LogoURL); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		pm.LogoURL = body.LogoURL
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": pm})
 }
@@ -574,9 +584,16 @@ func (h *CashBankHandler) UpdatePaymentMethodAPI(c fiber.Ctx) error {
 		Active            bool   `json:"active"`
 		AppliesTo         *string `json:"applies_to"`
 		RequiresReference *bool   `json:"requires_reference"`
+		// LogoURL: ausente = no cambia; "" = quitar el logo propio; data URL = reemplazar.
+		LogoURL *string `json:"logo_url"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
+	}
+	if body.LogoURL != nil {
+		if err := service.ValidatePaymentMethodLogo(*body.LogoURL); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	svc := service.NewCashBankService(db(c))
 	if err := svc.UpdatePaymentMethod(
@@ -597,6 +614,11 @@ func (h *CashBankHandler) UpdatePaymentMethodAPI(c fiber.Ctx) error {
 			if err := svc.SetPaymentMethodOptions(uint(id), applies, req); err != nil {
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 			}
+		}
+	}
+	if body.LogoURL != nil {
+		if err := svc.SetPaymentMethodLogo(uint(id), *body.LogoURL); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
 	return c.JSON(fiber.Map{"success": true})

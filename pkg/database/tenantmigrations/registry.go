@@ -160,6 +160,7 @@ var TenantMigrations = []TenantMigration{
 	V186ExportServices{},
 	V187ContactCountry{},
 	V188ServiceCharge{},
+	V189PaymentMethodLogo{},
 }
 
 // ByVersion mapa versión → migración.
