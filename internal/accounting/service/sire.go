@@ -124,9 +124,21 @@ func sunatError(op string, status int, body []byte) error {
 		Desc string `json:"error_description"`
 		Err  string `json:"error"`
 		Cod  string `json:"cod"`
+		// SUNAT detalla los 422 aquí (p. ej. 1001 «El campo numRuc no enviado o es vacío»).
+		Errors []struct {
+			Cod string `json:"cod"`
+			Msg string `json:"msg"`
+		} `json:"errors"`
 	}
 	_ = json.Unmarshal(body, &e)
 	msg := strings.TrimSpace(strings.Join([]string{e.Cod, e.Msg, e.Desc, e.Err}, " "))
+	if len(e.Errors) > 0 {
+		det := make([]string, 0, len(e.Errors))
+		for _, x := range e.Errors {
+			det = append(det, strings.TrimSpace(x.Cod+" "+x.Msg))
+		}
+		msg += " [" + strings.Join(det, "; ") + "]"
+	}
 	if msg == "" {
 		msg = strings.TrimSpace(string(body))
 		if len(msg) > 200 {
@@ -148,6 +160,7 @@ func (c *SireClient) do(cr *SireCreds, method, path string, q url.Values) ([]byt
 	req, _ := http.NewRequest(method, u, nil)
 	req.Header.Set("Authorization", "Bearer "+tk)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json") // el manual lo lista en todos los servicios
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("no se pudo conectar con SUNAT: %w", err)
@@ -161,9 +174,26 @@ func (c *SireClient) do(cr *SireCreds, method, path string, q url.Values) ([]byt
 		tokenMu.Unlock()
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, sunatError("SUNAT SIRE", resp.StatusCode, body)
+		err := sunatError("SUNAT SIRE", resp.StatusCode, body)
+		if resp.StatusCode == http.StatusUnprocessableEntity && !solUserHasRUC(cr.Username) {
+			err = fmt.Errorf("%w. El usuario SOL debe guardarse con el RUC por delante (RUC + usuario, p. ej. 20123456789MODDATOS); SUNAT toma el RUC de ese usuario", err)
+		}
+		return nil, err
 	}
 	return body, nil
+}
+
+// solUserHasRUC indica si el usuario SOL empieza con un RUC de 11 dígitos (formato exigido por la API SIRE).
+func solUserHasRUC(u string) bool {
+	if len(u) <= 11 {
+		return false
+	}
+	for _, r := range u[:11] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func bookCode(book string) string {
@@ -240,7 +270,7 @@ func (s *Service) SireRequestTicket(c *SireClient, book, period string, userID u
 	var body []byte
 	if book == SireBookPurchase {
 		body, err = c.do(cr, http.MethodGet, "/v1/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/"+period+"/exportacioncomprobantepropuesta",
-			url.Values{"codTipoArchivo": {"0"}, "codOrigenEnvio": {"1"}})
+			url.Values{"codTipoArchivo": {"0"}, "codOrigenEnvio": {"2"}}) // 2 = Servicio API (manual RCE v22, §5.34)
 	} else {
 		body, err = c.do(cr, http.MethodGet, "/v1/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/"+period+"/exportapropuesta",
 			url.Values{"codTipoArchivo": {"0"}})
@@ -316,6 +346,9 @@ func (s *Service) SireQueryTicket(c *SireClient, book, period, ticket string) (*
 			DesEstado      string `json:"desEstadoProceso"`
 			ArchivoReporte []struct {
 				Nombre string `json:"nomArchivoReporte"`
+				// SUNAT escribe «codTipoAchivoReporte» (sin «r») en la respuesta del ticket.
+				Tipo  *string `json:"codTipoAchivoReporte"`
+				Tipo2 *string `json:"codTipoArchivoReporte"`
 			} `json:"archivoReporte"`
 		} `json:"registros"`
 	}
@@ -337,7 +370,16 @@ func (s *Service) SireQueryTicket(c *SireClient, book, period, ticket string) (*
 	if r.CodEstado != "06" || t.FileName == "" {
 		return res, nil
 	}
-	q2 := url.Values{"nomArchivoReporte": {t.FileName}, "codTipoArchivoReporte": {"01"}, "perTributario": {period}, "codProceso": {"10"}, "numTicket": {ticket}}
+	tipoArchivo := "01"
+	if len(r.ArchivoReporte) > 0 {
+		if v := r.ArchivoReporte[0].Tipo; v != nil && *v != "" {
+			tipoArchivo = *v
+		} else if v := r.ArchivoReporte[0].Tipo2; v != nil && *v != "" {
+			tipoArchivo = *v
+		}
+	}
+	// Manual v22: nomArchivoReporte y codTipoArchivoReporte (los que devolvió el ticket); en ventas, además codLibro.
+	q2 := url.Values{"nomArchivoReporte": {t.FileName}, "codTipoArchivoReporte": {tipoArchivo}}
 	if book == SireBookSale {
 		q2.Set("codLibro", "140000")
 	}
