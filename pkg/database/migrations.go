@@ -909,6 +909,9 @@ type TenantCompanyConfig struct {
 	TermsAndConditions     string     `gorm:"type:text" json:"terms_and_conditions"`
 	// Preferencia global: incluir términos en comprobantes/NV/cotizaciones nuevas.
 	ShowTermsConditions bool `gorm:"default:false" json:"show_terms_conditions"`
+	// ExportsEnabled: la empresa factura exportación de servicios a clientes del exterior (operaciones 0201/0202/0208). Apagado por
+	// defecto: exportar sin serlo tiene consecuencias tributarias, así que se activa a propósito en Ajustes.
+	ExportsEnabled bool `gorm:"column:exports_enabled;default:false" json:"exports_enabled"`
 	// Solo nota de venta (SUNAT 00): mostrar razón social del emisor en el impreso.
 	// Default true = comportamiento previo (siempre visible). Si se oculta, se muestra
 	// nombre comercial en su lugar; sin nombre comercial, la razón social se sigue
@@ -973,6 +976,8 @@ type TenantContact struct {
 	TradeName                       string         `gorm:"size:255" json:"trade_name"`
 	Address                         string         `gorm:"size:255" json:"address"`
 	Ubigeo                          string         `gorm:"size:6;index" json:"ubigeo"` // código 6 dígitos del distrito (SUNAT)
+	// Country: país (ISO 3166-1 alfa-2) de un cliente extranjero; vacío = Perú. Lo usa la exportación de servicios (el hospedaje toma de aquí el país del pasaporte).
+	Country                         string         `gorm:"column:country;size:2" json:"country"`
 	Phone                           string         `gorm:"size:50" json:"phone"`
 	Email                           string         `gorm:"size:255" json:"email"`
 	PhotoURL                        string         `gorm:"size:500" json:"photo_url"`
@@ -1758,6 +1763,26 @@ type TenantSaleFiscalObligation struct {
 }
 
 func (TenantSaleFiscalObligation) TableName() string { return "tenant_sale_fiscal_obligations" }
+
+// TenantSaleExport datos de una venta de exportación de servicios (1:1 con la venta; operaciones 0201, 0202 y 0208).
+// 0201/0208 usan CountryUse (país donde se usa el servicio); 0202 (hospedaje) usa los datos del huésped y su estadía.
+type TenantSaleExport struct {
+	SaleID            uint       `gorm:"primaryKey" json:"sale_id"`
+	OperationTypeCode string     `gorm:"size:10;not null" json:"operation_type_code"`
+	CountryUse        string     `gorm:"size:2" json:"country_use,omitempty"` // ISO 3166-1 alfa-2
+	GuestName         string     `gorm:"size:150" json:"guest_name,omitempty"`
+	GuestDocType      string     `gorm:"size:2" json:"guest_doc_type,omitempty"` // catálogo 06: 7 pasaporte, 4 carné de extranjería, ...
+	GuestDocNumber    string     `gorm:"size:20" json:"guest_doc_number,omitempty"`
+	PassportCountry   string     `gorm:"size:2" json:"passport_country,omitempty"`
+	ResidenceCountry  string     `gorm:"size:2" json:"residence_country,omitempty"`
+	EntryDate         *time.Time `gorm:"type:date" json:"entry_date,omitempty"` // ingreso al país
+	CheckIn           *time.Time `gorm:"type:date" json:"check_in,omitempty"`
+	CheckOut          *time.Time `gorm:"type:date" json:"check_out,omitempty"`
+	StayDays          int        `json:"stay_days,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+}
+
+func (TenantSaleExport) TableName() string { return "tenant_sale_exports" }
 
 // TenantSaleDetraccion datos de detracción SUNAT (1:1 con venta factura 1001 o 1004).
 type TenantSaleDetraccion struct {

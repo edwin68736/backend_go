@@ -594,3 +594,55 @@ func TestSaveSettingsEmptyRestoresDefaults(t *testing.T) {
 		t.Errorf("guardado: %+v", st)
 	}
 }
+
+// Exportación de servicios (0201/0202/0208): la línea con afectación 40 va a la columna «Exportación», sin IGV; el hospedaje (0202) muestra al
+// huésped (nombre y pasaporte) como adquirente, y la nota de crédito la revierte en negativo.
+func TestSalesRegister_ExportacionDeServicios(t *testing.T) {
+	db := testDB(t)
+	if err := db.AutoMigrate(&database.TenantSaleExport{}); err != nil {
+		t.Fatal(err)
+	}
+	varios := database.TenantContact{DocType: "0", DocNumber: "99999999", BusinessName: "CLIENTES VARIOS", Type: "customer"}
+	db.Create(&varios)
+	exp := mkSale(t, db, saleOpts{docType: "FACTURA", series: "F001", corr: 20, subtotal: 500, tax: 0, contact: &varios.ID,
+		items: []database.TenantSaleItem{item("40", 500, 0)}})
+	hosp := mkSale(t, db, saleOpts{docType: "FACTURA", series: "F001", corr: 21, subtotal: 300, tax: 0, contact: &varios.ID,
+		items: []database.TenantSaleItem{item("40", 300, 0)}})
+	db.Create(&database.TenantSaleExport{SaleID: exp.ID, OperationTypeCode: "0201", CountryUse: "US"})
+	db.Create(&database.TenantSaleExport{SaleID: hosp.ID, OperationTypeCode: "0202", GuestName: "John Smith", GuestDocType: "7", GuestDocNumber: "X1234567", PassportCountry: "US", ResidenceCountry: "US"})
+	mkSale(t, db, saleOpts{docType: "NOTA_CREDITO", series: "FC01", corr: 7, subtotal: 500, tax: 0, original: &exp.ID,
+		items: []database.TenantSaleItem{item("40", 500, 0)}})
+
+	tb, err := New(db).SalesRegister("2026-03", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := func(name string) int {
+		for i, c := range tb.Columns {
+			if c == name {
+				return i
+			}
+		}
+		t.Fatalf("columna %q", name)
+		return -1
+	}
+	byNum := map[string][]any{}
+	for _, r := range tb.Rows {
+		byNum[fmt.Sprintf("%v-%v", r[4], r[5])] = r
+	}
+	e := byNum["F001-20"]
+	if e[col("Exportación")] != 500.0 || e[col("Base imponible gravada")] != 0.0 || e[col("IGV")] != 0.0 || e[col("Importe total")] != 500.0 {
+		t.Errorf("0201: %v", e)
+	}
+	if e[col("Cliente")] != "CLIENTES VARIOS" {
+		t.Errorf("0201 conserva al cliente de la venta: %v", e[col("Cliente")])
+	}
+	h := byNum["F001-21"]
+	if h[col("Cliente")] != "John Smith" || h[col("Tipo doc. identidad")] != "7" || h[col("N° doc. identidad")] != "X1234567" || h[col("Exportación")] != 300.0 {
+		t.Errorf("0202 debe mostrar al huésped como adquirente: %v", h)
+	}
+	n := byNum["FC01-7"]
+	if n[col("Exportación")] != -500.0 || n[col("Importe total")] != -500.0 {
+		t.Errorf("nota de crédito de exportación en negativo: %v", n)
+	}
+}

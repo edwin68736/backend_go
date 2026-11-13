@@ -59,3 +59,19 @@ type v180Purchase struct {
 }
 
 func (v180Purchase) TableName() string { return "tenant_purchases" }
+
+// V187: país opcional del cliente (solo esa columna).
+type v187Contact struct {
+	ID      uint   `gorm:"primaryKey"`
+	Country string `gorm:"column:country;size:2"`
+}
+
+func (v187Contact) TableName() string { return "tenant_contacts" }
+
+// V186: interruptor de exportaciones en la configuración de la empresa (solo esa columna, sin MODIFY de las demás).
+type v186CompanyConfig struct {
+	ID             uint `gorm:"primaryKey"`
+	ExportsEnabled bool `gorm:"column:exports_enabled;default:false"`
+}
+
+func (v186CompanyConfig) TableName() string { return "tenant_company_configs" }

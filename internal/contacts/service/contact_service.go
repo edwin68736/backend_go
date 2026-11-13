@@ -108,6 +108,8 @@ type ContactInput struct {
 	TradeName                       string
 	Address                         string
 	Ubigeo                          string
+	// Country: país ISO alfa-2 de un cliente extranjero; vacío o PE = Perú.
+	Country                         string
 	Phone                           string
 	Email                           string
 	PhotoURL                        string
@@ -118,6 +120,20 @@ type ContactInput struct {
 	EsAgenteDePercepcion            *bool
 	EsAgenteDePercepcionCombustible *bool
 	EsBuenContribuyente             *bool
+}
+
+// NormalizeCountry deja el país en ISO alfa-2 en mayúsculas; lo que no es un código válido, y el Perú (el valor por defecto), quedan vacíos.
+func NormalizeCountry(raw string) string {
+	c := strings.ToUpper(strings.TrimSpace(raw))
+	if len(c) != 2 || c == "PE" {
+		return ""
+	}
+	for _, r := range c {
+		if r < 'A' || r > 'Z' {
+			return ""
+		}
+	}
+	return c
 }
 
 func validateContactPersons(persons []ContactPersonInput) error {
@@ -242,6 +258,7 @@ func (s *ContactService) Create(input ContactInput) (*database.TenantContact, er
 		TradeName:                       input.TradeName,
 		Address:                         addr,
 		Ubigeo:                          ubi,
+		Country:                         NormalizeCountry(input.Country),
 		Phone:                           input.Phone,
 		Email:                           input.Email,
 		PhotoURL:                        strings.TrimSpace(input.PhotoURL),
@@ -297,6 +314,7 @@ func (s *ContactService) Update(id uint, input ContactInput) error {
 		"trade_name":                          input.TradeName,
 		"address":                             addr,
 		"ubigeo":                              ubi,
+		"country":                             NormalizeCountry(input.Country),
 		"phone":                               input.Phone,
 		"email":                               input.Email,
 		"photo_url":                           strings.TrimSpace(input.PhotoURL),

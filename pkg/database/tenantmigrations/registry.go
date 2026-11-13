@@ -157,6 +157,8 @@ var TenantMigrations = []TenantMigration{
 	V183AccountTransfers{},
 	V184BanksCatalog{},
 	V185UbigeoDistritosUpdate{},
+	V186ExportServices{},
+	V187ContactCountry{},
 	V188ServiceCharge{},
 }
 

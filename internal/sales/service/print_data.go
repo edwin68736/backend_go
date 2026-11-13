@@ -7,6 +7,7 @@ import (
 	"time"
 
 	detraccionsvc "tukifac/internal/detraccion"
+	"tukifac/internal/exportacion"
 	"tukifac/internal/fiscal/salecontext"
 	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/pkg/branchlogo"
@@ -440,6 +441,11 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	}
 
 	enrichFiscalPrintData(db, sale.ID, sale.Total, pd)
+
+	// Exportación de servicios: leyenda y datos de la operación (huésped / país de uso) en las notas del comprobante.
+	if exp, err := exportacion.LoadBySaleID(db, sale.ID); err == nil && exp != nil {
+		pd.Company.AdditionalNotes = exportacion.AppendToNotes(pd.Company.AdditionalNotes, exp)
+	}
 
 	// Términos: preferencia global de empresa (toggle en registro). Asegura impresión aunque
 	// el perfil fiscal de la venta no se haya persistido (p. ej. binding JSON incompleto).

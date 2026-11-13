@@ -12,6 +12,7 @@ import (
 	salecontext "tukifac/internal/fiscal/salecontext"
 	prepaymentsvc "tukifac/internal/prepayment"
 	quotationsvc "tukifac/internal/quotations/service"
+	"tukifac/internal/exportacion"
 	"tukifac/internal/sales/branchguard"
 	"tukifac/internal/sales/nvdisplay"
 	"tukifac/internal/sales/service"
@@ -155,6 +156,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		GlobalDiscountValue  float64                          `json:"global_discount_value"`
 		FiscalContext        *salecontext.FiscalContextInput  `json:"fiscal_context"`
 		Detraccion           *detraccionsvc.SaleInput         `json:"detraccion"`
+		Export               *exportacion.SaleInput           `json:"export"`
 		Prepayment           *prepaymentsvc.SaleInput         `json:"prepayment"`
 		FromQuotationID      *uint                            `json:"from_quotation_id"`
 		// IdempotencyKey: UUID por intento de cobro; el reintento con la misma clave devuelve la venta ya creada.
@@ -238,6 +240,7 @@ func (h *SaleHandler) CreateAPI(c fiber.Ctx) error {
 		CentralTenantID:       centralTenantID,
 		FiscalContext:         body.FiscalContext,
 		Detraccion:            body.Detraccion,
+		Export:                body.Export,
 		Prepayment:            body.Prepayment,
 		IssuedFromQuotationID: issuedFromQuotationID,
 		UserCanOverridePrice:  userCanOverridePrice(c),
