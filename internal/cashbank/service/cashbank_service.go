@@ -338,6 +338,12 @@ func (s *CashBankService) sessionMovementTotals(sessionID uint) (income, expense
 // contactID: proveedor/cliente vinculado (opcional, típico en un egreso a proveedor sin compra
 // registrada todavía) — nil cuando el movimiento no se vincula a ningún contacto.
 func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category, reference, paymentMethod string, amount float64, notes string, contactID *uint) error {
+	return s.AddMovementToAccount(sessionID, userID, movType, category, reference, paymentMethod, amount, notes, contactID, nil)
+}
+
+// AddMovementToAccount es AddMovement eligiendo la cuenta que recibe (ingreso) o de la que sale (egreso) el dinero: nil = la cuenta del método de pago.
+// Solo para métodos que van a una cuenta bancaria o billetera; el efectivo siempre es de la caja.
+func (s *CashBankService) AddMovementToAccount(sessionID, userID uint, movType, category, reference, paymentMethod string, amount float64, notes string, contactID *uint, accountID *uint) error {
 	if amount <= 0 {
 		return errors.New("el monto debe ser mayor a cero")
 	}
@@ -386,7 +392,18 @@ func (s *CashBankService) AddMovement(sessionID, userID uint, movType, category,
 	// GetMovements/GetSessionReport/ReverseManualMovement para mostrar y revertir un manual no
 	// efectivo con los mismos datos que uno en efectivo) — se crea aquí mismo para no forzar esos
 	// dos campos, ajenos a un pago de venta/compra, en la firma compartida por esos otros casos.
-	if acc, err := s.resolveAccountForPaymentMethod(paymentMethod); err == nil && acc != nil {
+	acc, accErr := s.resolveAccountForPaymentMethod(paymentMethod)
+	if accountID != nil && *accountID > 0 {
+		if accErr != nil || acc == nil {
+			return errors.New("el efectivo siempre se registra en la caja; no admite una cuenta bancaria")
+		}
+		chosen, err := s.ValidatePaymentDestinationAccount(nil, *accountID)
+		if err != nil {
+			return err
+		}
+		acc = chosen
+	}
+	if accErr == nil && acc != nil {
 		if err := requireRateForManualUSD(acc, time.Now()); err != nil {
 			return err
 		}

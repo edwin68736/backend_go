@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ type SessionReport struct {
 	Detraction           SessionDetraction       `json:"detraction"`
 	CreditGenerated      SessionCreditGenerated  `json:"credit_generated"`
 	ServiceCharge        SessionServiceCharge    `json:"service_charge"`
+	// Accounts: lo que entró y salió en cada cuenta bancaria/billetera durante la sesión (por la cuenta real que recibió o pagó, no por el método).
+	Accounts []SessionAccountTotals `json:"accounts"`
 	PayableGenerated     SessionPayableGenerated `json:"payable_generated"`
 	// Currency: cuando la sesión tuvo documentos en dólares, el saldo y los totales EN SOLES (cada USD al TC de su documento)
 	// y los montos por moneda. Vacío (has_foreign=false) si todo fue en soles. Los demás campos del reporte conservan los
@@ -45,6 +48,18 @@ type SessionReport struct {
 type SessionPayableGenerated struct {
 	Total     float64            `json:"total"`
 	Purchases []ExpenseDetailRow `json:"purchases"`
+}
+
+// SessionAccountTotals movimientos de la sesión en una cuenta bancaria o billetera (en la moneda de la cuenta) y su saldo actual. El reporte «por método»
+// agrupa por el método que declaró el cajero (p. ej. Transferencia); este bloque dice dónde quedó realmente el dinero (p. ej. Billetera Yape).
+type SessionAccountTotals struct {
+	AccountID uint    `json:"account_id"`
+	Name      string  `json:"name"`
+	Currency  string  `json:"currency"`
+	Income    float64 `json:"income"`
+	Expense   float64 `json:"expense"`
+	Net       float64 `json:"net"`
+	Balance   float64 `json:"balance"` // saldo actual de la cuenta (no solo de la sesión)
 }
 
 // SessionServiceCharge recargo al consumo cobrado en las ventas de la sesión (en soles). Informativo, sin impacto en arqueo: el dinero ya está
@@ -194,6 +209,8 @@ type MovementReportRow struct {
 	AmountPEN     float64  `json:"amount_pen"`
 	RateEstimated bool     `json:"rate_estimated,omitempty"`
 	RateMissing   bool     `json:"rate_missing,omitempty"`
+	// AccountName: cuenta bancaria/billetera a la que entró (o de la que salió) el dinero de un movimiento no efectivo. Vacío en efectivo.
+	AccountName string `json:"account_name,omitempty"`
 }
 
 // MovementChannelSummary totales de un canal (efectivo o electrónico).
@@ -811,6 +828,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 	populateSessionReportSections(report)
 	ensureSessionReportLists(report)
 	report.Currency = s.sessionCurrencySummary(&session)
+	report.Accounts = s.sessionAccountTotals(sessionID)
 	return report, nil
 }
 
@@ -948,6 +966,7 @@ func (s *CashBankService) ListMovementsReport(f MovementReportFilters) (Movement
 	all = append(all, manualBankRows...)
 	sortMovementRowsDesc(all)
 	s.enrichMovementRowsCurrency(all)
+	s.enrichMovementRowsAccountNames(all)
 
 	var cashChannel, electronicChannel, detractionChannel []MovementReportRow
 	for _, row := range all {
@@ -1039,9 +1058,115 @@ func buildMovementChannelBlock(rows []MovementReportRow, limit, offset int, open
 }
 
 func sortMovementRowsDesc(rows []MovementReportRow) {
-	sort.Slice(rows, func(i, j int) bool {
+	sort.SliceStable(rows, func(i, j int) bool {
 		return rows[i].Date.After(rows[j].Date)
 	})
+}
+
+// SortMovementRowsDesc ordena por fecha, la más reciente primero. La lista combinada de ingresos/egresos (efectivo + electrónico) se ordena así
+// de punta a punta: antes se concatenaba el bloque de efectivo y luego el electrónico, y lo último cobrado por Yape o transferencia quedaba
+// en las últimas páginas.
+func SortMovementRowsDesc(rows []MovementReportRow) { sortMovementRowsDesc(rows) }
+
+// enrichMovementRowsAccountNames completa AccountName de las filas de ventas y compras no efectivo, leyendo la cuenta del movimiento bancario
+// que dejó ese documento (la que eligió el cajero o la del método). Si un documento tuvo varios pagos a cuentas distintas se empareja por monto.
+func (s *CashBankService) enrichMovementRowsAccountNames(rows []MovementReportRow) {
+	saleIDs := map[uint]struct{}{}
+	purchaseIDs := map[uint]struct{}{}
+	for _, r := range rows {
+		if r.AccountName != "" || IsCashPaymentMethod(r.PaymentMethod) {
+			continue
+		}
+		if r.SaleID != nil {
+			saleIDs[*r.SaleID] = struct{}{}
+		}
+		if r.PurchaseID != nil {
+			purchaseIDs[*r.PurchaseID] = struct{}{}
+		}
+	}
+	if len(saleIDs) == 0 && len(purchaseIDs) == 0 {
+		return
+	}
+	q := s.db.Model(&database.TenantBankMovement{})
+	switch {
+	case len(saleIDs) > 0 && len(purchaseIDs) > 0:
+		q = q.Where("sale_id IN ? OR purchase_id IN ?", keysUint(saleIDs), keysUint(purchaseIDs))
+	case len(saleIDs) > 0:
+		q = q.Where("sale_id IN ?", keysUint(saleIDs))
+	default:
+		q = q.Where("purchase_id IN ?", keysUint(purchaseIDs))
+	}
+	var bms []database.TenantBankMovement
+	if err := q.Find(&bms).Error; err != nil || len(bms) == 0 {
+		return
+	}
+	accIDs := map[uint]struct{}{}
+	for _, m := range bms {
+		accIDs[m.BankAccountID] = struct{}{}
+	}
+	var accs []database.TenantBankAccount
+	s.db.Where("id IN ?", keysUint(accIDs)).Find(&accs)
+	names := make(map[uint]string, len(accs))
+	for _, a := range accs {
+		names[a.ID] = bankAccountDisplayName(a)
+	}
+	bySale := map[uint][]database.TenantBankMovement{}
+	byPurchase := map[uint][]database.TenantBankMovement{}
+	for _, m := range bms {
+		if m.SaleID != nil {
+			bySale[*m.SaleID] = append(bySale[*m.SaleID], m)
+		}
+		if m.PurchaseID != nil {
+			byPurchase[*m.PurchaseID] = append(byPurchase[*m.PurchaseID], m)
+		}
+	}
+	for i := range rows {
+		r := &rows[i]
+		if r.AccountName != "" || IsCashPaymentMethod(r.PaymentMethod) {
+			continue
+		}
+		var cand []database.TenantBankMovement
+		if r.SaleID != nil {
+			cand = bySale[*r.SaleID]
+		} else if r.PurchaseID != nil {
+			cand = byPurchase[*r.PurchaseID]
+		}
+		if len(cand) == 0 {
+			continue
+		}
+		pick := cand[0]
+		same := true
+		for _, m := range cand {
+			if m.BankAccountID != cand[0].BankAccountID {
+				same = false
+			}
+		}
+		if !same {
+			best := -1.0
+			for _, m := range cand {
+				d := math.Min(math.Abs(math.Abs(m.Amount)-math.Abs(r.Amount)), math.Abs(math.Abs(m.Amount)-math.Abs(r.AmountPEN)))
+				if best < 0 || d < best {
+					best, pick = d, m
+				}
+			}
+		}
+		r.AccountName = names[pick.BankAccountID]
+	}
+}
+
+// bankAccountDisplayName nombre corto para mostrar una cuenta en listas y reportes: «Banco · Nombre» o solo el nombre.
+func bankAccountDisplayName(a database.TenantBankAccount) string {
+	n := strings.TrimSpace(a.Name)
+	b := strings.TrimSpace(a.BankName)
+	switch {
+	case n != "" && b != "" && !strings.EqualFold(n, b):
+		return b + " · " + n
+	case n != "":
+		return n
+	case b != "":
+		return b
+	}
+	return fmt.Sprintf("Cuenta %d", a.ID)
 }
 
 type salePayRow struct {
@@ -1703,6 +1828,7 @@ func (s *CashBankService) buildManualBankMovementRows(f MovementReportFilters) (
 	}
 	contactNames := loadContactNamesMap(s.db, contactIDs)
 
+	accountNames := s.bankAccountNamesFor(movements)
 	rows := make([]MovementReportRow, 0, len(movements))
 	for _, m := range movements {
 		code := methodByAccount[m.BankAccountID]
@@ -1743,6 +1869,7 @@ func (s *CashBankService) buildManualBankMovementRows(f MovementReportFilters) (
 			UserName:      users[m.UserID],
 			BranchName:    branchName,
 			PaymentMethod: method,
+			AccountName:   accountNames[m.BankAccountID],
 			Amount:        amount,
 			MovementID:    manualBankMovementID(m.ID),
 			CashSessionID: sessionID,
@@ -2101,4 +2228,69 @@ func contactDisplayName(c database.TenantContact) string {
 		return c.TradeName
 	}
 	return c.BusinessName
+}
+
+// bankAccountNamesFor nombres para mostrar de las cuentas de un conjunto de movimientos bancarios.
+func (s *CashBankService) bankAccountNamesFor(movements []database.TenantBankMovement) map[uint]string {
+	ids := map[uint]struct{}{}
+	for _, m := range movements {
+		ids[m.BankAccountID] = struct{}{}
+	}
+	out := map[uint]string{}
+	if len(ids) == 0 {
+		return out
+	}
+	var accs []database.TenantBankAccount
+	s.db.Where("id IN ?", keysUint(ids)).Find(&accs)
+	for _, a := range accs {
+		out[a.ID] = bankAccountDisplayName(a)
+	}
+	return out
+}
+
+// sessionAccountTotals suma por cuenta los movimientos bancarios de la sesión: créditos = ingresos, débitos = egresos.
+func (s *CashBankService) sessionAccountTotals(sessionID uint) []SessionAccountTotals {
+	type row struct {
+		BankAccountID uint
+		Type          string
+		Total         float64
+	}
+	var rows []row
+	if err := s.db.Model(&database.TenantBankMovement{}).
+		Select("bank_account_id, type, COALESCE(SUM(COALESCE(account_amount, amount)), 0) AS total").
+		Where("cash_session_id = ?", sessionID).
+		Group("bank_account_id, type").Scan(&rows).Error; err != nil || len(rows) == 0 {
+		return []SessionAccountTotals{}
+	}
+	byAcc := map[uint]*SessionAccountTotals{}
+	order := []uint{}
+	for _, r := range rows {
+		t, ok := byAcc[r.BankAccountID]
+		if !ok {
+			t = &SessionAccountTotals{AccountID: r.BankAccountID}
+			byAcc[r.BankAccountID] = t
+			order = append(order, r.BankAccountID)
+		}
+		if r.Type == "credit" {
+			t.Income += r.Total
+		} else {
+			t.Expense += r.Total
+		}
+	}
+	var accs []database.TenantBankAccount
+	s.db.Where("id IN ?", order).Find(&accs)
+	for _, a := range accs {
+		if t := byAcc[a.ID]; t != nil {
+			t.Name, t.Currency, t.Balance = bankAccountDisplayName(a), strings.ToUpper(strings.TrimSpace(a.Currency)), money.RoundDisplay(a.Balance)
+		}
+	}
+	out := make([]SessionAccountTotals, 0, len(order))
+	for _, id := range order {
+		t := byAcc[id]
+		t.Income, t.Expense = money.RoundDisplay(t.Income), money.RoundDisplay(t.Expense)
+		t.Net = money.RoundDisplay(t.Income - t.Expense)
+		out = append(out, *t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

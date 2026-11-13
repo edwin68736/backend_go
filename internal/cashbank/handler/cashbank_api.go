@@ -288,6 +288,8 @@ func (h *CashBankHandler) AddMovementAPI(c fiber.Ctx) error {
 		// ContactID: proveedor/cliente vinculado (opcional) — típico en un egreso a proveedor sin
 		// compra registrada todavía (frontend: CashMovementTypeView.tsx, vista de Egresos).
 		ContactID *uint `json:"contact_id"`
+		// DestinationAccountID: cuenta que recibe (ingreso) o de la que sale (egreso) el dinero; nil = la cuenta del método. No aplica al efectivo.
+		DestinationAccountID *uint `json:"destination_account_id"`
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "JSON inválido"})
@@ -300,8 +302,8 @@ func (h *CashBankHandler) AddMovementAPI(c fiber.Ctx) error {
 	if _, err := svc.ValidateCashSessionForUser(uint(id), userID(c), branch.ActiveBranchID(c)); err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	}
-	if err := svc.AddMovement(
-		uint(id), userID(c), body.Type, body.Category, body.Reference, body.PaymentMethod, body.Amount, body.Notes, body.ContactID,
+	if err := svc.AddMovementToAccount(
+		uint(id), userID(c), body.Type, body.Category, body.Reference, body.PaymentMethod, body.Amount, body.Notes, body.ContactID, body.DestinationAccountID,
 	); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -446,6 +448,7 @@ func (h *CashBankHandler) ListMovementsReportAPI(c fiber.Ctx) error {
 	}
 	// Compatibilidad: clientes legacy esperan data/total/summary plano (paginado aparte).
 	legacyAll := append(append([]service.MovementReportRow{}, split.Cash.Data...), split.Electronic.Data...)
+	service.SortMovementRowsDesc(legacyAll) // por fecha, mezclando efectivo y electrónico (antes: todo el efectivo primero)
 	legacyData := legacyAll
 	if perPage > 0 {
 		start := (page - 1) * perPage
