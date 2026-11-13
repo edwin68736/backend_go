@@ -63,7 +63,43 @@ type BulkImportResult struct {
 	Updated         int              `json:"updated"`
 	StockRegistered int              `json:"stock_registered"`
 	Failed          []BulkImportFail `json:"failed"`
+	// LimitSkipped: filas de productos NUEVOS que no se importaron porque el plan ya no tenía cupo (no son errores del Excel:
+	// se informan aparte). PlanLimit describe el tope vigente; nil = el plan no limita productos.
+	LimitSkipped int                  `json:"limit_skipped"`
+	PlanLimit    *BulkImportPlanLimit `json:"plan_limit,omitempty"`
 }
+
+// BulkImportPlanLimit el tope de productos del plan frente a esta importación.
+type BulkImportPlanLimit struct {
+	Max int `json:"max"`
+	// Used: productos que ya ocupaban cupo al empezar la importación.
+	Used int64 `json:"used"`
+	// AllowedNew: productos nuevos que cabían en el plan al empezar (los que superen esa cantidad se omiten).
+	AllowedNew int `json:"allowed_new"`
+}
+
+// ProductQuota es el cupo restante de productos del plan durante una importación masiva. Los productos que ya existen
+// (se actualizan) no consumen cupo; solo los NUEVOS que no son servicio. nil = el plan no limita productos.
+type ProductQuota struct {
+	Max       int
+	Used      int64
+	Remaining int
+}
+
+// NewProductQuota arma el cupo a partir del tope del plan y los productos actuales. max<=0 = ilimitado → nil.
+func NewProductQuota(max int, used int64) *ProductQuota {
+	if max <= 0 {
+		return nil
+	}
+	rem := max - int(used)
+	if rem < 0 {
+		rem = 0
+	}
+	return &ProductQuota{Max: max, Used: used, Remaining: rem}
+}
+
+// SetImportQuota fija el cupo de productos que respetarán las importaciones masivas de este servicio.
+func (s *ProductService) SetImportQuota(q *ProductQuota) { s.importQuota = q }
 
 type bulkImportRunOpts struct {
 	ForceRestaurant bool
@@ -126,6 +162,10 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 
 	taxCfg := tax.LoadFromDB(s.db)
 	result := &BulkImportResult{Failed: make([]BulkImportFail, 0)}
+	quota := s.importQuota
+	if quota != nil {
+		result.PlanLimit = &BulkImportPlanLimit{Max: quota.Max, Used: quota.Used, AllowedNew: quota.Remaining}
+	}
 	catCache := make(map[string]uint)
 	brandCache := make(map[string]uint)
 	var branchNameCache map[string]uint // nombre normalizado → id; se carga al primer uso
@@ -245,6 +285,12 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			} else {
 				catalogType = "product"
 			}
+		}
+		// Cupo del plan: solo los productos que pasan a ocupar un lugar nuevo (alta, o reactivar uno eliminado) y no son servicio.
+		consumesSeat := (!hasExisting || isProductSoftDeleted(&existing)) && catalogType != "service"
+		if consumesSeat && quota != nil && quota.Remaining <= 0 {
+			result.LimitSkipped++
+			continue
 		}
 		unit := sunat.NormalizeUnit(item.Unit, catalogType)
 		if strings.TrimSpace(item.Unit) == "" && hasExisting && existing.Unit != "" {
@@ -394,6 +440,9 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 			onCommit()
 		}
 		codesProcessedInBatch[code] = struct{}{}
+		if consumesSeat && quota != nil {
+			quota.Remaining--
+		}
 		if hasExisting {
 			result.Updated++
 		} else {

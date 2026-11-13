@@ -200,6 +200,8 @@ func (s *ProductService) BulkImportAdvancedWith(items []BulkImportAdvancedItem, 
 	res.Created = r.Created
 	res.Updated = r.Updated
 	res.StockRegistered = r.StockRegistered
+	res.LimitSkipped = r.LimitSkipped
+	res.PlanLimit = r.PlanLimit
 	res.Failed = append(res.Failed, r.Failed...)
 	return res, nil
 }

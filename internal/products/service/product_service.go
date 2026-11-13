@@ -20,6 +20,8 @@ import (
 
 type ProductService struct {
 	db *gorm.DB
+	// importQuota: cupo de productos del plan para las importaciones masivas (nil = sin tope). Ver SetImportQuota.
+	importQuota *ProductQuota
 }
 
 func NewProductService(db *gorm.DB) *ProductService {

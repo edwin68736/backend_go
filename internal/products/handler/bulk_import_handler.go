@@ -5,9 +5,21 @@ import (
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
+	"tukifac/pkg/saas"
 
 	"github.com/gofiber/fiber/v3"
+	"gorm.io/gorm"
 )
+
+// productImportQuota cupo de productos que le queda al tenant según su plan, para que las importaciones masivas no lo superen
+// (cada petición lo recalcula, así que también se respeta al importar por lotes). nil = el plan no limita productos.
+func productImportQuota(c fiber.Ctx, conn *gorm.DB) *service.ProductQuota {
+	tenantID := middleware.TenantIDFromClaims(c)
+	if tenantID == 0 || conn == nil {
+		return nil
+	}
+	return service.NewProductQuota(saas.TenantPlanLimits(tenantID).MaxProducts, saas.CountProductSeats(conn))
+}
 
 // BulkImportRestaurantAPI POST /api/products/bulk-import/restaurant
 func (h *ProductHandler) BulkImportRestaurantAPI(c fiber.Ctx) error {
@@ -28,7 +40,9 @@ func (h *ProductHandler) BulkImportRestaurantAPI(c fiber.Ctx) error {
 		}
 	}
 	uid, _ := c.Locals("user_id").(uint)
-	res, err := service.NewProductService(db(c)).BulkImportRestaurant(body.Items, branchID, uid)
+	svc := service.NewProductService(db(c))
+	svc.SetImportQuota(productImportQuota(c, db(c)))
+	res, err := svc.BulkImportRestaurant(body.Items, branchID, uid)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -54,7 +68,9 @@ func (h *ProductHandler) BulkImportCatalogAPI(c fiber.Ctx) error {
 		}
 	}
 	uid, _ := c.Locals("user_id").(uint)
-	res, err := service.NewProductService(db(c)).BulkImportCatalog(body.Items, branchID, uid)
+	svc := service.NewProductService(db(c))
+	svc.SetImportQuota(productImportQuota(c, db(c)))
+	res, err := svc.BulkImportCatalog(body.Items, branchID, uid)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -156,6 +172,7 @@ func (h *ProductHandler) bulkImportAdvanced(c fiber.Ctx, restaurant bool) error 
 	}
 	uid, _ := c.Locals("user_id").(uint)
 	conn := db(c)
+	quota := productImportQuota(c, conn) // se calcula ANTES de la transacción del dry_run: el simulacro respeta el mismo cupo
 	if body.DryRun {
 		tx := conn.Begin()
 		if tx.Error != nil {
@@ -170,7 +187,9 @@ func (h *ProductHandler) bulkImportAdvanced(c fiber.Ctx, restaurant bool) error 
 		// platos de otros lotes, que en un dry_run por lotes no existirían).
 		opts.MaxItems = service.BulkImportMaxItems
 	}
-	res, err := service.NewProductService(conn).BulkImportAdvancedWith(body.Items, branchID, uid, opts)
+	svc := service.NewProductService(conn)
+	svc.SetImportQuota(quota)
+	res, err := svc.BulkImportAdvancedWith(body.Items, branchID, uid, opts)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

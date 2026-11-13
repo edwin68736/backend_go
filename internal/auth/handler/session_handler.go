@@ -78,7 +78,7 @@ func (h *SessionHandler) GetModules(c fiber.Ctx) error {
 	var usersUsed, branchesUsed, productsUsed int64
 	usersUsed = saas.CountSeatUsers(tdb)
 	tdb.Model(&database.TenantBranch{}).Where("active = ?", true).Count(&branchesUsed)
-	tdb.Model(&database.TenantProduct{}).Count(&productsUsed)
+	productsUsed = saas.CountProductSeats(tdb)
 
 	limits := saas.TenantPlanLimits(claims.TenantID)
 	type limitView struct {

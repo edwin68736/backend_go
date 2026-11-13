@@ -111,8 +111,7 @@ func CheckCreateQuota(tenantDB *gorm.DB, tenantID uint, res QuotaResource) *Quot
 		if max <= 0 {
 			return nil
 		}
-		// Solo bienes de inventario; los servicios no cuentan contra el tope de productos.
-		tenantDB.Model(&database.TenantProduct{}).Where("type != ?", "service").Count(&used)
+		used = CountProductSeats(tenantDB)
 	default:
 		return nil
 	}
@@ -120,6 +119,15 @@ func CheckCreateQuota(tenantDB *gorm.DB, tenantID uint, res QuotaResource) *Quot
 		return &QuotaError{Resource: res, Used: used, Max: max, PlanName: limits.PlanName}
 	}
 	return nil
+}
+
+// CountProductSeats cuenta los productos que ocupan un cupo del plan: bienes de inventario vivos (no eliminados); los
+// servicios no cuentan. Es el MISMO criterio con el que se valida el alta y el que muestra GET /api/session/modules
+// (antes el contador de pantalla contaba también los servicios y no coincidía con el bloqueo).
+func CountProductSeats(tenantDB *gorm.DB) int64 {
+	var n int64
+	tenantDB.Model(&database.TenantProduct{}).Where("type != ?", "service").Count(&n)
+	return n
 }
 
 // CountSeatUsers cuenta los usuarios que ocupan un cupo del plan: activos y no eliminados (el
