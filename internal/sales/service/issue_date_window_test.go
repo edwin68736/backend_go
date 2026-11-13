@@ -36,3 +36,23 @@ func TestResolveElectronicIssueDate(t *testing.T) {
 		}
 	}
 }
+
+// El vencimiento de una NV al contado (= su emisión) acompaña a la emisión elegida del comprobante; un plazo explícito se respeta.
+func TestElectronicDueDate(t *testing.T) {
+	loc := datespe.Location()
+	day := func(d int) time.Time { return time.Date(2026, 11, d, 12, 0, 0, 0, loc) }
+
+	nvIssue, chosen := day(13), day(10)
+	notaDue := day(13) // contado: vence el día de su emisión
+	if got := electronicDueDate(&notaDue, nvIssue, chosen); got == nil || !got.Equal(chosen) {
+		t.Fatalf("contado: el vencimiento debe ser la emisión elegida (10/11), got %v", got)
+	}
+
+	plazo := day(28) // plazo propio de la nota: se respeta
+	if got := electronicDueDate(&plazo, nvIssue, chosen); got == nil || !got.Equal(plazo) {
+		t.Fatalf("plazo explícito debe respetarse, got %v", got)
+	}
+	if got := electronicDueDate(nil, nvIssue, chosen); got != nil {
+		t.Fatalf("sin vencimiento debe seguir sin vencimiento, got %v", got)
+	}
+}

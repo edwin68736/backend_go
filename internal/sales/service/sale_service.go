@@ -2712,7 +2712,7 @@ func (s *SaleService) IssueElectronicFromNota(notaSaleID uint, targetSeriesID ui
 		return nil, fmt.Errorf("nota de venta en USD: %w", err)
 	}
 	nvID := notaSaleID
-	dueDate := nota.DueDate
+	dueDate := electronicDueDate(nota.DueDate, nota.IssueDate, issueAt)
 	payCondCode := ""
 	var creditInsts []CreditInstallmentInput
 	if creditPlan != nil {

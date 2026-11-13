@@ -47,3 +47,20 @@ func resolveElectronicIssueDate(raw string, notaDate, now time.Time) (time.Time,
 	}
 	return time.Date(day.Year(), day.Month(), day.Day(), 12, 0, 0, 0, loc), nil
 }
+
+// electronicDueDate fecha de vencimiento del comprobante que nace de una nota de venta al contado. La nota guarda como vencimiento
+// su propia fecha de emisión; si el comprobante se emite con otra fecha, copiarla dejaba un vencimiento (p. ej. 13/11) distinto
+// de la emisión elegida (10/11) y el PDF mostraba la fecha de la nota. Si el vencimiento de la nota era su propia emisión
+// (sin plazo propio), el del comprobante es su fecha de emisión; un plazo explícito de la nota se respeta.
+func electronicDueDate(notaDue *time.Time, notaIssue, issueAt time.Time) *time.Time {
+	if notaDue == nil {
+		return nil
+	}
+	loc := datespe.Location()
+	nd, ni := notaDue.In(loc), notaIssue.In(loc)
+	if nd.Year() == ni.Year() && nd.YearDay() == ni.YearDay() {
+		d := issueAt
+		return &d
+	}
+	return notaDue
+}
