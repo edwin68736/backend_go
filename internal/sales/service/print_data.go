@@ -226,6 +226,7 @@ type PrintClient struct {
 	BusinessName string `json:"business_name"`
 	Address      string `json:"address,omitempty"`
 	Email        string `json:"email,omitempty"`
+	Phone        string `json:"phone,omitempty"`
 }
 
 type PrintCompany struct {
@@ -557,6 +558,10 @@ func BuildPrintData(db *gorm.DB, sale *database.TenantSale, items []database.Ten
 	if directPaidSum > payable+0.001 {
 		pd.ChangeAmount = money.CalcPaymentChange(directPaidSum, payable)
 	}
+
+	// Foto del documento: congela (o aplica) cliente, empresa, sucursal, vendedor, cuentas y logo ANTES del QR, que lleva el RUC
+	// y el documento del cliente. Así editar esos datos después no altera el PDF de un comprobante ya emitido.
+	FreezePrintData(db, database.SnapshotKindSale, sale.ID, pd)
 
 	pd.QRData = pd.buildQRData()
 	enrichCreditNotePrintData(db, sale, pd)

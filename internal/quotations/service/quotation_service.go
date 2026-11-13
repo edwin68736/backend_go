@@ -392,6 +392,8 @@ func (s *QuotationService) Update(id uint, input UpdateQuotationInput) (*databas
 	if err != nil {
 		return nil, err
 	}
+	// La cotización se editó a propósito: su foto de impresión se vuelve a congelar en la próxima impresión.
+	_ = s.db.Where("doc_kind = ? AND doc_id = ?", database.SnapshotKindQuotation, id).Delete(&database.TenantDocumentSnapshot{}).Error
 	return s.reloadHeader(id)
 }
 
@@ -413,6 +415,9 @@ func (s *QuotationService) Delete(id uint) error {
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("quotation_id = ?", id).Delete(&database.TenantQuotationItem{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("doc_kind = ? AND doc_id = ?", database.SnapshotKindQuotation, id).Delete(&database.TenantDocumentSnapshot{}).Error; err != nil {
 			return err
 		}
 		return tx.Unscoped().Delete(&database.TenantQuotation{}, id).Error

@@ -6,6 +6,7 @@ import (
 
 	billingsvc "tukifac/internal/billing/service"
 	posvc "tukifac/internal/purchaseorders/service"
+	salessvc "tukifac/internal/sales/service"
 	"tukifac/internal/purchases/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
@@ -210,8 +211,13 @@ func (h *PurchaseHandler) GetAPI(c fiber.Ctx) error {
 		}
 	}
 
+	// Foto del documento (proveedor y emisor al registrar la compra): el PDF usa esto y no los datos actuales.
+	printSnapshot, printLogo := salessvc.EnsurePurchaseSnapshot(tdb, p)
+
 	return c.JSON(fiber.Map{
 		"data": fiber.Map{
+			"print_snapshot":     printSnapshot,
+			"print_logo":         printLogo,
 			"id":                 p.ID,
 			"branch_id":          p.BranchID,
 			"doc_type":           p.DocType,
@@ -319,6 +325,8 @@ func (h *PurchaseHandler) CreateAPI(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	// Congela proveedor, empresa, sucursal y logo tal como están al registrar la compra (ver salessvc.FreezePrintData).
+	salessvc.EnsurePurchaseSnapshot(tdb, purchase)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"success": true, "data": purchase})
 }
 

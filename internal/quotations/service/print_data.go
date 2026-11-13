@@ -220,6 +220,9 @@ func BuildPrintDataForQuotation(db *gorm.DB, quotationID uint) (*salessvc.PrintD
 		}
 	}
 
+	// Foto de la cotización: ver salessvc.FreezePrintData. Se descarta al editarla (su contenido cambia a propósito).
+	salessvc.FreezePrintData(db, database.SnapshotKindQuotation, quotationID, pd)
+
 	return pd, nil
 }
 
