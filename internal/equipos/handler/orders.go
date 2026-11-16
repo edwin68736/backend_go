@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 
 	"tukifac/internal/equipos/service"
@@ -515,4 +516,51 @@ func (h *Handler) UpdateShippingData(c fiber.Ctx) error {
 	})
 	trimOrder(c, res.Order)
 	return c.JSON(fiber.Map{"data": res.Order, "warnings": res.Warnings})
+}
+
+// UploadPaymentVoucher POST /equipos/payments/:id/voucher (multipart, campo «file»): adjunta o reemplaza el voucher.
+func (h *Handler) UploadPaymentVoucher(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	fh, err := c.FormFile("file")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Adjunta el archivo del voucher"})
+	}
+	if fh.Size > service.MaxVoucherBytes {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "el voucher no puede pesar más de 5 MB"})
+	}
+	f, err := fh.Open()
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "No se pudo leer el archivo"})
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, service.MaxVoucherBytes+1))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "No se pudo leer el archivo"})
+	}
+	v, err := svc().SaveVoucher(id, data)
+	if err != nil {
+		return fail(c, err)
+	}
+	audit(c, "equip_payment_voucher", "equip_payment", id, fiber.Map{"bytes": len(data), "mime": v.VoucherMime})
+	return c.JSON(fiber.Map{"data": v})
+}
+
+// GetPaymentVoucher GET /equipos/payments/:id/voucher: sirve el voucher (solo con sesión y permiso de ver pagos).
+func (h *Handler) GetPaymentVoucher(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	b, mime, err := svc().ReadVoucher(id)
+	if err != nil {
+		return fail(c, err)
+	}
+	c.Set("Content-Type", mime)
+	c.Set("X-Content-Type-Options", "nosniff")
+	c.Set("Cache-Control", "private, no-store")
+	c.Set("Content-Disposition", "inline")
+	return c.Send(b)
 }

@@ -159,6 +159,22 @@ func (s *Service) applyShipmentInput(tx *gorm.DB, sh *database.EquipShipment, in
 	return nil
 }
 
+// requireDestinationAgency: un pedido con envío por agencia no se guarda ni se confirma sin agencia de destino
+// (elegida de la lista o escrita a mano). Se exige al armar o editar el pedido desde el formulario; la importación
+// del Excel, los datos históricos y la edición posterior de datos de envío no pasan por aquí.
+func requireDestinationAgency(in *ShipmentInput) error {
+	if in == nil {
+		return nil
+	}
+	if m := strings.TrimSpace(in.DeliveryMode); m != "" && m != "agencia" {
+		return nil
+	}
+	if (in.DestinationAgencyID == nil || *in.DestinationAgencyID == 0) && strings.TrimSpace(in.DestinationAgency) == "" {
+		return invalid("elige la agencia de destino para guardar el pedido con envío por agencia")
+	}
+	return nil
+}
+
 func (s *Service) saveShipmentTx(tx *gorm.DB, orderID uint, in *ShipmentInput) error {
 	sh := database.EquipShipment{OrderID: orderID, Status: "pendiente_envio", IsCurrent: true, DeliveryMode: "agencia"}
 	if err := s.applyShipmentInput(tx, &sh, in); err != nil {
@@ -294,9 +310,6 @@ func (s *Service) DispatchOrder(orderID uint, date string) (*OrderResult, error)
 
 func (s *Service) dispatchOrder(orderID uint, date string) (*OrderResult, error) {
 	return s.shipmentActionTx(orderID, func(tx *gorm.DB, o *database.EquipOrder, sh *database.EquipShipment, c *database.EquipCarrier) ([]string, error) {
-		if o.ValidationStatus != "validado" {
-			return nil, invalid("el pedido debe estar validado antes de despacharse (estado: %s)", strings.ReplaceAll(o.ValidationStatus, "_", " "))
-		}
 		if sh.Status != "pendiente_envio" {
 			return nil, invalid("el envío ya está %s", shipmentStatusLabel(sh.Status))
 		}
@@ -356,9 +369,6 @@ func (s *Service) MarkPickedUp(orderID uint, date string) (*OrderResult, error) 
 		switch {
 		case sh.Status == "en_agencia":
 		case direct && (sh.Status == "pendiente_envio" || sh.Status == "en_transito"):
-			if o.ValidationStatus != "validado" {
-				return nil, invalid("el pedido debe estar validado antes de entregarse")
-			}
 		default:
 			return nil, invalid("el envío está %s: no se puede registrar el recojo", shipmentStatusLabel(sh.Status))
 		}
@@ -559,7 +569,7 @@ func (s *Service) ListShipments(f ShipmentFilter) ([]ShipmentRow, error) {
 		rows = append(rows, ShipmentRow{
 			ShipmentView: s.shipmentView(s.db, sh, st), OrderNumber: o.OrderNumber, CustomerName: o.CustomerName, CustomerPhone: o.CustomerPhone,
 			ValidationStatus: o.ValidationStatus, PaymentStatus: o.PaymentStatus, TotalAmount: o.TotalAmount, BalanceAmount: o.BalanceAmount,
-			ReadyToDispatch: sh.Status == "pendiente_envio" && o.ValidationStatus == "validado",
+			ReadyToDispatch: sh.Status == "pendiente_envio",
 			Packing:         s.packingFor(s.db, items[sh.OrderID]),
 		})
 	}

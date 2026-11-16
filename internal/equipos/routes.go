@@ -22,6 +22,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/equipos/combos", p("equipos.catalog"), h.CreateCombo)
 	saAPI.Put("/equipos/combos/:id", p("equipos.catalog"), h.UpdateCombo)
 
+	saAPI.Get("/equipos/plans", p("equipos.view"), h.ListPlans)
 	saAPI.Get("/equipos/carriers", p("equipos.view"), h.ListCarriers)
 	saAPI.Post("/equipos/carriers", p("equipos.carriers"), h.CreateCarrier)
 	saAPI.Put("/equipos/carriers/:id", p("equipos.carriers"), h.UpdateCarrier)
@@ -91,12 +92,15 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Get("/equipos/payments/:id", p("equipos.payments_view"), h.GetPayment)
 	saAPI.Post("/equipos/payments", p("equipos.payments"), h.CreatePayment)
 	saAPI.Post("/equipos/payments/:id/void", p("equipos.payments"), h.VoidPayment)
+	saAPI.Post("/equipos/payments/:id/voucher", p("equipos.payments"), h.UploadPaymentVoucher)
+	saAPI.Get("/equipos/payments/:id/voucher", p("equipos.payments_view"), h.GetPaymentVoucher)
 	saAPI.Post("/equipos/payments/:id/allocate", p("equipos.payments"), h.AllocatePayment)
 
 	saAPI.Get("/equipos/returns", p("equipos.view"), h.ListReturns)
 	saAPI.Post("/equipos/returns", p("equipos.returns"), h.CreateReturn)
 	saAPI.Put("/equipos/returns/:id", p("equipos.returns"), h.UpdateReturn)
 	saAPI.Post("/equipos/returns/:id/reship", p("equipos.returns"), h.ReshipReturn)
+	saAPI.Post("/equipos/returns/:id/cancel", p("equipos.returns_cancel"), h.CancelReturn)
 
 	saAPI.Get("/equipos/dashboard", p("equipos.view"), h.Dashboard)
 	saAPI.Get("/equipos/alerts", p("equipos.view"), h.Alerts)

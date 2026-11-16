@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	returnStatuses   = map[string]bool{"solicitado": true, "en_camino": true, "recibido": true, "desechado_por_agencia": true}
+	returnStatuses   = map[string]bool{"solicitado": true, "en_camino": true, "recibido": true, "desechado_por_agencia": true, "anulado": true}
 	returnConditions = map[string]bool{"buen_estado": true, "danado": true}
 	returnActions    = map[string]bool{"retorno": true, "reenvio": true, "reembolso": true, "perdida": true}
 )
@@ -224,6 +224,9 @@ func (s *Service) UpdateReturn(id uint, in ReturnUpdate, userID uint) (*ReturnVi
 		} else if !found {
 			return invalid("retorno no encontrado")
 		}
+		if r.Status == "anulado" {
+			return invalid("el retorno está anulado y no se puede modificar")
+		}
 		closed := r.Status == "recibido" || r.Status == "desechado_por_agencia"
 		if closed && in.Status != "" && in.Status != r.Status {
 			return invalid("el retorno ya está cerrado (%s)", r.Status)
@@ -393,4 +396,91 @@ func (s *Service) ListReturns(status string) ([]ReturnView, error) {
 		out = append(out, s.returnView(s.db, r))
 	}
 	return out, nil
+}
+
+// CancelReturn anula un retorno generado por error. Revierte sus efectos:
+//   - si ya se había recibido en buen estado, descuenta de nuevo el stock que reingresó (movimiento de ajuste);
+//   - el envío del pedido vuelve al estado que tenía antes del retorno (en agencia si ya había llegado, si no en tránsito).
+//
+// No se puede anular un retorno ya reenviado (habría que deshacer primero el reenvío) ni uno ya anulado.
+func (s *Service) CancelReturn(id uint, reason string, userID uint) (*ReturnView, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, invalid("indica el motivo de la anulación")
+	}
+	if len(reason) > 255 {
+		reason = reason[:255]
+	}
+	var out ReturnView
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var r database.EquipReturn
+		if found, err := findOne(tx, &r, "id = ?", id); err != nil {
+			return err
+		} else if !found {
+			return invalid("retorno no encontrado")
+		}
+		if r.Status == "anulado" {
+			return invalid("el retorno ya está anulado")
+		}
+		var reshipped int64
+		if err := tx.Model(&database.EquipStockMovement{}).Where("return_id = ? AND movement_type = ?", r.ID, database.EquipMoveReenvio).Count(&reshipped).Error; err != nil {
+			return err
+		}
+		if reshipped > 0 {
+			return invalid("el retorno ya fue reenviado: no se puede anular")
+		}
+		now := time.Now()
+		var uid *uint
+		if userID > 0 {
+			u := userID
+			uid = &u
+		}
+		// Reingreso ya hecho (recibido en buen estado): se compensa con el movimiento contrario.
+		var back []database.EquipStockMovement
+		if err := tx.Where("return_id = ? AND movement_type = ?", r.ID, database.EquipMoveReingreso).Find(&back).Error; err != nil {
+			return err
+		}
+		if len(back) > 0 {
+			rid := r.ID
+			rows := make([]database.EquipStockMovement, 0, len(back))
+			for _, m := range back {
+				rows = append(rows, database.EquipStockMovement{
+					ProductID: m.ProductID, OccurredAt: now, MovementType: database.EquipMoveAjuste, Quantity: -m.Quantity,
+					OrderID: r.OrderID, ReturnID: &rid, Note: fmt.Sprintf("Anulación del retorno N° %d", r.ReturnNumber), CreatedBy: uid,
+				})
+			}
+			if err := tx.Create(&rows).Error; err != nil {
+				return err
+			}
+		}
+		// El envío del pedido deja de estar «en retorno».
+		if r.ShipmentID != nil {
+			var sh database.EquipShipment
+			if found, err := findOne(tx, &sh, "id = ?", *r.ShipmentID); err != nil {
+				return err
+			} else if found && sh.IsCurrent && sh.Status == "retorno" {
+				switch {
+				case sh.ArrivedAt != nil:
+					sh.Status = "en_agencia"
+				case sh.DispatchedAt != nil:
+					sh.Status = "en_transito"
+				default:
+					sh.Status = "pendiente_envio"
+				}
+				if err := tx.Save(&sh).Error; err != nil {
+					return err
+				}
+			}
+		}
+		r.Status, r.CancelledAt, r.CancelReason = "anulado", &now, reason
+		if err := tx.Save(&r).Error; err != nil {
+			return err
+		}
+		out = s.returnView(tx, r)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

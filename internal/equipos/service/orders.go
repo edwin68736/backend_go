@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -50,6 +51,7 @@ type OrderInput struct {
 	CustomerName      string           `json:"customer_name"`
 	CustomerDocType   string           `json:"customer_doc_type"`
 	CustomerDocNumber string           `json:"customer_doc_number"`
+	ContactDocType    string           `json:"contact_doc_type"` // DNI (por defecto) | CE
 	ContactDNI        string           `json:"contact_dni"`
 	ContactName       string           `json:"contact_name"`
 	CustomerPhone     string           `json:"customer_phone"`
@@ -254,13 +256,26 @@ func (s *Service) resolveCustomer(tx *gorm.DB, in OrderInput, o *database.EquipO
 	// Quien recoge es dato del pedido (no del cliente): vacío = recoge el mismo cliente.
 	in.ContactDNI = strings.TrimSpace(in.ContactDNI)
 	in.ContactName = collapse(in.ContactName)
-	if in.ContactDNI != "" && (!onlyDigits(in.ContactDNI) || len(in.ContactDNI) != 8) {
-		return invalid("el DNI de quien recoge debe tener 8 dígitos")
+	contactType := strings.ToUpper(strings.TrimSpace(in.ContactDocType))
+	switch contactType {
+	case "", "DNI":
+		contactType = "DNI"
+		if in.ContactDNI != "" && (!onlyDigits(in.ContactDNI) || len(in.ContactDNI) != 8) {
+			return invalid("el DNI de quien recoge debe tener 8 dígitos")
+		}
+	case "CE":
+		// Carné de extranjería: 9 a 12 caracteres alfanuméricos.
+		in.ContactDNI = strings.ToUpper(in.ContactDNI)
+		if in.ContactDNI != "" && !ceDocRe.MatchString(in.ContactDNI) {
+			return invalid("el carné de extranjería de quien recoge debe tener entre 9 y 12 letras o dígitos")
+		}
+	default:
+		return invalid("tipo de documento de quien recoge inválido (DNI o CE)")
 	}
 	if in.ContactDNI == "" && in.ContactName == "" {
-		o.ContactDNI, o.ContactName = "", ""
+		o.ContactDocType, o.ContactDNI, o.ContactName = "DNI", "", ""
 	} else {
-		o.ContactDNI, o.ContactName = in.ContactDNI, in.ContactName
+		o.ContactDocType, o.ContactDNI, o.ContactName = contactType, in.ContactDNI, in.ContactName
 	}
 	if in.CustomerID != nil {
 		var c database.EquipCustomer
@@ -337,6 +352,8 @@ func normalizeSaleType(v string) (string, error) {
 	}
 	return "", invalid("tipo de salida inválido (independiente o promo_tk)")
 }
+
+var ceDocRe = regexp.MustCompile(`^[A-Z0-9]{9,12}$`)
 
 func normalizeBilling(v string) (string, error) {
 	switch strings.TrimSpace(v) {
@@ -425,6 +442,9 @@ func (s *Service) CreateOrder(in OrderInput, userID uint) (*OrderResult, error) 
 			if err := tx.Create(&items[i]).Error; err != nil {
 				return err
 			}
+		}
+		if err := requireDestinationAgency(in.Shipment); err != nil {
+			return err
 		}
 		if err := s.saveShipmentTx(tx, o.ID, in.Shipment); err != nil {
 			return err
@@ -543,6 +563,12 @@ func (s *Service) UpdateOrder(id uint, in OrderInput, confirm ConfirmInput, user
 		if o.Status == "registrado" {
 			// El stock se regenera con los ítems nuevos (queda registrado en la auditoría del cambio).
 			if err := s.regenerateMovementsTx(tx, o, items, confirm, userID); err != nil {
+				return err
+			}
+		}
+		var cur database.EquipShipment
+		if found, _ := findOne(tx, &cur, "order_id = ? AND is_current = ?", o.ID, true); !found || (cur.Status != "entregado" && cur.Status != "retorno") {
+			if err := requireDestinationAgency(in.Shipment); err != nil {
 				return err
 			}
 		}
@@ -698,6 +724,11 @@ func (s *Service) ConfirmOrder(id uint, c ConfirmInput, userID uint) (*OrderResu
 		if len(items) == 0 {
 			return invalid("agrega al menos un ítem antes de confirmar")
 		}
+		var sh database.EquipShipment
+		if found, _ := findOne(tx, &sh, "order_id = ? AND is_current = ?", o.ID, true); found && sh.DeliveryMode == "agencia" &&
+			sh.DestinationAgencyID == nil && strings.TrimSpace(sh.DestinationAgency) == "" {
+			return invalid("elige la agencia de destino antes de confirmar el pedido con envío por agencia")
+		}
 		outs, err := outflows(items)
 		if err != nil {
 			return err
@@ -709,7 +740,9 @@ func (s *Service) ConfirmOrder(id uint, c ConfirmInput, userID uint) (*OrderResu
 		if err := s.insertOutflowsTx(tx, o, outs, now, userID, c.NegativeNote); err != nil {
 			return err
 		}
+		// La validación manual se retiró: confirmar el pedido lo deja validado (el estado se conserva por historial).
 		o.Status, o.ConfirmedAt = "registrado", &now
+		o.ValidationStatus, o.ValidatedAt = "validado", &now
 		if c.AllowNegative && strings.TrimSpace(c.NegativeNote) != "" {
 			o.Notes = strings.TrimSpace(o.Notes + " | Confirmado con stock negativo: " + strings.TrimSpace(c.NegativeNote))
 		}

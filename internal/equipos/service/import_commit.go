@@ -391,7 +391,7 @@ func (s *Service) persistPlan(tx *gorm.DB, plan *importPlan, fileName string, us
 			IsGift: o.IsGift, CustomerID: custID, CustomerName: o.CustomerName, CustomerDocType: o.Doc.DocType,
 			CustomerDocNumber: o.Doc.DocNumber, ContactDNI: o.Doc.ContactDNI, CustomerPhone: o.Phone,
 			BillingDocType: o.BillingDoc, TotalAmount: total, PaidAmount: paid, BalanceAmount: balance, PaymentStatus: status,
-			ValidationStatus: "pendiente_validacion", Status: "registrado", ImportBatchID: bid, CreatedBy: uid,
+			ValidationStatus: "validado", Status: "registrado", ImportBatchID: bid, CreatedBy: uid,
 		}
 		if ord.CustomerName == "" {
 			ord.CustomerName = "Clientes varios"

@@ -105,7 +105,7 @@ func TestReturn_damagedDoesNotCreateStockAndValidation(t *testing.T) {
 
 func TestDashboardAndAlerts(t *testing.T) {
 	f := newFixture(t)
-	f.confirmed(t, 1, 100) // por validar
+	f.confirmed(t, 1, 100) // por despachar
 	o := f.shipped(t, 1, 100)
 	// Llegó hace 12 días: alerta amarilla/roja según configuración.
 	old := time.Now().AddDate(0, 0, -12)
@@ -114,7 +114,7 @@ func TestDashboardAndAlerts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Orders != 2 || d.PendingValidation != 1 || d.InAgency != 1 || d.WaitingDispatch != 1 {
+	if d.Orders != 2 || d.PendingValidation != 0 || d.InAgency != 1 || d.ReadyToDispatch != 1 {
 		t.Fatalf("dashboard: %+v", d)
 	}
 	al, err := f.s.Alerts()

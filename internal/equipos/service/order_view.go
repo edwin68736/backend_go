@@ -35,6 +35,8 @@ type PaymentLine struct {
 	Total     float64   `json:"payment_total"`
 	Status    string    `json:"status"`
 	Notes     string    `json:"notes"`
+	// VoucherMime no vacío = el cobro tiene voucher adjunto.
+	VoucherMime string `json:"voucher_mime"`
 }
 
 // TimelineEvent hito del pedido (cada fecha es un dato distinto: ver §5.5 de la propuesta).
@@ -146,7 +148,7 @@ func (s *Service) GetOrder(id uint) (*OrderView, error) {
 		}
 		for _, p := range pays {
 			v.Payments = append(v.Payments, PaymentLine{PaymentID: p.ID, PaidAt: p.PaidAt, Method: p.Method, Moment: p.Moment, Reference: p.Reference,
-				Invoice: invoiceText(p), Amount: amt[p.ID], Total: p.Amount, Status: p.Status, Notes: p.Notes})
+				Invoice: invoiceText(p), Amount: amt[p.ID], Total: p.Amount, Status: p.Status, Notes: p.Notes, VoucherMime: p.VoucherMime})
 		}
 	}
 
@@ -271,6 +273,7 @@ type OrderRow struct {
 	AgencyLevel           string     `json:"agency_level"` // verde | amarillo | rojo | critico | sin_fecha | ""
 	AgencyLabel           string     `json:"agency_label"`
 	DestinationAgency     string     `json:"destination_agency"`
+	DeliveryMode          string     `json:"delivery_mode"`
 	FreightCost           float64    `json:"freight_cost"`
 	ScheduledDispatchDate *time.Time `json:"scheduled_dispatch_date"`
 	CreatedBy             *uint      `json:"created_by"`
@@ -304,8 +307,9 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 	}
 	if q := strings.TrimSpace(f.Q); q != "" {
 		like := "%" + strings.ToLower(q) + "%"
-		base = base.Where("LOWER(o.customer_name) LIKE ? OR o.customer_doc_number LIKE ? OR o.customer_phone LIKE ? OR sh.guide_number LIKE ? OR CAST(o.order_number AS CHAR) = ?",
-			like, "%"+q+"%", "%"+q+"%", "%"+q+"%", q)
+		// También por quien recoge (nombre y documento): el destinatario del rótulo puede no ser el cliente.
+		base = base.Where("LOWER(o.customer_name) LIKE ? OR LOWER(o.contact_name) LIKE ? OR o.customer_doc_number LIKE ? OR o.contact_dni LIKE ? OR o.customer_phone LIKE ? OR sh.guide_number LIKE ? OR CAST(o.order_number AS CHAR) = ?",
+			like, like, "%"+q+"%", "%"+q+"%", "%"+q+"%", "%"+q+"%", q)
 	}
 	if d, err := parseDateOnly(f.From); err != nil {
 		return nil, err
@@ -349,7 +353,7 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 		orderBy = "CASE WHEN sh.status = 'en_agencia' AND sh.arrived_at IS NOT NULL THEN 0 WHEN sh.status = 'en_agencia' THEN 1 WHEN sh.status IN ('entregado', 'retorno') THEN 3 ELSE 2 END, CASE WHEN sh.status = 'en_agencia' THEN sh.arrived_at END ASC, o.order_number DESC"
 	}
 	if err := base.Session(&gorm.Session{}).
-		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, sh.arrived_at, COALESCE(sh.destination_agency, '') AS destination_agency, COALESCE(sh.freight_cost, 0) AS freight_cost, sh.scheduled_dispatch_date, o.created_by, COALESCE(cu.name, '') AS created_by_name").
+		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, sh.arrived_at, COALESCE(sh.destination_agency, '') AS destination_agency, COALESCE(sh.delivery_mode, '') AS delivery_mode, COALESCE(sh.freight_cost, 0) AS freight_cost, sh.scheduled_dispatch_date, o.created_by, COALESCE(cu.name, '') AS created_by_name").
 		Order(orderBy).
 		Limit(f.PerPage).Offset((f.Page - 1) * f.PerPage).Scan(&res.Rows).Error; err != nil {
 		return nil, err

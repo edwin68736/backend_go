@@ -60,7 +60,7 @@ func (f *fixture) input(qty float64, price float64) OrderInput {
 		CustomerName: "Juan Pérez", CustomerDocType: "DNI", CustomerDocNumber: "12345678", CustomerPhone: "987654321", SaveCustomer: true,
 		SaleType: "independiente",
 		Items:    []OrderItemInput{{LineType: "producto", ProductID: &pid, Quantity: qty, UnitPrice: price}},
-		Shipment: &ShipmentInput{CarrierID: &f.carrier.ID, DestinationDepartment: "Lima", DeliveryMode: "agencia"},
+		Shipment: &ShipmentInput{CarrierID: &f.carrier.ID, DestinationDepartment: "Lima", DestinationAgency: "Agencia Lima Centro", DeliveryMode: "agencia"},
 	}
 }
 
@@ -232,15 +232,10 @@ func TestOrder_duplicateWarning(t *testing.T) {
 	}
 }
 
-func TestDispatchFlow_requiresValidationAndFullFlow(t *testing.T) {
+func TestDispatchFlow_fullFlowWithoutValidation(t *testing.T) {
 	f := newFixture(t)
 	o := f.confirmed(t, 1, 100)
-	if _, err := f.s.DispatchOrder(o.ID, ""); err == nil || !strings.Contains(err.Error(), "valid") {
-		t.Fatalf("sin validar no se despacha: %v", err)
-	}
-	if _, err := f.s.ValidateOrder(o.ID, "ok", 1); err != nil {
-		t.Fatal(err)
-	}
+	// Ya no hay validación previa: un pedido confirmado se despacha directamente.
 	if _, err := f.s.UpdateShipment(o.ID, ShipmentInput{CarrierID: &f.carrier.ID, GuideNumber: "ABC123", DestinationDepartment: "Cusco", DeliveryMode: "agencia"}); err != nil {
 		t.Fatal(err)
 	}
@@ -264,23 +259,17 @@ func TestDispatchFlow_requiresValidationAndFullFlow(t *testing.T) {
 	}
 }
 
-func TestShipment_observedBlocksDispatchAndQueue(t *testing.T) {
+func TestShipment_queueReadyWithoutValidation(t *testing.T) {
 	f := newFixture(t)
 	o := f.confirmed(t, 1, 100)
-	if _, err := f.s.ObserveOrder(o.ID, "falta DNI", 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.DispatchOrder(o.ID, ""); err == nil {
-		t.Error("observado no se despacha")
-	}
 	rows, err := f.s.ListShipments(ShipmentFilter{Status: "pendiente_envio"})
-	if err != nil || len(rows) != 1 || rows[0].ReadyToDispatch {
+	if err != nil || len(rows) != 1 || !rows[0].ReadyToDispatch {
 		t.Fatalf("cola por despachar: %v %+v", err, rows)
 	}
-	if _, err := f.s.ValidateOrder(o.ID, "", 1); err != nil {
-		t.Fatal(err)
+	if _, err := f.s.DispatchOrder(o.ID, ""); err != nil {
+		t.Fatalf("un pedido confirmado se despacha sin validar: %v", err)
 	}
-	rows, _ = f.s.ListShipments(ShipmentFilter{Status: "pendiente_envio"})
+	rows, _ = f.s.ListShipments(ShipmentFilter{Status: "en_transito"})
 	if len(rows) != 1 || len(rows[0].Packing) == 0 {
 		t.Fatalf("lista de empaque: %+v", rows)
 	}

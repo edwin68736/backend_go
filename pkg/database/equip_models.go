@@ -107,7 +107,8 @@ type EquipOrder struct {
 	CustomerName      string           `gorm:"size:200" json:"customer_name"`
 	CustomerDocType   string           `gorm:"size:10" json:"customer_doc_type"`
 	CustomerDocNumber string           `gorm:"size:20" json:"customer_doc_number"`
-	ContactDNI        string           `gorm:"size:20" json:"contact_dni"`   // quien recoge, si no es el cliente
+	ContactDocType    string           `gorm:"size:6;default:'DNI'" json:"contact_doc_type"` // DNI | CE: tipo del documento de quien recoge
+	ContactDNI        string           `gorm:"size:20" json:"contact_dni"`   // documento de quien recoge, si no es el cliente
 	ContactName       string           `gorm:"size:200" json:"contact_name"` // nombre de quien recoge (destinatario del rótulo)
 	CustomerPhone     string           `gorm:"size:50" json:"customer_phone"`
 	BillingDocType    string           `gorm:"size:12;default:'ninguno'" json:"billing_doc_type"` // boleta | factura | ninguno
@@ -160,6 +161,10 @@ type EquipPayment struct {
 	Method            string    `gorm:"size:20;default:'otro'" json:"method"`       // yape | plin | efectivo | transferencia | deposito | otro
 	Moment            string    `gorm:"size:14;default:'anticipado'" json:"moment"` // anticipado | al_recoger
 	Reference         string    `gorm:"size:120" json:"reference"`
+	// Voucher (imagen o PDF del comprobante de pago): se guarda en disco fuera de /uploads (no es público) y se sirve
+	// solo con sesión. VoucherFile es el nombre en disco; VoucherMime se expone para que la pantalla sepa que existe.
+	VoucherFile       string    `gorm:"size:120" json:"-"`
+	VoucherMime       string    `gorm:"size:40" json:"voucher_mime"`
 	InvoiceDocType    string    `gorm:"size:12" json:"invoice_doc_type"`
 	InvoiceSeries     string    `gorm:"size:10" json:"invoice_series"`
 	InvoiceNumber     string    `gorm:"size:20" json:"invoice_number"`
@@ -259,10 +264,13 @@ type EquipReturn struct {
 	UnpaidBalance float64    `gorm:"type:decimal(15,2);default:0" json:"unpaid_balance"`
 	ReturnCost    float64    `gorm:"type:decimal(15,2);default:0" json:"return_cost"`
 	ReceivedAt    *time.Time `gorm:"type:date" json:"received_at"`
-	Status        string     `gorm:"size:24;default:'solicitado'" json:"status"`     // solicitado | en_camino | recibido | desechado_por_agencia
+	Status        string     `gorm:"size:24;default:'solicitado'" json:"status"`     // solicitado | en_camino | recibido | desechado_por_agencia | anulado
 	Condition     string     `gorm:"size:12;default:'buen_estado'" json:"condition"` // buen_estado | danado
 	ActionTaken   string     `gorm:"size:12;default:'retorno'" json:"action_taken"`  // retorno | reenvio | reembolso | perdida
 	Notes         string     `gorm:"size:500" json:"notes"`
+	// Anulación: el retorno queda en estado «anulado» con su motivo (no se borra, para el historial).
+	CancelledAt   *time.Time `json:"cancelled_at"`
+	CancelReason  string     `gorm:"size:255" json:"cancel_reason"`
 	ImportBatchID *uint      `gorm:"index" json:"import_batch_id"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`

@@ -65,6 +65,25 @@ func (h *Handler) ReshipReturn(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": res.Order})
 }
 
+// CancelReturn POST /equipos/returns/:id/cancel {reason} — pide el PIN de seguridad (X-Security-Pin).
+func (h *Handler) CancelReturn(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	if !requirePin(c) {
+		return nil
+	}
+	var b notesBody
+	_ = c.Bind().JSON(&b)
+	v, err := svc().CancelReturn(id, b.Reason, userID(c))
+	if err != nil {
+		return fail(c, err)
+	}
+	audit(c, "equip_return_cancelled", "equip_return", id, b)
+	return c.JSON(fiber.Map{"data": v})
+}
+
 // ── Panel y alertas ────────────────────────────────────────────────────────
 
 func (h *Handler) Dashboard(c fiber.Ctx) error {
