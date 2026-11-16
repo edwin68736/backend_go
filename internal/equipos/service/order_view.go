@@ -278,6 +278,7 @@ type OrderRow struct {
 	ScheduledDispatchDate *time.Time `json:"scheduled_dispatch_date"`
 	CreatedBy             *uint      `json:"created_by"`
 	CreatedByName         string     `json:"created_by_name"`
+	CustomerID            *uint      `json:"customer_id"`
 }
 
 type OrderListResult struct {
@@ -353,7 +354,7 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 		orderBy = "CASE WHEN sh.status = 'en_agencia' AND sh.arrived_at IS NOT NULL THEN 0 WHEN sh.status = 'en_agencia' THEN 1 WHEN sh.status IN ('entregado', 'retorno') THEN 3 ELSE 2 END, CASE WHEN sh.status = 'en_agencia' THEN sh.arrived_at END ASC, o.order_number DESC"
 	}
 	if err := base.Session(&gorm.Session{}).
-		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, sh.arrived_at, COALESCE(sh.destination_agency, '') AS destination_agency, COALESCE(sh.delivery_mode, '') AS delivery_mode, COALESCE(sh.freight_cost, 0) AS freight_cost, sh.scheduled_dispatch_date, o.created_by, COALESCE(cu.name, '') AS created_by_name").
+		Select("o.id, o.order_number, o.sale_type, o.order_date, o.customer_name, o.customer_doc_type, o.customer_doc_number AS customer_doc, o.total_amount, o.paid_amount, o.balance_amount, o.payment_status, o.validation_status, o.status, o.is_gift, COALESCE(sh.status, '') AS shipment_status, COALESCE(c.name, '') AS carrier_name, COALESCE(sh.guide_number, '') AS guide_number, COALESCE(sh.destination_department, '') AS department, sh.arrived_at, COALESCE(sh.destination_agency, '') AS destination_agency, COALESCE(sh.delivery_mode, '') AS delivery_mode, COALESCE(sh.freight_cost, 0) AS freight_cost, sh.scheduled_dispatch_date, o.created_by, o.customer_id, COALESCE(cu.name, '') AS created_by_name").
 		Order(orderBy).
 		Limit(f.PerPage).Offset((f.Page - 1) * f.PerPage).Scan(&res.Rows).Error; err != nil {
 		return nil, err
