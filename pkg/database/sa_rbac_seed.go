@@ -112,6 +112,7 @@ var SACentralPermissionCatalog = []saPermissionDef{
 	{Module: "equipos", Action: "payments_view", Label: "Ver historial de pagos y estados de cuenta de clientes"},
 	{Module: "equipos", Action: "shipments", Label: "Gestionar envíos (guía, despacho, llegada, recojo)"},
 	{Module: "equipos", Action: "returns", Label: "Gestionar retornos de equipos"},
+	{Module: "equipos", Action: "returns_receive", Label: "Marcar retornos como recibidos (reingresa el stock si el equipo está en buen estado)"},
 	{Module: "equipos", Action: "returns_cancel", Label: "Anular retornos de equipos (revierte el stock si ya se recibió)"},
 	{Module: "equipos", Action: "stock_view", Label: "Ver stock de equipos y su kardex"},
 	{Module: "equipos", Action: "stock_adjust", Label: "Registrar ingresos, ajustes y bajas de stock"},

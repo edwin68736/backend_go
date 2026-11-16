@@ -146,7 +146,8 @@ func (s *Service) applyTrackingEvent(d *shalom.TrackingData, eventType string) s
 		}
 	}
 	if sh == nil {
-		return "sin envío vigente con la guía " + d.Numero
+		// No es la guía de un envío: puede ser la de un retorno.
+		return s.applyReturnEvent(d)
 	}
 	ps := providerState{
 		Status: d.Status, OseID: d.OseID,
@@ -535,6 +536,10 @@ func (s *Service) SyncShalomShipments(ctx context.Context) (*SyncShipmentsResult
 				s.notifyShipmentEvent(id, event)
 			}
 		}
+	}
+	// Los retornos abiertos con guía también se alinean.
+	if err := s.syncOpenReturns(ctx, cl, res); err != nil {
+		return res, err
 	}
 	return res, nil
 }

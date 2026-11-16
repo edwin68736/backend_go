@@ -55,6 +55,9 @@ type ReturnView struct {
 	OrderNumber int          `json:"order_number"`
 	Items       []ReturnItem `json:"items"`
 	Reshipped   bool         `json:"reshipped"`
+	// TrackStage / TrackLabel etapa del retorno en Shalom: origen | transito | destino | entregado ("" = sin seguimiento).
+	TrackStage string `json:"track_stage"`
+	TrackLabel string `json:"track_label"`
 }
 
 func (s *Service) returnView(tx *gorm.DB, r database.EquipReturn) ReturnView {
@@ -68,6 +71,7 @@ func (s *Service) returnView(tx *gorm.DB, r database.EquipReturn) ReturnView {
 	var c int64
 	_ = tx.Model(&database.EquipStockMovement{}).Where("return_id = ? AND movement_type = ?", r.ID, database.EquipMoveReenvio).Count(&c).Error
 	v.Reshipped = c > 0
+	v.TrackStage, v.TrackLabel = returnStage(r.ProviderStatus)
 	return v
 }
 

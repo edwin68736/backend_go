@@ -84,6 +84,62 @@ func (h *Handler) CancelReturn(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": v})
 }
 
+// SetReturnGuide PATCH /equipos/returns/:id/guide {guide_number, code} — guarda la guía y, si es de Shalom, la vincula.
+func (h *Handler) SetReturnGuide(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	var b struct {
+		GuideNumber string `json:"guide_number"`
+		Code        string `json:"code"`
+	}
+	if err := c.Bind().JSON(&b); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Datos inválidos"})
+	}
+	ctx, cancel := providerCtx()
+	defer cancel()
+	v, warnings, err := svc().SetReturnGuide(ctx, id, b.GuideNumber, b.Code)
+	if err != nil {
+		return fail(c, err)
+	}
+	audit(c, "equip_return_guide", "equip_return", id, b)
+	return c.JSON(fiber.Map{"data": v, "warnings": warnings})
+}
+
+// RefreshReturnTracking POST /equipos/returns/:id/provider/refresh — «Actualizar desde Shalom».
+func (h *Handler) RefreshReturnTracking(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	ctx, cancel := providerCtx()
+	defer cancel()
+	v, err := svc().RefreshReturnFromProvider(ctx, id)
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"data": v})
+}
+
+// ReceiveReturn POST /equipos/returns/:id/receive {condition} — casilla «Recibido» (reingresa el stock si está en buen estado).
+func (h *Handler) ReceiveReturn(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	var b struct {
+		Condition string `json:"condition"`
+	}
+	_ = c.Bind().JSON(&b)
+	v, err := svc().ReceiveReturn(id, b.Condition, userID(c))
+	if err != nil {
+		return fail(c, err)
+	}
+	audit(c, "equip_return_received", "equip_return", id, b)
+	return c.JSON(fiber.Map{"data": v})
+}
+
 // ── Panel y alertas ────────────────────────────────────────────────────────
 
 func (h *Handler) Dashboard(c fiber.Ctx) error {

@@ -271,11 +271,17 @@ type EquipReturn struct {
 	ActionTaken   string     `gorm:"size:12;default:'retorno'" json:"action_taken"`  // retorno | reenvio | reembolso | perdida
 	Notes         string     `gorm:"size:500" json:"notes"`
 	// Anulación: el retorno queda en estado «anulado» con su motivo (no se borra, para el historial).
-	CancelledAt   *time.Time `json:"cancelled_at"`
-	CancelReason  string     `gorm:"size:255" json:"cancel_reason"`
-	ImportBatchID *uint      `gorm:"index" json:"import_batch_id"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	CancelledAt  *time.Time `json:"cancelled_at"`
+	CancelReason string     `gorm:"size:255" json:"cancel_reason"`
+	// Seguimiento de la guía del retorno en Shalom (mismos campos que un envío). ProviderStatus es el último estado informado.
+	ProviderCode     string     `gorm:"size:8" json:"provider_code"`
+	ProviderStatus   string     `gorm:"size:20" json:"provider_status"`
+	ProviderOseID    string     `gorm:"size:20" json:"provider_ose_id"`
+	ProviderSyncedAt *time.Time `json:"provider_synced_at"`
+	ProviderSubID    uint       `json:"provider_subscription_id"`
+	ImportBatchID    *uint      `gorm:"index" json:"import_batch_id"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 func (EquipReturn) TableName() string { return "equip_returns" }
