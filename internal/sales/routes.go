@@ -33,6 +33,7 @@ func RegisterRoutes(api fiber.Router) {
 	api.Get("/sales/pending-refunds", mod, loadRest, middleware.RequireSalesAccess("view"), h.PendingRefundsAPI)
 	api.Post("/sales/pending-refunds/apply", mod, loadRest, middleware.RequireSalesAccess("cancel"), h.ApplyPendingRefundAPI)
 	api.Post("/sales/pending-refunds/apply-note", mod, loadRest, middleware.RequireSalesAccess("cancel"), h.ApplyPendingNoteRefundAPI)
+	api.Get("/sales/filter-users", mod, loadRest, middleware.RequireSalesAccess("view"), h.FilterUsersAPI)
 	api.Get("/sales/:id", mod, loadRest, middleware.RequireSalesAccess("view"), h.GetAPI)
 	api.Post("/sales/:id/email-receipt", mod, loadRest, middleware.RequireSalesAccess("view"), h.EmailReceiptAPI)
 }

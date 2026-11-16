@@ -432,6 +432,23 @@ func (h *SaleHandler) VoidRejectedAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "Venta rechazada anulada correctamente"})
 }
 
+// GET /api/sales/filter-users — usuarios para los filtros "Registrado por" y "Vendedor" de la lista y el
+// reporte de ventas. Solo id y nombre, bajo el acceso de ver ventas (no exige users.view: son filtros, no
+// administración). Incluye usuarios eliminados porque sus ventas siguen existiendo.
+func (h *SaleHandler) FilterUsersAPI(c fiber.Ctx) error {
+	var rows []struct {
+		ID      uint   `json:"id"`
+		Name    string `json:"name"`
+		Deleted bool   `json:"deleted"`
+	}
+	if err := db(c).Unscoped().Table("tenant_users").
+		Select("id, name, (deleted_at IS NOT NULL) AS deleted").
+		Order("deleted_at IS NOT NULL, name ASC").Scan(&rows).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
 // GET /api/sales?q=&from=&to=&doc_type=&billing_status=&sunat_code=00|01,03&contact_id=
 func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 	// Un tenant no puede tener más de 2 listados/reportes simultáneos: su pool tiene pocas
