@@ -473,6 +473,8 @@ func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 			}
 		}
 	}
+	userIDFilter, _ := strconv.ParseUint(c.Query("user_id"), 10, 32)
+	sellerIDFilter, _ := strconv.ParseUint(c.Query("seller_user_id"), 10, 32)
 	params := service.SaleListParams{
 		BranchID:      uint(branchID),
 		ContactID:     uint(contactID),
@@ -481,6 +483,8 @@ func (h *SaleHandler) ListAPI(c fiber.Ctx) error {
 		BillingStatus: c.Query("billing_status"),
 		PaymentMethod: c.Query("payment_method"),
 		PaymentMode:   c.Query("payment_mode"),
+		UserID:        uint(userIDFilter),
+		SellerUserID:  uint(sellerIDFilter),
 		Query:         c.Query("q"),
 		DateFrom:      dateFrom,
 		DateTo:        dateTo,

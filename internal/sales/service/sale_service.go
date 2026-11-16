@@ -1289,6 +1289,11 @@ type SaleListParams struct {
 	BillingStatus string
 	PaymentMethod string
 	PaymentMode   string // all | mixed | single
+	// UserID: usuario que registró la venta (tenant_sales.user_id).
+	UserID uint
+	// SellerUserID: vendedor atribuido a la venta (perfil fiscal); si la venta no tiene vendedor
+	// explícito, el vendedor es quien la registró (mismo criterio que el PDF y el formulario).
+	SellerUserID uint
 	// CancelledFilter: vacío = todas; exclude = no anuladas (status != cancelled); only = solo anuladas
 	CancelledFilter string
 	DateFrom        *time.Time
@@ -1412,6 +1417,12 @@ func (s *SaleService) List(params SaleListParams) (sales []database.TenantSale, 
 	}
 	if params.ContactID > 0 {
 		q = q.Where("tenant_sales.contact_id = ?", params.ContactID)
+	}
+	if params.UserID > 0 {
+		q = q.Where("tenant_sales.user_id = ?", params.UserID)
+	}
+	if params.SellerUserID > 0 {
+		q = q.Where("COALESCE((SELECT tsfp.seller_user_id FROM tenant_sale_fiscal_profiles tsfp WHERE tsfp.sale_id = tenant_sales.id), tenant_sales.user_id) = ?", params.SellerUserID)
 	}
 	if params.DocType != "" {
 		q = q.Where("tenant_sales.doc_type = ?", params.DocType)
