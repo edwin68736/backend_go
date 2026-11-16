@@ -302,6 +302,29 @@ type retentionDetailBuildInput struct {
 	TipoCambio     *retentionExchangeInput
 }
 
+var relatedDocNumRe = regexp.MustCompile(`^[A-Za-z0-9]{1,4}-\d{1,8}$`)
+var relatedDocNumElectronicRe = regexp.MustCompile(`^[FBEfbe][A-Za-z0-9]{3}-\d{1,8}$`)
+
+// validateRelatedDocument corta antes de enviar lo que SUNAT/Greenter rechaza sin explicar (el facturador solo devuelve
+// «Server Error»): número con formato SERIE-CORRELATIVO y fecha del comprobante relacionado no posterior a la emisión.
+func validateRelatedDocument(idx int, tipoDoc, numDoc, docFecha, emisionFecha string) error {
+	tipoDoc = strings.TrimSpace(tipoDoc)
+	numDoc = strings.TrimSpace(numDoc)
+	re := relatedDocNumRe
+	if tipoDoc == "01" || tipoDoc == "03" || tipoDoc == "07" || tipoDoc == "08" {
+		re = relatedDocNumElectronicRe
+	}
+	if !re.MatchString(numDoc) {
+		return fmt.Errorf("detalle #%d: el número de documento %q no tiene el formato SERIE-CORRELATIVO (ej. F001-00000123); corrija la serie y el número en la compra/venta origen", idx, numDoc)
+	}
+	dDoc, err1 := facturador.FiscalCalendarDay(docFecha)
+	dEm, err2 := facturador.FiscalCalendarDay(emisionFecha)
+	if err1 == nil && err2 == nil && dDoc > dEm {
+		return fmt.Errorf("detalle #%d: la fecha del comprobante relacionado (%s) es posterior a la fecha de emisión (%s)", idx, dDoc, dEm)
+	}
+	return nil
+}
+
 func (s *BillingService) buildRetentionDetails(details []retentionDetailBuildInput, docFechaEmision string) ([]facturador.RetentionDetail, error) {
 	if len(details) == 0 {
 		return nil, errors.New("se requiere al menos un comprobante relacionado")
@@ -310,6 +333,9 @@ func (s *BillingService) buildRetentionDetails(details []retentionDetailBuildInp
 	for i, d := range details {
 		if strings.TrimSpace(d.TipoDoc) == "" || strings.TrimSpace(d.NumDoc) == "" {
 			return nil, fmt.Errorf("detalle #%d: tipo y número de documento son obligatorios", i+1)
+		}
+		if err := validateRelatedDocument(i+1, d.TipoDoc, d.NumDoc, d.FechaEmision, docFechaEmision); err != nil {
+			return nil, err
 		}
 		if d.ImpTotal <= 0 {
 			return nil, fmt.Errorf("detalle #%d: importe total debe ser mayor a cero", i+1)
@@ -388,6 +414,9 @@ func (s *BillingService) buildPerceptionDetails(details []perceptionDetailBuildI
 	for i, d := range details {
 		if strings.TrimSpace(d.TipoDoc) == "" || strings.TrimSpace(d.NumDoc) == "" {
 			return nil, fmt.Errorf("detalle #%d: tipo y número de documento son obligatorios", i+1)
+		}
+		if err := validateRelatedDocument(i+1, d.TipoDoc, d.NumDoc, d.FechaEmision, docFechaEmision); err != nil {
+			return nil, err
 		}
 		if d.ImpTotal <= 0 {
 			return nil, fmt.Errorf("detalle #%d: importe total debe ser mayor a cero", i+1)
