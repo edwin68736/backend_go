@@ -240,3 +240,16 @@ func TestTransfer_maestroCountsArrivalsAsIngresos(t *testing.T) {
 		t.Error("filtrar por otro producto no debe traer esta transferencia")
 	}
 }
+
+func TestWarehouses_ensureIsIdempotent(t *testing.T) {
+	f := newFixture(t)
+	for i := 0; i < 3; i++ {
+		if err := f.s.EnsureWarehouses(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws, err := f.s.ListWarehouses(true)
+	if err != nil || len(ws) != 2 {
+		t.Fatalf("la siembra repetida no duplica almacenes: %v %v", len(ws), err)
+	}
+}

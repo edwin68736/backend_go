@@ -7,6 +7,7 @@ import (
 	"tukifac/pkg/database"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // DefaultWarehouseCode código del Almacén 1: el operativo, del que salen todas las ventas.
@@ -28,12 +29,13 @@ func ensureWarehousesTx(db *gorm.DB) error {
 		return err
 	}
 	if main == 0 {
-		if err := db.Create(&database.EquipWarehouse{Code: DefaultWarehouseCode, Name: "Almacén 1 (oficina)", IsDefault: true, Active: true}).Error; err != nil {
+		// OnConflict: dos peticiones simultáneas pueden sembrar a la vez; la clave única del código evita duplicados.
+		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&database.EquipWarehouse{Code: DefaultWarehouseCode, Name: "Almacén 1 (oficina)", IsDefault: true, Active: true}).Error; err != nil {
 			return err
 		}
 	}
 	if total == 0 {
-		if err := db.Create(&database.EquipWarehouse{Code: "ALM2", Name: "Almacén 2 (Cerro Colorado)", Active: true, Notes: "Depósito: recibe lo importado y abastece al Almacén 1"}).Error; err != nil {
+		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&database.EquipWarehouse{Code: "ALM2", Name: "Almacén 2 (Cerro Colorado)", Active: true, Notes: "Depósito: recibe lo importado y abastece al Almacén 1"}).Error; err != nil {
 			return err
 		}
 	}
