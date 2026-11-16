@@ -12,6 +12,7 @@ import (
 	posvc "tukifac/internal/purchaseorders/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
+	"tukifac/pkg/saas"
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/saleunit"
 	"tukifac/pkg/tax"
@@ -165,6 +166,9 @@ func validatePurchaseProducts(db *gorm.DB, items []PurchaseItemInput) error {
 func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPurchase, error) {
 	if len(input.Items) == 0 {
 		return nil, errors.New("la compra debe tener al menos un ítem")
+	}
+	if err := validatePurchaseIssueDate(input.IssueDate, time.Now()); err != nil {
+		return nil, err
 	}
 	currency, exchangeRate, err := normalizePurchaseCurrency(input.Currency, input.ExchangeRate, input.IssueDate)
 	if err != nil {
@@ -759,4 +763,22 @@ func (s *PurchaseService) UpfrontPaymentsByPurchase(purchaseIDs []uint) map[uint
 		out[r.PurchaseID] = append(out[r.PurchaseID], UpfrontPaymentSummary{Method: r.Method, Amount: r.Amount, Reference: r.Reference})
 	}
 	return out
+}
+
+// validatePurchaseIssueDate rechaza una fecha de emisión posterior a hoy (día de Lima): el proveedor no puede haber emitido
+// un comprobante que aún no existe, y esa fecha después rompe documentos derivados (p. ej. la retención). La fecha de registro
+// es aparte; aquí solo se valida la de emisión del comprobante.
+func validatePurchaseIssueDate(issue, now time.Time) error {
+	if issue.IsZero() {
+		return nil
+	}
+	loc := saas.LimaLocation()
+	n := now.In(loc)
+	today := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc)
+	// La fecha llega como día calendario (puede venir en otra zona): se compara por Y-M-D.
+	i := time.Date(issue.Year(), issue.Month(), issue.Day(), 0, 0, 0, 0, loc)
+	if i.After(today) {
+		return fmt.Errorf("la fecha de emisión (%s) no puede ser posterior a hoy (%s)", i.Format("02/01/2006"), today.Format("02/01/2006"))
+	}
+	return nil
 }

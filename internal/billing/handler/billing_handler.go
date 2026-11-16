@@ -912,3 +912,33 @@ func (h *BillingHandler) GetReversionStatusAPI(c fiber.Ctx) error {
 	}
 	return c.JSON(rec)
 }
+
+func (h *BillingHandler) GetRetentionPrintAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := branchguard.RetentionReadable(c, db(c), uint(id)); err != nil {
+		return notFound(c, "no encontrado")
+	}
+	rec, err := billingSvc(c).GetRetentionPrintData(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
+}
+
+func (h *BillingHandler) GetPerceptionPrintAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if err := branchguard.PerceptionReadable(c, db(c), uint(id)); err != nil {
+		return notFound(c, "no encontrado")
+	}
+	rec, err := billingSvc(c).GetPerceptionPrintData(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rec)
+}

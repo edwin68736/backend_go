@@ -2258,6 +2258,9 @@ func (s *BillingService) CreateAndSendRetention(input CreateRetentionInput) (*da
 	if err != nil {
 		return nil, err
 	}
+	if err := validateFiscalEmissionNotFuture(fechaEmision); err != nil {
+		return nil, err
+	}
 	detailIn := make([]retentionDetailBuildInput, len(input.Details))
 	for i, d := range input.Details {
 		detailIn[i] = retentionDetailBuildInput{
@@ -2502,6 +2505,9 @@ func (s *BillingService) CreateAndSendPerception(input CreatePerceptionInput) (*
 	// Toda fecha hacia el facturador va como Y-m-dTH:i:sP (hora de Lima); ver fiscalDateTime.
 	fechaEmision, err := fiscalDateTime(input.FechaEmision, "fecha de emisión")
 	if err != nil {
+		return nil, err
+	}
+	if err := validateFiscalEmissionNotFuture(fechaEmision); err != nil {
 		return nil, err
 	}
 	detailIn := make([]perceptionDetailBuildInput, len(input.Details))
@@ -2813,4 +2819,38 @@ func docBranchID(db *gorm.DB, requested uint, series database.TenantDocumentSeri
 		return id
 	}
 	return 0
+}
+
+// FiscalAuxPrintData es lo que necesita el cliente para imprimir una retención o percepción: el documento tal como se envió a
+// SUNAT (payload) más su estado. No se reconstruye desde la venta ficticia que lo respalda.
+type FiscalAuxPrintData struct {
+	Kind        string          `json:"kind"`
+	Series      string          `json:"series"`
+	Correlative string          `json:"correlative"`
+	Status      string          `json:"status"`
+	SunatCode   string          `json:"sunat_code,omitempty"`
+	Payload     json.RawMessage `json:"payload"`
+}
+
+func (s *BillingService) GetRetentionPrintData(id uint) (*FiscalAuxPrintData, error) {
+	var rec database.TenantRetention
+	if err := s.db.First(&rec, id).Error; err != nil {
+		return nil, err
+	}
+	return &FiscalAuxPrintData{Kind: "retention", Series: rec.Series, Correlative: rec.Correlative, Status: rec.Status, SunatCode: rec.SunatCode, Payload: rawJSONOrNull(rec.PayloadJSON)}, nil
+}
+
+func (s *BillingService) GetPerceptionPrintData(id uint) (*FiscalAuxPrintData, error) {
+	var rec database.TenantPerception
+	if err := s.db.First(&rec, id).Error; err != nil {
+		return nil, err
+	}
+	return &FiscalAuxPrintData{Kind: "perception", Series: rec.Series, Correlative: rec.Correlative, Status: rec.Status, SunatCode: rec.SunatCode, Payload: rawJSONOrNull(rec.PayloadJSON)}, nil
+}
+
+func rawJSONOrNull(s string) json.RawMessage {
+	if strings.TrimSpace(s) == "" || !json.Valid([]byte(s)) {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(s)
 }

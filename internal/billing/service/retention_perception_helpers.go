@@ -596,3 +596,20 @@ func validateReversionDetail(tipoDoc, serie, correlativo, motivo string) error {
 	}
 	return nil
 }
+
+// validateFiscalEmissionNotFuture rechaza una fecha de emisión posterior a hoy (día de Lima): SUNAT no admite comprobantes
+// con fecha futura. La fecha ya viene normalizada por fiscalDateTime.
+func validateFiscalEmissionNotFuture(fechaEmision string) error {
+	day, err := facturador.FiscalCalendarDay(fechaEmision)
+	if err != nil {
+		return nil
+	}
+	today, err := facturador.FiscalCalendarDay(facturador.FormatFiscalDateTime(time.Now()))
+	if err != nil {
+		return nil
+	}
+	if day > today {
+		return fmt.Errorf("la fecha de emisión (%s) no puede ser posterior a hoy (%s)", day, today)
+	}
+	return nil
+}
