@@ -22,6 +22,7 @@ func setupEquiposDB(t *testing.T) *gorm.DB {
 		&database.EquipOrder{}, &database.EquipOrderItem{}, &database.EquipPayment{}, &database.EquipPaymentAllocation{},
 		&database.EquipCarrier{}, &database.EquipShipment{}, &database.EquipReturn{}, &database.EquipStockMovement{},
 		&database.EquipStockPeriod{}, &database.EquipSettings{}, &database.EquipImportBatch{}, &database.SuperAdminUser{},
+		&database.EquipWarehouse{}, &database.EquipRequirement{}, &database.EquipRequirementItem{}, &database.EquipTransfer{}, &database.EquipTransferItem{},
 	); err != nil {
 		t.Fatal(err)
 	}

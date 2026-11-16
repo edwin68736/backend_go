@@ -22,14 +22,16 @@ const (
 
 // Tipos de movimiento del kardex.
 const (
-	EquipMoveApertura   = "apertura"          // stock inicial del período (+)
-	EquipMoveIngreso    = "ingreso"           // reposición / compra (+)
-	EquipMoveSalida     = "salida_pedido"     // venta (−)
-	EquipMoveReenvio    = "salida_reenvio"    // nuevo envío tras un retorno (−)
-	EquipMoveReingreso  = "reingreso_retorno" // equipo devuelto en buen estado (+)
-	EquipMoveAjuste     = "ajuste"            // corrección con nota (±)
-	EquipMoveBaja       = "baja"              // equipo dañado/perdido (−)
-	EquipPeriodLayoutYM = "2006-01"
+	EquipMoveApertura    = "apertura"              // stock inicial del período (+)
+	EquipMoveIngreso     = "ingreso"               // reposición / compra (+)
+	EquipMoveSalida      = "salida_pedido"         // venta (−)
+	EquipMoveReenvio     = "salida_reenvio"        // nuevo envío tras un retorno (−)
+	EquipMoveReingreso   = "reingreso_retorno"     // equipo devuelto en buen estado (+)
+	EquipMoveAjuste      = "ajuste"                // corrección con nota (±)
+	EquipMoveBaja        = "baja"                  // equipo dañado/perdido (−)
+	EquipMoveTransferOut = "transferencia_salida"  // sale de un almacén hacia otro (−)
+	EquipMoveTransferIn  = "transferencia_ingreso" // llega a un almacén desde otro (+)
+	EquipPeriodLayoutYM  = "2006-01"
 )
 
 // EquipProduct catálogo de equipos, consumibles y accesorios.
@@ -108,8 +110,8 @@ type EquipOrder struct {
 	CustomerDocType   string           `gorm:"size:10" json:"customer_doc_type"`
 	CustomerDocNumber string           `gorm:"size:20" json:"customer_doc_number"`
 	ContactDocType    string           `gorm:"size:6;default:'DNI'" json:"contact_doc_type"` // DNI | CE: tipo del documento de quien recoge
-	ContactDNI        string           `gorm:"size:20" json:"contact_dni"`   // documento de quien recoge, si no es el cliente
-	ContactName       string           `gorm:"size:200" json:"contact_name"` // nombre de quien recoge (destinatario del rótulo)
+	ContactDNI        string           `gorm:"size:20" json:"contact_dni"`                   // documento de quien recoge, si no es el cliente
+	ContactName       string           `gorm:"size:200" json:"contact_name"`                 // nombre de quien recoge (destinatario del rótulo)
 	CustomerPhone     string           `gorm:"size:50" json:"customer_phone"`
 	BillingDocType    string           `gorm:"size:12;default:'ninguno'" json:"billing_doc_type"` // boleta | factura | ninguno
 	TotalAmount       float64          `gorm:"type:decimal(15,2);default:0" json:"total_amount"`
@@ -154,13 +156,13 @@ func (EquipOrderItem) TableName() string { return "equip_order_items" }
 
 // EquipPayment cobro: dinero que entra, a nombre del cliente. Forma su historial de pagos.
 type EquipPayment struct {
-	ID                uint      `gorm:"primaryKey" json:"id"`
-	CustomerID        *uint     `gorm:"index" json:"customer_id"`
-	Amount            float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
-	PaidAt            time.Time `gorm:"index" json:"paid_at"`
-	Method            string    `gorm:"size:20;default:'otro'" json:"method"`       // yape | plin | efectivo | transferencia | deposito | otro
-	Moment            string    `gorm:"size:14;default:'anticipado'" json:"moment"` // anticipado | al_recoger
-	Reference         string    `gorm:"size:120" json:"reference"`
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	CustomerID *uint     `gorm:"index" json:"customer_id"`
+	Amount     float64   `gorm:"type:decimal(15,2);not null" json:"amount"`
+	PaidAt     time.Time `gorm:"index" json:"paid_at"`
+	Method     string    `gorm:"size:20;default:'otro'" json:"method"`       // yape | plin | efectivo | transferencia | deposito | otro
+	Moment     string    `gorm:"size:14;default:'anticipado'" json:"moment"` // anticipado | al_recoger
+	Reference  string    `gorm:"size:120" json:"reference"`
 	// Voucher (imagen o PDF del comprobante de pago): se guarda en disco fuera de /uploads (no es público) y se sirve
 	// solo con sesión. VoucherFile es el nombre en disco; VoucherMime se expone para que la pantalla sepa que existe.
 	VoucherFile       string    `gorm:"size:120" json:"-"`
@@ -201,8 +203,8 @@ type EquipCarrier struct {
 	LabelTemplate  string `gorm:"size:60" json:"label_template"`
 	IsDefault      bool   `gorm:"default:false" json:"is_default"`
 	// DefaultOriginAgencyID agencia donde se entrega el paquete (origen que se propone en cada envío).
-	DefaultOriginAgencyID *uint `gorm:"index" json:"default_origin_agency_id"`
-	AgencyCount           int   `gorm:"-" json:"agency_count"` // agencias activas cargadas (calculado)
+	DefaultOriginAgencyID *uint     `gorm:"index" json:"default_origin_agency_id"`
+	AgencyCount           int       `gorm:"-" json:"agency_count"` // agencias activas cargadas (calculado)
 	Active                bool      `gorm:"default:true" json:"active"`
 	SortOrder             int       `gorm:"default:0" json:"sort_order"`
 	CreatedAt             time.Time `json:"created_at"`
@@ -291,6 +293,10 @@ type EquipStockMovement struct {
 	OrderItemID *uint    `json:"order_item_id"`
 	ReturnID    *uint    `json:"return_id"`
 	ViaComboID  *uint    `json:"via_combo_id"`
+	// WarehouseID almacén del movimiento. NULL = Almacén 1 (el operativo, del que se vende): así los movimientos
+	// anteriores a los almacenes y los que generan los pedidos no necesitan cambios.
+	WarehouseID *uint `gorm:"index" json:"warehouse_id"`
+	TransferID  *uint `gorm:"index" json:"transfer_id"`
 	// SaleTypeSnapshot tipo de salida del pedido al momento del movimiento (columnas del Stock Maestro).
 	SaleTypeSnapshot string    `gorm:"size:20" json:"sale_type_snapshot"`
 	Note             string    `gorm:"size:255" json:"note"`
@@ -376,3 +382,77 @@ const (
 	AgencyLocSuggested = "sugerida"
 	AgencyLocPending   = "pendiente"
 )
+
+// ── Almacenes, requerimientos y transferencias ─────────────────────────────
+
+// EquipWarehouse almacén de equipos. «ALM1» (Almacén 1, oficina) es el operativo: de él salen todas las ventas.
+// Los demás (p. ej. Cerro Colorado) son depósitos: reciben la mercadería importada y la envían al Almacén 1.
+type EquipWarehouse struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Code      string    `gorm:"size:12;not null;uniqueIndex" json:"code"`
+	Name      string    `gorm:"size:100;not null" json:"name"`
+	IsDefault bool      `gorm:"default:false" json:"is_default"` // el operativo (no se desactiva)
+	Active    bool      `gorm:"default:true" json:"active"`
+	Notes     string    `gorm:"size:255" json:"notes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (EquipWarehouse) TableName() string { return "equip_warehouses" }
+
+// EquipRequirement requerimiento de equipos: solicitud del almacén operativo a un depósito. Genera un documento
+// firmable y se atiende (total o parcialmente) con transferencias del depósito al operativo.
+type EquipRequirement struct {
+	ID                    uint       `gorm:"primaryKey" json:"id"`
+	Number                int        `gorm:"uniqueIndex" json:"number"`
+	RequestingWarehouseID uint       `gorm:"index" json:"requesting_warehouse_id"`            // quien pide (Almacén 1)
+	SupplyingWarehouseID  uint       `gorm:"index" json:"supplying_warehouse_id"`             // quien abastece (depósito)
+	Status                string     `gorm:"size:12;default:'pendiente';index" json:"status"` // pendiente | parcial | atendido | anulado
+	RequestedAt           time.Time  `json:"requested_at"`
+	Notes                 string     `gorm:"size:500" json:"notes"`
+	CreatedBy             *uint      `json:"created_by"`
+	CancelledAt           *time.Time `json:"cancelled_at"`
+	CancelReason          string     `gorm:"size:255" json:"cancel_reason"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
+func (EquipRequirement) TableName() string { return "equip_requirements" }
+
+// EquipRequirementItem producto pedido en un requerimiento y cuánto se ha enviado ya.
+type EquipRequirementItem struct {
+	ID            uint `gorm:"primaryKey" json:"id"`
+	RequirementID uint `gorm:"not null;index" json:"requirement_id"`
+	ProductID     uint `gorm:"not null" json:"product_id"`
+	Quantity      int  `gorm:"not null" json:"quantity"`
+	Sent          int  `gorm:"default:0" json:"sent"`
+}
+
+func (EquipRequirementItem) TableName() string { return "equip_requirement_items" }
+
+// EquipTransfer transferencia de equipos entre almacenes (genera la salida y la entrada en una sola operación).
+type EquipTransfer struct {
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	Number          int        `gorm:"uniqueIndex" json:"number"`
+	FromWarehouseID uint       `gorm:"index" json:"from_warehouse_id"`
+	ToWarehouseID   uint       `gorm:"index" json:"to_warehouse_id"`
+	RequirementID   *uint      `gorm:"index" json:"requirement_id"`                      // requerimiento que atiende, si lo hay
+	Status          string     `gorm:"size:12;default:'registrada';index" json:"status"` // registrada | anulada
+	TransferredAt   time.Time  `gorm:"index" json:"transferred_at"`
+	Notes           string     `gorm:"size:500" json:"notes"`
+	CreatedBy       *uint      `json:"created_by"`
+	CancelledAt     *time.Time `json:"cancelled_at"`
+	CancelReason    string     `gorm:"size:255" json:"cancel_reason"`
+	CancelledBy     *uint      `json:"cancelled_by"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+func (EquipTransfer) TableName() string { return "equip_transfers" }
+
+type EquipTransferItem struct {
+	ID         uint `gorm:"primaryKey" json:"id"`
+	TransferID uint `gorm:"not null;index" json:"transfer_id"`
+	ProductID  uint `gorm:"not null" json:"product_id"`
+	Quantity   int  `gorm:"not null" json:"quantity"`
+}
+
+func (EquipTransferItem) TableName() string { return "equip_transfer_items" }

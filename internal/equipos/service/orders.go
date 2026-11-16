@@ -600,8 +600,9 @@ func stockNowTx(tx *gorm.DB, ids []uint) (map[uint]int, error) {
 		Total     int
 	}
 	var rows []row
+	// Solo el Almacén 1 vende: el stock de los depósitos no cuenta para confirmar pedidos.
 	if err := tx.Model(&database.EquipStockMovement{}).Select("product_id, COALESCE(SUM(quantity), 0) AS total").
-		Where("product_id IN ?", ids).Group("product_id").Scan(&rows).Error; err != nil {
+		Where(inOperativeWarehouse).Where("product_id IN ?", ids).Group("product_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := map[uint]int{}

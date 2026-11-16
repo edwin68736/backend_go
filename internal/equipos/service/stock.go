@@ -21,7 +21,8 @@ func semaphore(stock, yellow, green int) string {
 	}
 }
 
-// stockTotals stock actual por producto (suma de todo el kardex).
+// stockTotals stock actual por producto en el Almacén 1 (el operativo, del que se vende). Lo que hay en otros
+// almacenes (depósitos) se ve aparte con stockDepot.
 func (s *Service) stockTotals() (map[uint]int, error) {
 	type row struct {
 		ProductID uint
@@ -29,7 +30,24 @@ func (s *Service) stockTotals() (map[uint]int, error) {
 	}
 	var rows []row
 	if err := s.db.Model(&database.EquipStockMovement{}).
-		Select("product_id, COALESCE(SUM(quantity), 0) AS total").Group("product_id").Scan(&rows).Error; err != nil {
+		Select("product_id, COALESCE(SUM(quantity), 0) AS total").Where(inOperativeWarehouse).Group("product_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint]int, len(rows))
+	for _, r := range rows {
+		out[r.ProductID] = r.Total
+	}
+	return out, nil
+}
+
+// stockDepot stock por producto fuera del Almacén 1 (suma de los depósitos).
+func (s *Service) stockDepot() (map[uint]int, error) {
+	var rows []struct {
+		ProductID uint
+		Total     int
+	}
+	if err := s.db.Model(&database.EquipStockMovement{}).
+		Select("product_id, COALESCE(SUM(quantity), 0) AS total").Where("NOT " + inOperativeWarehouse).Group("product_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make(map[uint]int, len(rows))
@@ -92,7 +110,7 @@ func (s *Service) StockReport(period string) ([]StockRow, error) {
 	var prior []before
 	if err := s.db.Model(&database.EquipStockMovement{}).
 		Select("product_id, COALESCE(SUM(quantity), 0) AS total").
-		Where("occurred_at < ?", start).Group("product_id").Scan(&prior).Error; err != nil {
+		Where(inOperativeWarehouse).Where("occurred_at < ?", start).Group("product_id").Scan(&prior).Error; err != nil {
 		return nil, err
 	}
 	type grouped struct {
@@ -105,7 +123,7 @@ func (s *Service) StockReport(period string) ([]StockRow, error) {
 	var inPeriod []grouped
 	if err := s.db.Model(&database.EquipStockMovement{}).
 		Select("product_id, movement_type, CASE WHEN via_combo_id IS NULL THEN 0 ELSE 1 END AS via_combo, sale_type_snapshot AS sale_type, COALESCE(SUM(quantity), 0) AS total").
-		Where("occurred_at >= ? AND occurred_at < ?", start, end).
+		Where(inOperativeWarehouse).Where("occurred_at >= ? AND occurred_at < ?", start, end).
 		Group("product_id, movement_type, CASE WHEN via_combo_id IS NULL THEN 0 ELSE 1 END, sale_type_snapshot").
 		Scan(&inPeriod).Error; err != nil {
 		return nil, err
@@ -147,7 +165,8 @@ func (s *Service) StockReport(period string) ([]StockRow, error) {
 		switch g.MovementType {
 		case database.EquipMoveApertura:
 			r.Opening += g.Total
-		case database.EquipMoveIngreso:
+		case database.EquipMoveIngreso, database.EquipMoveTransferIn:
+			// Lo que llega del depósito (o regresa por una anulación) entra como ingreso del Almacén 1.
 			r.Ingresos += g.Total
 		case database.EquipMoveSalida, database.EquipMoveReenvio:
 			q := -g.Total
@@ -164,7 +183,7 @@ func (s *Service) StockReport(period string) ([]StockRow, error) {
 			}
 		case database.EquipMoveReingreso:
 			r.Reentries += g.Total
-		case database.EquipMoveAjuste, database.EquipMoveBaja:
+		case database.EquipMoveAjuste, database.EquipMoveBaja, database.EquipMoveTransferOut:
 			r.Adjustments += g.Total
 		}
 	}
@@ -250,6 +269,8 @@ type MovementInput struct {
 	OccurredAt   *time.Time `json:"occurred_at"`
 	Note         string     `json:"note"`
 	UnitCost     *float64   `json:"unit_cost"` // solo ingresos
+	// WarehouseID almacén del movimiento (vacío = Almacén 1). Los ingresos de mercadería importada suelen ir al depósito.
+	WarehouseID *uint `json:"warehouse_id"`
 }
 
 // AddMovement registra un ingreso, ajuste, baja o apertura manual con nota obligatoria. Las salidas por pedido y los
@@ -303,6 +324,19 @@ func (s *Service) AddMovement(in MovementInput, userID uint) (*database.EquipSto
 	}
 	m := &database.EquipStockMovement{
 		ProductID: p.ID, OccurredAt: at, MovementType: in.MovementType, Quantity: qty, Note: note, UnitCost: in.UnitCost,
+	}
+	if in.WarehouseID != nil && *in.WarehouseID > 0 {
+		def, err := defaultWarehouseID(s.db)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := activeWarehouseTx(s.db, *in.WarehouseID, "elegido"); err != nil {
+			return nil, err
+		}
+		if *in.WarehouseID != def { // el Almacén 1 se guarda como NULL, igual que los movimientos de los pedidos
+			wid := *in.WarehouseID
+			m.WarehouseID = &wid
+		}
 	}
 	if userID > 0 {
 		u := userID

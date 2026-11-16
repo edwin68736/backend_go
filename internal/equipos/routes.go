@@ -56,6 +56,21 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Get("/equipos/stock", p("equipos.stock_view"), h.StockReport)
 	saAPI.Get("/equipos/stock/:productId/movements", p("equipos.stock_view"), h.ProductMovements)
 	saAPI.Post("/equipos/stock/movements", p("equipos.stock_adjust"), h.AddMovement)
+	saAPI.Get("/equipos/stock/warehouses", p("equipos.stock_view"), h.StockByWarehouse)
+
+	saAPI.Get("/equipos/warehouses", p("equipos.stock_view"), h.ListWarehouses)
+	saAPI.Post("/equipos/warehouses", p("equipos.warehouses"), h.CreateWarehouse)
+	saAPI.Put("/equipos/warehouses/:id", p("equipos.warehouses"), h.UpdateWarehouse)
+
+	saAPI.Get("/equipos/requirements", p("equipos.stock_view"), h.ListRequirements)
+	saAPI.Get("/equipos/requirements/:id", p("equipos.stock_view"), h.GetRequirement)
+	saAPI.Post("/equipos/requirements", p("equipos.stock_transfer"), h.CreateRequirement)
+	saAPI.Post("/equipos/requirements/:id/cancel", p("equipos.stock_transfer_cancel"), h.CancelRequirement)
+
+	saAPI.Get("/equipos/transfers", p("equipos.stock_view"), h.ListTransfers)
+	saAPI.Get("/equipos/transfers/:id", p("equipos.stock_view"), h.GetTransfer)
+	saAPI.Post("/equipos/transfers", p("equipos.stock_transfer"), h.CreateTransfer)
+	saAPI.Post("/equipos/transfers/:id/cancel", p("equipos.stock_transfer_cancel"), h.CancelTransfer)
 
 	saAPI.Post("/equipos/import/preview", p("equipos.import"), h.ImportPreview)
 	saAPI.Post("/equipos/import/commit", p("equipos.import"), h.ImportCommit)

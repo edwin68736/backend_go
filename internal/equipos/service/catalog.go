@@ -34,8 +34,10 @@ type ProductInput struct {
 // ProductWithStock producto con su stock actual (suma de todo el kardex).
 type ProductWithStock struct {
 	database.EquipProduct
-	Stock     int    `json:"stock"`
-	Semaphore string `json:"semaphore"`
+	Stock int `json:"stock"` // Almacén 1 (el que vende)
+	// StockDepot lo que hay en los demás almacenes (depósitos): no se puede vender hasta transferirlo al Almacén 1.
+	StockDepot int    `json:"stock_depot"`
+	Semaphore  string `json:"semaphore"`
 	// LastPrice último precio unitario cobrado en un pedido vigente (0 si nunca se vendió): sugerencia
 	// de precio cuando el producto no tiene precio de referencia.
 	LastPrice float64 `json:"last_price"`
@@ -114,6 +116,10 @@ func (s *Service) ListProducts(q, kind string, includeInactive bool) ([]ProductW
 	if err != nil {
 		return nil, err
 	}
+	depot, err := s.stockDepot()
+	if err != nil {
+		return nil, err
+	}
 	last, err := s.lastSalePrices()
 	if err != nil {
 		return nil, err
@@ -121,7 +127,7 @@ func (s *Service) ListProducts(q, kind string, includeInactive bool) ([]ProductW
 	out := make([]ProductWithStock, 0, len(rows))
 	for _, p := range rows {
 		cur := stock[p.ID]
-		out = append(out, ProductWithStock{EquipProduct: p, Stock: cur, Semaphore: semaphore(cur, p.YellowThreshold, p.GreenThreshold), LastPrice: last[p.ID]})
+		out = append(out, ProductWithStock{EquipProduct: p, Stock: cur, StockDepot: depot[p.ID], Semaphore: semaphore(cur, p.YellowThreshold, p.GreenThreshold), LastPrice: last[p.ID]})
 	}
 	return out, nil
 }
@@ -392,18 +398,18 @@ func (s *Service) getCombo(id uint) (*ComboView, error) {
 // ── Transportistas ──────────────────────────────────────────────────────────
 
 type CarrierInput struct {
-	Code           string `json:"code"`
-	Name           string `json:"name"`
-	DispatchDays   string `json:"dispatch_days"`
-	PickupDays     int    `json:"pickup_days"`
-	GuideLabel     string `json:"guide_label"`
-	GuideFormat    string `json:"guide_format"`
-	TrackingURLTpl string `json:"tracking_url_template"`
-	LabelTemplate  string `json:"label_template"`
-	IsDefault      bool   `json:"is_default"`
-	Active         *bool  `json:"active"`
-	SortOrder      int    `json:"sort_order"`
-	DefaultOriginAgencyID *uint `json:"default_origin_agency_id"`
+	Code                  string `json:"code"`
+	Name                  string `json:"name"`
+	DispatchDays          string `json:"dispatch_days"`
+	PickupDays            int    `json:"pickup_days"`
+	GuideLabel            string `json:"guide_label"`
+	GuideFormat           string `json:"guide_format"`
+	TrackingURLTpl        string `json:"tracking_url_template"`
+	LabelTemplate         string `json:"label_template"`
+	IsDefault             bool   `json:"is_default"`
+	Active                *bool  `json:"active"`
+	SortOrder             int    `json:"sort_order"`
+	DefaultOriginAgencyID *uint  `json:"default_origin_agency_id"`
 }
 
 var carrierCodeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,28}$`)

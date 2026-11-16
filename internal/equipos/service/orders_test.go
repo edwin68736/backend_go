@@ -47,11 +47,12 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) stock(t *testing.T, id uint) int {
 	t.Helper()
-	var n int
-	if err := f.s.db.Model(&database.EquipStockMovement{}).Where("product_id = ?", id).Select("COALESCE(SUM(quantity),0)").Scan(&n).Error; err != nil {
+	// Stock del Almacén 1 (el que vende): los depósitos no cuentan.
+	m, err := f.s.stockTotals()
+	if err != nil {
 		t.Fatal(err)
 	}
-	return n
+	return m[id]
 }
 
 func (f *fixture) input(qty float64, price float64) OrderInput {
