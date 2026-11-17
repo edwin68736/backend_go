@@ -291,7 +291,7 @@ type EquipStockMovement struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
 	ProductID    uint      `gorm:"not null;index:idx_equip_mov_product_date,priority:1" json:"product_id"`
 	OccurredAt   time.Time `gorm:"not null;index:idx_equip_mov_product_date,priority:2" json:"occurred_at"`
-	MovementType string    `gorm:"size:20;not null;index" json:"movement_type"`
+	MovementType string    `gorm:"size:30;not null;index" json:"movement_type"`
 	Quantity     int       `gorm:"not null" json:"quantity"` // con signo
 	// UnitCost costo unitario de compra (solo ingresos; opcional) para el costo promedio y la utilidad.
 	UnitCost    *float64 `gorm:"type:decimal(15,4)" json:"unit_cost"`
