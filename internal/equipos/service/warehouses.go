@@ -184,9 +184,12 @@ func (s *Service) StockByWarehouse() ([]WarehouseStockRow, error) {
 		WarehouseID uint
 		Total       int
 	}
+	// La misma expresión (con el id como literal) en SELECT y GROUP BY: con un parámetro en el SELECT, MySQL en modo
+	// only_full_group_by la trata como distinta de la del GROUP BY y rechaza la consulta.
+	wh := fmt.Sprintf("COALESCE(warehouse_id, %d)", def)
 	if err := s.db.Model(&database.EquipStockMovement{}).
-		Select("product_id, COALESCE(warehouse_id, ?) AS warehouse_id, COALESCE(SUM(quantity), 0) AS total", def).
-		Group("product_id, COALESCE(warehouse_id, " + fmt.Sprint(def) + ")").Scan(&rows).Error; err != nil {
+		Select("product_id, " + wh + " AS warehouse_id, COALESCE(SUM(quantity), 0) AS total").
+		Group("product_id, " + wh).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	by := map[uint]map[uint]int{}
