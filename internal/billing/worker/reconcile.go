@@ -7,11 +7,15 @@ import (
 
 	billingsvc "tukifac/internal/billing/service"
 	"tukifac/pkg/billinglock"
+	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
 	"tukifac/pkg/logger"
 )
 
 const reconcileBatchSize = 100
+
+// reconcileHealBatchSize tope de falsos «rechazados» que se reabren por pasada y por tenant.
+const reconcileHealBatchSize = 20
 const reconcileMinAge = 2 * time.Minute
 
 type reconcileSaleRow struct {
@@ -44,7 +48,22 @@ func ReconcileTenantPending(tenant database.Tenant) (synced int) {
 		Order("tenant_sales.id ASC").
 		Limit(reconcileBatchSize).
 		Find(&rows).Error
-	if err != nil || len(rows) == 0 {
+	if err != nil {
+		return 0
+	}
+	// Falsos «rechazados» (SUNAT caído / CDR pendiente): se reabren de a pocos por pasada, aparte del lote normal para no
+	// competir con los comprobantes pendientes de ahora. Al reconciliarse dejan de coincidir con la condición.
+	var healRows []reconcileSaleRow
+	if err := db.Table("tenant_sales").
+		Select("tenant_sales.id AS sale_id").
+		Joins("JOIN tenant_invoices ON tenant_invoices.sale_id = tenant_sales.id").
+		Where(billingstate.FalseRejectionSQL).
+		Order("tenant_sales.id DESC").
+		Limit(reconcileHealBatchSize).
+		Find(&healRows).Error; err == nil {
+		rows = append(rows, healRows...)
+	}
+	if len(rows) == 0 {
 		return 0
 	}
 
