@@ -1,6 +1,9 @@
 package service
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestOrder_agencyRequiredForAgencyDelivery(t *testing.T) {
 	f := newFixture(t)
@@ -86,5 +89,33 @@ func TestOrder_searchFindsPickupPerson(t *testing.T) {
 	}
 	if res, _ := f.s.ListOrders(OrderFilter{Q: "Juan"}); res == nil || res.Total != 1 {
 		t.Fatal("la búsqueda por nombre del cliente sigue funcionando")
+	}
+}
+
+func TestUndoPickup_returnsShipmentAndAllowsReturn(t *testing.T) {
+	f := newFixture(t)
+	o := f.shipped(t, 2, 100) // despachado y en agencia
+	p, err := f.s.MarkPickedUp(o.ID, "")
+	if err != nil || p.Order.Shipment.Status != "entregado" {
+		t.Fatalf("recojo: %v", err)
+	}
+	if _, err := f.s.CreateReturn(ReturnInput{OrderID: o.ID}, 1); err == nil {
+		t.Fatal("un envío entregado no admite retorno hasta deshacer el recojo")
+	}
+	if _, err := f.s.UndoPickup(o.ID, ""); err == nil || !IsValidation(err) {
+		t.Fatalf("el motivo es obligatorio: %v", err)
+	}
+	u, err := f.s.UndoPickup(o.ID, "se marcó por error: el cliente no recogió")
+	if err != nil || u.Order.Shipment.Status != "en_agencia" || u.Order.Shipment.PickedUpAt != nil {
+		t.Fatalf("deshacer: %v %+v", err, u)
+	}
+	if !strings.Contains(u.Order.Shipment.Notes, "Recojo deshecho") {
+		t.Errorf("debe quedar constancia en las notas del envío: %q", u.Order.Shipment.Notes)
+	}
+	if _, err := f.s.UndoPickup(o.ID, "otra vez"); err == nil {
+		t.Error("solo se deshace un envío entregado")
+	}
+	if _, err := f.s.CreateReturn(ReturnInput{OrderID: o.ID}, 1); err != nil {
+		t.Fatalf("tras deshacer se puede registrar el retorno: %v", err)
 	}
 }

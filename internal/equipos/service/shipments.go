@@ -397,6 +397,37 @@ func (s *Service) MarkPickedUp(orderID uint, date string) (*OrderResult, error) 
 	})
 }
 
+// UndoPickup deshace un «Cliente recogió» marcado por error: el envío vuelve al estado que tenía antes (en agencia si ya
+// había llegado; si no, en tránsito o por despachar) y se borra la fecha de recojo. Después el pedido admite un retorno u
+// otro recojo con normalidad. Exige motivo. Si Shalom ya informó «entregado», el siguiente seguimiento lo volvería a
+// marcar: el aviso lo advierte, porque en ese caso la entrega es real según la agencia.
+func (s *Service) UndoPickup(orderID uint, reason string) (*OrderResult, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, invalid("indica el motivo para deshacer el recojo")
+	}
+	return s.shipmentActionTx(orderID, func(tx *gorm.DB, o *database.EquipOrder, sh *database.EquipShipment, c *database.EquipCarrier) ([]string, error) {
+		if sh.Status != "entregado" {
+			return nil, invalid("solo se puede deshacer el recojo de un envío entregado (estado: %s)", shipmentStatusLabel(sh.Status))
+		}
+		switch {
+		case sh.DeliveryMode == "agencia" && sh.ArrivedAt != nil:
+			sh.Status = "en_agencia"
+		case sh.DispatchedAt != nil:
+			sh.Status = "en_transito"
+		default:
+			sh.Status = "pendiente_envio"
+		}
+		sh.PickedUpAt = nil
+		sh.Notes = strings.TrimSpace(sh.Notes + " | Recojo deshecho: " + reason)
+		var warns []string
+		if sh.ProviderStatus == "entregado" {
+			warns = append(warns, "Shalom informó este envío como entregado: al actualizar el seguimiento volverá a marcarse como recogido.")
+		}
+		return warns, nil
+	})
+}
+
 // MarkLabelPrinted deja constancia de que se imprimió el rótulo.
 func (s *Service) MarkLabelPrinted(orderID uint) error {
 	now := time.Now()

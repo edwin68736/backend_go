@@ -101,6 +101,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 	saAPI.Post("/equipos/orders/:id/dispatch", p("equipos.shipments"), handler.DispatchOrder)
 	saAPI.Post("/equipos/orders/:id/arrived", p("equipos.shipments"), handler.ArrivedOrder)
 	saAPI.Post("/equipos/orders/:id/picked-up", p("equipos.shipments"), handler.PickedUpOrder)
+	saAPI.Post("/equipos/orders/:id/undo-pickup", p("equipos.shipments"), h.UndoPickupOrder)
 	saAPI.Post("/equipos/orders/:id/label-printed", p("equipos.shipments"), h.LabelPrinted)
 
 	saAPI.Get("/equipos/payments", p("equipos.payments_view"), h.ListPayments)

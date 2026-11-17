@@ -343,6 +343,26 @@ func shipmentAction(name string, fn func(*service.Service, uint, string) (*servi
 	}
 }
 
+// UndoPickupOrder POST /equipos/orders/:id/undo-pickup {reason} — deshace un recojo marcado por error (pide PIN).
+func (h *Handler) UndoPickupOrder(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	if !requirePin(c) {
+		return nil
+	}
+	var b notesBody
+	_ = c.Bind().JSON(&b)
+	res, err := svc().UndoPickup(id, b.Reason)
+	if err != nil {
+		return fail(c, err)
+	}
+	audit(c, "equip_shipment_pickup_undone", "equip_order", id, b)
+	trimOrder(c, res.Order)
+	return c.JSON(fiber.Map{"data": res.Order, "warnings": res.Warnings})
+}
+
 var (
 	DispatchOrder = shipmentAction("equip_shipment_dispatched", (*service.Service).DispatchOrder)
 	PickedUpOrder = shipmentAction("equip_shipment_picked_up", (*service.Service).MarkPickedUp)
