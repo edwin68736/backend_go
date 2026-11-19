@@ -225,7 +225,14 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
 	}
 	// Una categoría de sucursal solo admite productos que se vendan únicamente allí (pkg/categorybranch).
-	if err := categorybranch.CheckProductCompatible(db(c), body.CategoryID, body.BranchIDs); err != nil {
+	// Un plato de la carta de Tukichef es de UNA sucursal (la activa) aunque no traiga «Disponible en».
+	createBranchSet := body.BranchIDs
+	if len(createBranchSet) == 0 && body.IsRestaurant {
+		if activeID, aerr := branch.ResolveWriteBranchID(c, 0); aerr == nil && activeID > 0 {
+			createBranchSet = []uint{activeID}
+		}
+	}
+	if err := categorybranch.CheckProductCompatible(db(c), body.CategoryID, createBranchSet); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	// Cuota de productos del plan (los servicios no cuentan; ver CheckCreateQuota).
@@ -456,8 +463,8 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 	// Sucursales finales del producto (las nuevas si las manda; si no, las que ya tiene) frente a la categoría de sucursal.
 	finalBranchIDs := scopedBranchIDs
 	if body.BranchIDs == nil {
-		assigned, _ := productbranch.BranchIDs(db(c), []uint{uint(id)})
-		finalBranchIDs = assigned[uint(id)]
+		// Las asignadas o, sin ninguna, su sucursal dueña (platos de la carta de Tukichef).
+		finalBranchIDs, _ = categorybranch.EffectiveBranches(db(c), uint(id))
 	}
 	if err := categorybranch.CheckProductCompatible(db(c), body.CategoryID, finalBranchIDs); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})

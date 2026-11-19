@@ -113,11 +113,25 @@ func EnsureNameFree(db *gorm.DB, name string, branchID *uint, excludeID uint) er
 	return nil
 }
 
-// productBranchSet sucursales asignadas a un producto en tenant_product_branches (vacío = todas).
-func productBranchSet(db *gorm.DB, productID uint) ([]uint, error) {
+// EffectiveBranches sucursales donde se vende un producto (vacío = todas): las de tenant_product_branches y, si no tiene
+// ninguna, su sucursal dueña legacy (TenantProduct.BranchID — los platos de la carta de Tukichef son de UNA sucursal aunque no
+// tengan filas en esa tabla; ver pkg/productbranch).
+func EffectiveBranches(db *gorm.DB, productID uint) ([]uint, error) {
 	var ids []uint
-	err := db.Model(&database.TenantProductBranch{}).Where("product_id = ?", productID).Pluck("branch_id", &ids).Error
-	return ids, err
+	if err := db.Model(&database.TenantProductBranch{}).Where("product_id = ?", productID).Pluck("branch_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	if len(ids) > 0 {
+		return ids, nil
+	}
+	var owner uint
+	if err := db.Model(&database.TenantProduct{}).Where("id = ?", productID).Select("branch_id").Scan(&owner).Error; err != nil {
+		return nil, err
+	}
+	if owner > 0 {
+		return []uint{owner}, nil
+	}
+	return nil, nil
 }
 
 // CheckProductCompatible: una categoría de sucursal solo admite productos que se vendan únicamente en esa sucursal. Un producto
@@ -160,7 +174,7 @@ func CheckScopeChange(db *gorm.DB, categoryID uint, newBranch *uint) error {
 	blocking := 0
 	example := ""
 	for _, p := range products {
-		ids, err := productBranchSet(db, p.ID)
+		ids, err := EffectiveBranches(db, p.ID)
 		if err != nil {
 			return err
 		}

@@ -364,9 +364,13 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 		// Categoría de sucursal: el producto debe quedar vendiéndose solo allí (sucursales de la fila, o las que ya tenía).
 		if catID != nil {
 			effective := branchIDs
-			if !setBranches && hasExisting {
-				assigned, _ := productbranch.BranchIDs(s.db, []uint{existing.ID})
-				effective = assigned[existing.ID]
+			if !setBranches {
+				switch {
+				case hasExisting:
+					effective, _ = categorybranch.EffectiveBranches(s.db, existing.ID)
+				case isRestaurant && opts.BranchID > 0:
+					effective = []uint{opts.BranchID} // plato de la carta: de la sucursal de la importación
+				}
 			}
 			if cerr := categorybranch.CheckProductCompatible(s.db, catID, effective); cerr != nil {
 				result.Failed = append(result.Failed, BulkImportFail{

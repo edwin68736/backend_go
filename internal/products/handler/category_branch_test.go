@@ -230,3 +230,22 @@ func TestCategoryBranch_NoSePuedeLimitarSiHayProductosEnOtrasSucursales(t *testi
 		t.Fatalf("limitar a S1 con un producto de todas: %d (%s), quiere 400", code, raw)
 	}
 }
+
+// Plato de la carta de Tukichef (is_restaurant): es de la sucursal activa aunque no mande «Disponible en», así que admite la
+// categoría de esa sucursal; con la categoría de otra, no.
+func TestCategoryBranch_PlatoDeCartaEsDeLaSucursalActiva(t *testing.T) {
+	app, _ := setupCategoryBranch(t)
+	_, s1 := createCat(t, app, "admin", map[string]any{"name": "Carta S1", "branch_id": 1})
+	_, s2 := createCat(t, app, "admin", map[string]any{"name": "Carta S2", "branch_id": 2})
+	app.Post("/products", (&ProductHandler{}).CreateAPI)
+	body := func(cat uint, code string) map[string]any {
+		return map[string]any{"name": "Plato " + code, "code": code, "type": "product", "unit": "NIU", "sale_price": 10,
+			"igv_affectation_type": "10", "is_restaurant": true, "category_id": cat}
+	}
+	if c, raw := prodReq(t, app, "admin", "POST", "/products", body(s1.Data.ID, "PL1")); c != 201 {
+		t.Errorf("plato de S1 con categoría de S1 (sucursal activa S1): %d %s, quiere 201", c, raw)
+	}
+	if c, _ := prodReq(t, app, "admin", "POST", "/products", body(s2.Data.ID, "PL2")); c != 400 {
+		t.Errorf("plato de S1 con categoría de S2: %d, quiere 400", c)
+	}
+}

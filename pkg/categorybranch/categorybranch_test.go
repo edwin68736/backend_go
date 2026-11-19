@@ -232,3 +232,31 @@ func TestSinMigracionV192_ComportamientoAnterior(t *testing.T) {
 		t.Fatalf("sin V192 no hay restricción: %v", err)
 	}
 }
+
+// Los platos de la carta de Tukichef son de UNA sucursal (TenantProduct.BranchID legacy) aunque no tengan filas en
+// tenant_product_branches: cuentan como «solo esa sucursal» para la compatibilidad con la categoría.
+func TestEffectiveBranches_UsaLaSucursalDuenaLegacy(t *testing.T) {
+	db := newDB(t)
+	c := cat(t, db, "Carta", u(1))
+	asignado := product(t, db, "Asignado", c.ID, 1, 2)
+	plato := database.TenantProduct{Name: "Plato", Code: "PL", Active: true, SalePrice: 1, BranchID: 1}
+	db.Create(&plato)
+	todas := database.TenantProduct{Name: "Todas", Code: "TD", Active: true, SalePrice: 1}
+	db.Create(&todas)
+
+	if got, _ := EffectiveBranches(db, asignado.ID); len(got) != 2 {
+		t.Errorf("con filas manda lo asignado: %v", got)
+	}
+	if got, _ := EffectiveBranches(db, plato.ID); len(got) != 1 || got[0] != 1 {
+		t.Errorf("sin filas, la sucursal dueña: %v", got)
+	}
+	if got, _ := EffectiveBranches(db, todas.ID); len(got) != 0 {
+		t.Errorf("sin filas ni dueña = todas: %v", got)
+	}
+	// Y el cambio de ámbito de la categoría no bloquea por un plato que ya es de esa sucursal.
+	g := cat(t, db, "Otra", nil)
+	db.Model(&database.TenantProduct{}).Where("id = ?", plato.ID).Update("category_id", g.ID)
+	if err := CheckScopeChange(db, g.ID, u(1)); err != nil {
+		t.Errorf("un plato de la sucursal 1 no impide limitar la categoría a la sucursal 1: %v", err)
+	}
+}
