@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/internal/products/service"
 	"tukifac/pkg/branch"
+	"tukifac/pkg/categorybranch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/imageprocess"
 	"tukifac/pkg/middleware"
@@ -221,6 +223,10 @@ func (h *ProductHandler) CreateAPI(c fiber.Ctx) error {
 	}
 	if err := requireAccessibleBranchIDs(c, body.BranchIDs); err != nil {
 		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	// Una categoría de sucursal solo admite productos que se vendan únicamente allí (pkg/categorybranch).
+	if err := categorybranch.CheckProductCompatible(db(c), body.CategoryID, body.BranchIDs); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	// Cuota de productos del plan (los servicios no cuentan; ver CheckCreateQuota).
 	if body.Type != "service" && middleware.EnforceCreateQuota(c, db(c), saas.QuotaProducts) {
@@ -446,6 +452,15 @@ func (h *ProductHandler) UpdateAPI(c fiber.Ctx) error {
 		if serr != nil {
 			return c.Status(403).JSON(fiber.Map{"error": serr.Error(), "code": branch.CodeBranchForbidden})
 		}
+	}
+	// Sucursales finales del producto (las nuevas si las manda; si no, las que ya tiene) frente a la categoría de sucursal.
+	finalBranchIDs := scopedBranchIDs
+	if body.BranchIDs == nil {
+		assigned, _ := productbranch.BranchIDs(db(c), []uint{uint(id)})
+		finalBranchIDs = assigned[uint(id)]
+	}
+	if err := categorybranch.CheckProductCompatible(db(c), body.CategoryID, finalBranchIDs); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	expiryDate, err := service.ParseProductExpiryDate(body.ExpiryDate)
 	if err != nil {
@@ -867,55 +882,127 @@ func (h *ProductHandler) UploadImageAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"image_url": imageURL})
 }
 
+// categoryListScope acota el listado de categorías por sucursal (pkg/categorybranch). Con branch_id explícito, o para quien no
+// ve todas las sucursales, solo las de todas y las de esa sucursal; el administrador sin branch_id ve todas (vista de
+// administración, con la columna «Sucursal»). Mismo criterio que el listado de productos.
+func categoryListScope(c fiber.Ctx) func(*gorm.DB) *gorm.DB {
+	reqB, _ := strconv.ParseUint(c.Query("branch_id"), 10, 32)
+	if reqB == 0 && branch.IsBranchAdmin(c) {
+		return nil
+	}
+	return categorybranch.VisibleIn(db(c), branch.ResolveReadBranchFilter(c, uint(reqB)))
+}
+
 // CategoryListAPI devuelve categorías activas (POS y selects).
 func (h *ProductHandler) CategoryListAPI(c fiber.Ctx) error {
 	svc := service.NewProductService(db(c))
+	scope := categoryListScope(c)
 	if c.Query("with_counts") == "true" || c.Query("with_counts") == "1" {
-		items, err := svc.ListCategoriesWithCounts()
+		items, err := svc.ListCategoriesWithCountsScoped(scope)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.JSON(fiber.Map{"data": items})
 	}
-	cats, err := svc.ListCategories()
+	cats, err := svc.ListCategoriesScoped(scope)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"data": cats})
 }
 
+// categoryScopeFromBody interpreta branch_id del cuerpo: ausente (set=false), null/0 = todas las sucursales, N = esa sucursal.
+func categoryScopeFromBody(raw json.RawMessage) (id *uint, set bool, err error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	s := strings.TrimSpace(string(raw))
+	if s == "null" || s == "0" || s == `""` {
+		return nil, true, nil
+	}
+	n, perr := strconv.ParseUint(strings.Trim(s, `"`), 10, 32)
+	if perr != nil || n == 0 {
+		return nil, true, errors.New("sucursal inválida")
+	}
+	v := uint(n)
+	return &v, true, nil
+}
+
+// requireCategoryBranchAccess: quien no puede administrar el catálogo global solo crea/edita/elimina categorías de SU sucursal
+// activa (nunca «todas» ni las de otra). El administrador del catálogo no tiene esa restricción.
+func requireCategoryBranchAccess(c fiber.Ctx, categoryBranch *uint) error {
+	if middleware.CanManageGlobalCatalog(c) {
+		return nil
+	}
+	active := branch.ActiveBranchID(c)
+	if categoryBranch == nil || active == 0 || *categoryBranch != active {
+		return errors.New("solo puede administrar categorías de su sucursal; las de todas las sucursales las gestiona quien administra el catálogo global")
+	}
+	return nil
+}
+
 // CategoryCreateAPI crea una categoría inline desde el formulario de producto o panel.
 func (h *ProductHandler) CategoryCreateAPI(c fiber.Ctx) error {
 	var body struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		SortOrder   *int   `json:"sort_order"`
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		SortOrder   *int            `json:"sort_order"`
+		BranchID    json.RawMessage `json:"branch_id"` // ausente/null = todas las sucursales
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
-	cat, err := service.NewProductService(db(c)).CreateCategory(body.Name, body.Description, body.SortOrder)
+	branchID, _, err := categoryScopeFromBody(body.BranchID)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := requireCategoryBranchAccess(c, branchID); err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	if branchID != nil && !branch.CanAccessBranch(c, *branchID) {
+		return c.Status(403).JSON(fiber.Map{"error": "no tiene acceso a esa sucursal", "code": branch.CodeBranchForbidden})
+	}
+	cat, err := service.NewProductService(db(c)).CreateCategoryInScope(body.Name, body.Description, body.SortOrder, branchID)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(201).JSON(fiber.Map{"data": cat})
 }
 
-// CategoryUpdateAPI actualiza nombre, descripción y orden.
+// CategoryUpdateAPI actualiza nombre, descripción, orden y (si viene branch_id) la sucursal.
 func (h *ProductHandler) CategoryUpdateAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
 	}
 	var body struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		SortOrder   int    `json:"sort_order"`
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		SortOrder   int             `json:"sort_order"`
+		BranchID    json.RawMessage `json:"branch_id"` // ausente = no cambiar; null = todas; N = esa sucursal
 	}
 	if err := c.Bind().JSON(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "datos inválidos"})
 	}
-	cat, err := service.NewProductService(db(c)).UpdateCategory(uint(id), body.Name, body.Description, body.SortOrder)
+	branchID, setBranch, err := categoryScopeFromBody(body.BranchID)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	svc := service.NewProductService(db(c))
+	current, gerr := svc.GetCategory(uint(id))
+	if gerr != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "categoría no encontrada"})
+	}
+	// Debe poder administrar la categoría actual y, si la cambia de ámbito, también el destino.
+	if err := requireCategoryBranchAccess(c, current.BranchID); err != nil {
+		return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+	}
+	if setBranch {
+		if err := requireCategoryBranchAccess(c, branchID); err != nil {
+			return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+		}
+	}
+	cat, err := svc.UpdateCategoryInScope(uint(id), body.Name, body.Description, body.SortOrder, setBranch, branchID)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -927,6 +1014,11 @@ func (h *ProductHandler) CategoryDeleteAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	if cur, gerr := service.NewProductService(db(c)).GetCategory(uint(id)); gerr == nil {
+		if err := requireCategoryBranchAccess(c, cur.BranchID); err != nil {
+			return c.Status(403).JSON(fiber.Map{"error": err.Error(), "code": branch.CodeBranchForbidden})
+		}
 	}
 	if err := service.NewProductService(db(c)).DeleteCategory(uint(id)); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})

@@ -275,17 +275,55 @@ func (s *EcommerceService) PriceBounds() (float64, float64, error) {
 	return row.Min, row.Max, err
 }
 
-// PublicCategories categorías con al menos un producto activo publicado en el catálogo.
+// PublicCategories categorías con al menos un producto activo publicado en el catálogo. La tienda es de todo el negocio, sin
+// mirar sucursal: muestra las categorías de todas las sucursales y UNIFICA por nombre las repetidas (la «Bebidas» de cada
+// local sale una sola vez, con el id de la primera; ver PublicCategoryIDsLike para filtrar por ella).
 func (s *EcommerceService) PublicCategories() ([]PublicCategory, error) {
-	var rows []PublicCategory
+	var rows []struct {
+		ID        uint
+		Name      string
+		ImageURL  string
+		SortOrder int
+	}
 	err := s.db.Table("tenant_categories c").
 		Select("DISTINCT c.id, c.name, c.image_url, c.sort_order").
 		Joins("JOIN tenant_products p ON p.category_id = c.id").
 		Where("p.show_in_digital_catalog = ? AND p.active = ? AND p.deleted_at IS NULL", true, true).
 		Where("c.deleted_at IS NULL").
-		Order("c.sort_order ASC, c.name ASC").
+		Order("c.sort_order ASC, c.name ASC, c.id ASC").
 		Scan(&rows).Error
-	return rows, err
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PublicCategory, 0, len(rows))
+	seen := map[string]int{} // nombre en minúsculas → posición en out
+	for _, r := range rows {
+		key := strings.ToLower(strings.TrimSpace(r.Name))
+		if i, ok := seen[key]; ok {
+			if out[i].ImageURL == "" {
+				out[i].ImageURL = r.ImageURL // la primera con imagen la aporta
+			}
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, PublicCategory{ID: r.ID, Name: r.Name, ImageURL: r.ImageURL})
+	}
+	return out, nil
+}
+
+// PublicCategoryIDsLike ids de todas las categorías que se llaman igual que la dada (la unificación de PublicCategories).
+// Una sola, la propia, si no se repite.
+func (s *EcommerceService) PublicCategoryIDsLike(categoryID uint) []uint {
+	var cat database.TenantCategory
+	if err := s.db.Select("id", "name").First(&cat, categoryID).Error; err != nil {
+		return []uint{categoryID}
+	}
+	var ids []uint
+	if err := s.db.Model(&database.TenantCategory{}).
+		Where("LOWER(name) = ?", strings.ToLower(strings.TrimSpace(cat.Name))).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		return []uint{categoryID}
+	}
+	return ids
 }
 
 // PublicProductGallery imágenes de un producto publicado en el Catálogo Digital: la principal primero y
@@ -322,13 +360,16 @@ func (s *EcommerceService) PublicProducts(query string, categoryID uint, minPric
 	psvc := productservice.NewProductService(s.db)
 	params := productservice.ProductListParams{
 		Query:                    query,
-		CategoryID:               categoryID,
 		ActiveOnly:               true,
 		ShowInDigitalCatalogOnly: true,
 		ExcludeCombos:            true, // v1: sin combos/configurables en la tienda pública
 		MinPrice:                 minPrice,
 		MaxPrice:                 maxPrice,
 		SortBy:                   "catalog", // agrupado por categoría, no por orden de registro
+	}
+	if categoryID > 0 {
+		// Las categorías repetidas por nombre (una por sucursal) se ven como una sola en la tienda.
+		params.CategoryIDs = s.PublicCategoryIDsLike(categoryID)
 	}
 	if perPage > 0 {
 		if page < 1 {

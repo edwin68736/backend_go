@@ -127,9 +127,11 @@ func RegisterRoutes(api fiber.Router) {
 		middleware.RequireProductsViewOrRestaurantCatalog(),
 		h.CategoryListAPI,
 	)
-	api.Post("/categories", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), middleware.RequireGlobalCatalog(), h.CategoryCreateAPI)
-	api.Put("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), middleware.RequireGlobalCatalog(), h.CategoryUpdateAPI)
-	api.Delete("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), middleware.RequireGlobalCatalog(), h.CategoryDeleteAPI)
+	// Sin RequireGlobalCatalog: quien no administra el catálogo global igual gestiona las categorías de SU sucursal. El handler
+	// (requireCategoryBranchAccess) permite las de su sucursal activa y rechaza las de «todas» o de otra sucursal.
+	api.Post("/categories", middleware.RequireModule("products"), middleware.RequirePermission("products.create"), h.CategoryCreateAPI)
+	api.Put("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.edit"), h.CategoryUpdateAPI)
+	api.Delete("/categories/:id", middleware.RequireModule("products"), middleware.RequirePermission("products.delete"), h.CategoryDeleteAPI)
 	api.Get("/brands",
 		middleware.RequireModule("products"),
 		middleware.LoadRestaurantPermissions(),

@@ -9,6 +9,7 @@ import (
 
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/categorybranch"
 	"tukifac/pkg/productbranch"
 	"tukifac/pkg/sunat"
 	"tukifac/pkg/tax"
@@ -247,7 +248,7 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 		var catID *uint
 		categoryProvided := strings.TrimSpace(item.CategoryName) != ""
 		if categoryProvided {
-			id, err := s.resolveCategoryIDByName(item.CategoryName, catCache)
+			id, err := s.resolveCategoryIDByName(item.CategoryName, opts.BranchID, catCache)
 			if err != nil {
 				result.Failed = append(result.Failed, BulkImportFail{
 					Row: item.RowNumber, Name: item.Name, Error: err.Error(),
@@ -358,6 +359,21 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 				Row: item.RowNumber, Name: item.Name, Error: branchErr.Error(),
 			})
 			continue
+		}
+
+		// Categoría de sucursal: el producto debe quedar vendiéndose solo allí (sucursales de la fila, o las que ya tenía).
+		if catID != nil {
+			effective := branchIDs
+			if !setBranches && hasExisting {
+				assigned, _ := productbranch.BranchIDs(s.db, []uint{existing.ID})
+				effective = assigned[existing.ID]
+			}
+			if cerr := categorybranch.CheckProductCompatible(s.db, catID, effective); cerr != nil {
+				result.Failed = append(result.Failed, BulkImportFail{
+					Row: item.RowNumber, Name: item.Name, Error: cerr.Error(),
+				})
+				continue
+			}
 		}
 
 		var productID uint
@@ -483,7 +499,10 @@ func branchIDForImport(isRestaurant bool, branchID uint) uint {
 	return 0
 }
 
-func (s *ProductService) resolveCategoryIDByName(name string, cache map[string]uint) (uint, error) {
+// resolveCategoryIDByName busca la categoría por nombre visible desde la sucursal de la importación (primero la de esa
+// sucursal, después la de todas) y, si no existe, la crea para todas las sucursales. Si el nombre solo existe como categoría
+// de OTRA sucursal, la creación falla con el aviso de nombre repetido (categorybranch.EnsureNameFree) y la fila se informa.
+func (s *ProductService) resolveCategoryIDByName(name string, branchID uint, cache map[string]uint) (uint, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
 		return 0, nil
@@ -491,14 +510,13 @@ func (s *ProductService) resolveCategoryIDByName(name string, cache map[string]u
 	if id, ok := cache[key]; ok {
 		return id, nil
 	}
-	var cat database.TenantCategory
-	err := s.db.Where("LOWER(name) = ?", key).First(&cat).Error
-	if err == nil {
+	cat, found, err := categorybranch.FindByName(s.db, name, branchID)
+	if err != nil {
+		return 0, err
+	}
+	if found {
 		cache[key] = cat.ID
 		return cat.ID, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return 0, err
 	}
 	created, err := s.CreateCategory(strings.TrimSpace(name), "", nil)
 	if err != nil {

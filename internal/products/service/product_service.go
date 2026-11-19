@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"tukifac/pkg/categorybranch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/modifierkind"
@@ -31,6 +32,8 @@ func NewProductService(db *gorm.DB) *ProductService {
 type ProductListParams struct {
 	Query                    string
 	CategoryID               uint
+	// CategoryIDs: varias categorías a la vez (la tienda unifica por nombre las «Bebidas» de cada sucursal).
+	CategoryIDs []uint
 	BrandID                  uint
 	Type                     string
 	ActiveOnly               bool
@@ -114,6 +117,9 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	}
 	if params.CategoryID > 0 {
 		q = q.Where(p+"category_id = ?", params.CategoryID)
+	}
+	if len(params.CategoryIDs) > 0 {
+		q = q.Where(p+"category_id IN ?", params.CategoryIDs)
 	}
 	if params.BrandID > 0 {
 		q = q.Where(p+"brand_id = ?", params.BrandID)
@@ -1412,14 +1418,34 @@ func (s *ProductService) nextCategorySortOrder() (int, error) {
 }
 
 func (s *ProductService) ListCategories() ([]database.TenantCategory, error) {
+	return s.ListCategoriesScoped(nil)
+}
+
+// ListCategoriesScoped: categorías activas, opcionalmente acotadas por sucursal (categorybranch.VisibleIn / VisibleInAny).
+// scope nil = todas.
+func (s *ProductService) ListCategoriesScoped(scope func(*gorm.DB) *gorm.DB) ([]database.TenantCategory, error) {
 	var cats []database.TenantCategory
-	err := s.db.Where("active = ?", true).Order("sort_order ASC, name ASC").Find(&cats).Error
+	q := s.db.Where("active = ?", true)
+	if scope != nil {
+		q = scope(q)
+	}
+	err := q.Order("sort_order ASC, name ASC").Find(&cats).Error
 	return cats, err
 }
 
 func (s *ProductService) ListCategoriesWithCounts() ([]CategoryListItem, error) {
+	return s.ListCategoriesWithCountsScoped(nil)
+}
+
+// ListCategoriesWithCountsScoped: igual que ListCategoriesWithCounts (incluye inactivas, es el listado de administración)
+// acotado por sucursal cuando se pide.
+func (s *ProductService) ListCategoriesWithCountsScoped(scope func(*gorm.DB) *gorm.DB) ([]CategoryListItem, error) {
 	var cats []database.TenantCategory
-	if err := s.db.Order("sort_order ASC, name ASC").Find(&cats).Error; err != nil {
+	q := s.db.Order("sort_order ASC, name ASC")
+	if scope != nil {
+		q = scope(q)
+	}
+	if err := q.Find(&cats).Error; err != nil {
 		return nil, err
 	}
 	if len(cats) == 0 {
@@ -1461,9 +1487,24 @@ func (s *ProductService) GetCategory(id uint) (*database.TenantCategory, error) 
 }
 
 func (s *ProductService) CreateCategory(name, description string, sortOrder *int) (*database.TenantCategory, error) {
+	return s.CreateCategoryInScope(name, description, sortOrder, nil)
+}
+
+// CreateCategoryInScope crea una categoría para todas las sucursales (branchID nil) o solo para una. El nombre no puede repetirse
+// en el mismo ámbito (categorybranch.EnsureNameFree).
+func (s *ProductService) CreateCategoryInScope(name, description string, sortOrder *int, branchID *uint) (*database.TenantCategory, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("nombre de categoría requerido")
+	}
+	if branchID != nil && !categorybranch.Ready(s.db) {
+		return nil, categorybranch.ErrNotMigrated
+	}
+	if err := categorybranch.ValidateBranch(s.db, branchID); err != nil {
+		return nil, err
+	}
+	if err := categorybranch.EnsureNameFree(s.db, name, branchID, 0); err != nil {
+		return nil, err
 	}
 	order := 0
 	if sortOrder != nil {
@@ -1475,12 +1516,22 @@ func (s *ProductService) CreateCategory(name, description string, sortOrder *int
 		}
 		order = next
 	}
-	cat := &database.TenantCategory{Name: name, Description: strings.TrimSpace(description), SortOrder: order, Active: true}
-	err := s.db.Create(cat).Error
+	cat := &database.TenantCategory{Name: name, Description: strings.TrimSpace(description), SortOrder: order, Active: true, BranchID: branchID}
+	q := s.db
+	if !categorybranch.Ready(s.db) {
+		q = q.Omit("branch_id") // tenant sin V192: la columna no existe
+	}
+	err := q.Create(cat).Error
 	return cat, err
 }
 
 func (s *ProductService) UpdateCategory(id uint, name, description string, sortOrder int) (*database.TenantCategory, error) {
+	return s.UpdateCategoryInScope(id, name, description, sortOrder, false, nil)
+}
+
+// UpdateCategoryInScope actualiza la categoría. setBranch=false conserva su ámbito actual; true lo cambia a branchID (nil =
+// todas). Limitar a una sucursal exige que todos sus productos se vendan solo allí (categorybranch.CheckScopeChange).
+func (s *ProductService) UpdateCategoryInScope(id uint, name, description string, sortOrder int, setBranch bool, branchID *uint) (*database.TenantCategory, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("nombre de categoría requerido")
@@ -1489,10 +1540,38 @@ func (s *ProductService) UpdateCategory(id uint, name, description string, sortO
 	if err := s.db.First(&cat, id).Error; err != nil {
 		return nil, errors.New("categoría no encontrada")
 	}
+	newBranch := cat.BranchID
+	scopeChanged := false
+	if setBranch {
+		if !categorybranch.Ready(s.db) {
+			return nil, categorybranch.ErrNotMigrated
+		}
+		if err := categorybranch.ValidateBranch(s.db, branchID); err != nil {
+			return nil, err
+		}
+		newBranch = branchID
+		scopeChanged = (cat.BranchID == nil) != (branchID == nil) || (cat.BranchID != nil && branchID != nil && *cat.BranchID != *branchID)
+	}
+	// El nombre solo se revalida si cambió él o el ámbito: no se bloquea editar el orden de una categoría vieja con nombre repetido.
+	if scopeChanged || !strings.EqualFold(cat.Name, name) {
+		if err := categorybranch.EnsureNameFree(s.db, name, newBranch, id); err != nil {
+			return nil, err
+		}
+	}
+	if scopeChanged {
+		if err := categorybranch.CheckScopeChange(s.db, id, newBranch); err != nil {
+			return nil, err
+		}
+	}
 	cat.Name = name
 	cat.Description = strings.TrimSpace(description)
 	cat.SortOrder = sortOrder
-	if err := s.db.Save(&cat).Error; err != nil {
+	cat.BranchID = newBranch
+	q := s.db
+	if !categorybranch.Ready(s.db) {
+		q = q.Omit("branch_id")
+	}
+	if err := q.Save(&cat).Error; err != nil {
 		return nil, err
 	}
 	return &cat, nil

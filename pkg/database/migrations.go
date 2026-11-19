@@ -1020,7 +1020,12 @@ type TenantCategory struct {
 	ParentID    *uint  `gorm:"index" json:"parent_id"`
 	SortOrder   int    `gorm:"default:0;index" json:"sort_order"`
 	// ImageURL imagen de la categoría (se muestra en la tienda virtual).
-	ImageURL  string         `gorm:"size:255" json:"image_url"`
+	ImageURL string `gorm:"size:255" json:"image_url"`
+	// BranchID (V192): sucursal a la que pertenece la categoría. NULL = todas las sucursales (lo de siempre: toda categoría
+	// anterior a V192 queda así, sin backfill, y cualquier camino que la cree sin indicar sucursal también). Con valor = solo
+	// esa sucursal. Regla única en pkg/categorybranch. No se registra en el scope global de sucursal: el filtro (NULL o la
+	// sucursal) lo aplica ese paquete.
+	BranchID  *uint          `gorm:"index" json:"branch_id"`
 	Active    bool           `gorm:"default:true" json:"active"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`

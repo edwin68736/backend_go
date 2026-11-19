@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/categorybranch"
 	"tukifac/pkg/productbranch"
 
 	"gorm.io/gorm"
@@ -196,6 +197,11 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	// sin asignación (= todas) no se toca. Ver pkg/productbranch.
 	if input.Type == "in" || input.Type == "adjustment_in" || (input.Type == "adjustment" && newBalance > 0) {
 		if err := productbranch.AssignIfRestricted(tx, input.ProductID, input.BranchID); err != nil {
+			return err
+		}
+		// Y si su categoría es exclusiva de otra sucursal, se amplía a todas: el producto ya se vende también aquí y no
+		// debe quedar sin categoría visible (ver categorybranch.WidenForBranch).
+		if err := categorybranch.WidenForBranch(tx, input.ProductID, input.BranchID); err != nil {
 			return err
 		}
 	}

@@ -9,7 +9,9 @@ import (
 // BranchScopedModels son las entidades con branch_id PROPIO que el scope global de sucursal (pkg/branchscope) restringe.
 //
 // Criterio: pertenencia exclusiva a una sucursal. NO se incluyen:
-//   - entidades globales del tenant (contactos, categorías, marcas, métodos de pago, bancos, configuración, roles);
+//   - entidades globales del tenant (contactos, marcas, métodos de pago, bancos, configuración, roles);
+//   - categorías: tienen branch_id (V192, NULL = todas) pero NO se filtran con este scope global — la regla propia (las de todas
+//     más las de la sucursal) vive en pkg/categorybranch y el administrador necesita ver todas;
 //   - TenantProduct (catálogo compartido; su visibilidad va por tenant_product_branches y TenantProduct.BranchID es legacy);
 //   - precios por sucursal y el puente de visibilidad de productos (configuración que administran quienes ven el catálogo);
 //   - transferencias (dos sucursales: origen y destino) y usuarios/asignaciones;
