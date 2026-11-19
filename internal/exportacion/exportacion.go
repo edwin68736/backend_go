@@ -219,6 +219,11 @@ func ApplyToInvoicePayload(payload *facturador.InvoicePayload, row *database.Ten
 	if payload == nil || row == nil {
 		return
 	}
+	// El tipo de operación de la exportación manda sobre el del perfil fiscal: ese perfil nace con 0101 (venta interna) y, aplicado antes,
+	// lo dejaba en el XML. Con 0101 el adquirente «-» es inválido y SUNAT rechaza con 2800 (tenant 20616204018, 16-nov-2026).
+	if row.OperationTypeCode != "" {
+		payload.TipoOperacion = row.OperationTypeCode
+	}
 	// RS 097-2012 art. 17.2 (anexo RS 123-2022): en exportaciones a no domiciliados la factura identifica al adquirente con «-».
 	if payload.TipoDoc == "01" {
 		payload.Client.TipoDoc, payload.Client.NumDoc = "-", "-"

@@ -177,3 +177,12 @@ func TestNormalize_0202SinFechasUsaElDiaDeEmision(t *testing.T) {
 		t.Fatalf("sin fechas debe asumir un solo día: %+v", r)
 	}
 }
+
+func TestApply_tipoOperacionDeLaExportacionGanaAlDelPerfilFiscal(t *testing.T) {
+	p := basePayload("01")
+	p.TipoOperacion = "0101" // el perfil fiscal lo deja en venta interna por defecto
+	ApplyToInvoicePayload(p, &database.TenantSaleExport{OperationTypeCode: salecurrency.OpExportHospedaje, GuestName: "John Smith"})
+	if p.TipoOperacion != salecurrency.OpExportHospedaje {
+		t.Fatalf("tipoOperacion = %q, want %q", p.TipoOperacion, salecurrency.OpExportHospedaje)
+	}
+}
