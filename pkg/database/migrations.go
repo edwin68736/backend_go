@@ -1593,6 +1593,9 @@ type TenantSale struct {
 	// Recargo al consumo cobrado en esta venta (cargo global, cat. 53 código 46): fuera de la base del IGV; suma a Total. Base: Subtotal.
 	ServiceChargeRate    float64    `gorm:"column:service_charge_rate;type:decimal(5,2);default:0" json:"service_charge_rate"`
 	ServiceChargeAmount  float64    `gorm:"column:service_charge_amount;type:decimal(15,2);default:0" json:"service_charge_amount"`
+	// NoteCredited NO se guarda: total de notas de crédito ACEPTADAS por SUNAT contra esta venta, que Cuentas por Cobrar resta
+	// del saldo (la factura no se edita; la nota la corrige). Lo llena receivables.AttachNoteCredits antes de calcular saldos.
+	NoteCredited         float64    `gorm:"-" json:"-"`
 	Currency             string     `gorm:"size:10;default:'PEN'" json:"currency"`
 	OperationTypeCode    string     `gorm:"size:10;default:'0101'" json:"operation_type_code"`
 	ExchangeRate         *float64   `gorm:"type:decimal(10,4)" json:"exchange_rate,omitempty"`

@@ -53,6 +53,15 @@ func RestorePartialSaleBankRefundTx(tx *gorm.DB, noteSale *database.TenantSale, 
 		return err
 	}
 
+	// Solo se devuelve lo cobrado: sobre una venta a crédito sin pagar la nota baja la deuda y no mueve la cuenta.
+	amount, err := NoteRefundableAmount(tx, noteSale)
+	if err != nil {
+		return err
+	}
+	if amount <= 0 {
+		return nil
+	}
+
 	uid := userID
 	if uid == 0 {
 		uid = noteSale.UserID
@@ -61,7 +70,7 @@ func RestorePartialSaleBankRefundTx(tx *gorm.DB, noteSale *database.TenantSale, 
 	refund := database.TenantBankMovement{
 		BankAccountID: origCredit.BankAccountID,
 		Type:          "debit",
-		Amount:        noteSale.Total,
+		Amount:        amount,
 		Description:   "Devolución por nota de crédito " + noteSale.Number,
 		Reference:     ref,
 		Date:          now,
@@ -73,7 +82,7 @@ func RestorePartialSaleBankRefundTx(tx *gorm.DB, noteSale *database.TenantSale, 
 		return err
 	}
 	// El saldo de la cuenta va en soles: una devolución de una venta en USD resta su equivalente (monto × TC de la venta).
-	delta, _ := refund.BalanceDelta(-noteSale.Total)
+	delta, _ := refund.BalanceDelta(-amount)
 	if refund.AccountAmount == nil {
 		var accCur string
 		tx.Table("tenant_bank_accounts").Select("currency").Where("id = ?", origCredit.BankAccountID).Scan(&accCur)

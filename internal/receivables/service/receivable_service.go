@@ -164,6 +164,9 @@ func (s *ReceivableService) List(f ListFilter) ([]ReceivableRow, int64, error) {
 	if len(sales) == 0 {
 		return []ReceivableRow{}, 0, nil
 	}
+	if err := AttachNoteCredits(s.db, sales); err != nil {
+		return nil, 0, err
+	}
 
 	ids := make([]uint, len(sales))
 	contactIDs := make([]uint, 0, len(sales))
@@ -296,6 +299,12 @@ func (s *ReceivableService) Collect(saleID uint, in CollectPaymentInput) error {
 	if salescope.IsNoteDocType(sale.DocType) {
 		return errors.New("una nota de crédito/débito no es una venta cobrable")
 	}
+	// Las notas de crédito aceptadas bajan lo que se puede cobrar de esta venta.
+	one := []database.TenantSale{sale}
+	if err := AttachNoteCredits(s.db, one); err != nil {
+		return err
+	}
+	sale = one[0]
 	var liveChild int64
 	if err := s.db.Model(&database.TenantSale{}).
 		Where("issued_from_nota_sale_id = ? AND status <> ?", saleID, "cancelled").
@@ -506,6 +515,9 @@ func (s *ReceivableService) Statement(contactID uint, branchID uint) (*Statement
 		return &StatementResult{ContactID: contactID, ContactName: name, Lines: []StatementLine{}}, nil
 	}
 
+	if err := AttachNoteCredits(s.db, sales); err != nil {
+		return nil, err
+	}
 	ids := make([]uint, len(sales))
 	for i := range sales {
 		ids[i] = sales[i].ID
