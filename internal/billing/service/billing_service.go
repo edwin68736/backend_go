@@ -426,6 +426,13 @@ func (s *BillingService) ResendToSUNAT(saleID uint) (*database.TenantInvoice, er
 // proporcionales — no se copia el 100% de la venta. Vacío o motivo no-parcial: comportamiento
 // de siempre (copia completa, mismos totales que la venta original).
 func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason string, reasonCode string, selections []NoteItemSelection, issueDate string) (*database.TenantSale, *database.TenantInvoice, error) {
+	return s.CreateCreditNote(originalSaleID, reason, reasonCode, selections, 0, issueDate)
+}
+
+// CreateCreditNote igual que CreateCreditNoteAndVoidSale, con la opción de acreditar un IMPORTE:
+// totalAmount > 0 (o NoteItemSelection.Amount por línea) arma una nota de ajuste de valor por ese
+// monto con IGV — solo motivos de IsAmountCreditNoteReason. No devuelve cantidades ni repone stock.
+func (s *BillingService) CreateCreditNote(originalSaleID uint, reason string, reasonCode string, selections []NoteItemSelection, totalAmount float64, issueDate string) (*database.TenantSale, *database.TenantInvoice, error) {
 	if !s.facturadorConfigured() {
 		return nil, nil, errors.New("la anulación con nota de crédito requiere facturador configurado")
 	}
@@ -501,12 +508,32 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 
 		// Nota parcial (Fase 2): el usuario eligió ítems/cantidades y el motivo mueve bienes —
 		// la nota se arma solo con esas líneas y sus propios totales, no con el 100% de la venta.
-		partial := IsPartialCreditNoteReason(reasonCode) && len(selections) > 0
+		// Nota por monto: se acredita un importe, no cantidades. Solo motivos de ajuste de valor.
+		amountMode := isAmountNote(selections, totalAmount)
+		if amountMode && !IsAmountCreditNoteReason(reasonCode) {
+			return fmt.Errorf("el motivo %s no admite acreditar por monto: use un motivo de descuento/disminución (04, 05, 09, 10) o elija ítems y cantidades", reasonCode)
+		}
+		partial := (IsPartialCreditNoteReason(reasonCode) && len(selections) > 0) || amountMode
 		var partialItems []database.TenantSaleItem
 		subtotal, taxAmount, total := orig.Subtotal, orig.TaxAmount, orig.Total
 		// Recargo al consumo: la nota total devuelve el de la venta (orig.Total ya lo incluye); la parcial, su parte proporcional.
 		ncServiceCharge, ncServiceChargeRate := orig.ServiceChargeAmount, orig.ServiceChargeRate
-		if partial {
+		if amountMode {
+			amounts, err := resolveAmountNoteAmounts(origItems, selections, totalAmount)
+			if err != nil {
+				return err
+			}
+			credited, err := creditedAmountOnSale(tx, originalSaleID)
+			if err != nil {
+				return err
+			}
+			partialItems, subtotal, taxAmount, total, err = buildAmountNoteItems(originalSaleID, origItems, amounts, credited)
+			if err != nil {
+				return err
+			}
+			// Un ajuste de valor no toca el recargo al consumo (se acredita solo en notas por cantidad).
+			ncServiceCharge = 0
+		} else if partial {
 			ids := make([]uint, len(selections))
 			for i, sel := range selections {
 				ids[i] = sel.OriginalItemID
@@ -518,6 +545,22 @@ func (s *BillingService) CreateCreditNoteAndVoidSale(originalSaleID uint, reason
 			partialItems, subtotal, taxAmount, total, err = buildPartialNoteItems(originalSaleID, origItems, selections, alreadyReturned)
 			if err != nil {
 				return err
+			}
+			// Una nota por monto previa no consume cupo de cantidad: el tope del valor de la venta se
+			// controla también aquí para que devolución + ajuste de valor nunca superen lo vendido.
+			if credited, cerr := creditedAmountOnSale(tx, originalSaleID); cerr != nil {
+				return cerr
+			} else if credited > 0 {
+				var saleValue float64
+				for _, it := range origItems {
+					saleValue += it.Total
+				}
+				if remaining := money.RoundSunat(saleValue - credited); total > remaining+0.005 {
+					if remaining < 0 {
+						remaining = 0
+					}
+					return fmt.Errorf("la nota por S/ %.2f supera lo que aún se puede acreditar de esta venta (disponible S/ %.2f: ya hay notas por S/ %.2f)", total, remaining, credited)
+				}
 			}
 			ncServiceCharge, err = partialNoteServiceCharge(tx, &orig, origItems, selections, subtotal)
 			if err != nil {

@@ -16,6 +16,9 @@ import (
 type NoteItemSelection struct {
 	OriginalItemID uint    `json:"original_item_id"`
 	Quantity       float64 `json:"quantity"`
+	// Amount: importe (con IGV) a acreditar de esta línea — nota por monto (ver note_amount.go).
+	// Si viene > 0 se ignora Quantity y la nota no devuelve cantidades ni repone stock.
+	Amount float64 `json:"amount,omitempty"`
 }
 
 // partialCreditNoteReasonCodes motivos del catálogo SUNAT 09 que implican devolver o

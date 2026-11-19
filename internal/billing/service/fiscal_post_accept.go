@@ -133,20 +133,24 @@ func (s *BillingService) applyPartialCreditNoteSideEffects(saleID uint, sale *da
 			return
 		}
 	}
-	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		return salesvc.RestorePartialStockFromKardexTx(tx, sale, "NC/"+sale.Number, 0)
-	}); err != nil {
-		logger.L.Warn("nc_partial_restore_stock_failed",
+	// Descuento / disminución de valor: el cliente se queda con la mercadería, no vuelve stock (aunque la
+	// nota traiga líneas con cantidad). El resto de efectos (devolución del dinero) sí aplican.
+	if CreditNoteReturnsStock(sale.NoteReasonCode) {
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			return salesvc.RestorePartialStockFromKardexTx(tx, sale, "NC/"+sale.Number, 0)
+		}); err != nil {
+			logger.L.Warn("nc_partial_restore_stock_failed",
+				slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+				slog.Uint64("nc_sale_id", uint64(saleID)),
+				slog.Any("error", err),
+			)
+			return
+		}
+		logger.L.Info("nc_partial_restore_stock_ok",
 			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
 			slog.Uint64("nc_sale_id", uint64(saleID)),
-			slog.Any("error", err),
 		)
-		return
 	}
-	logger.L.Info("nc_partial_restore_stock_ok",
-		slog.Uint64("tenant_id", uint64(s.centralTenantID)),
-		slog.Uint64("nc_sale_id", uint64(saleID)),
-	)
 
 	// Devuelve el dinero en Cuentas/Bancos si la venta original se cobró ahí (independiente del
 	// resultado de la reposición de stock arriba: son efectos separados, uno no debe bloquear
