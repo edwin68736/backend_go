@@ -220,6 +220,11 @@ func (s *BillingService) buildNotePayload(noteSaleID uint) (*facturador.NotePayl
 	if err != nil {
 		return nil, err
 	}
+	// Si el comprobante tenía descuento global o anticipo, las líneas de la nota deben ir ya netas (ver note_payload_net.go).
+	// Solo aplica a la nota con líneas propias; las que toman las de la venta afectada (len(items) vacío arriba) no se tocan.
+	if noteSale.ID > 0 {
+		items = netNoteItemsForPayload(items, &noteSale)
+	}
 	details, err := BuildInvoiceDetailsFromSaleItems(items, companyTaxRate, normUnit)
 	if err != nil {
 		return nil, err
