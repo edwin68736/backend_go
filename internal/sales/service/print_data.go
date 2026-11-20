@@ -600,7 +600,7 @@ func enrichDespatchPrintData(db *gorm.DB, sale *database.TenantSale, pd *PrintDa
 			DocType:   payload.Destinatario.TipoDoc,
 			DocNumber: payload.Destinatario.NumDoc,
 			Name:      payload.Destinatario.RznSocial,
-			Address:   payload.Destinatario.Address.Direccion,
+			Address:   despatchPartyAddress(payload.Destinatario.Address),
 		},
 		MotivoTraslado: strings.TrimSpace(payload.Envio.DesTraslado),
 		Modalidad:      despatchModalidadLabel(payload.Envio.ModTraslado),
@@ -641,7 +641,7 @@ func enrichDespatchPrintData(db *gorm.DB, sale *database.TenantSale, pd *PrintDa
 			DocType:   payload.Tercero.TipoDoc,
 			DocNumber: payload.Tercero.NumDoc,
 			Name:      payload.Tercero.RznSocial,
-			Address:   payload.Tercero.Address.Direccion,
+			Address:   despatchPartyAddress(payload.Tercero.Address),
 		}
 	}
 	if len(payload.AddDocs) > 0 {
@@ -651,6 +651,16 @@ func enrichDespatchPrintData(db *gorm.DB, sale *database.TenantSale, pd *PrintDa
 	}
 
 	pd.Despatch = out
+}
+
+// despatchPartyAddress devuelve la dirección de una parte de la guía. El payload guardado puede no traer
+// dirección (p. ej. un tercero que solo lleva RUC y razón social): InvoiceClient.Address es un puntero y
+// leerlo sin comprobar tumbaba GET /api/sales/:id con 500 (guía T001-5 de 20615174638, 20/11/2026).
+func despatchPartyAddress(a *facturador.InvoiceAddress) string {
+	if a == nil {
+		return ""
+	}
+	return a.Direccion
 }
 
 // despatchDateOnly extrae dd/mm/yyyy de un datetime ISO fiscal (misma capa de formato que

@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"runtime/debug"
 
 	"tukifac/config"
 	"tukifac/pkg/cmd"
@@ -81,8 +82,26 @@ func runServer(cfg *config.Config) {
 		},
 	})
 
+	// Un panic en un handler lo captura recover y el ErrorHandler responde 500 genérico. El logger de peticiones va
+	// por dentro de recover, así que el panic lo atraviesa sin quedar registrado: sin este handler no hay ningún rastro
+	// en producción (guía T001-5 de 20615174638, 20/11/2026: 500 en GET /api/sales/:id y cero líneas de log).
 	app.Use(recover.New(recover.Config{
-		EnableStackTrace: cfg.IsDev(),
+		EnableStackTrace: true,
+		StackTraceHandler: func(c fiber.Ctx, e any) {
+			attrs := []any{
+				slog.String("method", c.Method()),
+				slog.String("route", c.Path()),
+				slog.Any("panic", e),
+				slog.String("stack", string(debug.Stack())),
+			}
+			if slug, ok := c.Locals("tenant_slug").(string); ok && slug != "" {
+				attrs = append(attrs, slog.String("tenant", slug))
+			}
+			if uid, ok := c.Locals("user_id").(uint); ok && uid > 0 {
+				attrs = append(attrs, slog.Uint64("user_id", uint64(uid)))
+			}
+			logger.L.Error("panic_recovered", attrs...)
+		},
 	}))
 
 	routes.Setup(app)
