@@ -128,11 +128,9 @@ func (h *Handler) ReceiveReturn(c fiber.Ctx) error {
 	if !ok {
 		return nil
 	}
-	var b struct {
-		Condition string `json:"condition"`
-	}
+	var b service.ReceiveInput
 	_ = c.Bind().JSON(&b)
-	v, err := svc().ReceiveReturn(id, b.Condition, userID(c))
+	v, err := svc().ReceiveReturnWith(id, b, userID(c))
 	if err != nil {
 		return fail(c, err)
 	}

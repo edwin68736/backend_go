@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -73,6 +74,7 @@ type StockRow struct {
 	Reentries   int    `json:"reingresos"`
 	Adjustments int    `json:"adjustments"` // ajustes y bajas, con signo
 	Current     int    `json:"current"`     // stock al cierre del período
+	Damaged     int    `json:"damaged"`     // equipos recibidos dañados en retornos (acumulado: no vuelven al stock)
 	Yellow      int    `json:"yellow_threshold"`
 	Green       int    `json:"green_threshold"`
 	Semaphore   string `json:"semaphore"`
@@ -188,9 +190,14 @@ func (s *Service) StockReport(period string) ([]StockRow, error) {
 		}
 	}
 
+	damaged, err := s.damagedByProduct()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]StockRow, 0, len(order))
 	for _, id := range order {
 		r := rows[id]
+		r.Damaged = damaged[id]
 		r.TotalOut = r.DirectIndep + r.DirectPromo + r.ComboIndep + r.ComboPromo
 		r.Current = r.Opening + r.Ingresos + r.Reentries + r.Adjustments - r.TotalOut
 		r.Semaphore = semaphore(r.Current, r.Yellow, r.Green)
@@ -358,4 +365,24 @@ func negativeStock(rows []StockRow) []StockRow {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
 	return out
+}
+
+// damagedByProduct equipos dañados por producto: los de retornos recibidos en estado «dañado» (no reingresan al stock,
+// así que no figuran en el kardex). Es un acumulado informativo; no descuenta reparaciones ni bajas.
+func (s *Service) damagedByProduct() (map[uint]int, error) {
+	var rets []database.EquipReturn
+	if err := s.db.Select("id, items_json").Where("status = ? AND `condition` = ?", "recibido", "danado").Find(&rets).Error; err != nil {
+		return nil, err
+	}
+	out := map[uint]int{}
+	for _, r := range rets {
+		var items []ReturnItem
+		if json.Unmarshal([]byte(r.ItemsJSON), &items) != nil {
+			continue
+		}
+		for _, it := range items {
+			out[it.ProductID] += it.Quantity
+		}
+	}
+	return out, nil
 }

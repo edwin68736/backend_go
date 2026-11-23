@@ -180,7 +180,21 @@ func (s *Service) saveShipmentTx(tx *gorm.DB, orderID uint, in *ShipmentInput) e
 	if err := s.applyShipmentInput(tx, &sh, in); err != nil {
 		return err
 	}
+	deliverInOffice(&sh)
 	return tx.Create(&sh).Error
+}
+
+// deliverInOffice: un pedido vendido en oficina se entrega en el acto, así que su envío nace cerrado («Entregado en
+// oficina»). Solo aplica a la modalidad «oficina»; «pendiente_recojo» (valor antiguo) conserva el flujo manual.
+func deliverInOffice(sh *database.EquipShipment) {
+	if sh.DeliveryMode != "oficina" || sh.Status != "pendiente_envio" {
+		return
+	}
+	d := todayNoon()
+	sh.Status, sh.PickedUpAt = "entregado", &d
+	if sh.DispatchedAt == nil {
+		sh.DispatchedAt = &d
+	}
 }
 
 // shipmentUpdateOnOrderTx actualiza el envío vigente desde el formulario del pedido (no cambia su estado).
@@ -196,12 +210,17 @@ func (s *Service) shipmentUpdateOnOrderTx(tx *gorm.DB, orderID uint, in *Shipmen
 	if !found {
 		return s.saveShipmentTx(tx, orderID, in)
 	}
+	// Un pedido entregado en oficina que pasa a envío por agencia vuelve a «por despachar» (nunca salió de la oficina).
+	if sh.Status == "entregado" && sh.DeliveryMode == "oficina" && sh.ProviderStatus == "" && strings.TrimSpace(in.DeliveryMode) == "agencia" {
+		sh.Status, sh.PickedUpAt, sh.DispatchedAt = "pendiente_envio", nil, nil
+	}
 	if sh.Status == "entregado" || sh.Status == "retorno" {
 		return nil // un envío cerrado no se edita desde el pedido
 	}
 	if err := s.applyShipmentInput(tx, &sh, in); err != nil {
 		return err
 	}
+	deliverInOffice(&sh)
 	return tx.Save(&sh).Error
 }
 

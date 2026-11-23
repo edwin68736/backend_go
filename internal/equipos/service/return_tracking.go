@@ -311,9 +311,23 @@ func (s *Service) syncOpenReturns(ctx context.Context, cl *shalom.Client, res *S
 	return nil
 }
 
-// ReceiveReturn «Recibido»: cierra el retorno con la condición del equipo. En buen estado reingresa al stock (la misma
-// regla de Gestionar); dañado solo se registra. No hace falta repetir costos ni saldo: se conservan.
+// ReceiveInput datos opcionales al marcar un retorno como recibido (modal de la casilla «Recibido»).
+type ReceiveInput struct {
+	Condition     string   `json:"condition"`
+	ReturnCost    *float64 `json:"return_cost"`
+	UnpaidBalance *float64 `json:"unpaid_balance"`
+	Notes         string   `json:"notes"`
+	Discarded     bool     `json:"discarded"` // la agencia lo desechó: se cierra como «desechado por agencia» (no reingresa)
+}
+
+// ReceiveReturn «Recibido» sin datos adicionales: conserva costo y saldo.
 func (s *Service) ReceiveReturn(id uint, condition string, userID uint) (*ReturnView, error) {
+	return s.ReceiveReturnWith(id, ReceiveInput{Condition: condition}, userID)
+}
+
+// ReceiveReturnWith «Recibido»: cierra el retorno con la condición del equipo. En buen estado reingresa al stock (la misma
+// regla de Gestionar); dañado solo se registra. El costo, el saldo y las observaciones se actualizan solo si se envían.
+func (s *Service) ReceiveReturnWith(id uint, in ReceiveInput, userID uint) (*ReturnView, error) {
 	var r database.EquipReturn
 	if found, err := findOne(s.db, &r, "id = ?", id); err != nil {
 		return nil, err
@@ -323,8 +337,20 @@ func (s *Service) ReceiveReturn(id uint, condition string, userID uint) (*Return
 	if r.Status != "solicitado" && r.Status != "en_camino" {
 		return nil, invalid("el retorno ya está %s", strings.ReplaceAll(r.Status, "_", " "))
 	}
+	condition := in.Condition
 	if condition == "" {
 		condition = "buen_estado"
 	}
-	return s.UpdateReturn(id, ReturnUpdate{Status: "recibido", Condition: condition, ReturnCost: r.ReturnCost, UnpaidBalance: r.UnpaidBalance}, userID)
+	cost, unpaid := r.ReturnCost, r.UnpaidBalance
+	if in.ReturnCost != nil {
+		cost = *in.ReturnCost
+	}
+	if in.UnpaidBalance != nil {
+		unpaid = *in.UnpaidBalance
+	}
+	status := "recibido"
+	if in.Discarded {
+		status = "desechado_por_agencia"
+	}
+	return s.UpdateReturn(id, ReturnUpdate{Status: status, Condition: condition, ReturnCost: cost, UnpaidBalance: unpaid, Notes: in.Notes}, userID)
 }

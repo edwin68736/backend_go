@@ -267,6 +267,7 @@ type OrderRow struct {
 	GuideNumber           string     `json:"guide_number"`
 	Department            string     `json:"department"`
 	Summary               string     `json:"summary"`
+	SummaryItems          []string   `json:"summary_items" gorm:"-"`
 	ArrivedAt             *time.Time `json:"arrived_at"`
 	DaysInAgency          *int       `json:"days_in_agency"`
 	DaysLeft              *int       `json:"days_left"`
@@ -322,10 +323,20 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 	} else if d != nil {
 		base = base.Where("o.order_date <= ?", d.Format("2006-01-02"))
 	}
-	for col, val := range map[string]string{"o.sale_type": f.SaleType, "o.payment_status": f.PaymentStatus, "o.validation_status": f.ValidationStatus, "o.status": f.Status, "sh.status": f.ShipmentStatus} {
+	for col, val := range map[string]string{"o.sale_type": f.SaleType, "o.payment_status": f.PaymentStatus, "o.validation_status": f.ValidationStatus, "o.status": f.Status} {
 		if strings.TrimSpace(val) != "" {
 			base = base.Where(col+" = ?", strings.TrimSpace(val))
 		}
+	}
+	// «Recogido» (agencia) y «Entregado en oficina» comparten el estado entregado: se separan por la modalidad.
+	switch ss := strings.TrimSpace(f.ShipmentStatus); ss {
+	case "":
+	case "entregado":
+		base = base.Where("sh.status = ? AND sh.delivery_mode <> ?", "entregado", "oficina")
+	case "entregado_oficina":
+		base = base.Where("sh.status = ? AND sh.delivery_mode = ?", "entregado", "oficina")
+	default:
+		base = base.Where("sh.status = ?", ss)
 	}
 	if f.CarrierID > 0 {
 		base = base.Where("sh.carrier_id = ?", f.CarrierID)
@@ -388,6 +399,7 @@ func (s *Service) ListOrders(f OrderFilter) (*OrderListResult, error) {
 		}
 		for i := range res.Rows {
 			res.Rows[i].Summary = strings.Join(parts[res.Rows[i].ID], " | ")
+			res.Rows[i].SummaryItems = append([]string{}, parts[res.Rows[i].ID]...)
 		}
 	}
 	return res, nil

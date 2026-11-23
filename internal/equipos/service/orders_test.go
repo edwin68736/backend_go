@@ -536,10 +536,11 @@ func TestOrder_officePickupDropsCarrierAndGuide(t *testing.T) {
 	if _, err := f.s.ValidateOrder(id, "", 1); err != nil {
 		t.Fatal(err)
 	}
-	if d, err := f.s.DispatchOrder(id, ""); err != nil || len(d.Warnings) != 0 {
-		t.Fatalf("despachar oficina sin avisos: %v %v", err, d)
+	// Vendido en oficina = entregado en el acto: ya no hay despacho ni recojo pendientes.
+	if o, err := f.s.GetOrder(id); err != nil || o.Shipment.Status != "entregado" || o.Shipment.PickedUpAt == nil {
+		t.Fatalf("entregado en oficina: %v %+v", err, o.Shipment)
 	}
-	if p, err := f.s.MarkPickedUp(id, ""); err != nil || p.Order.Shipment.Status != "entregado" {
-		t.Fatalf("recojo: %v", err)
+	if _, err := f.s.DispatchOrder(id, ""); err == nil {
+		t.Fatal("un pedido entregado en oficina no se despacha")
 	}
 }
