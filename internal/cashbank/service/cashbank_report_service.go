@@ -9,7 +9,6 @@ import (
 	"time"
 	"tukifac/pkg/salecurrency"
 
-	"tukifac/internal/sales/nvdisplay"
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 	"tukifac/pkg/paymentcondition"
@@ -392,7 +391,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			report.ServiceCharge.Sales++
 		}
 	}
-	displayDocNumbers := nvdisplay.LoadDisplayNumbersBySaleID(s.db, saleIDs)
+	displayDocNumbers := cashReportDisplayNumbers(s.db, saleIDs)
 	// (1) SOLO para "crédito generado" y detracción SPOT: TODOS los pagos de las ventas
 	// REGISTRADAS en esta sesión, sin importar en qué Caja ocurrió cada pago. Esto es
 	// deliberado — el saldo de crédito pendiente de una venta es "total - pagado en CUALQUIER
@@ -536,7 +535,7 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 			for _, es := range extraSales {
 				salesMap[es.ID] = es
 			}
-			for id, num := range nvdisplay.LoadDisplayNumbersBySaleID(s.db, missing) {
+			for id, num := range cashReportDisplayNumbers(s.db, missing) {
 				displayDocNumbers[id] = num
 			}
 		}
@@ -1429,7 +1428,8 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 		Joins("JOIN tenant_sales ON tenant_sales.id = tenant_sale_payments.sale_id").
 		Joins("JOIN tenant_cash_sessions ON tenant_cash_sessions.id = tenant_sales.cash_session_id").
 		Where("tenant_sales.cash_session_id > 0").
-		Where("tenant_sales.status NOT IN ?", []string{"cancelled", "draft"})
+		Where("tenant_sales.status NOT IN ?", []string{"cancelled", "draft"}).
+		Where(convertedChildPaymentExclusion)
 
 	if f.SessionID > 0 {
 		// Filtra por la Caja donde ocurrió el PAGO, no donde se registró la venta — así un cobro
@@ -1534,7 +1534,7 @@ func (s *CashBankService) buildSalePaymentMovementRows(f MovementReportFilters) 
 	for _, sale := range legacySales {
 		saleIDsForDisplay = append(saleIDsForDisplay, sale.ID)
 	}
-	displayDocNumbers := nvdisplay.LoadDisplayNumbersBySaleID(s.db, saleIDsForDisplay)
+	displayDocNumbers := cashReportDisplayNumbers(s.db, saleIDsForDisplay)
 
 	for _, p := range payRows {
 		if paymentcondition.IsCreditCode(p.Method) {
