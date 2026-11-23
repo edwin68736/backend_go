@@ -53,6 +53,11 @@ func NoteRefundableAmount(db *gorm.DB, nc *database.TenantSale) (float64, error)
 		if seen[p.ID] || taxpayment.IsDetractionCode(p.Method) || paymentcondition.IsCreditCode(p.Method) {
 			continue
 		}
+		// Los pagos que la conversión copia al comprobante son informativos (sin sesión de caja): el dinero real ya está en los de la
+		// nota de venta. Contarlos sumaría lo cobrado dos veces. Los cobros posteriores sobre el comprobante sí llevan sesión.
+		if paidSaleID != orig.ID && p.SaleID == orig.ID && p.CashSessionID == nil {
+			continue
+		}
 		seen[p.ID] = true
 		paid += p.Amount
 	}
