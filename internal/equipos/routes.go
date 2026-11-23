@@ -114,6 +114,7 @@ func RegisterRoutes(saAPI fiber.Router) {
 
 	saAPI.Get("/equipos/returns", p("equipos.view"), h.ListReturns)
 	saAPI.Post("/equipos/returns", p("equipos.returns"), h.CreateReturn)
+	saAPI.Get("/equipos/orders/:id/returnable", p("equipos.view"), h.ReturnableItems)
 	saAPI.Put("/equipos/returns/:id", p("equipos.returns"), h.UpdateReturn)
 	saAPI.Post("/equipos/returns/:id/reship", p("equipos.returns"), h.ReshipReturn)
 	saAPI.Post("/equipos/returns/:id/cancel", p("equipos.returns_cancel"), h.CancelReturn)

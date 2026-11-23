@@ -18,6 +18,19 @@ func (h *Handler) ListReturns(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": rows})
 }
 
+// ReturnableItems GET /equipos/orders/:id/returnable — por producto: enviado, ya devuelto y disponible para devolver.
+func (h *Handler) ReturnableItems(c fiber.Ctx) error {
+	id, ok := idParam(c, "id")
+	if !ok {
+		return nil
+	}
+	rows, err := svc().ReturnableItems(id)
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(fiber.Map{"data": rows})
+}
+
 func (h *Handler) CreateReturn(c fiber.Ctx) error {
 	if !requirePin(c) { // mismo mecanismo que anular pedido: cabecera X-Security-Pin
 		return nil

@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -119,24 +120,25 @@ func (s *Service) CreateReturn(in ReturnInput, userID uint) (*ReturnView, error)
 		var sh database.EquipShipment
 		if found, err := findOne(tx, &sh, "order_id = ? AND is_current = ?", o.ID, true); err != nil {
 			return err
-		} else if !found || (sh.Status != "en_transito" && sh.Status != "en_agencia") {
-			return invalid("el retorno se registra sobre un envío en tránsito o en agencia")
+		} else if !found {
+			return invalid("el pedido no tiene envío")
 		}
-		var its []database.EquipOrderItem
-		if err := tx.Where("order_id = ?", o.ID).Find(&its).Error; err != nil {
-			return err
-		}
-		outs, err := outflows(its)
+		sold, returned, err := orderReturnQuantities(tx, o.ID)
 		if err != nil {
 			return err
 		}
-		sold := map[uint]int{}
-		for _, ou := range outs {
-			sold[ou.ProductID] += ou.Quantity
+		avail := map[uint]int{}
+		for pid, q := range sold {
+			if left := q - returned[pid]; left > 0 {
+				avail[pid] = left
+			}
+		}
+		if len(avail) == 0 {
+			return invalid("ya se devolvió todo lo enviado en este pedido")
 		}
 		want := map[uint]int{}
 		if len(in.Items) == 0 {
-			want = sold
+			want = avail // vacío = todo lo que aún no se devolvió
 		} else {
 			for _, it := range in.Items {
 				if it.Quantity <= 0 {
@@ -147,8 +149,8 @@ func (s *Service) CreateReturn(in ReturnInput, userID uint) (*ReturnView, error)
 		}
 		var items []ReturnItem
 		for pid, q := range want {
-			if q > sold[pid] {
-				return invalid("no puedes devolver más de lo enviado (producto %d)", pid)
+			if q > avail[pid] {
+				return invalid("no puedes devolver más de lo enviado (producto %d: enviado %d, ya devuelto %d)", pid, sold[pid], returned[pid])
 			}
 			var p database.EquipProduct
 			if found, _ := findOne(tx, &p, "id = ?", pid); !found {
@@ -156,37 +158,56 @@ func (s *Service) CreateReturn(in ReturnInput, userID uint) (*ReturnView, error)
 			}
 			items = append(items, ReturnItem{ProductID: pid, Code: p.Code, Quantity: q})
 		}
-		for pid, q := range sold { // sin retornos parciales por ahora: se devuelve el pedido completo
-			if want[pid] != q {
-				return invalid("el retorno parcial aún no está disponible: se devuelve el pedido completo")
-			}
-		}
 		if len(items) == 0 {
 			return invalid("el retorno no tiene productos")
+		}
+		// Retorno completo: nada devuelto antes y se devuelve todo lo enviado → el envío pasa a «en retorno» (en tránsito o en agencia).
+		// Retorno parcial: el envío NO cambia de estado (el pedido sigue vigente); también se admite sobre un envío ya recogido.
+		full := len(returned) == 0
+		for pid, q := range sold {
+			if want[pid] != q {
+				full = false
+			}
+		}
+		if full {
+			if sh.Status != "en_transito" && sh.Status != "en_agencia" {
+				return invalid("el retorno se registra sobre un envío en tránsito o en agencia")
+			}
+		} else if sh.Status != "en_transito" && sh.Status != "en_agencia" && sh.Status != "entregado" {
+			return invalid("el retorno parcial se registra sobre un envío despachado (en tránsito, en agencia o recogido)")
 		}
 		sortReturnItems(items)
 		raw, _ := json.Marshal(items)
 		var max struct{ N int }
 		_ = tx.Model(&database.EquipReturn{}).Select("COALESCE(MAX(return_number), 0) AS n").Scan(&max).Error
-		unpaid := o.BalanceAmount
+		unpaid := 0.0
+		if full {
+			unpaid = o.BalanceAmount
+		}
 		if in.UnpaidBalance != nil {
 			unpaid = *in.UnpaidBalance
+		}
+		guide := sh.GuideNumber
+		if !full {
+			guide = "" // la guía del pedido es la de ida: no se usa para seguir un retorno parcial
 		}
 		if unpaid < 0 {
 			return invalid("el saldo no cobrado no puede ser negativo")
 		}
 		oid, sid := o.ID, sh.ID
 		r := database.EquipReturn{
-			ReturnNumber: max.N + 1, OrderID: &oid, ShipmentID: &sid, CustomerName: o.CustomerName, GuideNumber: sh.GuideNumber,
+			ReturnNumber: max.N + 1, OrderID: &oid, ShipmentID: &sid, CustomerName: o.CustomerName, GuideNumber: guide,
 			RequestedAt: req, ItemsJSON: string(raw), ItemsText: itemsText(items), UnpaidBalance: unpaid, ReturnCost: in.ReturnCost,
 			Status: "solicitado", Condition: cond, ActionTaken: "retorno", Notes: strings.TrimSpace(in.Notes),
 		}
 		if err := tx.Create(&r).Error; err != nil {
 			return err
 		}
-		sh.Status = "retorno"
-		if err := tx.Save(&sh).Error; err != nil {
-			return err
+		if full {
+			sh.Status = "retorno"
+			if err := tx.Save(&sh).Error; err != nil {
+				return err
+			}
 		}
 		out = s.returnView(tx, r)
 		return nil
@@ -195,6 +216,68 @@ func (s *Service) CreateReturn(in ReturnInput, userID uint) (*ReturnView, error)
 		return nil, err
 	}
 	return &out, nil
+}
+
+// orderReturnQuantities cantidades enviadas por producto del pedido (combos expandidos) y cantidades ya devueltas en retornos no anulados.
+func orderReturnQuantities(tx *gorm.DB, orderID uint) (sold, returned map[uint]int, err error) {
+	var its []database.EquipOrderItem
+	if err = tx.Where("order_id = ?", orderID).Find(&its).Error; err != nil {
+		return nil, nil, err
+	}
+	outs, err := outflows(its)
+	if err != nil {
+		return nil, nil, err
+	}
+	sold, returned = map[uint]int{}, map[uint]int{}
+	for _, ou := range outs {
+		sold[ou.ProductID] += ou.Quantity
+	}
+	var rets []database.EquipReturn
+	if err = tx.Select("id, items_json").Where("order_id = ? AND status <> ?", orderID, "anulado").Find(&rets).Error; err != nil {
+		return nil, nil, err
+	}
+	for _, r := range rets {
+		var items []ReturnItem
+		if json.Unmarshal([]byte(r.ItemsJSON), &items) != nil {
+			continue
+		}
+		for _, it := range items {
+			returned[it.ProductID] += it.Quantity
+		}
+	}
+	return sold, returned, nil
+}
+
+// ReturnableItem producto de un pedido con lo enviado, lo ya devuelto y lo que aún se puede devolver.
+type ReturnableItem struct {
+	ProductID uint   `json:"product_id"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	Sold      int    `json:"sold"`
+	Returned  int    `json:"returned"`
+	Available int    `json:"available"`
+}
+
+// ReturnableItems lista, por producto, lo que se puede devolver del pedido (para el formulario de retorno parcial).
+func (s *Service) ReturnableItems(orderID uint) ([]ReturnableItem, error) {
+	sold, returned, err := orderReturnQuantities(s.db, orderID)
+	if err != nil {
+		return nil, err
+	}
+	out := []ReturnableItem{}
+	for pid, q := range sold {
+		var p database.EquipProduct
+		if found, _ := findOne(s.db, &p, "id = ?", pid); !found {
+			continue
+		}
+		left := q - returned[pid]
+		if left < 0 {
+			left = 0
+		}
+		out = append(out, ReturnableItem{ProductID: pid, Code: p.Code, Name: p.Name, Sold: q, Returned: returned[pid], Available: left})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out, nil
 }
 
 func sortReturnItems(items []ReturnItem) {
@@ -334,7 +417,7 @@ func (s *Service) Reship(returnID uint, userID uint) (*OrderResult, error) {
 		if found, err := findOne(tx, &old, "order_id = ? AND is_current = ?", o.ID, true); err != nil {
 			return err
 		} else if !found || old.Status != "retorno" {
-			return invalid("el envío vigente del pedido no está en retorno")
+			return invalid("el envío vigente del pedido no está en retorno (si el retorno fue parcial, el pedido sigue vigente: registra un pedido de reposición)")
 		}
 		old.IsCurrent = false
 		if err := tx.Save(&old).Error; err != nil {

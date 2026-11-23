@@ -83,9 +83,9 @@ func TestRoutes_createReturnRequiresPin(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("no debe crearse retorno sin PIN válido: %d", n)
 	}
-	partial := fmt.Sprintf(`{"order_id":%d,"items":[{"product_id":%d,"quantity":1}]}`, order.ID, prod.ID)
+	partial := fmt.Sprintf(`{"order_id":%d,"items":[{"product_id":%d,"quantity":999}]}`, order.ID, prod.ID) // más de lo enviado
 	if c := post("123456", partial); c != http.StatusBadRequest {
-		t.Errorf("retorno parcial: %d, want 400", c)
+		t.Errorf("cantidad mayor a lo enviado: %d, want 400", c)
 	}
 	if c := post("123456", body); c != http.StatusCreated {
 		t.Fatalf("PIN correcto: %d, want 201", c)
