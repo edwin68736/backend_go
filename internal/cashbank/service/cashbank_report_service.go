@@ -363,8 +363,13 @@ func (s *CashBankService) GetSessionReport(sessionID uint) (*SessionReport, erro
 		return voided
 	}
 
+	// Regla comercial: una nota de venta convertida cuenta como venta de esta sesión y el comprobante emitido desde ella NO (hereda la misma
+	// sesión y copia sus pagos y su recargo): sin este filtro el recargo y el «crédito generado» salían dos veces. El dinero recibido no
+	// depende de esta lista (bloque 2, por cash_session_id del pago). Los cobros posteriores hechos sobre el comprobante siguen entrando por
+	// ese bloque 2.
 	var sessionSales []database.TenantSale
-	if err := s.db.Where("cash_session_id = ? AND status NOT IN ?", sessionID, []string{"cancelled", "draft"}).
+	if err := salescope.CommercialSales(s.db.Model(&database.TenantSale{})).
+		Where("cash_session_id = ? AND status NOT IN ?", sessionID, []string{"cancelled", "draft"}).
 		Order("created_at ASC").Find(&sessionSales).Error; err != nil {
 		return nil, err
 	}
