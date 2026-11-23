@@ -264,6 +264,11 @@ func (s *Scanner) scanTenant(ctx context.Context, t database.Tenant, deep bool, 
 	} else if hasHealth {
 		h.LastDeepAt = existingHealth.LastDeepAt
 	}
+	var prev *database.TenantFiscalHealth
+	if hasHealth {
+		prev = &existingHealth
+	}
+	s.applyUsageAndPlan(&h, prev, tdb, t.ID, now)
 	return s.Central.Clauses(clause.OnConflict{UpdateAll: true}).Create(&h).Error
 }
 

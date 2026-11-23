@@ -49,6 +49,21 @@ type TenantFiscalHealth struct {
 	OlderOpenRejected int `gorm:"not null;default:0"`
 	OlderOldestAt     *time.Time
 	LastDeepAt        *time.Time
+
+	// Uso real del tenant (lo cuenta el mismo escaneo) y plan vigente con sus límites (0 = ilimitado). Alimentan las columnas
+	// Plan / Usuarios / Productos / Sucursales del resumen. ServicesCount se guarda aparte de ProductsCount porque el bloqueo
+	// de altas solo cuenta bienes, mientras que el panel muestra ambos sumados.
+	UsersCount     int `gorm:"not null;default:0"`
+	ProductsCount  int `gorm:"not null;default:0"`
+	ServicesCount  int `gorm:"not null;default:0"`
+	BranchesCount  int `gorm:"not null;default:0"`
+	UsageScannedAt *time.Time
+	PlanID         uint   `gorm:"not null;default:0"`
+	PlanName       string `gorm:"size:100;not null;default:''"`
+	MaxUsers       int    `gorm:"not null;default:0"`
+	MaxBranches    int    `gorm:"not null;default:0"`
+	MaxProducts    int    `gorm:"not null;default:0"`
+	PlanSyncedAt   *time.Time
 }
 
 func (TenantFiscalHealth) TableName() string { return "tenant_fiscal_health" }

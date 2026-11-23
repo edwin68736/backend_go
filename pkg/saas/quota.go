@@ -12,6 +12,7 @@ import (
 // PlanLimits: cuotas del plan vigente del tenant. 0 = ilimitado (grandfathering: superar el tope
 // no borra datos; solo bloquea crear nuevos).
 type PlanLimits struct {
+	PlanID             uint   `json:"plan_id"`
 	PlanName           string `json:"plan_name"`
 	MaxUsers          int  `json:"max_users"`
 	MaxBranches        int  `json:"max_branches"`
@@ -23,21 +24,27 @@ type PlanLimits struct {
 // TenantPlanLimits devuelve los límites del plan de la suscripción vigente del tenant.
 // Sin suscripción/plan → todo 0 (ilimitado), para no bloquear cuentas sin plan configurado.
 func TenantPlanLimits(tenantID uint) PlanLimits {
+	return TenantPlanLimitsDB(database.CentralDB, tenantID)
+}
+
+// TenantPlanLimitsDB es TenantPlanLimits sobre una BD central dada (el resumen fiscal usa la de su escáner).
+func TenantPlanLimitsDB(central *gorm.DB, tenantID uint) PlanLimits {
 	var limits PlanLimits
-	if database.CentralDB == nil || tenantID == 0 {
+	if central == nil || tenantID == 0 {
 		return limits
 	}
 	var sub database.SaasSubscription
-	if err := database.CentralDB.Where("tenant_id = ?", tenantID).
+	if err := central.Where("tenant_id = ?", tenantID).
 		Where("status NOT IN ?", []string{database.SaasSubCancelled}).
 		Order("created_at desc").First(&sub).Error; err != nil {
 		return limits
 	}
 	var plan database.SaasPlan
-	if err := database.CentralDB.First(&plan, sub.PlanID).Error; err != nil {
+	if err := central.First(&plan, sub.PlanID).Error; err != nil {
 		return limits
 	}
 	return PlanLimits{
+		PlanID:             plan.ID,
 		PlanName:           plan.Name,
 		MaxUsers:          plan.MaxUsers,
 		MaxBranches:        plan.MaxBranches,
@@ -127,6 +134,21 @@ func CheckCreateQuota(tenantDB *gorm.DB, tenantID uint, res QuotaResource) *Quot
 func CountProductSeats(tenantDB *gorm.DB) int64 {
 	var n int64
 	tenantDB.Model(&database.TenantProduct{}).Where("type != ?", "service").Count(&n)
+	return n
+}
+
+// CountServiceSeats cuenta los servicios vivos del catálogo. No ocupan cupo en el bloqueo de altas (solo cuentan los bienes), pero el
+// panel central los muestra sumados a los productos.
+func CountServiceSeats(tenantDB *gorm.DB) int64 {
+	var n int64
+	tenantDB.Model(&database.TenantProduct{}).Where("type = ?", "service").Count(&n)
+	return n
+}
+
+// CountActiveBranches cuenta las sucursales activas: el mismo criterio con el que se valida el alta de una sucursal.
+func CountActiveBranches(tenantDB *gorm.DB) int64 {
+	var n int64
+	tenantDB.Model(&database.TenantBranch{}).Where("active = ?", true).Count(&n)
 	return n
 }
 

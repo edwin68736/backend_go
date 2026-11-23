@@ -21,6 +21,7 @@ type Filter struct {
 	Q           string   // nombre o slug, parcial
 	OnlyPending bool     // solo tenants con algo por enviar (pending + error)
 	StaleOnly   bool     // solo tenants con un pendiente de + días (sin importar el rango)
+	LimitStatus string   // "exceeded" | "near": solo tenants que llegaron / se acercan a un límite de su plan
 	Sort        string   // to_send (def), emitted, accepted, sent, rejected, name, ruc, oldest, last_issue, scanned
 	Dir         string   // asc | desc; vacío = la natural de la columna
 	Page        int
@@ -60,6 +61,52 @@ type Row struct {
 	LastIssueAt  *time.Time `json:"last_issue_at"`
 	ScannedAt    *time.Time `json:"scanned_at"`
 	ScanError    string     `json:"scan_error,omitempty"`
+
+	// Plan vigente y uso frente a sus límites (0 = ilimitado). CatalogCount = productos + servicios: es lo que el panel
+	// compara con el límite de productos. Sin UsageScannedAt aún no hay conteo del tenant.
+	PlanName       string     `json:"plan_name"`
+	MaxUsers       int        `json:"max_users"`
+	MaxBranches    int        `json:"max_branches"`
+	MaxProducts    int        `json:"max_products"`
+	UsersCount     int        `json:"users_count"`
+	ProductsCount  int        `json:"products_count"`
+	ServicesCount  int        `json:"services_count"`
+	CatalogCount   int        `json:"catalog_count"`
+	BranchesCount  int        `json:"branches_count"`
+	UsageScannedAt *time.Time `json:"usage_scanned_at"`
+	// LimitStatus: "exceeded" (alguna entidad llegó o superó su límite), "near" (alguna al 80 % o más) u "" (en regla / sin dato).
+	LimitStatus string `json:"limit_status"`
+}
+
+// Umbral desde el cual una entidad se considera «cerca del límite».
+const nearLimitRatio = 0.8
+
+// usageRatio uso sobre límite; -1 si el límite es ilimitado (0) o no hay límite que comparar.
+func usageRatio(count, max int) float64 {
+	if max <= 0 {
+		return -1
+	}
+	return float64(count) / float64(max)
+}
+
+// limitStatus peor estado entre usuarios, productos+servicios y sucursales. Sin conteo todavía no se afirma nada.
+func limitStatus(r *Row) string {
+	if r.UsageScannedAt == nil {
+		return ""
+	}
+	worst := -1.0
+	for _, x := range []float64{usageRatio(r.UsersCount, r.MaxUsers), usageRatio(r.CatalogCount, r.MaxProducts), usageRatio(r.BranchesCount, r.MaxBranches)} {
+		if x > worst {
+			worst = x
+		}
+	}
+	switch {
+	case worst >= 1:
+		return "exceeded"
+	case worst >= nearLimitRatio:
+		return "near"
+	}
+	return ""
 }
 
 // Totals suma de las filas filtradas (todas las páginas).
@@ -77,6 +124,9 @@ type Totals struct {
 	// Stale: tenants con un pendiente de StaleAfterDays o más.
 	Stale      int `json:"stale"`
 	ScanErrors int `json:"scan_errors"`
+	// OverLimit: tenants que llegaron o superaron algún límite de su plan. NearLimit: los que están al 80 % o más (sin contar los anteriores).
+	OverLimit int `json:"over_limit"`
+	NearLimit int `json:"near_limit"`
 }
 
 // Result respuesta paginada.
@@ -157,6 +207,11 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 			r.OldestOpenAt, r.LastIssueAt = h.OldestOpenAt, h.LastIssueAt
 			r.OpenToSend = h.OpenPending + h.OpenError
 			r.Stale = h.OldestOpenAt != nil && r.OpenToSend > 0 && time.Since(*h.OldestOpenAt) >= StaleAfterDays*24*time.Hour
+			r.PlanName, r.MaxUsers, r.MaxBranches, r.MaxProducts = h.PlanName, h.MaxUsers, h.MaxBranches, h.MaxProducts
+			r.UsersCount, r.ProductsCount, r.ServicesCount, r.BranchesCount = h.UsersCount, h.ProductsCount, h.ServicesCount, h.BranchesCount
+			r.CatalogCount = h.ProductsCount + h.ServicesCount
+			r.UsageScannedAt = h.UsageScannedAt
+			r.LimitStatus = limitStatus(r)
 		}
 		rowBy[t.ID] = r
 		rows = append(rows, r)
@@ -198,6 +253,17 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 		}
 		rows = kept
 	}
+	// Filtro por límites del plan: "exceeded" = llegaron o superaron algún límite; "near" = al 80 % o más (incluye los excedidos).
+	switch f.LimitStatus {
+	case "exceeded", "near":
+		kept := rows[:0]
+		for _, r := range rows {
+			if r.LimitStatus == "exceeded" || (f.LimitStatus == "near" && r.LimitStatus == "near") {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
 	if f.OnlyPending {
 		kept := rows[:0]
 		for _, r := range rows {
@@ -226,6 +292,12 @@ func Summarize(central *gorm.DB, f Filter) (Result, error) {
 		}
 		if r.ScanError != "" {
 			totals.ScanErrors++
+		}
+		switch r.LimitStatus {
+		case "exceeded":
+			totals.OverLimit++
+		case "near":
+			totals.NearLimit++
 		}
 		if r.ScannedAt != nil && (oldestScan == nil || r.ScannedAt.Before(*oldestScan)) {
 			oldestScan = r.ScannedAt
@@ -257,6 +329,8 @@ var sortDefaultDesc = map[string]bool{
 	// Texto y fechas: "name"/"ruc" de A a Z; "oldest" el pendiente más viejo primero; "scanned" el
 	// verificado hace más tiempo primero.
 	"name": false, "ruc": false, "oldest": false, "scanned": false,
+	// Plan por nombre (A a Z); uso de usuarios, productos y sucursales como proporción del límite (mayor uso primero).
+	"plan": false, "users": true, "products": true, "branches": true,
 }
 
 func cmpInt(a, b int) int {
@@ -339,6 +413,32 @@ func sortRows(rows []*Row, key, dir string) {
 			return mul * cmpTimePtr(ta, tb, false)
 		case "scanned":
 			return mul * cmpTimePtr(a.ScannedAt, b.ScannedAt, true)
+		case "plan":
+			return mul * strings.Compare(strings.ToLower(a.PlanName), strings.ToLower(b.PlanName))
+		case "users", "products", "branches":
+			ra, rb := usageRatio(a.UsersCount, a.MaxUsers), usageRatio(b.UsersCount, b.MaxUsers)
+			if key == "products" {
+				ra, rb = usageRatio(a.CatalogCount, a.MaxProducts), usageRatio(b.CatalogCount, b.MaxProducts)
+			} else if key == "branches" {
+				ra, rb = usageRatio(a.BranchesCount, a.MaxBranches), usageRatio(b.BranchesCount, b.MaxBranches)
+			}
+			// Ilimitados (ratio -1) siempre al final, sea cual sea la dirección.
+			if ra < 0 || rb < 0 {
+				switch {
+				case ra < 0 && rb < 0:
+					return 0
+				case ra < 0:
+					return 1
+				}
+				return -1
+			}
+			switch {
+			case ra < rb:
+				return -mul
+			case ra > rb:
+				return mul
+			}
+			return 0
 		default: // to_send
 			if c := cmpInt(a.ToSend, b.ToSend); c != 0 {
 				return mul * c
