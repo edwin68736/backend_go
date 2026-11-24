@@ -12,6 +12,11 @@ func Execute(args []string) int {
 		return 1
 	}
 
+	// Auditoría de solo lectura: no pasa por InitDatabase (que ejecuta AutoMigrate de las tablas de flota de la BD central).
+	if args[0] == "audit-stock-reconcile" {
+		return RunAuditStockReconcile(args[1:])
+	}
+
 	if err := InitDatabase(); err != nil {
 		fmt.Fprintf(os.Stderr, "database connection failed: %v\n", err)
 		return 1
@@ -106,6 +111,7 @@ func printUsage() {
   diagnose-tenant-permissions  Compara catálogo/asignación de permisos de un tenant contra el código vigente [--ruc=n | --slug=s] [--role=nombre]
   audit-tenant-permission-catalog  Escanea la flota buscando tenants con catálogo de permisos incompleto [--active-only]
   reseed-tenant-permissions  Completa catálogo de permisos de un tenant y reasigna todo al Administrador [--tenant=slug]
+  audit-stock-reconcile      SOLO LECTURA: duplicados de saldo y saldo vs kardex por tenant [--slug=] [--limit=] [--product=] [--branch=] [--max-detail=20] [--json=archivo] [--fail-on-diff] (BD local salvo --allow-remote)
   payment audit|repair|verify [--slug=tenant]  Dominio financiero (métodos/condiciones/tributario)
   validate-prepayment-phase0 [--slug=demo]   E2E Fase 0: boleta+factura anticipo SUNAT Beta
 
