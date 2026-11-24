@@ -164,4 +164,41 @@ func EnrichSales(db *gorm.DB, sales []database.TenantSale) {
 		}
 		applyIssueToSale(&sales[i], issue)
 	}
+	markConverted(db, sales)
+}
+
+// markConverted marca los comprobantes emitidos desde una nota de venta (IsConverted) y les pone el número de la nota de origen. Una sola
+// consulta para todos los padres de la página.
+func markConverted(db *gorm.DB, sales []database.TenantSale) {
+	parentIDs := make([]uint, 0)
+	seen := map[uint]struct{}{}
+	for i := range sales {
+		if sales[i].IssuedFromNotaSaleID != nil && *sales[i].IssuedFromNotaSaleID > 0 {
+			id := *sales[i].IssuedFromNotaSaleID
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+				parentIDs = append(parentIDs, id)
+			}
+		}
+	}
+	numberByID := map[uint]string{}
+	if len(parentIDs) > 0 {
+		var parents []database.TenantSale
+		if err := db.Select("id", "series", "number").Where("id IN ?", parentIDs).Find(&parents).Error; err == nil {
+			for _, p := range parents {
+				numberByID[p.ID] = FormatDocumentNumber(p.Series, p.Number)
+			}
+		}
+	}
+	for i := range sales {
+		s := &sales[i]
+		hasParent := s.IssuedFromNotaSaleID != nil && *s.IssuedFromNotaSaleID > 0
+		if !hasParent && strings.TrimSpace(s.SaleOrigin) != "converted_from_nota" {
+			continue
+		}
+		s.IsConverted = true
+		if hasParent {
+			s.ConvertedFromNumber = numberByID[*s.IssuedFromNotaSaleID]
+		}
+	}
 }

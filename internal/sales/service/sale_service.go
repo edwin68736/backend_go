@@ -1343,6 +1343,10 @@ type SaleListSummary struct {
 	SumActive       float64 `json:"sum_active"`
 	CountCancelled  int64   `json:"count_cancelled"`
 	CountActive     int64   `json:"count_active"`
+	// De las ventas vigentes (sum_active / count_active): lo que corresponde a comprobantes emitidos desde una nota de venta. Ya se contó al
+	// vender la nota; se informa aparte para que el usuario lo descuente si cuenta las notas de venta por separado.
+	SumConverted    float64 `json:"sum_converted"`
+	CountConverted  int64   `json:"count_converted"`
 	SumDetraccion   float64 `json:"sum_detraccion"`
 	SumNetPayable   float64 `json:"sum_net_payable"`
 	CountDetraccion int64   `json:"count_detraccion"`
@@ -1693,6 +1697,8 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 		SumActive      float64 `gorm:"column:sum_active"`
 		CountCancelled int64   `gorm:"column:count_cancelled"`
 		CountActive    int64   `gorm:"column:count_active"`
+		SumConverted   float64 `gorm:"column:sum_converted"`
+		CountConverted int64   `gorm:"column:count_converted"`
 	}
 	// Una nota de crédito es la reversión de la venta anulada, no una venta nueva ni una resta
 	// aparte: su propia venta original ya queda excluida de sum_active (status != 'cancelled') y
@@ -1709,6 +1715,8 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 	const netTotal = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.total END)"
 	const netSubtotal = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.subtotal END)"
 	const netTax = "(CASE WHEN " + isNote + " THEN 0 ELSE tenant_sales.tax_amount END)"
+	// Comprobante emitido desde una NV: misma definición que salescope.IsConverted (padre o origen «converted_from_nota»).
+	const isConverted = "(tenant_sales.issued_from_nota_sale_id > 0 OR COALESCE(NULLIF(TRIM(tenant_sales.sale_origin), ''), 'direct') = 'converted_from_nota')"
 	var row aggRow
 	err := sc.sales(s.db.Model(&database.TenantSale{})).
 		Where("tenant_sales.id IN (?)", idSub).
@@ -1719,7 +1727,9 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' THEN tenant_sales.total ELSE 0 END), 0) AS sum_cancelled,
 			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' THEN ` + netTotal + ` ELSE 0 END), 0) AS sum_active,
 			COALESCE(SUM(CASE WHEN tenant_sales.status = 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_cancelled,
-			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_active
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` THEN 1 ELSE 0 END), 0) AS count_active,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND ` + isConverted + ` THEN ` + netTotal + ` ELSE 0 END), 0) AS sum_converted,
+			COALESCE(SUM(CASE WHEN tenant_sales.status != 'cancelled' AND NOT ` + isNote + ` AND ` + isConverted + ` THEN 1 ELSE 0 END), 0) AS count_converted
 		`).
 		Scan(&row).Error
 	if err != nil {
@@ -1732,6 +1742,8 @@ func (s *SaleService) saleListSummary(q *gorm.DB, useDistinct, rowsAreDocuments 
 	out.SumActive = row.SumActive
 	out.CountCancelled = row.CountCancelled
 	out.CountActive = row.CountActive
+	out.SumConverted = row.SumConverted
+	out.CountConverted = row.CountConverted
 
 	type curAggRow struct {
 		Currency       string  `gorm:"column:cur_code"`

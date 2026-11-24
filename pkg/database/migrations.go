@@ -1679,6 +1679,10 @@ type TenantSale struct {
 	// Vuelto entregado en la venta (suma de pagos directos - importe cobrable, si es positivo);
 	// se calcula igual que print_data.ChangeAmount, no es columna en BD (ver enrichSalesWithChangeAmount).
 	ChangeAmount float64 `gorm:"-" json:"change_amount,omitempty"`
+	// Comprobante emitido desde una nota de venta (conversión NV → factura/boleta): su importe ya se contó al vender la nota, así que los
+	// reportes lo marcan para que el usuario no lo cuente dos veces. No son columnas: se calculan al listar (nvdisplay.EnrichSales).
+	IsConverted         bool   `gorm:"-" json:"is_converted,omitempty"`
+	ConvertedFromNumber string `gorm:"-" json:"converted_from_number,omitempty"` // número de la nota de venta de origen, p. ej. NV001-00000206
 }
 
 type TenantSaleItem struct {
