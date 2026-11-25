@@ -341,8 +341,20 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 		return errors.New("las sucursales origen y destino deben ser diferentes")
 	}
 
+	// Salida, entrada y registro van juntos: si algo falla, no queda stock fuera de las dos sucursales.
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		return s.transferTx(tx, productID, fromBranchID, toBranchID, quantity, userID, notes)
+	})
+}
+
+func (s *InventoryService) transferTx(tx *gorm.DB, productID, fromBranchID, toBranchID uint, quantity float64, userID uint, notes string) error {
+	if err := LockStockRowsTx(tx, []StockKey{
+		{ProductID: productID, BranchID: fromBranchID}, {ProductID: productID, BranchID: toBranchID},
+	}); err != nil {
+		return err
+	}
 	ref := "TRANSFER"
-	if err := s.RecordMovement(MovementInput{
+	if err := s.RecordMovementTx(tx, MovementInput{
 		ProductID:     productID,
 		BranchID:      fromBranchID,
 		Type:          "out",
@@ -355,7 +367,7 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 		return err
 	}
 
-	if err := s.RecordMovement(MovementInput{
+	if err := s.RecordMovementTx(tx, MovementInput{
 		ProductID:     productID,
 		BranchID:      toBranchID,
 		Type:          "in",
@@ -369,7 +381,7 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 	}
 
 	// Registrar en log para poder anular
-	return s.db.Create(&database.TenantTransferLog{
+	return tx.Create(&database.TenantTransferLog{
 		ProductID:    productID,
 		FromBranchID: fromBranchID,
 		ToBranchID:   toBranchID,
@@ -453,13 +465,15 @@ func (s *InventoryService) TransferWithSerials(productID, fromBranchID, toBranch
 		// Reasignar seriales: cambiar branch_id a destino (disponibles de inmediato)
 		// Para un flujo de confirmación, cambiar Status a "reserved" hasta que el destino confirme recepción
 		for _, serial := range serials {
-			tx.Model(&database.TenantProductSerial{}).
+			if err := tx.Model(&database.TenantProductSerial{}).
 				Where("product_id = ? AND branch_id = ? AND serial = ?", productID, fromBranchID, serial).
 				Updates(map[string]interface{}{
 					"branch_id":  toBranchID,
 					"status":     "available",
 					"updated_at": time.Now(),
-				})
+				}).Error; err != nil {
+				return err
+			}
 		}
 
 		serialsJSON, _ := json.Marshal(serials)
@@ -498,10 +512,31 @@ func (s *InventoryService) ReverseTransfer(logID, userID uint) error {
 	if err := s.db.First(&logRow, logID).Error; err != nil {
 		return err
 	}
+	if logRow.TransferID != nil {
+		// El destino puede no haber recibido nada (pendiente o cancelada): revertir por línea movería stock ajeno.
+		return errors.New("esta transferencia no se anula por línea: cancélala desde la transferencia")
+	}
 	if logRow.RevertedAt != nil {
-		return errors.New("la transferencia ya fue anulada")
+		return errTransferAlreadyReverted
 	}
 
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		// Primero se reclama la línea: una segunda anulación simultánea espera aquí y luego no encuentra nada que reclamar.
+		claim := tx.Model(&database.TenantTransferLog{}).
+			Where("id = ? AND reverted_at IS NULL", logRow.ID).Update("reverted_at", time.Now())
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return errTransferAlreadyReverted
+		}
+		return NewInventoryService(tx).reverseMovements(logRow, userID)
+	})
+}
+
+var errTransferAlreadyReverted = errors.New("la transferencia ya fue anulada")
+
+func (s *InventoryService) reverseMovements(logRow database.TenantTransferLog, userID uint) error {
 	notes := "Anulación transferencia"
 	// Revertir: mover de destino (ToBranchID) hacia origen (FromBranchID)
 	if logRow.SerialsJSON != "" {
@@ -517,9 +552,7 @@ func (s *InventoryService) ReverseTransfer(logID, userID uint) error {
 			return err
 		}
 	}
-
-	now := time.Now()
-	return s.db.Model(&logRow).Update("reverted_at", now).Error
+	return nil
 }
 
 // ListTransferLogs devuelve el historial de transferencias (líneas) para compatibilidad.
@@ -660,16 +693,26 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 		return err
 	}
 	if tr.Status != "pending" {
-		return errors.New("solo se puede confirmar una transferencia en estado pendiente")
+		return errNotPendingConfirm
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		now := time.Now()
+		// La lectura de arriba solo da un mensaje rápido; quien decide es este cambio condicional, que además deja la cabecera
+		// bloqueada hasta el final: de varias confirmaciones o cancelaciones simultáneas solo una encuentra «pending».
+		if err := claimPendingTransfer(tx, transferID, map[string]interface{}{
+			"status": "confirmed", "confirmed_at": now, "confirmed_by": userID,
+		}, errNotPendingConfirm); err != nil {
+			return err
+		}
 		var logs []database.TenantTransferLog
-		if err := tx.Where("transfer_id = ?", transferID).Find(&logs).Error; err != nil {
+		if err := tx.Where("transfer_id = ?", transferID).Order("id").Find(&logs).Error; err != nil {
+			return err
+		}
+		if err := lockTransferStock(tx, logs, func(l database.TenantTransferLog) uint { return l.ToBranchID }); err != nil {
 			return err
 		}
 		ref := "TRANSFER-CONFIRMED"
-		now := time.Now()
 		for _, logRow := range logs {
 			if logRow.SerialsJSON != "" {
 				var serials []string
@@ -702,12 +745,34 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 				return err
 			}
 		}
-		return tx.Model(&tr).Updates(map[string]interface{}{
-			"status":       "confirmed",
-			"confirmed_at": now,
-			"confirmed_by": userID,
-		}).Error
+		return nil
 	})
+}
+
+var (
+	errNotPendingConfirm = errors.New("solo se puede confirmar una transferencia en estado pendiente")
+	errNotPendingCancel  = errors.New("solo se puede cancelar una transferencia en estado pendiente")
+)
+
+// claimPendingTransfer cambia el estado solo si sigue pendiente. Si la transacción falla, el cambio se revierte con ella.
+func claimPendingTransfer(tx *gorm.DB, transferID uint, changes map[string]interface{}, notPending error) error {
+	res := tx.Model(&database.TenantTransfer{}).Where("id = ? AND status = ?", transferID, "pending").Updates(changes)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return notPending
+	}
+	return nil
+}
+
+// lockTransferStock toma los saldos de todas las líneas en orden estable (evita interbloqueos entre traslados).
+func lockTransferStock(tx *gorm.DB, logs []database.TenantTransferLog, branchOf func(database.TenantTransferLog) uint) error {
+	keys := make([]StockKey, 0, len(logs))
+	for _, l := range logs {
+		keys = append(keys, StockKey{ProductID: l.ProductID, PresentationID: l.PresentationID, BranchID: branchOf(l)})
+	}
+	return LockStockRowsTx(tx, keys)
 }
 
 // CancelTransfer cancela una transferencia pendiente: devuelve stock/series al origen. Solo permitido si status = pending.
@@ -717,12 +782,18 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 		return err
 	}
 	if tr.Status != "pending" {
-		return errors.New("solo se puede cancelar una transferencia en estado pendiente")
+		return errNotPendingCancel
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		if err := claimPendingTransfer(tx, transferID, map[string]interface{}{"status": "cancelled"}, errNotPendingCancel); err != nil {
+			return err
+		}
 		var logs []database.TenantTransferLog
-		if err := tx.Where("transfer_id = ?", transferID).Find(&logs).Error; err != nil {
+		if err := tx.Where("transfer_id = ?", transferID).Order("id").Find(&logs).Error; err != nil {
+			return err
+		}
+		if err := lockTransferStock(tx, logs, func(l database.TenantTransferLog) uint { return l.FromBranchID }); err != nil {
 			return err
 		}
 		ref := "TRANSFER-CANCELLED"
@@ -752,7 +823,7 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 				return err
 			}
 		}
-		return tx.Model(&tr).Update("status", "cancelled").Error
+		return nil
 	})
 }
 
