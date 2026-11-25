@@ -624,7 +624,8 @@ func buildMovementNotes(doc database.TenantInventoryDocument) string {
 	if doc.Notes != "" && doc.Notes != doc.MovementReason {
 		parts = append(parts, doc.Notes)
 	}
-	if doc.Reference != "" {
+	// La clave de un ingreso hecho desde la app es interna: no se muestra en el kardex.
+	if doc.Reference != "" && !strings.HasPrefix(doc.Reference, supplyEntryReferencePrefix) {
 		parts = append(parts, "Ref: "+doc.Reference)
 	}
 	return strings.Join(parts, " | ")

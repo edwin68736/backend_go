@@ -268,7 +268,7 @@ func TestSupplyPurchaseFlow(t *testing.T) {
 
 	s, b = f.call("supervisor", "GET", fmt.Sprintf("/supplies/%d/purchases", f.supply), nil)
 	wantStatus(t, s, b, 200)
-	if !strings.Contains(b, "Mercado SAC") || !strings.Contains(b, `"line_total":177`) {
+	if !strings.Contains(b, "Mercado SAC") || !strings.Contains(b, `"line_total":177`) || !strings.Contains(b, `"unit":"Saco 50"`) {
 		t.Fatalf("historial: %s", b)
 	}
 
@@ -321,6 +321,9 @@ func TestSupplyInitialStockAndEntries(t *testing.T) {
 	wantStatus(t, s, b, 400)
 	s, b = entry("ingreso", 1, 1, "")
 	wantStatus(t, s, b, 400)
+	if f.count(&database.TenantStockMovement{}, "notes LIKE ?", "%APP:%") != 0 {
+		t.Fatal("la clave interna no debe aparecer en el kardex")
+	}
 	if f.count(&database.TenantInventoryDocument{}, "reference LIKE ?", "APP:%") != 3 {
 		t.Fatal("un documento por intento aceptado")
 	}

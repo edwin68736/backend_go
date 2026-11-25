@@ -159,7 +159,15 @@ func supplyPurchaseViews(gdb *gorm.DB, purchases []database.TenantPurchase, with
 			var items []database.TenantPurchaseItem
 			gdb.Where("purchase_id = ?", p.ID).Order("id").Find(&items)
 			for _, it := range items {
-				line := supplyPurchaseLineView{Name: it.Description, Unit: it.Unit, Quantity: it.Quantity, UnitCost: it.UnitCost, LineTotal: it.Total}
+				unit := it.Unit
+				if it.SaleUnitID != nil {
+					// La cantidad es de unidades de compra («1 Saco 50 kg»), no de la unidad base.
+					var su database.TenantProductSaleUnit
+					if gdb.Unscoped().Select("id", "name").Limit(1).Find(&su, *it.SaleUnitID).Error == nil && su.Name != "" {
+						unit = su.Name
+					}
+				}
+				line := supplyPurchaseLineView{Name: it.Description, Unit: unit, Quantity: it.Quantity, UnitCost: it.UnitCost, LineTotal: it.Total}
 				if it.ProductID != nil {
 					line.ProductID = *it.ProductID
 				}
@@ -454,7 +462,8 @@ func (h *RestaurantHandler) SupplyPurchaseHistory(c fiber.Ctx) error {
 		return supplyNotFound(c, err)
 	}
 	q := db(c).Table("tenant_purchase_items AS i").
-		Select("tp.id AS purchase_id, tp.issue_date, ct.business_name AS supplier, tp.series, tp.number, i.quantity, i.unit, tp.status, i.total").
+		Select("tp.id AS purchase_id, tp.issue_date, ct.business_name AS supplier, tp.series, tp.number, i.quantity, COALESCE(su.name, i.unit) AS unit, tp.status, i.total").
+		Joins("LEFT JOIN tenant_product_sale_units su ON su.id = i.sale_unit_id").
 		Joins("JOIN tenant_purchases tp ON tp.id = i.purchase_id").
 		Joins("LEFT JOIN tenant_contacts ct ON ct.id = tp.contact_id").
 		Where("i.product_id = ?", p.ID)
