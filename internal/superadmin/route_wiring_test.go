@@ -327,6 +327,7 @@ var protectedRoutesGrupo1 = []protectedRoute{
 	{"PUT", "/api/superadmin/tenants/1", "empresas.update"},
 	{"PATCH", "/api/superadmin/tenants/1/status", "empresas.change_status"},
 	{"POST", "/api/superadmin/tenants/1/modules", "empresas.update"},
+	{"PUT", "/api/superadmin/tenants/1/restaurant-recipes", "empresas.update"},
 	{"PUT", "/api/superadmin/tenants/1/sunat-config", "facturador.manage"},
 	{"PATCH", "/api/superadmin/tenants/1/sunat-env", "facturador.manage"},
 	{"POST", "/api/superadmin/tenants/1/sync-facturador", "facturador.manage"},
@@ -335,8 +336,8 @@ var protectedRoutesGrupo1 = []protectedRoute{
 }
 
 func TestProtectedRoutesGrupo1_Count(t *testing.T) {
-	if len(protectedRoutesGrupo1) != 13 {
-		t.Fatalf("protectedRoutesGrupo1 tiene %d entradas, esperado 13", len(protectedRoutesGrupo1))
+	if len(protectedRoutesGrupo1) != 14 {
+		t.Fatalf("protectedRoutesGrupo1 tiene %d entradas, esperado 14", len(protectedRoutesGrupo1))
 	}
 }
 

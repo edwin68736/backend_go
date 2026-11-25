@@ -213,6 +213,12 @@ func (s *ProductService) bulkImport(items []BulkImportItem, opts bulkImportRunOp
 				})
 				continue
 			}
+			if found != nil && found.IsSupply {
+				result.Failed = append(result.Failed, BulkImportFail{
+					Row: item.RowNumber, Name: item.Name, Error: errSupplyClassCode(code, true).Error(),
+				})
+				continue
+			}
 			if found != nil {
 				existing = *found
 				hasExisting = true

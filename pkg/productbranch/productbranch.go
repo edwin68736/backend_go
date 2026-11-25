@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 
 	"gorm.io/gorm"
 )
@@ -118,6 +119,9 @@ func Set(db *gorm.DB, productID uint, branchIDs []uint) error {
 		return errors.New("producto requerido")
 	}
 	ids := normalize(branchIDs)
+	if len(ids) > 0 && supplies.IsSupply(db, productID) {
+		ids = nil // un insumo está disponible en todas las sucursales
+	}
 	if !Ready(db) {
 		if len(ids) == 0 {
 			return nil // "todas" es justamente lo que ya rige sin la tabla

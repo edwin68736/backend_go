@@ -15,6 +15,9 @@ const (
 	SettingsManage  = "s.m"
 	DeliveryView    = "d.v"
 	DeliveryUpdate  = "d.u"
+	SuppliesView    = "sp.v" // supplies.view: ver insumos, stock y movimientos
+	SuppliesManage  = "sp.m" // supplies.manage: crear y editar insumos y sus unidades de compra
+	RecipesViewCost = "rc.c" // recipes.view_cost: ver y fijar costos de insumos y recetas
 )
 
 // AllKeys lista completa para invalidación / admin.
@@ -22,6 +25,7 @@ var AllKeys = []string{
 	TablesView, TablesOpen, OrdersCreate, OrdersCharge, OrdersCancel,
 	KitchenView, KitchenUpdate, POSUse, CashView,
 	ProductsManage, SettingsManage, DeliveryView, DeliveryUpdate,
+	SuppliesView, SuppliesManage, RecipesViewCost, // por defecto solo administrador y supervisor
 }
 
 // LegacyRoleToKeys mapeo retrocompatible restaurant_role → permisos.

@@ -20,6 +20,8 @@ func RegisterRoutes(api fiber.Router) {
 	manage := middleware.RequireRestaurantAdminOrTenantAdmin()
 
 	r.Get("/session/permissions", h.SessionPermissions)
+
+	RegisterSupplyRoutes(r, h)
 	r.Get("/staff", manage, h.ListStaff)
 	r.Get("/staff/management", manage, h.ListStaffManagement)
 	r.Post("/staff/users", manage, h.CreateStaffUser)
@@ -95,4 +97,22 @@ func RegisterSalePaymentRoutes(api fiber.Router) {
 	loadRest := middleware.LoadRestaurantPermissions()
 	api.Post("/sales/:id/payments", mod, loadRest, middleware.RequireSalesAccess("create"), h.RegisterPayments)
 	api.Get("/sales/:id/payments", mod, loadRest, middleware.RequireSalesAccess("view"), h.GetSalePayments)
+}
+
+// RegisterSupplyRoutes monta las rutas de insumos sobre un grupo que ya cargó los permisos de restaurante.
+func RegisterSupplyRoutes(r fiber.Router, h *handler.RestaurantHandler) {
+	// Insumos (F1): solo con el módulo activado.
+	viewSupplies := middleware.RequireAnyRestaurantPerm(restaurantperm.SuppliesView, restaurantperm.SuppliesManage)
+	manageSupplies := middleware.RequireRestaurantPerm(restaurantperm.SuppliesManage)
+	r.Get("/supplies", h.RequireRecipesEnabled, viewSupplies, h.ListSupplies)
+	r.Post("/supplies", h.RequireRecipesEnabled, manageSupplies, h.CreateSupply)
+	r.Get("/supplies/unit-catalog", h.RequireRecipesEnabled, viewSupplies, h.SupplyUnitCatalog)
+	r.Get("/supplies/:id", h.RequireRecipesEnabled, viewSupplies, h.GetSupply)
+	r.Put("/supplies/:id", h.RequireRecipesEnabled, manageSupplies, h.UpdateSupply)
+	r.Get("/supplies/:id/stock", h.RequireRecipesEnabled, viewSupplies, h.SupplyStock)
+	r.Get("/supplies/:id/movements", h.RequireRecipesEnabled, viewSupplies, h.SupplyMovements)
+	r.Get("/supplies/:id/units", h.RequireRecipesEnabled, viewSupplies, h.ListSupplyUnits)
+	r.Post("/supplies/:id/units", h.RequireRecipesEnabled, manageSupplies, h.CreateSupplyUnit)
+	r.Put("/supplies/:id/units/:unitId", h.RequireRecipesEnabled, manageSupplies, h.UpdateSupplyUnit)
+	r.Delete("/supplies/:id/units/:unitId", h.RequireRecipesEnabled, manageSupplies, h.DeleteSupplyUnit)
 }

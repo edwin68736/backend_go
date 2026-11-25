@@ -7,6 +7,7 @@ import (
 
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/salescope"
 
 	"github.com/gofiber/fiber/v3"
@@ -73,7 +74,7 @@ salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchSc
 	// Totales generales (dashboard completo, sin filtro usuario para no romper otras vistas)
 	var contactsCount, productsCount, salesCount, purchasesCount int64
 	tdb.Model(&database.TenantContact{}).Where("active = ?", true).Count(&contactsCount)
-	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Count(&productsCount)
+	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Scopes(supplies.Exclude(tdb)).Count(&productsCount)
 	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Scopes(branchScope(branchID)).Where("status != ?", "cancelled").Count(&salesCount)
 	tdb.Model(&database.TenantPurchase{}).Scopes(purchaseBranchScope(branchID)).Where("status != ?", "cancelled").Count(&purchasesCount)
 

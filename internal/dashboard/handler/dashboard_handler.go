@@ -6,6 +6,7 @@ import (
 
 	"tukifac/config"
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/salescope"
 
 	"github.com/gofiber/fiber/v3"
@@ -39,7 +40,7 @@ func (h *DashboardHandler) Home(c fiber.Ctx) error {
 	var contactsCount, productsCount int64
 	var salesCount, purchasesCount int64
 	tdb.Model(&database.TenantContact{}).Where("active = ?", true).Count(&contactsCount)
-	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Count(&productsCount)
+	tdb.Model(&database.TenantProduct{}).Where("active = ?", true).Scopes(supplies.Exclude(tdb)).Count(&productsCount)
 	salescope.EmittedSalesNoNotes(tdb.Model(&database.TenantSale{})).Where("status != ?", "cancelled").Count(&salesCount)
 	tdb.Model(&database.TenantPurchase{}).Where("status != ?", "cancelled").Count(&purchasesCount)
 

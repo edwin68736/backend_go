@@ -60,7 +60,7 @@ var errProductUnavailable = errors.New("el producto no está disponible en la ti
 func (s *EcommerceService) loadPublicProduct(productID uint) (*database.TenantProduct, error) {
 	var p database.TenantProduct
 	err := s.db.Where("id = ? AND active = ? AND show_in_digital_catalog = ?", productID, true, true).First(&p).Error
-	if err != nil || p.HasCombo {
+	if err != nil || p.HasCombo || p.IsSupply {
 		return nil, errProductUnavailable
 	}
 	return &p, nil

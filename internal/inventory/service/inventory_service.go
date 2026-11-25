@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/categorybranch"
 	"tukifac/pkg/productbranch"
 
@@ -1035,7 +1036,11 @@ func (s *InventoryService) GetKardex(params KardexParams) ([]database.TenantStoc
 	if needProductJoin {
 		q = q.Joins("INNER JOIN tenant_products p ON p.id = tenant_stock_movements.product_id")
 		if params.RestaurantOnly {
-			q = q.Where("p.is_restaurant = ? AND p.manage_stock = ?", true, true)
+			if supplies.Ready(s.db) {
+				q = q.Where("(p.is_restaurant = ? OR p.is_supply = ?) AND p.manage_stock = ?", true, true, true)
+			} else {
+				q = q.Where("p.is_restaurant = ? AND p.manage_stock = ?", true, true)
+			}
 		}
 		if params.CategoryID > 0 {
 			q = q.Where("p.category_id = ?", params.CategoryID)
@@ -1121,6 +1126,7 @@ type StockSummary struct {
 	Quantity    float64
 	MinStock    float64
 	IsLow       bool
+	IsSupply    bool // para rotularlo: los insumos sí cuentan en inventario y stock bajo
 }
 
 func (s *InventoryService) StockSummary(branchID uint) ([]StockSummary, error) {
@@ -1132,11 +1138,16 @@ func (s *InventoryService) StockSummary(branchID uint) ([]StockSummary, error) {
 		BranchName  string  `json:"branch_name"`
 		Quantity    float64 `json:"quantity"`
 		MinStock    float64 `json:"min_stock"`
+		IsSupply    bool    `json:"is_supply"`
 	}
 
+	columns := "ps.product_id, p.name as product_name, p.code as product_code, ps.branch_id, b.name as branch_name, ps.quantity, p.min_stock"
+	if supplies.Ready(s.db) {
+		columns += ", p.is_supply"
+	}
 	var results []result
 	q := s.db.Table("tenant_product_stocks ps").
-		Select("ps.product_id, p.name as product_name, p.code as product_code, ps.branch_id, b.name as branch_name, ps.quantity, p.min_stock").
+		Select(columns).
 		Joins("JOIN tenant_products p ON p.id = ps.product_id").
 		Joins("JOIN tenant_branches b ON b.id = ps.branch_id").
 		Where("p.manage_stock = ? AND p.active = ?", true, true)
@@ -1160,6 +1171,7 @@ func (s *InventoryService) StockSummary(branchID uint) ([]StockSummary, error) {
 			Quantity:    r.Quantity,
 			MinStock:    r.MinStock,
 			IsLow:       r.Quantity <= r.MinStock,
+			IsSupply:    r.IsSupply,
 		}
 	}
 	return summaries, nil

@@ -60,12 +60,13 @@ func extractDigits(s string) string {
 }
 
 func (s *ProductService) findActiveProductByCodeCandidate(cand string, branchID uint) (*database.TenantProduct, error) {
+	// El lector alimenta carritos: un insumo no existe para él.
 	if branchID > 0 {
 		p, err := s.GetByCodeInBranch(cand, branchID)
 		if err != nil {
 			return nil, err
 		}
-		if p != nil && p.Active {
+		if p != nil && p.Active && !p.IsSupply {
 			if err := s.EnsureRestaurantBranchAccess(p, branchID); err == nil {
 				return p, nil
 			}
@@ -75,7 +76,7 @@ func (s *ProductService) findActiveProductByCodeCandidate(cand string, branchID 
 	if err != nil {
 		return nil, err
 	}
-	if p == nil || !p.Active {
+	if p == nil || !p.Active || p.IsSupply {
 		return nil, nil
 	}
 	if err := s.EnsureRestaurantBranchAccess(p, branchID); err != nil {

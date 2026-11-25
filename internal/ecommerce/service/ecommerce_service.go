@@ -9,6 +9,7 @@ import (
 	companyservice "tukifac/internal/company/service"
 	productservice "tukifac/internal/products/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 
 	"gorm.io/gorm"
 )
@@ -271,6 +272,7 @@ func (s *EcommerceService) PriceBounds() (float64, float64, error) {
 	err := s.db.Table("tenant_products").
 		Select("COALESCE(MIN(sale_price), 0) AS min, COALESCE(MAX(sale_price), 0) AS max").
 		Where("show_in_digital_catalog = ? AND active = ? AND deleted_at IS NULL", true, true).
+		Scopes(supplies.Exclude(s.db)).
 		Scan(&row).Error
 	return row.Min, row.Max, err
 }
@@ -285,10 +287,14 @@ func (s *EcommerceService) PublicCategories() ([]PublicCategory, error) {
 		ImageURL  string
 		SortOrder int
 	}
+	published := "p.show_in_digital_catalog = ? AND p.active = ? AND p.deleted_at IS NULL"
+	if supplies.Ready(s.db) {
+		published += " AND " + supplies.NotSupplySQL("p")
+	}
 	err := s.db.Table("tenant_categories c").
 		Select("DISTINCT c.id, c.name, c.image_url, c.sort_order").
 		Joins("JOIN tenant_products p ON p.category_id = c.id").
-		Where("p.show_in_digital_catalog = ? AND p.active = ? AND p.deleted_at IS NULL", true, true).
+		Where(published, true, true).
 		Where("c.deleted_at IS NULL").
 		Order("c.sort_order ASC, c.name ASC, c.id ASC").
 		Scan(&rows).Error
@@ -332,6 +338,7 @@ func (s *EcommerceService) PublicProductGallery(productID uint) ([]string, error
 	var p database.TenantProduct
 	if err := s.db.Select("id", "image_url").
 		Where("id = ? AND show_in_digital_catalog = ? AND active = ?", productID, true, true).
+		Scopes(supplies.Exclude(s.db)).
 		First(&p).Error; err != nil {
 		return nil, errors.New("producto no encontrado")
 	}

@@ -1107,6 +1107,10 @@ type TenantProduct struct {
 	HasModifiers       bool    `gorm:"default:false" json:"has_modifiers"`
 	HasCombo           bool    `gorm:"default:false" json:"has_combo"`
 	IsRestaurant       bool    `gorm:"default:false" json:"is_restaurant"`
+	// Insumo (V195): se compra y se mueve en inventario, nunca se vende (ver pkg/supplies). Solo lectura para GORM a propósito:
+	// así un tenant todavía sin V195 puede seguir creando productos; se escribe únicamente con supplies.Mark.
+	IsSupply   bool   `gorm:"->;default:false;index" json:"is_supply"`
+	SupplyKind string `gorm:"->;size:12;not null;default:'raw'" json:"-"`
 	// Canales de difusión — independientes de IsRestaurant (que es del módulo Restaurante/comandas).
 	ShowInDigitalCatalog bool `gorm:"default:false" json:"show_in_digital_catalog"`
 	// Reservado para el futuro Menú Digital; sin UI todavía.
@@ -2728,6 +2732,8 @@ type TenantRestaurantSetting struct {
 	DeletionPin      string    `gorm:"size:72" json:"-"` // hash bcrypt del PIN de anulación (no se expone en JSON)
 	StaffV2Enabled   bool      `gorm:"default:false" json:"staff_v2_enabled"`
 	PermCacheVersion uint      `gorm:"default:0" json:"perm_cache_version"`
+	// RecipesEnabled (V195): módulo de insumos y recetas. Solo lectura para GORM: lo activa el superadmin.
+	RecipesEnabled bool `gorm:"->;not null;default:false" json:"recipes_enabled"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

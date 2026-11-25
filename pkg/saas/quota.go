@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -133,7 +134,7 @@ func CheckCreateQuota(tenantDB *gorm.DB, tenantID uint, res QuotaResource) *Quot
 // (antes el contador de pantalla contaba también los servicios y no coincidía con el bloqueo).
 func CountProductSeats(tenantDB *gorm.DB) int64 {
 	var n int64
-	tenantDB.Model(&database.TenantProduct{}).Where("type != ?", "service").Count(&n)
+	tenantDB.Model(&database.TenantProduct{}).Where("type != ?", "service").Scopes(supplies.Exclude(tenantDB)).Count(&n) // los insumos no ocupan cupo
 	return n
 }
 

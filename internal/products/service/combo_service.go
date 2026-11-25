@@ -364,6 +364,9 @@ func validateComboComponent(product *database.TenantProduct, comp database.Tenan
 	if product.ID != 0 && comp.ID == product.ID {
 		return errors.New("un combo no puede contenerse a sí mismo")
 	}
+	if comp.IsSupply {
+		return fmt.Errorf("'%s' es un insumo y no puede formar parte de un combo", comp.Name)
+	}
 	if comp.HasCombo {
 		return fmt.Errorf("'%s' ya es un combo: un combo no puede contener otro combo", comp.Name)
 	}

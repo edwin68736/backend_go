@@ -215,7 +215,7 @@ func LoadCatalog(tx *gorm.DB, comboID uint) ([]database.TenantComboGroup, map[ui
 	byGroup := make(map[uint][]CatalogItem, len(groups))
 	for _, it := range items {
 		p, ok := products[it.ProductID]
-		if !ok || !p.Active {
+		if !ok || !p.Active || p.IsSupply {
 			// Componente borrado o desactivado tras armar el combo: no se puede servir.
 			continue
 		}

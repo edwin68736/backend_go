@@ -270,6 +270,10 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	input.Items = resolvedItems
 	input.ExtraStockMovements = append(input.ExtraStockMovements, comboStock...)
+	// Un insumo no se vende, ni como línea ni como salida de combo o extra, venga el id de donde venga.
+	if err := rejectSupplyLines(s.db, input); err != nil {
+		return nil, err
+	}
 	// SUNAT exige código en cada línea: sin él la venta se guardaba y reventaba recién al
 	// emitir, con el cliente esperando. Se completa antes de calcular nada.
 	fillMissingItemCodes(s.db, input.Items)

@@ -7,6 +7,7 @@ import (
 
 	restaurantsvc "tukifac/internal/restaurant/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 
 	"gorm.io/gorm"
 )
@@ -17,6 +18,7 @@ const (
 	blockReasonBranchMismatch  = "El producto no pertenece a la sucursal activa"
 	blockReasonHasSales        = "Tiene ventas registradas"
 	blockReasonHasPurchases      = "Tiene compras registradas"
+	blockReasonSupplyMovements   = "Es un insumo con movimientos de inventario"
 )
 
 // PinVerificationError indica PIN inválido o no configurado (HTTP 403).
@@ -260,6 +262,18 @@ func (s *ProductService) scanBulkDeleteBlockers(ids []uint) map[uint][]string {
 		Scan(&rows)
 	for _, r := range rows {
 		add(r.ProductID, blockReasonHasPurchases)
+	}
+
+	// El kardex de un insumo es su historia aunque nunca se haya comprado (ingresos, ajustes): no se purga.
+	if supplies.Ready(s.db) {
+		rows = nil
+		s.db.Model(&database.TenantStockMovement{}).
+			Select("DISTINCT product_id").
+			Where("product_id IN ? AND product_id IN (SELECT id FROM tenant_products WHERE is_supply = ?)", ids, true).
+			Scan(&rows)
+		for _, r := range rows {
+			add(r.ProductID, blockReasonSupplyMovements)
+		}
 	}
 
 	return blockers

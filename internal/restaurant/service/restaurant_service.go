@@ -19,6 +19,7 @@ import (
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/money"
 	"tukifac/pkg/saas/docusage"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/tax"
 
 	"golang.org/x/crypto/bcrypt"
@@ -1292,6 +1293,13 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		// cliente — evita que la mesa quede "abierta" con todo ya cobrado, o "cerrada" con algo
 		// pendiente, por un desfase de conteo en el frontend.
 		input.CloseSession = len(comandas) == len(allPending) && len(partialQty) == 0
+	}
+
+	// El cobro de mesa arma las líneas sin pasar por SaleService.Create: se rechaza aquí una comanda que apunte a un insumo.
+	for _, c := range comandas {
+		if err := supplies.RejectPtr(s.db, c.ProductID); err != nil {
+			return nil, err
+		}
 	}
 
 	resolvedCash, err := s.resolveCashSessionForSale(sess.BranchID, input.UserID, input.EmployeeType, input.CashSessionID, input.Payments)

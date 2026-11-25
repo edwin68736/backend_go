@@ -126,6 +126,10 @@ func (s *ProductService) BulkUpdatePricesWith(rows []BulkPriceUpdateRow, opts Bu
 					break
 				}
 			}
+			if p.IsSupply && r.SalePrice != nil {
+				rr.Status, rr.Error = "error", "Es un insumo: no tiene precio de venta"
+				break
+			}
 			upd := map[string]interface{}{}
 			if r.SalePrice != nil && opts.BranchID == 0 {
 				upd["sale_price"] = *r.SalePrice

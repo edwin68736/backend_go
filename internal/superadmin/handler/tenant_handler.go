@@ -289,6 +289,24 @@ func (h *TenantHandler) SetModuleAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// PUT /api/superadmin/tenants/:id/restaurant-recipes — activa insumos y recetas para una empresa.
+func (h *TenantHandler) SetRestaurantRecipesAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := c.Bind().JSON(&body); err != nil || body.Enabled == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "enabled es requerido"})
+	}
+	if err := h.svc.SetRestaurantRecipes(uint(id), *body.Enabled); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 // POST /api/superadmin/tenants/:id/migrate — ejecuta migraciones del tenant (columnas/tablas nuevas).
 func (h *TenantHandler) MigrateAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)

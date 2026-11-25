@@ -437,6 +437,9 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			// Costo base en SOLES (la compra en USD se convierte con su TC): lo que entra al precio de
 			// compra del catálogo y al kardex. El costo del documento (item.UnitCost) queda en su moneda.
 			baseUnitCostPEN := baseUnitCost * penFactor
+			if item.UpdateSalePrice && product.IsSupply {
+				return fmt.Errorf("«%s» es un insumo: no tiene precio de venta que actualizar", product.Name)
+			}
 			priceUpdates, err := catalogPriceUpdates(item, baseUnitCostPEN)
 			if err != nil {
 				return err
