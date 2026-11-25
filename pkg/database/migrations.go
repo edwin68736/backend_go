@@ -2233,6 +2233,8 @@ type TenantPurchase struct {
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+	// IdempotencyKey (V197): solo lectura para GORM; lo escribe el servicio de compras.
+	IdempotencyKey *string `gorm:"->;size:64" json:"-"`
 }
 
 // TenantPurchasePayable cuenta por pagar (CxP) de una compra a crédito — 1:1 con TenantPurchase,

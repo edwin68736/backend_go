@@ -81,6 +81,10 @@ type CreatePurchaseInput struct {
 	// PurchaseOrderID: orden de compra (V180) que origina esta compra. La orden pasa a
 	// "received" en la MISMA transacción; 1 orden → 1 compra.
 	PurchaseOrderID *uint
+	// IdempotencyKey: clave del intento; repetirla devuelve la compra ya creada con ErrIdempotentReplay.
+	IdempotencyKey string
+	// RejectDuplicateDocument: no admitir otra compra vigente del mismo proveedor con la misma serie y número.
+	RejectDuplicateDocument bool
 }
 
 // normalizePurchaseCurrency valida moneda (PEN/USD) y TC: USD exige TC > 0; PEN lo descarta.
@@ -184,6 +188,11 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	}
 	if input.Series == "" || input.Number == "" {
 		return nil, errors.New("serie y número del documento son requeridos")
+	}
+	// Antes de validar nada: un reintento de una compra ya guardada no debe fallar porque la caja se cerró después.
+	input.IdempotencyKey = normalizeIdempotencyKey(input.IdempotencyKey)
+	if existing := findByIdempotencyKey(s.db, input.UserID, input.IdempotencyKey); existing != nil {
+		return existing, ErrIdempotentReplay
 	}
 	if err := validatePurchaseItems(input.Items); err != nil {
 		return nil, err
@@ -327,9 +336,20 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	}
 	docNumber := input.Series + "-" + input.Number
 
-	return purchase, s.db.Transaction(func(tx *gorm.DB) error {
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		if input.RejectDuplicateDocument {
+			if err := ensureNewDocument(tx, input.ContactID, input.Series, input.Number); err != nil {
+				return err
+			}
+		}
 		if err := tx.Create(purchase).Error; err != nil {
 			return err
+		}
+		// La clave se escribe dentro de la transacción: el índice único hace esperar y fallar a un intento simultáneo.
+		if input.IdempotencyKey != "" && IdempotencyReady(tx) {
+			if err := tx.Table("tenant_purchases").Where("id = ?", purchase.ID).Update("idempotency_key", input.IdempotencyKey).Error; err != nil {
+				return err
+			}
 		}
 		if input.PurchaseOrderID != nil && *input.PurchaseOrderID > 0 {
 			if err := posvc.MarkReceivedTx(tx, *input.PurchaseOrderID, purchase.ID, currency); err != nil {
@@ -505,6 +525,13 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		}
 		return nil
 	})
+	if txErr != nil {
+		// Si otro intento con la misma clave ganó, se devuelve su compra en vez del error.
+		if winner := findByIdempotencyKey(s.db, input.UserID, input.IdempotencyKey); winner != nil {
+			return winner, ErrIdempotentReplay
+		}
+	}
+	return purchase, txErr
 }
 
 type PurchaseListParams struct {

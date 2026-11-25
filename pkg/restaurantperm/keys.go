@@ -17,6 +17,7 @@ const (
 	DeliveryUpdate  = "d.u"
 	SuppliesView    = "sp.v" // supplies.view: ver insumos, stock y movimientos
 	SuppliesManage  = "sp.m" // supplies.manage: crear y editar insumos y sus unidades de compra
+	SuppliesPurchase = "sp.p" // supplies.purchase: comprar insumos, proveedores, ingresos y mermas
 	RecipesViewCost = "rc.c" // recipes.view_cost: ver y fijar costos de insumos y recetas
 )
 
@@ -25,7 +26,7 @@ var AllKeys = []string{
 	TablesView, TablesOpen, OrdersCreate, OrdersCharge, OrdersCancel,
 	KitchenView, KitchenUpdate, POSUse, CashView,
 	ProductsManage, SettingsManage, DeliveryView, DeliveryUpdate,
-	SuppliesView, SuppliesManage, RecipesViewCost, // por defecto solo administrador y supervisor
+	SuppliesView, SuppliesManage, SuppliesPurchase, RecipesViewCost, // por defecto solo administrador y supervisor
 }
 
 // LegacyRoleToKeys mapeo retrocompatible restaurant_role → permisos.

@@ -115,4 +115,17 @@ func RegisterSupplyRoutes(r fiber.Router, h *handler.RestaurantHandler) {
 	r.Post("/supplies/:id/units", h.RequireRecipesEnabled, manageSupplies, h.CreateSupplyUnit)
 	r.Put("/supplies/:id/units/:unitId", h.RequireRecipesEnabled, manageSupplies, h.UpdateSupplyUnit)
 	r.Delete("/supplies/:id/units/:unitId", h.RequireRecipesEnabled, manageSupplies, h.DeleteSupplyUnit)
+
+	// Compras, proveedores, ingresos y carga inicial (F3a). Las compras exigen además los módulos de compras y caja.
+	buy := middleware.RequireRestaurantPerm(restaurantperm.SuppliesPurchase)
+	purchases, cash := middleware.RequireModule("purchases"), middleware.RequireModule("cashbank")
+	r.Get("/suppliers", h.RequireRecipesEnabled, buy, h.ListSuppliers)
+	r.Post("/suppliers", h.RequireRecipesEnabled, buy, h.CreateSupplier)
+	r.Get("/supply-purchases", h.RequireRecipesEnabled, buy, purchases, h.ListSupplyPurchases)
+	r.Post("/supply-purchases", h.RequireRecipesEnabled, buy, purchases, cash, h.CreateSupplyPurchase)
+	r.Get("/supply-purchases/:id", h.RequireRecipesEnabled, buy, purchases, h.GetSupplyPurchase)
+	r.Post("/supply-purchases/:id/void", h.RequireRecipesEnabled, buy, purchases, cash, h.VoidSupplyPurchase)
+	r.Post("/supply-entries", h.RequireRecipesEnabled, buy, h.CreateSupplyEntry)
+	r.Post("/supplies/:id/initial-stock", h.RequireRecipesEnabled, manageSupplies, h.SupplyInitialStock)
+	r.Get("/supplies/:id/purchases", h.RequireRecipesEnabled, viewSupplies, h.SupplyPurchaseHistory)
 }

@@ -168,6 +168,7 @@ var TenantMigrations = []TenantMigration{
 	V194InventoryDocumentUnitCost{},
 	V195Supplies{},
 	V196SupplyCosts{},
+	V197PurchaseIdempotencyKey{},
 }
 
 // ByVersion mapa versión → migración.
