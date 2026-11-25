@@ -92,6 +92,7 @@ func RegisterRoutes(app *fiber.App) {
 	saAPI.Get("/tenants/:id/modules", middleware.RequireSAPermission("empresas.view"), tenantHandler.GetModulesAPI)
 	// SetModuleAPI cambia entitlements del ERP de un tenant — mismo permiso que editar el tenant.
 	saAPI.Post("/tenants/:id/modules", middleware.RequireSAPermission("empresas.update"), tenantHandler.SetModuleAPI)
+	saAPI.Get("/tenants/:id/restaurant-recipes", middleware.RequireSAPermission("empresas.view"), tenantHandler.GetRestaurantRecipesAPI)
 	saAPI.Put("/tenants/:id/restaurant-recipes", middleware.RequireSAPermission("empresas.update"), tenantHandler.SetRestaurantRecipesAPI)
 	// Fase 5 (etapa 3, Grupo 4): hallazgo — /tenants/:id/migrate es una RUTA DUPLICADA de
 	// /migrations/:tenantId/migrate (mismo efecto real: migra un tenant, por un código distinto,

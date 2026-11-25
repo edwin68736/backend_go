@@ -289,6 +289,19 @@ func (h *TenantHandler) SetModuleAPI(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+// GET /api/superadmin/tenants/:id/restaurant-recipes
+func (h *TenantHandler) GetRestaurantRecipesAPI(c fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID inválido"})
+	}
+	enabled, available, err := h.svc.GetRestaurantRecipes(uint(id))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": fiber.Map{"enabled": enabled, "available": available}})
+}
+
 // PUT /api/superadmin/tenants/:id/restaurant-recipes — activa insumos y recetas para una empresa.
 func (h *TenantHandler) SetRestaurantRecipesAPI(c fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)

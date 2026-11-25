@@ -200,6 +200,7 @@ var protectedRoutesEtapa2 = []protectedRoute{
 	{"GET", "/api/superadmin/tenants", "empresas.view"},
 	{"GET", "/api/superadmin/tenants/1", "empresas.view"},
 	{"GET", "/api/superadmin/tenants/1/modules", "empresas.view"},
+	{"GET", "/api/superadmin/tenants/1/restaurant-recipes", "empresas.view"},
 	// ubigeo + consulta (empresas.view — ver informe de la etapa)
 	{"GET", "/api/superadmin/ubigeo/regiones", "empresas.view"},
 	{"GET", "/api/superadmin/ubigeo/provincias", "empresas.view"},
@@ -241,8 +242,8 @@ var protectedRoutesEtapa2 = []protectedRoute{
 
 func TestProtectedRoutesEtapa2_Count(t *testing.T) {
 	// 7 de la etapa 1 + 52 de la etapa 2 + 3 del resumen fiscal por tenant (tenant-summary) + 2 de alertas (reconocer/resolver) = 64.
-	if len(protectedRoutesEtapa2) != 64 {
-		t.Fatalf("protectedRoutesEtapa2 tiene %d entradas, esperado 64 — actualiza este test junto con el informe si cambia intencionalmente", len(protectedRoutesEtapa2))
+	if len(protectedRoutesEtapa2) != 65 {
+		t.Fatalf("protectedRoutesEtapa2 tiene %d entradas, esperado 65 — actualiza este test junto con el informe si cambia intencionalmente", len(protectedRoutesEtapa2))
 	}
 }
 
