@@ -641,13 +641,18 @@ func (s *PurchaseService) GetItems(purchaseID uint) ([]database.TenantPurchaseIt
 const StatusCancelled = "cancelled"
 
 // Void anula la compra: revierte stock, registra salida en kardex y elimina seriales vinculados.
+// voidBeforeTxHook solo lo usan las pruebas: se ejecuta entre la lectura del estado y la transacción de anulación.
+var voidBeforeTxHook func()
+
+var errPurchaseAlreadyVoided = errors.New("la compra ya está anulada")
+
 func (s *PurchaseService) Void(purchaseID, userID uint) error {
 	var p database.TenantPurchase
 	if err := s.db.First(&p, purchaseID).Error; err != nil {
 		return err
 	}
 	if p.Status == StatusCancelled {
-		return errors.New("la compra ya está anulada")
+		return errPurchaseAlreadyVoided
 	}
 
 	items, err := s.GetItems(purchaseID)
@@ -658,7 +663,20 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 	ref := "ANULACION COMPRA/" + p.Series + "-" + p.Number
 	docNumber := p.Series + "-" + p.Number
 
+	if voidBeforeTxHook != nil {
+		voidBeforeTxHook()
+	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// La lectura de arriba solo da un mensaje rápido; quien decide es este cambio condicional, antes de tocar caja o stock. De
+		// varias anulaciones simultáneas solo una lo consigue; las demás esperan y fallan. Si algo falla después, se revierte con todo.
+		claim := tx.Model(&database.TenantPurchase{}).Where("id = ? AND status <> ?", purchaseID, StatusCancelled).
+			Update("status", StatusCancelled)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return errPurchaseAlreadyVoided
+		}
 		// Si la compra venía de una orden de compra, la orden vuelve a quedar disponible.
 		if p.PurchaseOrderID != nil {
 			if err := posvc.ReleaseOnPurchaseVoidTx(tx, purchaseID); err != nil {
@@ -783,7 +801,7 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 			}
 		}
 
-		return tx.Model(&database.TenantPurchase{}).Where("id = ?", purchaseID).Update("status", StatusCancelled).Error
+		return nil
 	})
 }
 
