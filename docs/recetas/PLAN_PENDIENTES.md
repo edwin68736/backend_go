@@ -127,8 +127,15 @@ go test ./internal/restaurant/ -run 'TestRecipe|TestSupply' -count=1
 - Columnas nuevas o ensanchadas: migración versionada antes de desplegar. La base local no es estricta y trunca en silencio.
 - La siguiente migración libre es **V199**.
 
-## 9. Se quedó en la PC original
-- Tres archivos de Tukichef sin commit, ajenos a este módulo: `PrintersSettingsTab.tsx`, `printers/ConnectionMethodPicker.tsx`,
-  `restaurant/RestaurantSeriesSettings.tsx`.
-- La carpeta `docs/arquitectura/` del backend (informes de infraestructura) y otras ramas locales sin subir.
-- `PLAN_DESPLIEGUE.md`, las bases de datos locales, los `.env` y las notas de la herramienta de asistencia.
+## 9. Lo que no está en la rama
+- **Ya subido** (trabajo de otras sesiones): en Tukichef, el commit «Ajustes de impresoras y series» (**sin revisar**); en Tukifac, el
+  tutorial de stock y almacenes. Un guardado antiguo de junio de Tukifac quedó aparte en la rama `respaldo/stash-2026-06-01`
+  (no está aplicado ni probado).
+- **No se sube porque los repositorios son públicos:** `docs/arquitectura/`, `PLAN_DESPLIEGUE.md`, los documentos de la carpeta raíz y las
+  notas del asistente. Están en `copiar_a_otra_pc.zip`, en la carpeta raíz de la PC original.
+- Los `.env` y las bases de datos locales se copian aparte.
+
+## 10. Antes de desplegar (revisión)
+- Todo lo que otras sesiones habían confirmado ya estaba en `main`; compara con lo que hay desplegado, porque `main` tiene cambios sin
+  desplegar además de este módulo.
+- El flujo de despliegue se lanza a mano desde GitHub: no desplegar `insumos-recetas` hasta terminar y fusionar.
