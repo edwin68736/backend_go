@@ -31,11 +31,15 @@ vez creaban series repetidas y la sucursal quedaba sin poder registrar ingresos.
 **No probado:** MySQL 8, producción, pantallas (no existen aún), crédito con cuenta por pagar y pagos mixtos por la ruta nueva (los
 resuelve el servicio de compras, que tiene sus propias pruebas).
 
-## 3. Defecto previo encontrado (sin corregir)
-**Anular una compra en Tukifac no está protegido contra dos pulsaciones a la vez.** Reproducido en MariaDB, 3 de 3: de 8 anulaciones
-simultáneas, 2 tuvieron éxito; el stock se revirtió dos veces (quedó en 0 en vez de 50) y la caja recibió dos devoluciones.
-Está en `PurchaseService.Void`: lee el estado fuera de la transacción. La ruta nueva de Tukichef sí está protegida. Se corrige igual que
-los traslados (F2a); afecta a todos los tenants y no depende de insumos. Falta además revisar si ya ocurrió en producción.
+## 3. Defecto previo encontrado y corregido (autorizado el 25-nov-2026)
+**Anular una compra en Tukifac no estaba protegido contra dos pulsaciones a la vez.** Reproducido en MariaDB, 3 de 3: de 8 anulaciones
+simultáneas, 2 tuvieron éxito; el stock se revirtió dos veces y la caja recibió dos devoluciones.
+
+- Arreglo (commit `311dab5`): `PurchaseService.Void` reclama la compra con un cambio condicional dentro de la transacción, antes de tocar
+  caja o stock. Afecta a todos los tenants; sin migración.
+- Pruebas: `purchase_void_once_test.go` (SQLite, falla sin el arreglo) y 8 anulaciones simultáneas en MariaDB (`bf28be8`), tres corridas.
+- El commit se aplica limpio sobre `origin/main` (`7469cc5`) y ahí pasan compras, cuentas por pagar y órdenes de compra: **puede salir solo**.
+- **No revisado:** si ya ocurrió en producción, y el pago a proveedor simultáneo con la anulación.
 
 ## 4. Límites
 - Solo soles. La carga inicial es insumo por insumo.
