@@ -50,6 +50,8 @@ Cubren: creación e idempotencia; rechazo posterior de filas repetidas; omisión
 
 ## 4. Condiciones para desplegar (importante)
 
+> Actualización: F0a-3 ya implementa la creación segura (ver `F0a-3_INFORME.md`); ambas fases deben desplegarse juntas.
+
 1. **No desplegar F0a-2 sin F0a-3.** `RecordMovementTx`, `EnsureProductBranchLink` y `linkProductsToBranchStock` leen y luego insertan sin protección. Hoy una carrera crea una fila duplicada en silencio; con el índice **esa operación fallaría con error 1062** (una venta, traslado o alta podría mostrar error). La creación segura es parte de F0a-3.
 2. **Esperar a que se resuelva la red entre los VPS** (ver `docs/arquitectura/DIAGNOSTICO_LENTITUD_20261125.md`): V193/V194 recorren los 849 tenants y `migrate-fleet` ya se ha colgado con la red degradada.
 3. Antes del despliegue conviene correr `audit-stock-reconcile` en producción (solo lectura, con autorización) para saber en cuántos tenants se omitirá el índice.

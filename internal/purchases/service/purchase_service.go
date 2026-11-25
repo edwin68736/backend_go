@@ -386,6 +386,16 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		}
 		// Actualizar precios de catálogo, ingresar stock y registrar seriales por cada ítem
 		inv := invsvc.NewInventoryService(tx)
+		// F0a-3: solo ordena los bloqueos de saldo; no cambia la lógica de la compra.
+		lockKeys := make([]invsvc.StockKey, 0, len(input.Items))
+		for _, it := range input.Items {
+			if it.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: input.BranchID})
+			}
+		}
+		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for i, item := range input.Items {
 			if item.ProductID == nil {
 				continue
@@ -667,6 +677,15 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 		}
 
 		inv := invsvc.NewInventoryService(tx)
+		voidKeys := make([]invsvc.StockKey, 0, len(items))
+		for _, it := range items {
+			if it.ProductID != nil {
+				voidKeys = append(voidKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: p.BranchID})
+			}
+		}
+		if err := invsvc.LockStockRowsTx(tx, voidKeys); err != nil {
+			return err
+		}
 		for _, item := range items {
 			if item.ProductID == nil {
 				continue

@@ -17,6 +17,7 @@ import (
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ProductService struct {
@@ -2944,5 +2945,6 @@ func linkProductsToBranchStock(tx *gorm.DB, productIDs []uint, branchID uint) er
 	if len(rows) == 0 {
 		return nil
 	}
-	return tx.Create(&rows).Error
+	// Con el índice único, otra operación pudo crear alguna a la vez: se ignora el conflicto.
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }

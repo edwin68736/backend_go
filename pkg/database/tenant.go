@@ -2,7 +2,10 @@ package database
 
 import (
 	"fmt"
+	"os"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"tukifac/config"
 
@@ -25,9 +28,20 @@ func GetTenantDB(dbName string) (*gorm.DB, error) {
 // query con argumentos (2 round trips); interpolando en el cliente es 1, igual que con el statement cacheado.
 func tenantDSN(dbName string) string {
 	cfg := config.AppConfig
-	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true",
-		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, dbName,
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true%s",
+		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, dbName, lockWaitParam(),
 	)
+}
+
+// lockWaitParam: espera máxima de un bloqueo de fila para las conexiones de tenant (F0a-3), en segundos, con
+// DB_TENANT_LOCK_WAIT_SECONDS. Sin definir (o fuera de 1-120) no se envía nada y rige el valor del servidor: así desplegar el
+// código no cambia la configuración. 5 s es el valor propuesto para evaluar.
+func lockWaitParam() string {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("DB_TENANT_LOCK_WAIT_SECONDS")))
+	if err != nil || n < 1 || n > 120 {
+		return ""
+	}
+	return fmt.Sprintf("&innodb_lock_wait_timeout=%d", n)
 }
 
 // tenantGormConfig NO activa PrepareStmt: en gorm v1.31 cada gorm.Open con PrepareStmt crea un LRU de

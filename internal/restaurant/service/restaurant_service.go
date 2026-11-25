@@ -1537,6 +1537,21 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 		// Descontar stock y registrar kardex para productos con control de stock
 		inv := invsvc.NewInventoryService(tx)
+		// F0a-3: solo ordena los bloqueos de saldo para evitar bloqueos mutuos; no cambia la lógica del cobro.
+		lockKeys := make([]invsvc.StockKey, 0, len(saleItems)+len(comandas))
+		for _, it := range saleItems {
+			if it.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: sess.BranchID})
+			}
+		}
+		for _, c := range comandas {
+			if c.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *c.ProductID, BranchID: sess.BranchID})
+			}
+		}
+		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for _, item := range saleItems {
 			if item.ProductID == nil {
 				continue

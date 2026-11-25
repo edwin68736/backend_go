@@ -920,6 +920,19 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 		// Descontar stock y marcar seriales como vendidos (productos con series)
 		inv := invsvc.NewInventoryService(tx)
+		// F0a-3: solo ordena los bloqueos de saldo para evitar bloqueos mutuos; no cambia la lógica de la venta.
+		lockKeys := make([]invsvc.StockKey, 0, len(input.Items)+len(input.ExtraStockMovements))
+		for _, it := range input.Items {
+			if it.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: input.BranchID})
+			}
+		}
+		for _, mv := range input.ExtraStockMovements {
+			lockKeys = append(lockKeys, invsvc.StockKey{ProductID: mv.ProductID, BranchID: input.BranchID})
+		}
+		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for i, item := range input.Items {
 			if item.ProductID == nil {
 				continue

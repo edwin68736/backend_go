@@ -150,7 +150,7 @@ func (s *InventoryDocumentService) CreateInventoryDocument(input CreateDocumentI
 	}
 	input.Source = normalizeDocumentSource(input.Source)
 	var docID uint
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	err := runInventoryTx(s.db, func(tx *gorm.DB) error {
 		svc := &InventoryDocumentService{db: tx}
 		id, err := svc.createInventoryDocumentTx(tx, input)
 		if err != nil {
@@ -200,7 +200,7 @@ func (s *InventoryDocumentService) UpdateInventoryDocument(id uint, input Update
 
 // ConfirmInventoryDocument confirma el documento y genera kardex en una sola transacción.
 func (s *InventoryDocumentService) ConfirmInventoryDocument(id, userID uint) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
 		svc := &InventoryDocumentService{db: tx}
 		return svc.confirmInventoryDocumentTx(tx, id, userID)
 	})
@@ -208,7 +208,7 @@ func (s *InventoryDocumentService) ConfirmInventoryDocument(id, userID uint) err
 
 // VoidInventoryDocument anula un documento confirmado revirtiendo stock/kardex.
 func (s *InventoryDocumentService) VoidInventoryDocument(id, userID uint) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
 		svc := &InventoryDocumentService{db: tx}
 		return svc.voidInventoryDocumentTx(tx, id, userID)
 	})
@@ -275,7 +275,7 @@ func (s *InventoryDocumentService) RecordAdjustmentViaDocument(input AdjustmentI
 		Serials:        input.Serials,
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
 		svc := &InventoryDocumentService{db: tx}
 		docID, err := svc.createInventoryDocumentTx(tx, CreateDocumentInput{
 			Direction:       direction,
@@ -390,6 +390,9 @@ func (s *InventoryDocumentService) confirmInventoryDocumentTx(tx *gorm.DB, id, u
 	docID := doc.ID
 	notes := buildMovementNotes(doc)
 
+	if err := LockStockRowsTx(tx, documentStockKeys(doc.BranchID, lines)); err != nil {
+		return err
+	}
 	for _, line := range lines {
 		if err := applyDocumentLineMovement(tx, inv, doc, line, movType, opID, docID, number, notes, userID); err != nil {
 			return err
@@ -435,6 +438,9 @@ func (s *InventoryDocumentService) voidInventoryDocumentTx(tx *gorm.DB, id, user
 	notes := buildMovementNotes(doc)
 	now := time.Now()
 
+	if err := LockStockRowsTx(tx, documentStockKeys(doc.BranchID, lines)); err != nil {
+		return err
+	}
 	for _, line := range lines {
 		if err := applyDocumentLineVoid(tx, inv, doc, line, reverseType, opID, docID, voidRef, notes, userID); err != nil {
 			return err
@@ -447,6 +453,14 @@ func (s *InventoryDocumentService) voidInventoryDocumentTx(tx *gorm.DB, id, user
 		"voided_by":  userID,
 		"updated_at": now,
 	}).Error
+}
+
+func documentStockKeys(branchID uint, lines []database.TenantInventoryDocumentDetail) []StockKey {
+	keys := make([]StockKey, 0, len(lines))
+	for _, l := range lines {
+		keys = append(keys, StockKey{ProductID: l.ProductID, PresentationID: l.PresentationID, BranchID: branchID})
+	}
+	return keys
 }
 
 func loadDocumentForUpdate(tx *gorm.DB, id uint) (database.TenantInventoryDocument, error) {

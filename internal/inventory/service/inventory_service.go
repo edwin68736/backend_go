@@ -13,6 +13,7 @@ import (
 	"tukifac/pkg/productbranch"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type InventoryService struct {
@@ -57,6 +58,8 @@ type MovementInput struct {
 	SaleUnitID       *uint
 	SaleUnitQuantity *float64
 	ConversionFactor *float64
+	// AllowNegative permite que una salida deje el saldo en negativo (F0a-3). Apagado por defecto: ningún llamador actual lo usa.
+	AllowNegative bool
 }
 
 func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *MovementInput) error {
@@ -152,16 +155,17 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 
 	byPresentation := input.PresentationID != nil && *input.PresentationID > 0
 
-	var currentQty float64
-	var stock database.TenantProductStock
-	var pstock database.TenantProductPresentationStock
+	// Fila de saldo bloqueada (F0a-3): el saldo se lee ya confirmado por quien lo tuviera, así dos movimientos simultáneos no se
+	// pisan. El bloqueo dura hasta el fin de la transacción del llamador.
+	target := stockTarget{entityID: input.ProductID, branchID: input.BranchID}
 	if byPresentation {
-		tx.Where("presentation_id = ? AND branch_id = ?", *input.PresentationID, input.BranchID).First(&pstock)
-		currentQty = pstock.Quantity
-	} else {
-		tx.Where("product_id = ? AND branch_id = ?", input.ProductID, input.BranchID).First(&stock)
-		currentQty = stock.Quantity
+		target = stockTarget{byPresentation: true, entityID: *input.PresentationID, branchID: input.BranchID}
 	}
+	row, hasRow, err := acquireStockRow(tx, target)
+	if err != nil {
+		return err
+	}
+	currentQty := row.Quantity
 
 	var newBalance float64
 	switch input.Type {
@@ -169,8 +173,8 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 		newBalance = currentQty + input.Quantity
 	case "out", "adjustment_out":
 		newBalance = currentQty - input.Quantity
-		if newBalance < 0 {
-			return fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f",
+		if newBalance < 0 && !input.AllowNegative {
+			return fmt.Errorf("%w para %s: requiere %.2f, hay %.2f", ErrInsufficientStock,
 				stockLabel(productName, presentationName), input.Quantity, currentQty)
 		}
 	case "adjustment":
@@ -206,22 +210,17 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 		}
 	}
 
-	if byPresentation {
-		if pstock.ID == 0 {
+	if !hasRow { // solo con el interruptor INVENTORY_ROW_LOCKS=off: comportamiento anterior
+		if byPresentation {
 			return tx.Create(&database.TenantProductPresentationStock{
 				PresentationID: *input.PresentationID, BranchID: input.BranchID, Quantity: newBalance,
 			}).Error
 		}
-		return tx.Model(&pstock).Updates(map[string]interface{}{
-			"quantity": newBalance, "updated_at": time.Now(),
-		}).Error
-	}
-	if stock.ID == 0 {
 		return tx.Create(&database.TenantProductStock{
 			ProductID: input.ProductID, BranchID: input.BranchID, Quantity: newBalance,
 		}).Error
 	}
-	return tx.Model(&stock).Updates(map[string]interface{}{
+	return tx.Model(target.model()).Where("id = ?", row.ID).Updates(map[string]interface{}{
 		"quantity": newBalance, "updated_at": time.Now(),
 	}).Error
 }
@@ -239,7 +238,8 @@ func (s *InventoryService) EnsureProductBranchLink(productID, branchID uint) err
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	return s.db.Create(&database.TenantProductStock{
+	// Con el índice único, otra petición pudo crearla a la vez: se ignora el conflicto.
+	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&database.TenantProductStock{
 		ProductID: productID,
 		BranchID:  branchID,
 		Quantity:  0,
@@ -329,7 +329,7 @@ func (s *InventoryService) GetPresentationStockByProduct(productID, branchID uin
 // RecordMovement registra un movimiento de inventario y actualiza el stock (fuera de una
 // transacción existente). Envuelve RecordMovementTx en su propia transacción.
 func (s *InventoryService) RecordMovement(input MovementInput) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
 		return s.RecordMovementTx(tx, input)
 	})
 }
@@ -565,6 +565,13 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 		transferIDOut = tr.ID
 
 		ref := "TRANSFER-PENDING"
+		lockKeys := make([]StockKey, 0, len(lines))
+		for _, line := range lines {
+			lockKeys = append(lockKeys, StockKey{ProductID: line.ProductID, PresentationID: line.PresentationID, BranchID: fromBranchID})
+		}
+		if err := LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for _, line := range lines {
 			if line.ProductID == 0 || line.Quantity <= 0 {
 				return errors.New("producto y cantidad requeridos en cada línea")
@@ -1095,7 +1102,7 @@ func (s *InventoryService) GetKardex(params KardexParams) ([]database.TenantStoc
 		q = q.Offset(params.Offset).Limit(params.Limit)
 	}
 
-	err := q.Order("tenant_stock_movements.created_at DESC").Find(&movements).Error
+	err := q.Order("tenant_stock_movements.created_at DESC, tenant_stock_movements.id DESC").Find(&movements).Error
 	if err != nil {
 		return nil, 0, err
 	}
