@@ -1533,7 +1533,7 @@ type TenantInventoryDocumentDetail struct {
 	// presentación con stock propio.
 	PresentationID *uint     `gorm:"index" json:"presentation_id,omitempty"`
 	Quantity       float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost       float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
+	UnitCost       float64   `gorm:"type:decimal(15,6)" json:"unit_cost"` // (15,6) desde V194: costos por gramo/ml
 	SerialsJSON    string    `gorm:"type:text" json:"serials_json,omitempty"`
 	SortOrder      int       `gorm:"not null;default:0" json:"sort_order"`
 	CreatedAt      time.Time `json:"created_at"`

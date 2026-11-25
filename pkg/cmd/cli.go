@@ -16,6 +16,10 @@ func Execute(args []string) int {
 	if args[0] == "audit-stock-reconcile" {
 		return RunAuditStockReconcile(args[1:])
 	}
+	// Igual: no debe ejecutar nada más que lo suyo (consulta, o creación de índices con --apply).
+	if args[0] == "stock-unique-index" {
+		return RunStockUniqueIndex(args[1:])
+	}
 
 	if err := InitDatabase(); err != nil {
 		fmt.Fprintf(os.Stderr, "database connection failed: %v\n", err)
@@ -112,6 +116,7 @@ func printUsage() {
   audit-tenant-permission-catalog  Escanea la flota buscando tenants con catálogo de permisos incompleto [--active-only]
   reseed-tenant-permissions  Completa catálogo de permisos de un tenant y reasigna todo al Administrador [--tenant=slug]
   audit-stock-reconcile      SOLO LECTURA: duplicados de saldo y saldo vs kardex por tenant [--slug=] [--limit=] [--product=] [--branch=] [--max-detail=20] [--json=archivo] [--fail-on-diff] (BD local salvo --allow-remote)
+  stock-unique-index         Índice UNIQUE de saldos: estado y motivo; --apply lo crea donde no haya duplicados [--slug=] [--limit=] (BD local salvo --allow-remote)
   payment audit|repair|verify [--slug=tenant]  Dominio financiero (métodos/condiciones/tributario)
   validate-prepayment-phase0 [--slug=demo]   E2E Fase 0: boleta+factura anticipo SUNAT Beta
 

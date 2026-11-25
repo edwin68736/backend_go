@@ -164,6 +164,8 @@ var TenantMigrations = []TenantMigration{
 	V190DocumentSnapshots{},
 	V191SaleItemPackLabel{},
 	V192CategoryBranch{},
+	V193StockUniqueIndexes{},
+	V194InventoryDocumentUnitCost{},
 }
 
 // ByVersion mapa versión → migración.
