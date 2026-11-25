@@ -28,11 +28,18 @@ La reproducción usa llamadas simultáneas al servicio. No se probó con doble c
 - SQLite: 101 paquetes en verde. `pkg/saas` se excluyó (fallos previos, ver `F1a_INFORME.md`).
 - La confirmación de series por el usuario del destino (con filtro por sucursal) sigue pasando.
 
-**No probado:** MySQL 8, producción, traslado desde pantalla.
+**No probado:** el arreglo en MySQL 8 y en producción; traslado desde pantalla.
 
 ## 4. Datos ya afectados
-El arreglo evita casos nuevos; **no corrige** traslados que ya se hayan duplicado. No se consultó producción. Consulta de solo lectura
-para detectarlos, por empresa (probada en local, sin resultados):
+El arreglo evita casos nuevos; **no corrige** traslados que ya se hayan duplicado.
+
+**Revisión en producción (25-nov-2026, solo lectura, usuario `claude_ro`): no se encontraron duplicados.**
+- 854 empresas revisadas; 10 usan traslados (809 en total).
+- En las 10, el número de movimientos de confirmación y cancelación y sus unidades coinciden con las líneas de los traslados.
+- No hay traslados antiguos sin cabecera ni líneas anuladas, así que esas dos vías no han afectado datos.
+- Quedan 30 traslados pendientes: hasta desplegar, todavía pueden duplicarse al confirmarlos o cancelarlos.
+
+Consulta usada para detectarlos, por empresa:
 
 ```sql
 SELECT m.transfer_id, COUNT(*) AS movimientos,
