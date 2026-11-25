@@ -61,6 +61,9 @@ type MovementInput struct {
 	ConversionFactor *float64
 	// AllowNegative permite que una salida deje el saldo en negativo (F0a-3). Apagado por defecto: ningún llamador actual lo usa.
 	AllowNegative bool
+	// ReversesMovementID: este movimiento anula a otro (compra o documento). En un insumo usa su costo y, si corresponde, devuelve
+	// el promedio al de antes.
+	ReversesMovementID *uint
 }
 
 func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *MovementInput) error {
@@ -91,36 +94,44 @@ func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *Move
 //
 // Si el producto no existe devuelve nil: quien llama ya valida eso por su cuenta.
 func CheckProductPresentation(tx *gorm.DB, productID uint, presentationID *uint, requireActive bool) (productName, presentationName string, err error) {
+	_, productName, presentationName, err = checkProductPresentation(tx, productID, presentationID, requireActive)
+	return productName, presentationName, err
+}
+
+// checkProductPresentation devuelve además si el producto es un insumo (se lee la fila completa: en un tenant sin V195 la columna no
+// está y queda en false).
+func checkProductPresentation(tx *gorm.DB, productID uint, presentationID *uint, requireActive bool) (isSupply bool, productName, presentationName string, err error) {
 	var product database.TenantProduct
-	if tx.Select("id", "name", "has_variants").First(&product, productID).Error != nil {
-		return "", "", nil
+	if tx.First(&product, productID).Error != nil {
+		return false, "", "", nil
 	}
+	isSupply = product.IsSupply
 	byPresentation := presentationID != nil && *presentationID > 0
 	if !product.HasVariants {
 		if byPresentation {
-			return product.Name, "", fmt.Errorf("«%s» no maneja presentaciones", product.Name)
+			return isSupply, product.Name, "", fmt.Errorf("«%s» no maneja presentaciones", product.Name)
 		}
-		return product.Name, "", nil
+		return isSupply, product.Name, "", nil
 	}
 	if !byPresentation {
 		var n int64
 		tx.Model(&database.TenantProductPresentation{}).Where("product_id = ?", productID).Count(&n)
 		if n == 0 {
-			return product.Name, "", nil // marcado con variantes pero sin ninguna creada: sin qué elegir
+			return isSupply, product.Name, "", nil // marcado con variantes pero sin ninguna creada: sin qué elegir
 		}
-		return product.Name, "", fmt.Errorf("«%s» maneja stock por presentación: seleccione una presentación", product.Name)
+		return isSupply, product.Name, "", fmt.Errorf("«%s» maneja stock por presentación: seleccione una presentación", product.Name)
 	}
 	var pres database.TenantProductPresentation
 	if tx.First(&pres, *presentationID).Error != nil {
-		return product.Name, "", fmt.Errorf("la presentación indicada no existe para «%s»", product.Name)
+		return isSupply, product.Name, "", fmt.Errorf("la presentación indicada no existe para «%s»", product.Name)
 	}
 	if pres.ProductID != productID {
-		return product.Name, pres.Name, fmt.Errorf("la presentación «%s» no pertenece a «%s»", pres.Name, product.Name)
+		return isSupply, product.Name, pres.Name, fmt.Errorf("la presentación «%s» no pertenece a «%s»", pres.Name, product.Name)
 	}
 	if requireActive && !pres.Active {
-		return product.Name, pres.Name, fmt.Errorf("la presentación «%s» de «%s» está inactiva", pres.Name, product.Name)
+		return isSupply, product.Name, pres.Name, fmt.Errorf("la presentación «%s» de «%s» está inactiva", pres.Name, product.Name)
 	}
-	return product.Name, pres.Name, nil
+	return isSupply, product.Name, pres.Name, nil
 }
 
 // stockLabel arma «Producto» o «Producto» (Presentación) para los mensajes de stock.
@@ -139,19 +150,26 @@ func stockLabel(productName, presentationName string) string {
 // Si input.PresentationID viene informado, el saldo afectado es el de esa variante
 // (TenantProductPresentationStock) en vez del agregado del producto (TenantProductStock).
 func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) error {
+	_, err := s.recordMovementTx(tx, input)
+	return err
+}
+
+// recordMovementTx es RecordMovementTx devolviendo el movimiento creado (con su costo, si es un insumo).
+func (s *InventoryService) recordMovementTx(tx *gorm.DB, input MovementInput) (database.TenantStockMovement, error) {
+	var none database.TenantStockMovement
 	if input.ProductID == 0 || input.BranchID == 0 {
-		return errors.New("producto y sucursal son requeridos")
+		return none, errors.New("producto y sucursal son requeridos")
 	}
 	if input.Quantity <= 0 {
-		return errors.New("la cantidad debe ser mayor a cero")
+		return none, errors.New("la cantidad debe ser mayor a cero")
 	}
 	if err := s.resolveMovementOperationType(tx, &input); err != nil {
-		return err
+		return none, err
 	}
 	isOut := input.Type == "out" || input.Type == "adjustment_out"
-	productName, presentationName, err := CheckProductPresentation(tx, input.ProductID, input.PresentationID, isOut)
+	isSupply, productName, presentationName, err := checkProductPresentation(tx, input.ProductID, input.PresentationID, isOut)
 	if err != nil {
-		return err
+		return none, err
 	}
 
 	byPresentation := input.PresentationID != nil && *input.PresentationID > 0
@@ -164,7 +182,7 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	}
 	row, hasRow, err := acquireStockRow(tx, target)
 	if err != nil {
-		return err
+		return none, err
 	}
 	currentQty := row.Quantity
 
@@ -175,13 +193,13 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	case "out", "adjustment_out":
 		newBalance = currentQty - input.Quantity
 		if newBalance < 0 && !input.AllowNegative {
-			return fmt.Errorf("%w para %s: requiere %.2f, hay %.2f", ErrInsufficientStock,
+			return none, fmt.Errorf("%w para %s: requiere %.2f, hay %.2f", ErrInsufficientStock,
 				stockLabel(productName, presentationName), input.Quantity, currentQty)
 		}
 	case "adjustment":
 		newBalance = input.Quantity
 	default:
-		return errors.New("tipo de movimiento inválido")
+		return none, errors.New("tipo de movimiento inválido")
 	}
 
 	movement := database.TenantStockMovement{
@@ -193,8 +211,17 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 		SaleUnitID: input.SaleUnitID, SaleUnitQuantity: input.SaleUnitQuantity, ConversionFactor: input.ConversionFactor,
 		CreatedAt: time.Now(),
 	}
+	// Costo de insumos (F2b): se decide con el saldo ya bloqueado, antes de crear el movimiento.
+	var cost supplyCost
+	costed := isSupply && !byPresentation && SupplyCostsReady(tx)
+	if costed {
+		if cost, err = planSupplyCost(tx, input, currentQty); err != nil {
+			return none, err
+		}
+		movement.UnitCost = cost.unitCost
+	}
 	if err := tx.Create(&movement).Error; err != nil {
-		return err
+		return none, err
 	}
 
 	// Entra stock a una sucursal donde el producto no está asignado (y sí lo está a otras):
@@ -202,15 +229,29 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	// sin asignación (= todas) no se toca. Ver pkg/productbranch.
 	if input.Type == "in" || input.Type == "adjustment_in" || (input.Type == "adjustment" && newBalance > 0) {
 		if err := productbranch.AssignIfRestricted(tx, input.ProductID, input.BranchID); err != nil {
-			return err
+			return none, err
 		}
 		// Y si su categoría es exclusiva de otra sucursal, se amplía a todas: el producto ya se vende también aquí y no
 		// debe quedar sin categoría visible (ver categorybranch.WidenForBranch).
 		if err := categorybranch.WidenForBranch(tx, input.ProductID, input.BranchID); err != nil {
-			return err
+			return none, err
 		}
 	}
 
+	if err := saveStockBalance(tx, target, input, row, hasRow, newBalance); err != nil {
+		return none, err
+	}
+	if costed {
+		if err := saveSupplyCost(tx, movement.ID, input.ProductID, input.BranchID, cost); err != nil {
+			return none, err
+		}
+		movement.CostUnknown, movement.CostApplied = cost.unknown, cost.applied
+	}
+	return movement, nil
+}
+
+func saveStockBalance(tx *gorm.DB, target stockTarget, input MovementInput, row stockRowState, hasRow bool, newBalance float64) error {
+	byPresentation := target.byPresentation
 	if !hasRow { // solo con el interruptor INVENTORY_ROW_LOCKS=off: comportamiento anterior
 		if byPresentation {
 			return tx.Create(&database.TenantProductPresentationStock{
@@ -354,7 +395,7 @@ func (s *InventoryService) transferTx(tx *gorm.DB, productID, fromBranchID, toBr
 		return err
 	}
 	ref := "TRANSFER"
-	if err := s.RecordMovementTx(tx, MovementInput{
+	sent, err := s.recordMovementTx(tx, MovementInput{
 		ProductID:     productID,
 		BranchID:      fromBranchID,
 		Type:          "out",
@@ -363,11 +404,13 @@ func (s *InventoryService) transferTx(tx *gorm.DB, productID, fromBranchID, toBr
 		Notes:         notes,
 		UserID:        userID,
 		OperationCode: "TRANSFER",
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
 	if err := s.RecordMovementTx(tx, MovementInput{
+		UnitCost:      frozenCost(sent),
 		ProductID:     productID,
 		BranchID:      toBranchID,
 		Type:          "in",
@@ -391,6 +434,21 @@ func (s *InventoryService) transferTx(tx *gorm.DB, productID, fromBranchID, toBr
 		Notes:        notes,
 		CreatedAt:    time.Now(),
 	}).Error
+}
+
+// frozenCost: costo con el que salió la mercadería (0 si no es un insumo o no se conoce).
+func frozenCost(m database.TenantStockMovement) float64 {
+	if m.CostUnknown {
+		return 0
+	}
+	return m.UnitCost
+}
+
+func logCost(l database.TenantTransferLog) float64 {
+	if l.UnitCost == nil {
+		return 0
+	}
+	return *l.UnitCost
 }
 
 // TransferByProduct transfiere stock: si el producto maneja series, usa TransferWithSerials con los primeros N seriales disponibles; si no, usa Transfer por cantidad.
@@ -654,11 +712,12 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 			}
 
 			// Salida en origen
-			if err := s.RecordMovementTx(tx, MovementInput{
+			sent, err := s.recordMovementTx(tx, MovementInput{
 				ProductID: line.ProductID, PresentationID: line.PresentationID, BranchID: fromBranchID, Type: "out",
 				Quantity: qty, Reference: ref, Notes: notes, UserID: userID,
 				OperationCode: "TRANSFER", TransferID: &tr.ID,
-			}); err != nil {
+			})
+			if err != nil {
 				return err
 			}
 
@@ -676,6 +735,12 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 			}
 			if err := tx.Create(&logRow).Error; err != nil {
 				return err
+			}
+			// Insumo: se guarda el costo despachado para confirmar o cancelar con él.
+			if cost := frozenCost(sent); cost > 0 && product.IsSupply && SupplyCostsReady(tx) {
+				if err := tx.Table("tenant_transfer_logs").Where("id = ?", logRow.ID).Update("unit_cost", cost).Error; err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -739,7 +804,7 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 			// Entrada en destino
 			if err := s.RecordMovementTx(tx, MovementInput{
 				ProductID: logRow.ProductID, PresentationID: logRow.PresentationID, BranchID: logRow.ToBranchID, Type: "in",
-				Quantity: logRow.Quantity, Reference: ref, Notes: logRow.Notes, UserID: userID,
+				Quantity: logRow.Quantity, UnitCost: logCost(logRow), Reference: ref, Notes: logRow.Notes, UserID: userID,
 				OperationCode: "TRANSFER", TransferID: &transferID,
 			}); err != nil {
 				return err
@@ -817,7 +882,7 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 			// Devolver stock al origen (entrada en origen = revertir la salida)
 			if err := s.RecordMovementTx(tx, MovementInput{
 				ProductID: logRow.ProductID, PresentationID: logRow.PresentationID, BranchID: logRow.FromBranchID, Type: "in",
-				Quantity: logRow.Quantity, Reference: ref, Notes: "Cancelación transferencia", UserID: userID,
+				Quantity: logRow.Quantity, UnitCost: logCost(logRow), Reference: ref, Notes: "Cancelación transferencia", UserID: userID,
 				OperationCode: "TRANSFER", TransferID: &transferID,
 			}); err != nil {
 				return err

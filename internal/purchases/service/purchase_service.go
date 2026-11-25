@@ -437,6 +437,9 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			// Costo base en SOLES (la compra en USD se convierte con su TC): lo que entra al precio de
 			// compra del catálogo y al kardex. El costo del documento (item.UnitCost) queda en su moneda.
 			baseUnitCostPEN := baseUnitCost * penFactor
+			if product.IsSupply {
+				baseUnitCostPEN = supplyBaseCost(tx, purchaseItems[i], penFactor, baseQuantity)
+			}
 			if item.UpdateSalePrice && product.IsSupply {
 				return fmt.Errorf("«%s» es un insumo: no tiene precio de venta que actualizar", product.Name)
 			}
@@ -689,7 +692,8 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 		if err := invsvc.LockStockRowsTx(tx, voidKeys); err != nil {
 			return err
 		}
-		for _, item := range items {
+		for i := len(items) - 1; i >= 0; i-- {
+			item := items[i]
 			if item.ProductID == nil {
 				continue
 			}
@@ -715,8 +719,10 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 				var saleUnitID *uint
 				var saleUnitQuantity, conversionFactor *float64
 				presentationID := item.PresentationID
+				var reverses *uint
 				if err := tx.Where("purchase_item_id = ? AND type = ?", item.ID, "in").
 					First(&original).Error; err == nil {
+					reverses = &original.ID
 					quantity = original.Quantity
 					unitCost = original.UnitCost
 					saleUnitID = original.SaleUnitID
@@ -727,6 +733,7 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 					}
 				}
 				if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+					ReversesMovementID: reverses,
 					ProductID:        *item.ProductID,
 					PresentationID:   presentationID,
 					BranchID:         p.BranchID,

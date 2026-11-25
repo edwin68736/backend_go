@@ -1433,6 +1433,8 @@ type TenantProductStock struct {
 	BranchID  uint      `gorm:"not null;index" json:"branch_id"`
 	Quantity  float64   `gorm:"type:decimal(15,3);default:0" json:"quantity"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// AvgUnitCost (V196): costo promedio, solo insumos. Solo lectura para GORM (lo escribe el servicio de inventario).
+	AvgUnitCost *float64 `gorm:"->;type:decimal(15,6)" json:"-"`
 }
 
 // TenantProductPresentationStock: saldo de stock POR VARIANTE (ej. color/talla) de un producto
@@ -1487,6 +1489,10 @@ type TenantStockMovement struct {
 	PurchaseItemID *uint     `gorm:"index" json:"purchase_item_id,omitempty"`
 	UserID         uint      `gorm:"index" json:"user_id"`
 	CreatedAt      time.Time `json:"created_at"`
+	// V196, solo insumos (solo lectura para GORM): promedio previo, si este movimiento lo cambió y si salió sin costo conocido.
+	AvgBefore   *float64 `gorm:"->;type:decimal(15,6)" json:"-"`
+	CostApplied bool     `gorm:"->;not null;default:false" json:"-"`
+	CostUnknown bool     `gorm:"->;not null;default:false" json:"cost_unknown,omitempty"`
 }
 
 // TenantInventoryOperationType catálogo de tipos de operación (Tabla 12 SUNAT). Seed por migración; sin CRUD.
@@ -1573,6 +1579,8 @@ type TenantTransferLog struct {
 	Notes          string     `gorm:"type:text" json:"notes"`
 	CreatedAt      time.Time  `json:"created_at"`
 	RevertedAt     *time.Time `gorm:"index" json:"reverted_at"` // legacy: si no nil, anulada (flujo antiguo)
+	// UnitCost (V196): costo del insumo al despacharlo, congelado para la confirmación o cancelación. Solo lectura para GORM.
+	UnitCost *float64 `gorm:"->;type:decimal(15,6)" json:"-"`
 }
 
 type TenantSale struct {

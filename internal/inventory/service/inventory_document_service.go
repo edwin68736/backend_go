@@ -441,7 +441,9 @@ func (s *InventoryDocumentService) voidInventoryDocumentTx(tx *gorm.DB, id, user
 	if err := LockStockRowsTx(tx, documentStockKeys(doc.BranchID, lines)); err != nil {
 		return err
 	}
-	for _, line := range lines {
+	// De la última línea a la primera: así el promedio de un insumo repetido vuelve paso a paso.
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
 		if err := applyDocumentLineVoid(tx, inv, doc, line, reverseType, opID, docID, voidRef, notes, userID); err != nil {
 			return err
 		}
@@ -732,6 +734,14 @@ func applyDocumentLineVoid(
 		OperationTypeID:     &opTypeID,
 		InventoryDocumentID: &docRefID,
 	}
+	if product.IsSupply {
+		// El costo sale del movimiento original, no del detalle del documento.
+		original, err := originalDocumentMovement(tx, docID, line, reverseType)
+		if err != nil {
+			return err
+		}
+		movInput.ReversesMovementID = original
+	}
 
 	if product.ManageSeries {
 		if reverseType == "out" {
@@ -758,6 +768,28 @@ func applyDocumentLineVoid(
 		}
 	}
 	return inv.RecordMovementTx(tx, movInput)
+}
+
+// originalDocumentMovement: el movimiento que esta línea generó al confirmar. Con líneas repetidas se toman de la última a la
+// primera, saltando los ya anulados.
+func originalDocumentMovement(tx *gorm.DB, docID uint, line database.TenantInventoryDocumentDetail, reverseType string) (*uint, error) {
+	forward, reverse := []string{"in", "adjustment_in"}, []string{"out", "adjustment_out"}
+	if reverseType == "in" || reverseType == "adjustment_in" {
+		forward, reverse = reverse, forward
+	}
+	match := func(types []string) *gorm.DB {
+		return tx.Model(&database.TenantStockMovement{}).
+			Where("inventory_document_id = ? AND product_id = ? AND quantity = ? AND type IN ?", docID, line.ProductID, line.Quantity, types)
+	}
+	var done int64
+	if err := match(reverse).Count(&done).Error; err != nil {
+		return nil, err
+	}
+	var ids []uint
+	if err := match(forward).Order("id DESC").Offset(int(done)).Limit(1).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	return &ids[0], nil
 }
 
 func applySerialsInTx(tx *gorm.DB, inv *InventoryService, input MovementInput, serials []string) error {

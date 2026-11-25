@@ -6,6 +6,7 @@ package handler
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -37,7 +38,8 @@ type supplyView struct {
 	ExpiryDate    string                      `json:"expiry_date,omitempty"`
 	StockTotal    float64                     `json:"stock_total"`
 	StockByBranch []productsvc.BranchStockRow `json:"stock_by_branch"`
-	UnitCost      *float64                    `json:"unit_cost,omitempty"` // solo con recipes.view_cost
+	UnitCost      *float64                    `json:"unit_cost,omitempty"` // «último costo»; solo con recipes.view_cost
+	AvgCost       *float64                    `json:"avg_cost,omitempty"`  // costo promedio de la sucursal consultada
 }
 
 type supplyBody struct {
@@ -129,7 +131,11 @@ func supplyViewByID(c fiber.Ctx, p *database.TenantProduct) (supplyView, error) 
 	}
 	for _, it := range items {
 		if it.ID == p.ID {
-			return toSupplyView(it, canViewSupplyCost(c)), nil
+			view := toSupplyView(it, canViewSupplyCost(c))
+			if canViewSupplyCost(c) {
+				view.AvgCost = supplyAverages(db(c), []uint{p.ID}, supplyBranch(c))[p.ID]
+			}
+			return view, nil
 		}
 	}
 	return supplyView{}, gorm.ErrRecordNotFound
@@ -159,9 +165,19 @@ func (h *RestaurantHandler) ListSupplies(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	withCost := canViewSupplyCost(c)
+	var averages map[uint]*float64
+	if withCost {
+		ids := make([]uint, 0, len(items))
+		for _, it := range items {
+			ids = append(ids, it.ID)
+		}
+		averages = supplyAverages(db(c), ids, supplyBranch(c))
+	}
 	out := make([]supplyView, 0, len(items))
 	for _, it := range items {
-		out = append(out, toSupplyView(it, withCost))
+		v := toSupplyView(it, withCost)
+		v.AvgCost = averages[it.ID]
+		out = append(out, v)
 	}
 	return c.JSON(fiber.Map{"data": out, "total": total})
 }
@@ -322,8 +338,9 @@ type supplyMovementView struct {
 	Balance   float64  `json:"balance"`
 	Reference string   `json:"reference"`
 	Notes     string   `json:"notes"`
-	CreatedAt string   `json:"created_at"`
-	UnitCost  *float64 `json:"unit_cost,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+	UnitCost    *float64 `json:"unit_cost,omitempty"`
+	CostUnknown bool     `json:"cost_unknown,omitempty"`
 }
 
 func (h *RestaurantHandler) SupplyMovements(c fiber.Ctx) error {
@@ -350,11 +367,49 @@ func (h *RestaurantHandler) SupplyMovements(c fiber.Ctx) error {
 		}
 		if withCost {
 			cost := m.UnitCost
-			v.UnitCost = &cost
+			v.UnitCost, v.CostUnknown = &cost, m.CostUnknown
 		}
 		out = append(out, v)
 	}
 	return c.JSON(fiber.Map{"data": out, "total": total})
+}
+
+// supplyAverages: costo promedio por insumo. Con una sucursal, el suyo; con todas, ponderado por el saldo positivo de cada una
+// (o el único conocido si no hay saldo). Sin promedio, el insumo no aparece en el mapa.
+func supplyAverages(gdb *gorm.DB, ids []uint, branchID uint) map[uint]*float64 {
+	out := map[uint]*float64{}
+	if len(ids) == 0 || !invsvc.SupplyCostsReady(gdb) {
+		return out
+	}
+	q := gdb.Table("tenant_product_stocks").Select("product_id, quantity, avg_unit_cost").
+		Where("product_id IN ? AND avg_unit_cost IS NOT NULL", ids).Order("product_id, branch_id")
+	if branchID > 0 {
+		q = q.Where("branch_id = ?", branchID)
+	}
+	var rows []struct {
+		ProductID   uint
+		Quantity    float64
+		AvgUnitCost float64
+	}
+	if err := q.Find(&rows).Error; err != nil {
+		return out
+	}
+	value, qty := map[uint]float64{}, map[uint]float64{}
+	for _, r := range rows {
+		if r.Quantity > 0 {
+			value[r.ProductID] += r.Quantity * r.AvgUnitCost
+			qty[r.ProductID] += r.Quantity
+		}
+		if _, ok := out[r.ProductID]; !ok {
+			cost := r.AvgUnitCost
+			out[r.ProductID] = &cost
+		}
+	}
+	for id, n := range qty {
+		avg := math.Round(value[id]/n*1e6) / 1e6
+		out[id] = &avg
+	}
+	return out
 }
 
 // SupplyUnitCatalog: unidades de medida disponibles para elegir la unidad base y las de compra.

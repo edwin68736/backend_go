@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	invsvc "tukifac/internal/inventory/service"
 	"tukifac/internal/restaurant/handler"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
@@ -171,6 +172,23 @@ func TestSupplyRoutes(t *testing.T) {
 	if p.PurchasePrice != 3.5 {
 		t.Fatalf("el costo no debía cambiar: %v", p.PurchasePrice)
 	}
+	// F2b: con una entrada con costo, la lista y el detalle traen el promedio; sin permiso de costos, no.
+	if err := invsvc.NewInventoryService(db).RecordMovement(invsvc.MovementInput{ProductID: id, BranchID: 1, Type: "in", Quantity: 3, UnitCost: 4, UserID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, url := range []string{"/supplies", path} {
+		s, b = call(t, app, "supervisor", "GET", url, nil)
+		want(s, b, 200)
+		if !strings.Contains(b, `"avg_cost":4`) || !strings.Contains(b, `"unit_cost":3.5`) {
+			t.Fatalf("faltan promedio o último costo en %s: %s", url, b)
+		}
+	}
+	s, b = call(t, app, "mozo", "GET", fmt.Sprintf("/nocost/%d", id), nil)
+	want(s, b, 200)
+	if strings.Contains(b, "avg_cost") {
+		t.Fatalf("promedio expuesto sin permiso: %s", b)
+	}
+
 	// Con movimientos, la unidad base ya no se cambia.
 	s, b = call(t, app, "admin", "PUT", path, map[string]any{"unit": "GRM"})
 	want(s, b, 400)
