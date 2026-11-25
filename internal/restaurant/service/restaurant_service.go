@@ -767,14 +767,26 @@ func (s *RestaurantService) cancelComandaTx(tx *gorm.DB, c *database.TenantComan
 	if c.BilledAt != nil {
 		return errors.New("no se puede anular una comanda ya facturada (cobro parcial)")
 	}
-	now := time.Now()
-	if err := tx.Model(c).Updates(map[string]interface{}{
-		"cancelled_at":    now,
-		"cancelled_by_id": cancelledByID,
-		"cancel_reason":   reason,
-		"status":          "entregada",
-	}).Error; err != nil {
+	// F0b: primero la mesa y después la comanda (mismo orden que el cobro, para no bloquearse mutuamente), y se anula SOLO si sigue
+	// sin cobrar ni anular: c pudo leerse antes de que otra caja la cobrara.
+	var lockedSession database.TenantTableSession
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&lockedSession, c.SessionID).Error; err != nil {
 		return err
+	}
+	now := time.Now()
+	res := tx.Model(&database.TenantComanda{}).
+		Where("id = ? AND billed_at IS NULL AND cancelled_at IS NULL", c.ID).
+		Updates(map[string]interface{}{
+			"cancelled_at":    now,
+			"cancelled_by_id": cancelledByID,
+			"cancel_reason":   reason,
+			"status":          "entregada",
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("la comanda ya fue cobrada o anulada; actualiza la mesa")
 	}
 
 	taxCfg := tax.LoadFromDB(tx)
@@ -1468,6 +1480,10 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		sale.IdempotencyKey = &key
 	}
 
+	if billAfterReadHook != nil {
+		billAfterReadHook()
+	}
+
 	now := time.Now()
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var lockedSess database.TenantTableSession
@@ -1493,6 +1509,10 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		}
 		if claim.RowsAffected == 0 {
 			return errors.New("la sesión ya está cerrada o facturada")
+		}
+		// F0b: las comandas se leyeron antes de bloquear la mesa; si otra operación las tocó, no se cobra nada.
+		if err := verifyBillableTx(tx, input.SessionID, comandas, partialQty, input.CloseSession); err != nil {
+			return err
 		}
 
 		var err error
@@ -1661,8 +1681,9 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 				}
 			}
 			if len(billedIDs) > 0 {
-				tx.Model(&database.TenantComanda{}).Where("id IN ?", billedIDs).
-					Update("billed_at", now)
+				if err := markBilledTx(tx, billedIDs, now); err != nil {
+					return err
+				}
 			}
 		}
 

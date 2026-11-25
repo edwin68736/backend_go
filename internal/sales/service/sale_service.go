@@ -2422,6 +2422,24 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 	return out, summary, nil
 }
 
+// claimCancellationTx (F0b) es el primer paso de toda anulación: marca la venta como anulada SOLO si aún no lo está y bloquea la fila
+// hasta el fin de la transacción. El estado leído antes de la transacción no basta: dos anulaciones simultáneas devolvían dos veces
+// el dinero y el stock. El error es el de siempre, del que dependen otros flujos.
+func claimCancellationTx(tx *gorm.DB, saleID uint) error {
+	res := tx.Model(&database.TenantSale{}).Where("id = ? AND status <> ?", saleID, "cancelled").Update("status", "cancelled")
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("la venta ya está cancelada")
+	}
+	return nil
+}
+
+// cancelBeforeTxHook: solo para pruebas. Se ejecuta entre la lectura del estado de la venta y la transacción de anulación. nil en
+// producción.
+var cancelBeforeTxHook func()
+
 func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error {
 	var sale database.TenantSale
 	if err := s.db.First(&sale, id).Error; err != nil {
@@ -2462,8 +2480,14 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 
 	ref := "ANULACION VENTA/" + sale.Number
 	cashSvc := cashbanksvc.NewCashBankService(s.db)
+	if cancelBeforeTxHook != nil {
+		cancelBeforeTxHook()
+	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := claimCancellationTx(tx, sale.ID); err != nil {
+			return err
+		}
 		if err := reverseSaleCashTx(tx, cashSvc, &sale, ref, reason, userID); err != nil {
 			return err
 		}
@@ -2507,7 +2531,13 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 	}
 	ref := "ANULACION VENTA/" + sale.Number
 	cashSvc := cashbanksvc.NewCashBankService(s.db)
+	if cancelBeforeTxHook != nil {
+		cancelBeforeTxHook()
+	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := claimCancellationTx(tx, sale.ID); err != nil {
+			return err
+		}
 		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
 			return err
 		}
