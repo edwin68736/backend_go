@@ -453,3 +453,41 @@ func TestPurchaseWithoutKeyUnchanged(t *testing.T) {
 	_, err := purchasesvc.NewPurchaseService(fresh).Create(in)
 	ok(t, err)
 }
+
+// La anulación normal (Tukifac) también revierte una sola vez con 8 peticiones a la vez.
+func TestPurchaseVoidConcurrent(t *testing.T) {
+	f := setupBuy(t)
+	if !f.mysql {
+		t.Skip("requiere TUKIFAC_TEST_MYSQL_DSN (MySQL/MariaDB)")
+	}
+	sup := f.supplier()
+	for _, n := range []string{"900", "901"} { // la segunda deja stock de sobra para una doble reversa
+		s, b := f.call("supervisor", "POST", "/supply-purchases", f.purchaseBody(sup, n, "z"+n))
+		wantStatus(t, s, b, 201)
+	}
+	var p database.TenantPurchase
+	ok(t, f.db.Where("number = ?", "900").First(&p).Error)
+	errs := make([]error, 8)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = purchasesvc.NewPurchaseService(f.db).Void(p.ID, 2)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	succeeded := 0
+	for _, err := range errs {
+		if err == nil {
+			succeeded++
+		}
+	}
+	qty, _ := f.stock()
+	if succeeded != 1 || qty != 50 || f.count(&database.TenantCashMovement{}, "type = ?", "income") != 1 {
+		t.Fatalf("anulaciones=%d stock=%v, quería 1 y 50 con un solo ingreso de caja", succeeded, qty)
+	}
+}
