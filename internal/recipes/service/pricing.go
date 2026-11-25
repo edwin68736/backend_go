@@ -74,6 +74,7 @@ func (t priceTax) published(net float64) float64 {
 type Costing struct {
 	PortionCost         float64 `json:"portion_cost"`
 	NetPrice            float64 `json:"net_price"`
+	NetFactor           float64 `json:"net_factor"` // sol neto por cada sol publicado (para mostrar el food cost de otro precio)
 	FoodCostPct         float64 `json:"food_cost_pct"`
 	Margin              float64 `json:"margin"`
 	MarginPct           float64 `json:"margin_pct"`
@@ -87,7 +88,7 @@ type Costing struct {
 
 // cost calcula food cost, margen y precio sugerido. targetPct es el food cost objetivo (0-100).
 func costing(portionCost, price float64, tax priceTax, targetPct float64, s Settings) Costing {
-	c := Costing{PortionCost: round6(portionCost), TargetFoodCostPct: targetPct, NetPrice: round2(tax.net(price))}
+	c := Costing{PortionCost: round6(portionCost), TargetFoodCostPct: targetPct, NetPrice: round2(tax.net(price)), NetFactor: round6(tax.net(1))}
 	if net := tax.net(price); net > 0 {
 		c.FoodCostPct = round2(portionCost / net * 100)
 		c.Margin = round2(net - portionCost)

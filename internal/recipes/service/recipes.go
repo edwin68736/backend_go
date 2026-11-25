@@ -249,6 +249,8 @@ type Dish struct {
 	PresentationID   uint     `json:"presentation_id"`
 	Name             string   `json:"name"`
 	PresentationName string   `json:"presentation_name,omitempty"`
+	CategoryID       uint     `json:"category_id,omitempty"`
+	CategoryName     string   `json:"category_name,omitempty"`
 	Price            float64  `json:"price"`
 	BranchPrice      bool     `json:"branch_price"` // el precio es propio de la sucursal
 	IsCombo          bool     `json:"is_combo"`
@@ -519,23 +521,57 @@ func (s *Service) dishes(snap *snapshot, q Query) ([]Dish, error) {
 	if err := s.loadCombos(snap, comboIDs); err != nil {
 		return nil, err
 	}
+	categories, err := s.categoryNames(products)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Dish, 0, len(products))
 	for _, p := range products {
+		var categoryID uint
+		if p.CategoryID != nil {
+			categoryID = *p.CategoryID
+		}
 		variants := presentations[p.ID]
 		if p.HasVariants && len(variants) > 0 {
 			for _, pr := range variants {
-				d := Dish{ProductID: p.ID, PresentationID: pr.ID, Name: p.Name, PresentationName: pr.Name, Price: pr.SalePrice}
+				d := Dish{ProductID: p.ID, PresentationID: pr.ID, Name: p.Name, PresentationName: pr.Name, Price: pr.SalePrice,
+					CategoryID: categoryID, CategoryName: categories[categoryID]}
 				snap.fill(p, &d, q)
 				out = append(out, d)
 			}
 			continue
 		}
-		d := Dish{ProductID: p.ID, Name: p.Name, Price: p.SalePrice, IsCombo: p.HasCombo}
+		d := Dish{ProductID: p.ID, Name: p.Name, Price: p.SalePrice, IsCombo: p.HasCombo, CategoryID: categoryID, CategoryName: categories[categoryID]}
 		if bp, ok := branchPrices[p.ID]; ok {
 			d.Price, d.BranchPrice = bp, true
 		}
 		snap.fill(p, &d, q)
 		out = append(out, d)
+	}
+	return out, nil
+}
+
+// categoryNames: nombre de la categoría de cada plato, para filtrar la lista.
+func (s *Service) categoryNames(products []database.TenantProduct) (map[uint]string, error) {
+	var ids []uint
+	for _, p := range products {
+		if p.CategoryID != nil && *p.CategoryID > 0 {
+			ids = append(ids, *p.CategoryID)
+		}
+	}
+	out := map[uint]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		ID   uint
+		Name string
+	}
+	if err := s.db.Table("tenant_categories").Select("id, name").Where("id IN ?", ids).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.ID] = r.Name
 	}
 	return out, nil
 }

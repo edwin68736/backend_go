@@ -271,6 +271,14 @@ func TestRecipeApplyPrice(t *testing.T) {
 	f := setupRecipes(t)
 	f.burgerRecipe()
 	path := "/recipes/" + u(f.burger) + "/apply-price"
+	ok(t, f.db.Create(&database.TenantUser{ID: 2, Name: "Rosa", Email: "rosa@example.test", Password: "x", RoleID: 1, Active: true}).Error)
+	// La lista trae la categoría para poder filtrar.
+	cat := database.TenantCategory{Name: "Sanguches"}
+	ok(t, f.db.Create(&cat).Error)
+	ok(t, f.db.Model(&database.TenantProduct{}).Where("id = ?", f.burger).Update("category_id", cat.ID).Error)
+	if d := f.dish(f.burger); d.CategoryName != "Sanguches" || d.CategoryID != cat.ID {
+		t.Fatalf("categoría: %+v", d)
+	}
 
 	s, b := f.call("supervisor", "POST", path, map[string]any{"current_price": 14, "new_price": 16.40})
 	wantStatus(t, s, b, 409)
@@ -301,9 +309,14 @@ func TestRecipeApplyPrice(t *testing.T) {
 	}
 	s, b = f.call("supervisor", "GET", "/recipes/"+u(f.burger)+"/price-history", nil)
 	wantStatus(t, s, b, 200)
-	var hist struct{ Data []database.TenantPriceChange }
+	var hist struct {
+		Data []struct {
+			BranchID uint   `json:"branch_id"`
+			UserName string `json:"user_name"`
+		}
+	}
 	ok(t, json.Unmarshal([]byte(b), &hist))
-	if len(hist.Data) != 2 || hist.Data[0].BranchID != 1 {
+	if len(hist.Data) != 2 || hist.Data[0].BranchID != 1 || hist.Data[0].UserName != "Rosa" {
 		t.Fatalf("historial: %+v", hist.Data)
 	}
 

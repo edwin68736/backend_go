@@ -170,8 +170,14 @@ func (h *RestaurantHandler) RecipePriceHistory(c fiber.Ctx) error {
 	if !ok {
 		return dishNotFound(c)
 	}
-	var rows []database.TenantPriceChange
-	if err := db(c).Where("product_id = ? AND branch_id IN ?", productID, []uint{0, branchID}).Order("id DESC").Limit(50).Find(&rows).Error; err != nil {
+	var rows []struct {
+		database.TenantPriceChange
+		UserName string `json:"user_name"`
+	}
+	err := db(c).Table("tenant_price_changes AS pc").Select("pc.*, u.name AS user_name").
+		Joins("LEFT JOIN tenant_users u ON u.id = pc.user_id").
+		Where("pc.product_id = ? AND pc.branch_id IN ?", productID, []uint{0, branchID}).Order("pc.id DESC").Limit(50).Scan(&rows).Error
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"data": rows})
