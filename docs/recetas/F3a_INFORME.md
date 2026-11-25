@@ -39,7 +39,12 @@ simultáneas, 2 tuvieron éxito; el stock se revirtió dos veces y la caja recib
   caja o stock. Afecta a todos los tenants; sin migración.
 - Pruebas: `purchase_void_once_test.go` (SQLite, falla sin el arreglo) y 8 anulaciones simultáneas en MariaDB (`bf28be8`), tres corridas.
 - El commit se aplica limpio sobre `origin/main` (`7469cc5`) y ahí pasan compras, cuentas por pagar y órdenes de compra: **puede salir solo**.
-- **No revisado:** si ya ocurrió en producción, y el pago a proveedor simultáneo con la anulación.
+- **Producción (25-nov-2026, solo lectura): no se encontraron dobles anulaciones.** 853 empresas; 37 tienen compras anuladas (76).
+  Ningún pago de caja o banco devuelto dos veces, y ninguna compra con más salidas de anulación que entradas por doble registro.
+- **Observación aparte (`una empresa`):** la anulación de `TK0001-00002` sacó stock que esa compra no había metido (el
+  stock había entrado por documentos de ingreso). No es una doble anulación: `Void` revierte según si el producto controla stock **hoy**,
+  no según si la compra generó movimiento. El saldo final de ese caso quedó correcto porque volvieron a registrar la compra. Sin corregir.
+- **No revisado:** el pago a proveedor simultáneo con la anulación.
 
 ## 4. Límites
 - Solo soles. La carga inicial es insumo por insumo.
