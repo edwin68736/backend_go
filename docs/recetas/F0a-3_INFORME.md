@@ -43,12 +43,17 @@ Fecha: 25-nov-2026 · Alcance autorizado: **F0a-3, solo en local**. No se desple
 
 Las pruebas MySQL borran las tablas de su BD (exigen "test" en el nombre): correrlas **por paquete**, no con `go test ./...`.
 
+### Actualización (cobro de mesa)
+16 cobros de mesa simultáneos (`BillTable`, platos compartidos en orden opuesto): con bloqueo, 8 de 8 correctos; sin él, actualizaciones perdidas (saldo 92 en vez de 84).
+
+**Defecto anterior a F0a, confirmado (para F0b):** dos cobros de **la misma mesa** con claves de idempotencia distintas y `CloseSession=false` crean **dos ventas de las mismas comandas en 10 de 10 intentos**, con y sin el bloqueo de F0a. Con `CloseSession=true` el segundo debería ser rechazado (deducido del código, no probado).
+
 ## 4. Hallazgo fuera de alcance (anterior a F0a, importante)
 `SaleService.Create` y `BillTable` piden una **segunda conexión del pool** (`cashbanksvc.NewCashBankService(s.db)`) mientras tienen abierta la transacción de la venta. Con 24 ventas simultáneas y un pool de 8, la prueba terminó en `1205 Lock wait timeout` **con y sin** el bloqueo nuevo; con un pool holgado pasa. **Producción usa 6 conexiones por tenant**: un pico de ventas simultáneas de un mismo tenant puede agotarlo. Es consistente con el incidente de pool agotado ya documentado. Propongo tratarlo como tarea aparte; **no se tocó**.
 
 ## 5. No probado
 - MySQL 8.0.46 (producción).
-- Concurrencia de cobro de mesa, compras, anulaciones, notas de crédito y traslados (el cambio en ellos es solo el pre-bloqueo; pruebas funcionales en verde).
+- Concurrencia de compras, anulaciones, notas de crédito y traslados (el cambio en ellos es solo el pre-bloqueo; pruebas funcionales en verde).
 - Efecto en latencia con carga real: los bloqueos duran hasta el fin de la transacción, y en venta y cobro hay pagos y caja después del stock.
 - Carreras propias de traslados (fuera de F0a por decisión).
 
