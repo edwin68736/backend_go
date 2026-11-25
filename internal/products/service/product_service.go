@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tukifac/pkg/categorybranch"
+	recipesvc "tukifac/internal/recipes/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/modifierkind"
@@ -1415,6 +1416,9 @@ func (s *ProductService) ListProductPresentations(productID uint) ([]database.Te
 }
 
 func (s *ProductService) Delete(id uint) error {
+	if recipesvc.UsedAsIngredient(s.db, id) {
+		return errors.New("el insumo está en una receta: quítalo de la receta antes de eliminarlo")
+	}
 	s.db.Where("product_id = ?", id).Delete(&database.TenantProductPresentation{})
 	return s.db.Delete(&database.TenantProduct{}, id).Error
 }

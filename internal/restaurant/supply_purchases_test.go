@@ -110,7 +110,7 @@ func setupBuy(t *testing.T) *buyFixture {
 	ok(t, db.Where(database.TenantPaymentMethod{Code: "cash"}).Attrs(database.TenantPaymentMethod{Name: "Efectivo", IsSystem: true, Active: true, DestinationType: "cash"}).
 		FirstOrCreate(&database.TenantPaymentMethod{}).Error)
 	ok(t, db.Create(&database.TenantCashSession{BranchID: 1, UserID: 2, OpenedBy: 2, Status: "open", OpenedAt: time.Now()}).Error)
-	for id, kind := range map[uint]string{2: "supervisor", 3: "waiter", 4: "supervisor"} {
+	for id, kind := range map[uint]string{2: "supervisor", 3: "waiter", 4: "supervisor", 5: "cook"} {
 		ok(t, db.Create(&database.TenantRestaurantStaff{UserID: id, EmployeeType: kind, DisplayName: kind, IsActive: true}).Error)
 	}
 	ok(t, database.SetRecipesEnabled(db, true))
@@ -130,7 +130,7 @@ func setupBuy(t *testing.T) *buyFixture {
 	f.app = fiber.New()
 	slug := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())
 	f.app.Use(func(c fiber.Ctx) error {
-		uids := map[string]uint{"supervisor": 2, "mozo": 3, "sincaja": 4, "sinmodulo": 2}
+		uids := map[string]uint{"supervisor": 2, "mozo": 3, "sincaja": 4, "sinmodulo": 2, "cocinero": 5}
 		uid := uids[c.Get("X-U")]
 		modules := []string{"restaurant", "purchases", "cashbank"}
 		if c.Get("X-U") == "sinmodulo" {

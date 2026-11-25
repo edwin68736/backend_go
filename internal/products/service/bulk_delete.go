@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	recipesvc "tukifac/internal/recipes/service"
 	restaurantsvc "tukifac/internal/restaurant/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/supplies"
@@ -19,6 +20,7 @@ const (
 	blockReasonHasSales        = "Tiene ventas registradas"
 	blockReasonHasPurchases      = "Tiene compras registradas"
 	blockReasonSupplyMovements   = "Es un insumo con movimientos de inventario"
+	blockReasonInRecipe          = "Es ingrediente de una receta"
 )
 
 // PinVerificationError indica PIN inválido o no configurado (HTTP 403).
@@ -276,13 +278,24 @@ func (s *ProductService) scanBulkDeleteBlockers(ids []uint) map[uint][]string {
 		}
 	}
 
+	for _, id := range recipesvc.UsedIngredients(s.db, ids) {
+		add(id, blockReasonInRecipe)
+	}
+
 	return blockers
 }
 
 // purgeRestaurantProduct elimina físicamente un producto restaurante válido y relaciones directas permitidas.
 // Solo invocado desde BulkDeleteRestaurant (productos sin historial). No reutiliza Delete().
 func (s *ProductService) purgeRestaurantProduct(productID uint) error {
+	hasRecipes := recipesvc.Ready(s.db)
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Con el plato se va su receta.
+		if hasRecipes {
+			if err := recipesvc.PurgeProduct(tx, productID); err != nil {
+				return err
+			}
+		}
 		if err := tx.Unscoped().Where("product_id = ?", productID).Delete(&database.TenantProductPresentation{}).Error; err != nil {
 			return err
 		}

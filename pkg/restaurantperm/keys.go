@@ -19,6 +19,8 @@ const (
 	SuppliesManage  = "sp.m" // supplies.manage: crear y editar insumos y sus unidades de compra
 	SuppliesPurchase = "sp.p" // supplies.purchase: comprar insumos, proveedores, ingresos y mermas
 	RecipesViewCost = "rc.c" // recipes.view_cost: ver y fijar costos de insumos y recetas
+	RecipesView      = "rc.v" // recipes.view: ver recetas y para cuánto alcanza (sin costos)
+	RecipesManage    = "rc.m" // recipes.manage: crear, editar y borrar recetas
 )
 
 // AllKeys lista completa para invalidación / admin.
@@ -26,7 +28,8 @@ var AllKeys = []string{
 	TablesView, TablesOpen, OrdersCreate, OrdersCharge, OrdersCancel,
 	KitchenView, KitchenUpdate, POSUse, CashView,
 	ProductsManage, SettingsManage, DeliveryView, DeliveryUpdate,
-	SuppliesView, SuppliesManage, SuppliesPurchase, RecipesViewCost, // por defecto solo administrador y supervisor
+	SuppliesView, SuppliesManage, SuppliesPurchase, RecipesViewCost, RecipesManage, // por defecto solo administrador y supervisor
+	RecipesView, // además, cocina
 }
 
 // LegacyRoleToKeys mapeo retrocompatible restaurant_role → permisos.
@@ -39,7 +42,7 @@ func LegacyRoleToKeys(role string) []string {
 	case "mozo":
 		return []string{TablesView, TablesOpen, OrdersCreate}
 	case "cocinero":
-		return []string{KitchenView, KitchenUpdate}
+		return []string{KitchenView, KitchenUpdate, RecipesView}
 	default:
 		return nil
 	}
@@ -61,7 +64,7 @@ func EmployeeTypeToKeys(employeeType string, flags StaffFlags) []string {
 		keys := []string{TablesView, TablesOpen, OrdersCreate}
 		return keys
 	case "cook":
-		return []string{KitchenView, KitchenUpdate}
+		return []string{KitchenView, KitchenUpdate, RecipesView}
 	case "driver":
 		return []string{DeliveryView, DeliveryUpdate}
 	default:

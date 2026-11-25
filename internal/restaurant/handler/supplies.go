@@ -12,6 +12,7 @@ import (
 
 	invsvc "tukifac/internal/inventory/service"
 	productsvc "tukifac/internal/products/service"
+	recipesvc "tukifac/internal/recipes/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
@@ -296,6 +297,10 @@ func (h *RestaurantHandler) UpdateSupply(c fiber.Ctx) error {
 	unitChanges := (body.UnitID != nil && p.UnitID != nil && *body.UnitID != *p.UnitID) ||
 		(body.UnitID == nil && body.Unit != nil && !strings.EqualFold(strings.TrimSpace(*body.Unit), p.Unit))
 	if unitChanges {
+		// Las recetas guardan cantidades en la unidad base: cambiarla las falsearía.
+		if recipesvc.UsedAsIngredient(db(c), p.ID) {
+			return supplyBadRequest(c, "no se puede cambiar la unidad base: el insumo está en una receta")
+		}
 		var movements int64
 		if err := db(c).Model(&database.TenantStockMovement{}).Where("product_id = ?", p.ID).Count(&movements).Error; err != nil {
 			return supplyNotFound(c, err)

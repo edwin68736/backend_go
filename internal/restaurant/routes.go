@@ -128,4 +128,19 @@ func RegisterSupplyRoutes(r fiber.Router, h *handler.RestaurantHandler) {
 	r.Post("/supply-entries", h.RequireRecipesEnabled, buy, h.CreateSupplyEntry)
 	r.Post("/supplies/:id/initial-stock", h.RequireRecipesEnabled, manageSupplies, h.SupplyInitialStock)
 	r.Get("/supplies/:id/purchases", h.RequireRecipesEnabled, viewSupplies, h.SupplyPurchaseHistory)
+
+	// Recetas (F4a). Los costos y el precio sugerido exigen además recipes.view_cost.
+	viewRecipes := middleware.RequireAnyRestaurantPerm(restaurantperm.RecipesView, restaurantperm.RecipesManage)
+	manageRecipes := middleware.RequireRestaurantPerm(restaurantperm.RecipesManage)
+	viewCost := middleware.RequireRestaurantPerm(restaurantperm.RecipesViewCost)
+	manageDishes := middleware.RequireRestaurantPerm(restaurantperm.ProductsManage)
+	r.Get("/recipe-settings", h.RequireRecipesEnabled, h.RequireRecipeTables, viewCost, h.GetRecipeSettings)
+	r.Put("/recipe-settings", h.RequireRecipesEnabled, h.RequireRecipeTables, manageRecipes, viewCost, h.UpdateRecipeSettings)
+	r.Get("/recipes", h.RequireRecipesEnabled, h.RequireRecipeTables, viewRecipes, h.ListRecipes)
+	r.Get("/recipes/:productId", h.RequireRecipesEnabled, h.RequireRecipeTables, viewRecipes, h.GetRecipe)
+	r.Put("/recipes/:productId", h.RequireRecipesEnabled, h.RequireRecipeTables, manageRecipes, h.SaveRecipe)
+	r.Delete("/recipes/:productId", h.RequireRecipesEnabled, h.RequireRecipeTables, manageRecipes, h.DeleteRecipe)
+	r.Get("/recipes/:productId/price-history", h.RequireRecipesEnabled, h.RequireRecipeTables, viewCost, h.RecipePriceHistory)
+	r.Post("/recipes/:productId/apply-price", h.RequireRecipesEnabled, h.RequireRecipeTables, manageRecipes, viewCost, manageDishes,
+		h.ApplyRecipePrice)
 }
