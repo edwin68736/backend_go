@@ -183,11 +183,17 @@ func (s *CashBankService) cashOnlyMovementTotals(sessionID uint) (income, expens
 	// Los movimientos de un documento en USD se llevan a SOLES con el TC del documento: el esperado del arqueo se compara contra
 	// lo contado en soles. En una sesión solo en soles es exactamente la suma de siempre.
 	pen := s.penAmounts(movements, nil)
+	return cashTotals(movements, pen.cash)
+}
+
+// cashTotals suma ingresos/egresos EN EFECTIVO de movimientos ya filtrados a income/expense; amountPEN son sus equivalentes en
+// soles por id (penAmounts). La comparten el cálculo de una sesión y el del historial por lotes.
+func cashTotals(movements []database.TenantCashMovement, amountPEN map[uint]float64) (income, expense float64) {
 	for _, m := range movements {
 		if !IsCashPaymentMethod(m.PaymentMethod) {
 			continue
 		}
-		v := pen.cash[m.ID]
+		v := amountPEN[m.ID]
 		if m.Type == "income" {
 			income += v
 		} else {
@@ -586,30 +592,101 @@ func (s *CashBankService) ListSessionsEnriched(params SessionListParams) ([]Cash
 		return nil, 0, err
 	}
 	out := make([]CashSessionListItem, 0, len(sessions))
+	for start := 0; start < len(sessions); start += sessionListBatchSize {
+		items, err := s.enrichSessions(sessions[start:min(start+sessionListBatchSize, len(sessions))])
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, items...)
+	}
+	return out, total, nil
+}
+
+// sessionListBatchSize sesiones que se enriquecen con un mismo juego de consultas (acota el tamaño de los IN).
+const sessionListBatchSize = 50
+
+// enrichSessions completa un lote de sesiones con un número FIJO de consultas. Cada consulta es un viaje a la BD: hacerlas por
+// sesión (unas 12) volvía el historial muy lento en cuanto subía la latencia. Los importes salen de las mismas funciones que
+// usan el detalle y el arqueo (cashTotals, buildSessionBalanceSummary).
+func (s *CashBankService) enrichSessions(sessions []database.TenantCashSession) ([]CashSessionListItem, error) {
+	ids := make([]uint, 0, len(sessions))
+	userIDs := make([]uint, 0, len(sessions)*2)
+	for _, st := range sessions {
+		ids = append(ids, st.ID)
+		userIDs = append(userIDs, st.OpenedBy)
+		if st.ClosedBy != nil && *st.ClosedBy > 0 {
+			userIDs = append(userIDs, *st.ClosedBy)
+		}
+	}
+
+	var cashMovs []database.TenantCashMovement
+	if err := s.db.Where("cash_session_id IN ?", ids).Find(&cashMovs).Error; err != nil {
+		return nil, err
+	}
+	var bankMovs []database.TenantBankMovement
+	if err := s.db.Where("cash_session_id IN ?", ids).Find(&bankMovs).Error; err != nil {
+		return nil, err
+	}
+	var saleCounts []struct {
+		CashSessionID uint
+		N             int64
+	}
+	if err := s.db.Model(&database.TenantSale{}).
+		Select("cash_session_id, COUNT(*) AS n").
+		Where("cash_session_id IN ?", ids).
+		Group("cash_session_id").
+		Scan(&saleCounts).Error; err != nil {
+		return nil, err
+	}
+	var users []database.TenantUser
+	s.db.Select("id", "name").Where("id IN ?", userIDs).Find(&users)
+
+	// Una caja está vacía si no tiene NINGÚN movimiento (de cualquier tipo) ni ventas, igual que SessionUsageOf.
+	usage := make(map[uint]SessionUsage, len(sessions))
+	flows := make([]database.TenantCashMovement, 0, len(cashMovs))
+	for _, m := range cashMovs {
+		u := usage[m.CashSessionID]
+		u.Movements++
+		usage[m.CashSessionID] = u
+		if m.Type == "income" || m.Type == "expense" {
+			flows = append(flows, m)
+		}
+	}
+	for _, c := range saleCounts {
+		u := usage[c.CashSessionID]
+		u.Sales = c.N
+		usage[c.CashSessionID] = u
+	}
+	cashBySession := make(map[uint][]database.TenantCashMovement, len(sessions))
+	for _, m := range flows {
+		cashBySession[m.CashSessionID] = append(cashBySession[m.CashSessionID], m)
+	}
+	bankBySession := make(map[uint][]database.TenantBankMovement, len(sessions))
+	for _, m := range bankMovs {
+		if m.CashSessionID != nil {
+			bankBySession[*m.CashSessionID] = append(bankBySession[*m.CashSessionID], m)
+		}
+	}
+	names := make(map[uint]string, len(users))
+	for _, u := range users {
+		names[u.ID] = u.Name
+	}
+	pen := s.penAmounts(flows, bankMovs)
+	methodByAccount := s.paymentMethodCodesByBankAccount(bankMovs)
+
+	out := make([]CashSessionListItem, 0, len(sessions))
 	for _, st := range sessions {
 		item := CashSessionListItem{TenantCashSession: st}
-		income, expense := s.sessionMovementTotals(st.ID)
-		item.TotalIncome = income
-		item.TotalExpense = expense
-		if summary, err := s.GetSessionBalanceSummary(st.ID); err == nil {
-			item.Total = summary.Total
-		}
-		if usage, err := s.SessionUsageOf(st.ID); err == nil {
-			item.Empty = usage.Empty()
-		}
-		var opener database.TenantUser
-		if s.db.Select("name").First(&opener, st.OpenedBy).Error == nil {
-			item.OpenedByName = opener.Name
-		}
+		item.TotalIncome, item.TotalExpense = cashTotals(cashBySession[st.ID], pen.cash)
+		item.Total = buildSessionBalanceSummary(st.OpeningBalance, cashBySession[st.ID], bankBySession[st.ID], pen, methodByAccount, nil).Total
+		item.Empty = usage[st.ID].Empty()
+		item.OpenedByName = names[st.OpenedBy]
 		if st.ClosedBy != nil && *st.ClosedBy > 0 {
-			var closer database.TenantUser
-			if s.db.Select("name").First(&closer, *st.ClosedBy).Error == nil {
-				item.ClosedByName = closer.Name
-			}
+			item.ClosedByName = names[*st.ClosedBy]
 		}
 		out = append(out, item)
 	}
-	return out, total, nil
+	return out, nil
 }
 
 // =================== BANCOS ===================
