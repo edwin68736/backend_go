@@ -50,9 +50,30 @@ func (s *CashBankService) GetSessionBalanceSummary(sessionID uint) (*SessionBala
 		return nil, err
 	}
 
+	methodNames := s.paymentMethodDisplayNames()
+
+	var cashMovs []database.TenantCashMovement
+	s.db.Where("cash_session_id = ? AND type IN ?", sessionID, []string{"income", "expense"}).Find(&cashMovs)
+	var bankMovs []database.TenantBankMovement
+	s.db.Where("cash_session_id = ?", sessionID).Find(&bankMovs)
+	pen := s.penAmounts(cashMovs, bankMovs) // equivalentes en soles (documentos en USD al TC de su documento)
+	var methodByAccount map[uint]string
+	if len(bankMovs) > 0 {
+		methodByAccount = s.paymentMethodCodesByBankAccount(bankMovs)
+	}
+
+	out := buildSessionBalanceSummary(session.OpeningBalance, cashMovs, bankMovs, pen, methodByAccount, methodNames)
+	out.CashExpected = s.getExpectedBalance(sessionID)
+	out.HasForeign, out.RateEstimatedCount, out.RateMissingCount = pen.foreign, pen.estimated, pen.missing
+	return out, nil
+}
+
+// buildSessionBalanceSummary arma el desglose por método y el total a partir de los movimientos ya cargados de UNA sesión (sin
+// consultar la BD). No llena CashExpected ni los avisos de moneda extranjera.
+func buildSessionBalanceSummary(openingBalance float64, cashMovs []database.TenantCashMovement, bankMovs []database.TenantBankMovement,
+	pen sessionPEN, methodByAccount map[uint]string, methodNames map[string]string) *SessionBalanceSummary {
 	totals := map[string]*MethodBalance{}
 	order := make([]string, 0, 6)
-	methodNames := s.paymentMethodDisplayNames()
 
 	ensure := func(rawMethod string) *MethodBalance {
 		method := normalizeReportMethod(rawMethod)
@@ -67,11 +88,6 @@ func (s *CashBankService) GetSessionBalanceSummary(sessionID uint) (*SessionBala
 	// El efectivo siempre aparece, aunque no haya habido ni un movimiento — es la apertura.
 	ensure("efectivo")
 
-	var cashMovs []database.TenantCashMovement
-	s.db.Where("cash_session_id = ? AND type IN ?", sessionID, []string{"income", "expense"}).Find(&cashMovs)
-	var bankMovs []database.TenantBankMovement
-	s.db.Where("cash_session_id = ?", sessionID).Find(&bankMovs)
-	pen := s.penAmounts(cashMovs, bankMovs) // equivalentes en soles (documentos en USD al TC de su documento)
 	for _, m := range cashMovs {
 		mb := ensure(m.PaymentMethod)
 		if m.Type == "income" {
@@ -88,24 +104,21 @@ func (s *CashBankService) GetSessionBalanceSummary(sessionID uint) (*SessionBala
 	// AddMovement ya no duplica: un manual vive en EXACTAMENTE una de las dos tablas según su
 	// método, así que ambas consultas (cashMovs arriba, bankMovs aquí) son necesariamente
 	// disjuntas por construcción y no hay riesgo de doble conteo.
-	if len(bankMovs) > 0 {
-		methodByAccount := s.paymentMethodCodesByBankAccount(bankMovs)
-		for _, m := range bankMovs {
-			code := methodByAccount[m.BankAccountID]
-			if code == "" {
-				// Cuenta sin método de pago vinculado (ni por FK ni por el texto legado): no
-				// hay forma de saber cuál es, pero el movimiento sigue perteneciendo a la
-				// sesión — se agrupa aparte en vez de colar como "efectivo" (normalizeReportMethod
-				// trata "" como efectivo, criterio pensado para cash_movements sin dato, no para
-				// este caso).
-				code = "otros"
-			}
-			mb := ensure(code)
-			if m.Type == "credit" {
-				mb.Income += pen.bank[m.ID]
-			} else {
-				mb.Expense += pen.bank[m.ID]
-			}
+	for _, m := range bankMovs {
+		code := methodByAccount[m.BankAccountID]
+		if code == "" {
+			// Cuenta sin método de pago vinculado (ni por FK ni por el texto legado): no
+			// hay forma de saber cuál es, pero el movimiento sigue perteneciendo a la
+			// sesión — se agrupa aparte en vez de colar como "efectivo" (normalizeReportMethod
+			// trata "" como efectivo, criterio pensado para cash_movements sin dato, no para
+			// este caso).
+			code = "otros"
+		}
+		mb := ensure(code)
+		if m.Type == "credit" {
+			mb.Income += pen.bank[m.ID]
+		} else {
+			mb.Expense += pen.bank[m.ID]
 		}
 	}
 
@@ -120,8 +133,7 @@ func (s *CashBankService) GetSessionBalanceSummary(sessionID uint) (*SessionBala
 		return order[i] < order[j]
 	})
 
-	out := &SessionBalanceSummary{CashExpected: s.getExpectedBalance(sessionID), HasForeign: pen.foreign,
-		RateEstimatedCount: pen.estimated, RateMissingCount: pen.missing}
+	out := &SessionBalanceSummary{}
 	for _, method := range order {
 		mb := totals[method]
 		// Income/Expense quedan como la suma pura de movimientos (útil para mostrar "Ingresos"/
@@ -129,12 +141,12 @@ func (s *CashBankService) GetSessionBalanceSummary(sessionID uint) (*SessionBala
 		// existe para efectivo y solo afecta el Net — igual que getExpectedBalance.
 		mb.Net = mb.Income - mb.Expense
 		if method == "efectivo" {
-			mb.Net += session.OpeningBalance
+			mb.Net += openingBalance
 		}
 		out.ByMethod = append(out.ByMethod, *mb)
 		out.Total += mb.Net
 	}
-	return out, nil
+	return out
 }
 
 // paymentMethodDisplayNames mapa método normalizado → nombre configurado (tenant_payment_methods.Name).

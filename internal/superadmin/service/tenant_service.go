@@ -764,16 +764,27 @@ func (s *TenantService) Stats() (map[string]int64, error) {
 	}
 	var tenants []database.Tenant
 	s.db.Select("id").Find(&tenants)
+	// Suscripciones vigentes de todos los tenants en UNA consulta (antes una por tenant: cientos de viajes a la BD por carga).
+	var subs []database.SaasSubscription
+	if err := s.db.Select("tenant_id", "plan_id").
+		Where("status NOT IN ?", []string{database.SaasSubCancelled}).
+		Order("created_at desc, id asc").Find(&subs).Error; err != nil {
+		return nil, err
+	}
+	currentPlan := make(map[uint]uint, len(tenants))
+	for _, sub := range subs {
+		if _, seen := currentPlan[sub.TenantID]; !seen {
+			currentPlan[sub.TenantID] = sub.PlanID // orden descendente: la primera es la vigente
+		}
+	}
 	byPlan := map[string]int64{}
 	for _, t := range tenants {
-		var sub database.SaasSubscription
-		if err := s.db.Where("tenant_id = ?", t.ID).
-			Where("status NOT IN ?", []string{database.SaasSubCancelled}).
-			Order("created_at desc").First(&sub).Error; err != nil {
+		planID, ok := currentPlan[t.ID]
+		if !ok {
 			byPlan["sin_plan"]++
 			continue
 		}
-		name := strings.ToLower(strings.TrimSpace(planName[sub.PlanID]))
+		name := strings.ToLower(strings.TrimSpace(planName[planID]))
 		if name == "" {
 			name = "desconocido"
 		}
