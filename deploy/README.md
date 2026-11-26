@@ -20,7 +20,7 @@ bash deploy/scripts/deploy.sh
 # Primera vez con Migration v2 (baseline V30 + target V31)
 bash deploy/scripts/migrate-init.sh
 
-# Fleet de tenants (manual o cron cada 5 min)
+# Fleet de tenants (manual o cron nocturno)
 bash deploy/scripts/migrate-fleet.sh   # flock + migrate-fleet-cron (lock Redis/DB)
 
 # Solo BD central
@@ -43,13 +43,23 @@ Documentación completa: **[docs/MIGRATIONS-SaaS.md](../docs/MIGRATIONS-SaaS.md)
 
 ### Cron recomendado
 
+Una vez cada noche (08:00 UTC = 3:00 a. m. de Perú). Cada corrida revisa a fondo el esquema de 100 tenants y ejecuta hasta 100
+ejecuciones por backfill pendiente. El deploy **no** corre backfills: si una versión trae uno nuevo, lanzarlo a mano tras el
+deploy (cambiando `31` por la versión del backfill) o tardará varias noches en llegar a todos:
+
+```bash
+docker exec tukifac-backend-go ./tukifac-api migrate-backfill-fleet --version=31 --limit=100000 --active-only=false
+```
+
+No subir `MIGRATE_LIMIT` para esto: también amplía la revisión de esquema, que es secuencial y no entra en el tiempo máximo.
+
 ```bash
 chmod +x /opt/tukifac/deploy/scripts/migrate-fleet.sh
 mkdir -p /var/log/tukifac
 ```
 
 ```cron
-*/5 * * * * /opt/tukifac/deploy/scripts/migrate-fleet.sh >> /var/log/tukifac/cron-migrate.log 2>&1
+0 8 * * * /opt/tukifac/deploy/scripts/migrate-fleet.sh >> /var/log/tukifac/cron-migrate.log 2>&1
 ```
 
 ### Panel operativo

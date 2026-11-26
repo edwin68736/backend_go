@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cron: migrate-fleet-cron con lock (flock en host + Redis/DB en API).
-# Uso: */5 * * * * /opt/tukifac/deploy/scripts/migrate-fleet.sh
+# Uso: 0 8 * * * /opt/tukifac/deploy/scripts/migrate-fleet.sh   (3:00 a. m. de Perú; el servidor usa UTC)
 set -euo pipefail
 
 BASE_DIR="${TUKIFAC_BASE:-/opt/tukifac}"
