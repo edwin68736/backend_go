@@ -64,7 +64,7 @@ func NewScanner() *Scanner {
 	return &Scanner{
 		Central: database.CentralDB,
 		Open: func(t database.Tenant) (*gorm.DB, func(), error) {
-			// Barrido de todos los tenants cada 15 min: no debe pasar por el pool LRU compartido
+			// Barrido periódico de todos los tenants: no debe pasar por el pool LRU compartido
 			// (max 200 vs ~620 tenants), que expulsaba los pools de los tenants en operación.
 			db, release, err := database.GetTenantDBBackground(t.DBName)
 			if err != nil {

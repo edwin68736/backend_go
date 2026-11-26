@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	fiscalSnapshotInterval = 15 * time.Minute
-	fiscalSnapshotWorkers  = 4
+	// Cada 6 horas y a horas fijas de Lima (00:35, 06:35, 12:35 y 18:35): el barrido abre las bases de todos los tenants.
+	// Para un tenant puntual está la actualización manual desde el panel.
+	fiscalSnapshotInterval  = 6 * time.Hour
+	fiscalSnapshotRunMinute = 35
+	fiscalSnapshotWorkers   = 4
 	// Pasada profunda (historial completo + abiertos antiguos): una vez al día a partir de las 00:30 Lima.
 	fiscalSnapshotDeepHour   = 0
 	fiscalSnapshotDeepMinute = 30
@@ -36,21 +39,37 @@ func runFiscalSnapshotLoop() {
 		slog.Int("workers", fiscalSnapshotWorkers),
 	)
 
+	// Al arrancar (despliegue o reinicio) se hace una pasada y luego se siguen las horas fijas.
 	runFiscalSnapshotOnce()
 
-	ticker := time.NewTicker(fiscalSnapshotInterval)
-	defer ticker.Stop()
-	for range ticker.C {
+	next := nextFiscalSnapshotRun(time.Now())
+	for {
+		time.Sleep(time.Until(next))
 		runFiscalSnapshotOnce()
+		// Desde la hora programada o desde ahora, lo que sea posterior: nunca repite el mismo horario ni acumula atrasos.
+		if now := time.Now(); now.After(next) {
+			next = nextFiscalSnapshotRun(now)
+		} else {
+			next = nextFiscalSnapshotRun(next)
+		}
 	}
+}
+
+// nextFiscalSnapshotRun primer horario fijo estrictamente posterior a from.
+func nextFiscalSnapshotRun(from time.Time) time.Time {
+	lt := from.In(saas.LimaLocation())
+	run := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, fiscalSnapshotRunMinute, 0, 0, lt.Location())
+	for !run.After(lt) {
+		run = run.Add(fiscalSnapshotInterval)
+	}
+	return run
 }
 
 func runFiscalSnapshotOnce() {
 	if !database.IsCentralSchemaReady() || !fiscalSnapshotTablesReady() {
 		return
 	}
-	// TTL algo menor que el intervalo: si una instancia muere con el candado tomado, el siguiente
-	// ciclo puede continuar.
+	// TTL corto: si una instancia muere con el candado tomado, caduca pronto y otra puede continuar.
 	release, acquired := cronlock.TryAcquire("fiscal:tenant_snapshot", 14*time.Minute)
 	if !acquired {
 		logger.L.Debug("fiscal_snapshot_skipped_lock")

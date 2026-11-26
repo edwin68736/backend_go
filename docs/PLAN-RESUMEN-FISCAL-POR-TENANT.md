@@ -225,7 +225,7 @@ Implementadas las fases 1–3 del plan.
 
 - **Modelos:** `pkg/database/tenant_fiscal_summary.go` (`TenantFiscalDaily`, `TenantFiscalHealth`), registrados en `MigrateCentral()`.
 - **Escáner:** `internal/fiscal/summary/scanner.go` (consulta agregada por tenant, escritura solo de diferencias, errores por tenant en `scan_error`) y `query.go` (`Summarize`, solo BD central).
-- **Job:** `pkg/cron/fiscal_tenant_snapshot.go` (cada 15 min, 4 workers, candado `fiscal:tenant_snapshot`; pasada profunda la primera vez y cada noche desde las 00:30 Lima). Registra siempre `fiscal_snapshot_done` con tenants, fallidos, si fue profunda y milisegundos.
+- **Job:** `pkg/cron/fiscal_tenant_snapshot.go` (al arrancar y cada 6 h a las 00:35, 06:35, 12:35 y 18:35 Lima —desde el 2026-11-26; antes cada 15 min—, 4 workers, candado `fiscal:tenant_snapshot`; pasada profunda la primera vez y cada noche desde las 00:30 Lima). Registra siempre `fiscal_snapshot_done` con tenants, fallidos, si fue profunda y milisegundos.
 - **API:** `GET /superadmin/fiscal/tenant-summary` y `POST /superadmin/fiscal/tenant-summary/:id/refresh` (permiso `fiscal.view`; "Verificar" tiene enfriamiento de 20 s por tenant). Si faltan las tablas responde 503 con mensaje claro.
 - **Panel central:** `TenantFiscalSummary.tsx` reemplaza la tabla "Tenants fiscales" de Operaciones; filtros de fecha (atajos + rango), tipo, RUC, nombre, "solo con pendientes", orden, paginación, desglose por tipo, CSV. El enlace "Documentos" abre `/fiscal?tenant=<slug>`.
 
