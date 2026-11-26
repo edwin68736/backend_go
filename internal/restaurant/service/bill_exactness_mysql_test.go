@@ -71,7 +71,7 @@ func exactnessMySQL(t *testing.T) *gorm.DB {
 		}
 	}
 	sqlDB, _ := db.DB()
-	sqlDB.SetMaxOpenConns(30) // el cobro pide una segunda conexión dentro de su transacción (hallazgo aparte)
+	sqlDB.SetMaxOpenConns(30) // holgado: aquí se prueba la exactitud; el límite de conexiones tiene su propia prueba
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	for _, err := range []error{
 		db.Create(&database.TenantCompanyConfig{ID: 1, SunatEnabled: true, TaxRate: 18}).Error,

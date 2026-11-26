@@ -39,13 +39,13 @@ El módulo nace apagado (`recipes_enabled`, lo enciende el superadmin). **Hoy na
 ## 3. Lo que falta, en orden
 
 ### 3.1 F5a — descuento de insumos al cobrar (backend)
-Propuesta completa en `F5_PROPUESTA.md`. **Falta autorizarla**, con sus 6 decisiones:
-- [ ] F5a (backend) y F5b (pantallas) por separado
-- [ ] El descuento lo enciende el administrador del restaurante, con lista de verificación
-- [ ] Insumo insuficiente: por defecto vender y quedar en negativo; «bloquear» como opción
-- [ ] Combo con algún componente sin receta: costo de la línea vacío
-- [ ] NC parcial sobre comprobante nacido de una NV: no repone (igual que hoy)
-- [ ] Costo de receta en el reporte de utilidad: en F6
+Propuesta completa en `F5_PROPUESTA.md`. Las 6 decisiones quedaron **aceptadas como se recomiendan** (26-nov-2026); falta implementarla:
+- [x] F5a (backend) y F5b (pantallas) por separado
+- [x] El descuento lo enciende el administrador del restaurante, con lista de verificación
+- [x] Insumo insuficiente: por defecto vender y quedar en negativo; «bloquear» como opción
+- [x] Combo con algún componente sin receta: costo de la línea vacío
+- [x] NC parcial sobre comprobante nacido de una NV: no repone (igual que hoy)
+- [x] Costo de receta en el reporte de utilidad: en F6
 
 Trabajo:
 - [ ] V199: registro de consumos y de reversas (únicos), `recipe_cost` en la línea de venta, `recipes_consume` (apagado), política, tipos de movimiento
@@ -69,7 +69,8 @@ Trabajo:
 ### 3.4 Antes de dar el módulo por terminado
 - [ ] Decidir la **carga inicial masiva (Excel)**: la propuesta la mencionaba (§13); hoy se carga insumo por insumo
 - [ ] Subir la versión de Tukichef y compilar las apps (Android y escritorio)
-- [ ] Probar todo en **MySQL 8** (producción); hasta ahora solo MariaDB 10.4 y SQLite
+- [ ] Probar todo en **MySQL 8** (producción). El 26-nov-2026 pasaron en MySQL 8.0.30 local las pruebas de inventario, restaurante e
+  insumos; en ventas, dos de anulación solo fallan si comparten la base con otras (pasan en una base nueva). Falta probar en 8.0.46 y las pantallas.
 - [ ] Probar el interruptor del panel central en pantalla
 - [ ] Gaveta 58 mm: probar con impresora real
 
@@ -87,7 +88,11 @@ rendimiento de compra, importación por Excel, vista previa del costo antes de g
 - Anular una compra revierte stock según el control de stock **actual** del producto, no el de cuando se compró.
 - Tras anular una compra, «último costo» conserva el de la compra anulada.
 - La reposición de una NC parcial no es idempotente para productos normales, y no repone si el comprobante nació de una NV.
-- El cobro pide una segunda conexión a la base dentro de la transacción (caja/bancos): con muchos cobros simultáneos puede agotar el límite.
+- **Corregido el 26-nov-2026:** venta, anulación, cobro de mesa, registro de pagos, cobro de cuentas y pago a proveedores ya no piden una
+  segunda conexión con la transacción abierta (pruebas `TestUnaConexion_*` y `TestMySQL_cobrosSimultaneosConTresConexiones`). Pasa a `main`
+  junto con el módulo, así que **producción sigue con el defecto** hasta entonces.
+- La **emisión de nota de crédito** todavía pide una segunda conexión (serie y correlativo dentro de la transacción): pendiente, con
+  propuesta aparte porque toca la numeración.
 - El pago a proveedor simultáneo con la anulación de la compra no está protegido.
 - El retorno a la versión anterior del despliegue no funciona como está descrito: revisarlo antes de desplegar el módulo.
 - `pkg/saas` tiene 13 pruebas que fallan desde antes; en MariaDB fallan dos de anulación en `sales/service`.

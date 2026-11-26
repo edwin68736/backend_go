@@ -1606,7 +1606,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		}
 
 		// Registrar pagos múltiples: distribuir a caja o cuenta bancaria según método
-		cbSvc := cashbanksvc.NewCashBankService(s.db)
+		cbSvc := cashbanksvc.NewCashBankService(tx) // con tx: no pedir una segunda conexión
 		var recordLines []money.SalePaymentLine
 		for _, p := range input.Payments {
 			if p.Amount <= 0 || p.Method == "" {
@@ -1844,8 +1844,8 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 		)
 	}
 
-	cbSvc := cashbanksvc.NewCashBankService(s.db)
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		cbSvc := cashbanksvc.NewCashBankService(tx) // con tx: no pedir una segunda conexión
 		var recordLines []money.SalePaymentLine
 		for _, p := range payments {
 			if p.Amount <= 0 || p.Method == "" {

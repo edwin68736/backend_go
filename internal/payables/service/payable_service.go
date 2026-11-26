@@ -276,7 +276,7 @@ func (s *PayableService) Pay(purchaseID uint, in PayInput) error {
 		}
 
 		desc := "Pago proveedor " + docNumber
-		if err := cbSvc.RecordExpensePayment(tx, method, in.Amount, cashSessionID, docNumber, desc, &purchaseID, in.UserID); err != nil {
+		if err := cashbanksvc.NewCashBankService(tx).RecordExpensePayment(tx, method, in.Amount, cashSessionID, docNumber, desc, &purchaseID, in.UserID); err != nil {
 			return err
 		}
 

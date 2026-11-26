@@ -839,7 +839,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 
 		// Crear TenantSalePayment y distribuir cada pago a caja o cuenta bancaria
-		cbSvc := cashbanksvc.NewCashBankService(s.db)
+		cbSvc := cashbanksvc.NewCashBankService(tx) // con tx: no pedir una segunda conexión
 		if !skipPay {
 			payLines := make([]cashbanksvc.PaymentLineInput, 0, len(payments))
 			for _, p := range payments {
@@ -2496,7 +2496,6 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 	}
 
 	ref := "ANULACION VENTA/" + sale.Number
-	cashSvc := cashbanksvc.NewCashBankService(s.db)
 	if cancelBeforeTxHook != nil {
 		cancelBeforeTxHook()
 	}
@@ -2505,7 +2504,7 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 		if err := claimCancellationTx(tx, sale.ID); err != nil {
 			return err
 		}
-		if err := reverseSaleCashTx(tx, cashSvc, &sale, ref, reason, userID); err != nil {
+		if err := reverseSaleCashTx(tx, cashbanksvc.NewCashBankService(tx), &sale, ref, reason, userID); err != nil {
 			return err
 		}
 		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
@@ -2547,7 +2546,6 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		return err
 	}
 	ref := "ANULACION VENTA/" + sale.Number
-	cashSvc := cashbanksvc.NewCashBankService(s.db)
 	if cancelBeforeTxHook != nil {
 		cancelBeforeTxHook()
 	}
@@ -2563,7 +2561,7 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		}
 		// La anulación por nota de crédito también devuelve el dinero: antes solo revertía
 		// stock y el cobro quedaba vivo en caja, así que el arqueo cuadraba de más.
-		if err := reverseSaleCashTx(tx, cashSvc, &sale, ref, reason, userID); err != nil {
+		if err := reverseSaleCashTx(tx, cashbanksvc.NewCashBankService(tx), &sale, ref, reason, userID); err != nil {
 			return err
 		}
 		cancelNotes := strings.TrimSpace(sale.Notes)
