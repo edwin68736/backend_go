@@ -7,7 +7,7 @@ En los cuatro repositorios, **rama `insumos-recetas`** (no `main`):
 
 | Repositorio | Contiene |
 |---|---|
-| backend (`backend_go`) | F0a a F4b, migraciones V193–V198, todos los informes |
+| backend (`backend_go`) | F0a a F5a, migraciones V193–V199, todos los informes |
 | `frontend_restaurant_tenant` (Tukichef) | Insumos, Compras de insumos, Recetas (versión 1.6.0); arreglo de gaveta 58 mm |
 | `frontend_tenant` (Tukifac) | insumos rotulados en compras, traslados e inventario; arreglo de gaveta |
 | `frontend_central` | interruptor «Insumos y recetas» por empresa |
@@ -34,11 +34,14 @@ git checkout insumos-recetas
 | F3a, F3b | compras, ingresos, mermas y carga inicial (V197) | `F3a_INFORME.md`, `F3b_INFORME.md` |
 | F4a, F4b | recetas, costo, precio sugerido, disponibilidad, aplicar precio (V198) | `F4a_INFORME.md`, `F4b_INFORME.md` |
 
-El módulo nace apagado (`recipes_enabled`, lo enciende el superadmin). **Hoy nada se descuenta al vender.**
+| F5a | descuento y reversa de insumos al vender, en el backend (V199) | `F5a_INFORME.md` |
+
+El módulo nace apagado (`recipes_enabled`, lo enciende el superadmin) y **el descuento al vender también** (`recipes_consume`, lo
+enciende el restaurante; todavía sin pantalla).
 
 ## 3. Lo que falta, en orden
 
-### 3.1 F5a — descuento de insumos al cobrar (backend)
+### 3.1 F5a — descuento de insumos al cobrar (backend): HECHA el 26-nov-2026, ver `F5a_INFORME.md`
 Propuesta completa en `F5_PROPUESTA.md`. Las 6 decisiones quedaron **aceptadas como se recomiendan** (26-nov-2026); falta implementarla:
 - [x] F5a (backend) y F5b (pantallas) por separado
 - [x] El descuento lo enciende el administrador del restaurante, con lista de verificación
@@ -48,13 +51,13 @@ Propuesta completa en `F5_PROPUESTA.md`. Las 6 decisiones quedaron **aceptadas c
 - [x] Costo de receta en el reporte de utilidad: en F6
 
 Trabajo:
-- [ ] V199: registro de consumos y de reversas (únicos), `recipe_cost` en la línea de venta, `recipes_consume` (apagado), política, tipos de movimiento
-- [ ] `ConsumeForSaleTx` en `SaleService.Create` y en `BillTable` (usando solo la transacción recibida)
-- [ ] Plato con receta deja de descontar su stock directo (venta, validación previa y agregar pedido)
-- [ ] Combos: los componentes deben saber de qué línea salieron
-- [ ] Reversa en `Cancel`, `CancelNotaVenta` y NC parcial
-- [ ] Interruptor de emergencia por variable de entorno
-- [ ] Prueba dorada (apagado = igual que hoy), flujos reales, `payload_json` idéntico, simultaneidad en MariaDB estricto, suite completa
+- [x] V199: registro de consumos y de reversas (únicos), `recipe_cost` en la línea de venta, `recipes_consume` (apagado), política, tipos de movimiento
+- [x] `ConsumeForSaleTx` en `SaleService.Create` y en `BillTable` (usando solo la transacción recibida)
+- [x] Plato con receta deja de descontar su stock directo (venta, validación previa y agregar pedido)
+- [x] Combos: los componentes deben saber de qué línea salieron
+- [x] Reversa en `Cancel`, `CancelNotaVenta` y NC parcial
+- [x] Interruptor de emergencia por variable de entorno
+- [x] Prueba dorada (apagado = igual que hoy), flujos reales, `payload_json` idéntico, simultaneidad en MariaDB estricto, suite completa
 
 ### 3.2 F5b — pantallas del descuento (Tukichef)
 - [ ] Interruptor con lista de verificación (platos sin receta, insumos sin stock o sin costo) y política
@@ -130,7 +133,7 @@ go test ./internal/restaurant/ -run 'TestRecipe|TestSupply' -count=1
 - Producción: solo lectura salvo permiso explícito.
 - Fiscal: probar por el flujo real, verificar el `payload_json`/XML final, test de regresión y decir qué no se probó.
 - Columnas nuevas o ensanchadas: migración versionada antes de desplegar. La base local no es estricta y trunca en silencio.
-- La siguiente migración libre es **V199**.
+- La siguiente migración libre es **V200**.
 
 ## 9. Lo que no está en la rama
 - **Ya subido** (trabajo de otras sesiones): en Tukichef, el commit «Ajustes de impresoras y series» (**sin revisar**); en Tukifac, el

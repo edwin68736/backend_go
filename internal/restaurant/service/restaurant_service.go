@@ -13,6 +13,7 @@ import (
 	cashbanksvc "tukifac/internal/cashbank/service"
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/internal/restaurant/staff"
+	recipesvc "tukifac/internal/recipes/service"
 	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
@@ -1492,6 +1493,12 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		billAfterReadHook()
 	}
 
+	// F5a: insumos que consume este cobro (nil con el descuento apagado). Se arma de las comandas, que son lo realmente servido.
+	consumption, err := planBillConsumption(s.db, comandas, mapKeys)
+	if err != nil {
+		return nil, err
+	}
+
 	now := time.Now()
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var lockedSess database.TenantTableSession
@@ -1557,6 +1564,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *c.ProductID, BranchID: sess.BranchID})
 			}
 		}
+		lockKeys = append(lockKeys, consumption.StockKeys(sess.BranchID)...)
 		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
 			return err
 		}
@@ -1572,7 +1580,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			if product.HasCombo {
 				continue
 			}
-			if !product.ManageStock {
+			if !product.ManageStock || consumption.HasRecipe(product.ID, uintValue(item.PresentationID)) {
 				continue
 			}
 			var itemPresentationID *uint
@@ -1601,6 +1609,12 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			BranchID:  sess.BranchID,
 			Reference: "VENTA/" + sale.Number,
 			UserID:    input.UserID,
+			Skip:      func(productID uint) bool { return consumption.HasRecipe(productID, 0) },
+		}); err != nil {
+			return err
+		}
+		if err := consumption.ApplyTx(tx, recipesvc.ConsumeInput{
+			SaleID: sale.ID, Number: sale.Number, BranchID: sess.BranchID, UserID: input.UserID, Items: saleItems,
 		}); err != nil {
 			return err
 		}

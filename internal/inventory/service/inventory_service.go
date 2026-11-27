@@ -154,6 +154,11 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	return err
 }
 
+// RecordMovementResultTx es RecordMovementTx devolviendo el movimiento creado (el consumo de recetas necesita su costo).
+func (s *InventoryService) RecordMovementResultTx(tx *gorm.DB, input MovementInput) (database.TenantStockMovement, error) {
+	return s.recordMovementTx(tx, input)
+}
+
 // recordMovementTx es RecordMovementTx devolviendo el movimiento creado (con su costo, si es un insumo).
 func (s *InventoryService) recordMovementTx(tx *gorm.DB, input MovementInput) (database.TenantStockMovement, error) {
 	var none database.TenantStockMovement

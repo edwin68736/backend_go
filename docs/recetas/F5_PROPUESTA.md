@@ -1,6 +1,6 @@
 # F5 — Descuento de insumos al cobrar y su reversa: diagnóstico y propuesta
 
-Fecha: 25-nov-2026 · Estado: **PROPUESTA; no se modificó código.** Espera autorización expresa.
+Fecha: 25-nov-2026 · Estado: **F5a implementada** (26-nov-2026, ver `F5a_INFORME.md`); falta F5b.
 Marco: `PROPUESTA_INSUMOS_RECETAS_TUKICHEF.md` §9 y §20; recetas de F4 (incluidas las de presentación, que la v3.1 dejaba para V2).
 
 Es la fase de más riesgo: **toca la venta de todos los clientes**, aunque el descuento nace apagado.

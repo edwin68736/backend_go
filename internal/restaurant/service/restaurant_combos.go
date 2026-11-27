@@ -207,6 +207,8 @@ type comboStockContext struct {
 	BranchID  uint
 	Reference string
 	UserID    uint
+	// Skip: componentes que no descuentan su propio stock porque se descuentan sus insumos (receta). nil = ninguno.
+	Skip func(productID uint) bool
 }
 
 // recordComboComponentStock descuenta el stock de los componentes de los combos vendidos.
@@ -239,7 +241,7 @@ func recordComboComponentStock(
 		if tx.First(&product, productID).Error != nil {
 			continue
 		}
-		if !product.ManageStock {
+		if !product.ManageStock || (ctx.Skip != nil && ctx.Skip(productID)) {
 			continue
 		}
 		if err := inv.RecordMovementTx(tx, invsvc.MovementInput{

@@ -134,6 +134,10 @@ func RegisterSupplyRoutes(r fiber.Router, h *handler.RestaurantHandler) {
 	manageRecipes := middleware.RequireRestaurantPerm(restaurantperm.RecipesManage)
 	viewCost := middleware.RequireRestaurantPerm(restaurantperm.RecipesViewCost)
 	manageDishes := middleware.RequireRestaurantPerm(restaurantperm.ProductsManage)
+	// Descuento de insumos al vender (F5a): lo enciende el administrador del restaurante.
+	restaurantSettings := middleware.RequireRestaurantPerm(restaurantperm.SettingsManage)
+	r.Get("/recipe-consumption", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, restaurantSettings, h.GetRecipeConsumption)
+	r.Put("/recipe-consumption", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, restaurantSettings, h.UpdateRecipeConsumption)
 	r.Get("/recipe-settings", h.RequireRecipesEnabled, h.RequireRecipeTables, viewCost, h.GetRecipeSettings)
 	r.Put("/recipe-settings", h.RequireRecipesEnabled, h.RequireRecipeTables, manageRecipes, viewCost, h.UpdateRecipeSettings)
 	r.Get("/recipes", h.RequireRecipesEnabled, h.RequireRecipeTables, viewRecipes, h.ListRecipes)

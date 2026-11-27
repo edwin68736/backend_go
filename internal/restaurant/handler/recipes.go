@@ -138,6 +138,36 @@ func (h *RestaurantHandler) UpdateRecipeSettings(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": svc.Settings()})
 }
 
+// RequireConsumptionTables: la BD del tenant ya tiene lo del descuento de insumos (V199).
+func (h *RestaurantHandler) RequireConsumptionTables(c fiber.Ctx) error {
+	if gdb := db(c); gdb != nil && recipesvc.ConsumptionReady(gdb) {
+		return c.Next()
+	}
+	return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "El descuento de insumos aún no está disponible", "code": "recipes_unavailable"})
+}
+
+func (h *RestaurantHandler) GetRecipeConsumption(c fiber.Ctx) error {
+	cfg, err := recipesvc.ReadConsumptionSettings(db(c))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": cfg})
+}
+
+func (h *RestaurantHandler) UpdateRecipeConsumption(c fiber.Ctx) error {
+	cfg, err := recipesvc.ReadConsumptionSettings(db(c)) // lo que no se envía se conserva
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := c.Bind().JSON(&cfg); err != nil {
+		return supplyBadRequest(c, "datos inválidos")
+	}
+	if err := recipesvc.SaveConsumptionSettings(db(c), cfg); err != nil {
+		return supplyBadRequest(c, err.Error())
+	}
+	return h.GetRecipeConsumption(c)
+}
+
 func (h *RestaurantHandler) ApplyRecipePrice(c fiber.Ctx) error {
 	svc := recipesvc.New(db(c))
 	productID, branchID, ok := recipeProduct(c, svc)

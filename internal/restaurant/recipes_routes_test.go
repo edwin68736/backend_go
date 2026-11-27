@@ -423,6 +423,34 @@ func TestRecipePresentationsAndCombos(t *testing.T) {
 	}
 }
 
+// F5a: el descuento nace apagado y solo lo cambia quien administra el restaurante.
+func TestRecipeConsumptionSettings(t *testing.T) {
+	f := setupRecipes(t)
+	s, b := f.call("supervisor", "GET", "/recipe-consumption", nil)
+	wantStatus(t, s, b, 403) // BD sin V199
+	ok(t, (tenantmigrations.V199RecipeConsumption{}).Up(f.db))
+	s, b = f.call("supervisor", "GET", "/recipe-consumption", nil)
+	wantStatus(t, s, b, 200)
+	if !strings.Contains(b, `"consume":false`) || !strings.Contains(b, `"stock_policy":"allow"`) {
+		t.Fatal("nace apagado y permitiendo vender: " + b)
+	}
+	s, b = f.call("supervisor", "PUT", "/recipe-consumption", map[string]any{"consume": true})
+	wantStatus(t, s, b, 200)
+	s, b = f.call("supervisor", "PUT", "/recipe-consumption", map[string]any{"stock_policy": "block"})
+	wantStatus(t, s, b, 200)
+	if !strings.Contains(b, `"consume":true`) || !strings.Contains(b, `"stock_policy":"block"`) {
+		t.Fatal("lo que no se envía se conserva: " + b)
+	}
+	s, b = f.call("supervisor", "PUT", "/recipe-consumption", map[string]any{"stock_policy": "otra"})
+	wantStatus(t, s, b, 400)
+	for _, user := range []string{"mozo", "cocinero"} {
+		s, b = f.call(user, "GET", "/recipe-consumption", nil)
+		wantStatus(t, s, b, 403)
+		s, b = f.call(user, "PUT", "/recipe-consumption", map[string]any{"consume": false})
+		wantStatus(t, s, b, 403)
+	}
+}
+
 func TestRecipeProtectsSupplies(t *testing.T) {
 	f := setupRecipes(t)
 	ok(t, f.db.AutoMigrate(&database.TenantSaleItem{}))

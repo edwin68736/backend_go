@@ -15,6 +15,7 @@ import (
 	detraccionsvc "tukifac/internal/detraccion"
 	salecontext "tukifac/internal/fiscal/salecontext"
 	invsvc "tukifac/internal/inventory/service"
+	recipesvc "tukifac/internal/recipes/service"
 	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/internal/exportacion"
 	"tukifac/internal/sales/nvdisplay"
@@ -148,6 +149,9 @@ type SaleItemInput struct {
 	// endpoint de ventas jamás puede poblarlo, así que ningún cliente puede autoexcluirse de
 	// validateAuthorizedPrices. Ver sale_price_authorization.go.
 	PriceAuthorized bool `json:"-"`
+	// comboComponents: componentes (producto → cantidad ya multiplicada) del combo de esta línea. Lo llena resolveComboItems; sirve
+	// para descontar las recetas de lo realmente elegido y saber de qué línea salió cada una.
+	comboComponents map[uint]float64
 }
 
 // ExtraStockMovement salida de kardex de un producto que no es línea de la venta
@@ -532,6 +536,13 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// Validar stock y series antes de la transacción (omitir si la NV ya descontó inventario).
 	emitFromNV := input.IssuedFromNotaSaleID != nil && *input.IssuedFromNotaSaleID > 0
 	skipStockCheck := input.SkipInventory || emitFromNV
+	// F5a: qué insumos consume la venta (nil con el descuento apagado). Un plato con receta no descuenta su propio stock.
+	var consumption *recipesvc.Plan
+	if !skipStockCheck {
+		if consumption, err = planSaleConsumption(s.db, input.Items); err != nil {
+			return nil, err
+		}
+	}
 	if !skipStockCheck {
 		for _, item := range input.Items {
 			if item.ProductID == nil {
@@ -550,6 +561,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 					return nil, presErr
 				}
 				switch {
+				case consumption.HasRecipe(product.ID, presentationID(item.PresentationID)):
+					// Se descuentan sus insumos, no su stock.
 				case product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0:
 					var pstock database.TenantProductPresentationStock
 					s.db.Where("presentation_id = ? AND branch_id = ?", *item.PresentationID, input.BranchID).First(&pstock)
@@ -904,6 +917,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 
 		if skipInv {
+			if emitFromNV {
+				if err := recipesvc.CopyLineCostTx(tx, *input.IssuedFromNotaSaleID, saleItems); err != nil {
+					return err
+				}
+			}
 			if err := s.persistFiscalContextTx(tx, sale, input, seriesLocked); err != nil {
 				return err
 			}
@@ -934,6 +952,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		for _, mv := range input.ExtraStockMovements {
 			lockKeys = append(lockKeys, invsvc.StockKey{ProductID: mv.ProductID, BranchID: input.BranchID})
 		}
+		lockKeys = append(lockKeys, consumption.StockKeys(input.BranchID)...)
 		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
 			return err
 		}
@@ -950,6 +969,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 			if !product.ManageStock || productIsCatalogService(&product) {
+				continue
+			}
+			if consumption.HasRecipe(product.ID, presentationID(item.PresentationID)) {
 				continue
 			}
 
@@ -1051,7 +1073,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			if tx.First(&comp, mv.ProductID).Error != nil {
 				continue
 			}
-			if !comp.ManageStock || productIsCatalogService(&comp) {
+			if !comp.ManageStock || productIsCatalogService(&comp) || consumption.HasRecipe(comp.ID, 0) {
 				continue
 			}
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
@@ -1065,6 +1087,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			}); err != nil {
 				return err
 			}
+		}
+		if err := consumption.ApplyTx(tx, recipesvc.ConsumeInput{
+			SaleID: sale.ID, Number: sale.Number, BranchID: input.BranchID, UserID: input.UserID, Items: saleItems,
+		}); err != nil {
+			return err
 		}
 		if err := s.persistFiscalContextTx(tx, sale, input, seriesLocked); err != nil {
 			return err
@@ -2507,7 +2534,7 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 		if err := reverseSaleCashTx(tx, cashbanksvc.NewCashBankService(tx), &sale, ref, reason, userID); err != nil {
 			return err
 		}
-		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
+		if err := restoreSaleStockTx(tx, &sale, ref, userID); err != nil {
 			return err
 		}
 		if err := releaseSerialsForSaleTx(tx, items); err != nil {
@@ -2553,7 +2580,7 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		if err := claimCancellationTx(tx, sale.ID); err != nil {
 			return err
 		}
-		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
+		if err := restoreSaleStockTx(tx, &sale, ref, userID); err != nil {
 			return err
 		}
 		if err := releaseSerialsForSaleTx(tx, items); err != nil {

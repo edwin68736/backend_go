@@ -88,7 +88,8 @@ func resolveComboItems(
 		// modificadores: el visor de comprobantes ya sabe pintarla.
 		item.ModifiersJSON = combos.ComponentsSnapshot(res.ComponentsPayload())
 
-		for productID, qty := range res.StockMovements(item.Quantity) {
+		item.comboComponents = res.StockMovements(item.Quantity)
+		for productID, qty := range item.comboComponents {
 			if _, seen := stockByProduct[productID]; !seen {
 				stockOrder = append(stockOrder, productID)
 			}
