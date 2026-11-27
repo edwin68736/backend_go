@@ -11,10 +11,11 @@
 | Disco del servidor de base de datos | holgado |
 
 ## Riesgo encontrado: la duración
-Las dos últimas veces que una sola migración llegó a todas las empresas, tardó cerca de 30 minutos según
-`tenant_migration_history`. El despliegue corta el paso remoto a los 30 minutos (`command_timeout` en
-`.github/workflows/deploy-production.yml`) y ahora son ocho migraciones. No se pudo ver si aquellas veces las aplicó el
-despliegue o la tarea programada: eso está en el historial de GitHub Actions.
+Según `tenant_migration_history`, en dos ocasiones recientes (una con cuatro migraciones juntas y otra con una sola) llegar a
+todas las empresas tardó alrededor de media hora: pesa más recorrer las empresas que la cantidad de migraciones. El
+despliegue corta el paso remoto a los 30 minutos (`command_timeout` en `.github/workflows/deploy-production.yml`), así que está
+justo en el límite, y ahora son ocho. No se pudo ver si aquellas veces las aplicó el despliegue o la tarea programada: eso está
+en el historial de GitHub Actions.
 
 Si se corta, la versión anterior sigue atendiendo (el reinicio no llega a ejecutarse) y puede quedar parte de las empresas
 migradas. El simulacro mostró que la versión anterior funciona sobre una base migrada.
