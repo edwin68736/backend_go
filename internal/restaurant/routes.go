@@ -138,6 +138,11 @@ func RegisterSupplyRoutes(r fiber.Router, h *handler.RestaurantHandler) {
 	restaurantSettings := middleware.RequireRestaurantPerm(restaurantperm.SettingsManage)
 	r.Get("/recipe-consumption", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, restaurantSettings, h.GetRecipeConsumption)
 	r.Put("/recipe-consumption", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, restaurantSettings, h.UpdateRecipeConsumption)
+	// F5b: porciones y aviso de insumos para quien toma pedidos (sin costos); lista de verificación para encender el descuento.
+	takesOrders := middleware.RequireAnyRestaurantPerm(restaurantperm.TablesOpen, restaurantperm.OrdersCreate, restaurantperm.OrdersCharge, restaurantperm.POSUse)
+	r.Get("/recipe-availability", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, takesOrders, h.GetRecipeAvailability)
+	r.Post("/recipe-check", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, takesOrders, h.CheckRecipeSupplies)
+	r.Get("/recipe-consumption/checklist", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, restaurantSettings, h.GetRecipeChecklist)
 	r.Get("/recipe-settings", h.RequireRecipesEnabled, h.RequireRecipeTables, viewCost, h.GetRecipeSettings)
 	r.Put("/recipe-settings", h.RequireRecipesEnabled, h.RequireRecipeTables, manageRecipes, viewCost, h.UpdateRecipeSettings)
 	r.Get("/recipes", h.RequireRecipesEnabled, h.RequireRecipeTables, viewRecipes, h.ListRecipes)

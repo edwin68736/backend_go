@@ -264,6 +264,7 @@ type Dish struct {
 	TargetPct        *float64 `json:"recipe_target_food_cost_pct,omitempty"`
 	Costing          *Costing `json:"costing,omitempty"`
 	Lines            []Line   `json:"lines,omitempty"`
+	manageStock      bool     // el plato controla su propio stock (para la lista de verificación del descuento)
 }
 
 type snapshot struct {
@@ -534,14 +535,15 @@ func (s *Service) dishes(snap *snapshot, q Query) ([]Dish, error) {
 		variants := presentations[p.ID]
 		if p.HasVariants && len(variants) > 0 {
 			for _, pr := range variants {
-				d := Dish{ProductID: p.ID, PresentationID: pr.ID, Name: p.Name, PresentationName: pr.Name, Price: pr.SalePrice,
+				d := Dish{ProductID: p.ID, PresentationID: pr.ID, Name: p.Name, PresentationName: pr.Name, Price: pr.SalePrice, manageStock: p.ManageStock,
 					CategoryID: categoryID, CategoryName: categories[categoryID]}
 				snap.fill(p, &d, q)
 				out = append(out, d)
 			}
 			continue
 		}
-		d := Dish{ProductID: p.ID, Name: p.Name, Price: p.SalePrice, IsCombo: p.HasCombo, CategoryID: categoryID, CategoryName: categories[categoryID]}
+		d := Dish{ProductID: p.ID, Name: p.Name, Price: p.SalePrice, IsCombo: p.HasCombo, CategoryID: categoryID, CategoryName: categories[categoryID],
+			manageStock: p.ManageStock}
 		if bp, ok := branchPrices[p.ID]; ok {
 			d.Price, d.BranchPrice = bp, true
 		}

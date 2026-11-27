@@ -37,7 +37,9 @@ git checkout insumos-recetas
 | F5a | descuento y reversa de insumos al vender, en el backend (V199) | `F5a_INFORME.md` |
 
 El módulo nace apagado (`recipes_enabled`, lo enciende el superadmin) y **el descuento al vender también** (`recipes_consume`, lo
-enciende el restaurante; todavía sin pantalla).
+enciende el restaurante desde Tukichef → Recetas).
+
+| F5b | pantallas del descuento en Tukichef (porciones, aviso de insumos, revisión y encendido) | `F5b_INFORME.md` |
 
 ## 3. Lo que falta, en orden
 
@@ -59,9 +61,9 @@ Trabajo:
 - [x] Interruptor de emergencia por variable de entorno
 - [x] Prueba dorada (apagado = igual que hoy), flujos reales, `payload_json` idéntico, simultaneidad en MariaDB estricto, suite completa
 
-### 3.2 F5b — pantallas del descuento (Tukichef)
-- [ ] Interruptor con lista de verificación (platos sin receta, insumos sin stock o sin costo) y política
-- [ ] Aviso de insumo insuficiente al pedir y porciones disponibles en el POS
+### 3.2 F5b — pantallas del descuento (Tukichef): HECHA el 27-nov-2026, ver `F5b_INFORME.md`
+- [x] Interruptor con lista de verificación (platos sin receta, insumos sin stock o sin costo) y política
+- [x] Aviso de insumo insuficiente al pedir y porciones disponibles en el POS
 
 ### 3.3 F6 — reportes (Tukichef, por sucursal)
 - [ ] Existencias y valorización · historial de compras por insumo · consumo de ingredientes
@@ -82,6 +84,8 @@ Preparaciones intermedias y subrecetas, extras y modificadores con insumo, desgl
 rendimiento de compra, importación por Excel, vista previa del costo antes de guardar.
 
 ## 4. Pendiente de probar en pantalla (lo ya hecho)
+- Descuento: combos, delivery y para llevar, mozo o cajero con PIN, apagarlo, varias sucursales.
+- Tukifac «Nueva venta» con un plato que descuenta por receta y tiene control de stock.
 - Recetas: quitar receta, aviso «el precio cambió», sucursal con precio propio, plato incompleto, merma y rendimiento distinto de 1,
   usuario que edita sin ver costos, negocio con el módulo apagado, vender en el POS el plato con precio nuevo.
 - Compras: compra a crédito, crear proveedor, usuario sin permisos, negocio sin módulo de compras.

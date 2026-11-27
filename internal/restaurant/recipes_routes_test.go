@@ -2,10 +2,12 @@ package restaurant
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	productsvc "tukifac/internal/products/service"
 	recipesvc "tukifac/internal/recipes/service"
@@ -420,6 +422,130 @@ func TestRecipePresentationsAndCombos(t *testing.T) {
 	d = f.dish(combo)
 	if !d.Incomplete || d.Costing != nil || !d.HasRecipe || d.Available == nil || *d.Available != 4 {
 		t.Fatalf("combo sin costo: %+v", d)
+	}
+}
+
+// F5b: porciones, aviso de insumos y lista de verificación.
+func TestRecipeConsumptionScreens(t *testing.T) {
+	f := setupRecipes(t)
+	ok(t, f.db.AutoMigrate(&database.TenantTableSession{}, &database.TenantComanda{}, &database.TenantModifierGroup{},
+		&database.TenantModifierOption{}, &database.TenantProductModifierGroup{}, &database.TenantPreparationArea{}))
+	ok(t, (tenantmigrations.V199RecipeConsumption{}).Up(f.db))
+	f.burgerRecipe() // 150 g de carne (hay 2 kg), 1 pan (30), 10 g de queso (1 kg)
+	drink := f.newDish("CHICHA", "Chicha", 5, nil)
+	double := f.newDish("DOBLE", "Doble", 22, func(in *productsvc.ProductInput) { in.ManageStock = true })
+	s, b := f.save("supervisor", double, 0, 1, line(f.meat, 300, "GRM", 0))
+	wantStatus(t, s, b, 200)
+
+	read := func(user string) recipesvc.Availability {
+		t.Helper()
+		s, b := f.call(user, "GET", "/recipe-availability", nil)
+		wantStatus(t, s, b, 200)
+		if strings.Contains(b, "cost") {
+			t.Fatal("las porciones no llevan costos: " + b)
+		}
+		var out struct{ Data recipesvc.Availability }
+		ok(t, json.Unmarshal([]byte(b), &out))
+		return out.Data
+	}
+	check := func(session uint, items ...map[string]any) string {
+		t.Helper()
+		s, b := f.call("mozo", "POST", "/recipe-check", map[string]any{"session_id": session, "items": items})
+		wantStatus(t, s, b, 200)
+		return b
+	}
+	order := func(product uint, qty float64) map[string]any { return map[string]any{"product_id": product, "quantity": qty} }
+
+	// Apagado: nada de porciones ni avisos.
+	if a := read("mozo"); a.Active || len(a.Dishes) != 0 {
+		t.Fatalf("apagado: %+v", a)
+	}
+	if b := check(0, order(f.burger, 100)); !strings.Contains(b, `"active":false`) || !strings.Contains(b, `"shortages":[]`) {
+		t.Fatal(b)
+	}
+
+	s, b = f.call("supervisor", "GET", "/recipe-consumption/checklist", nil)
+	wantStatus(t, s, b, 200)
+	var list struct{ Data recipesvc.Checklist }
+	ok(t, json.Unmarshal([]byte(b), &list))
+	c := list.Data
+	names := func(d []recipesvc.ChecklistDish) string {
+		var out []string
+		for _, x := range d {
+			out = append(out, x.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	if c.DishesWithRecipe != 2 || !strings.Contains(names(c.DishesWithoutRecipe), "Chicha") || names(c.OwnStockReplaced) != "Doble" ||
+		len(c.SuppliesWithoutStock) != 0 || len(c.SuppliesWithoutCost) != 0 {
+		t.Fatalf("lista: %+v", c)
+	}
+	for _, user := range []string{"mozo", "cocinero"} {
+		s, b = f.call(user, "GET", "/recipe-consumption/checklist", nil)
+		wantStatus(t, s, b, 403)
+	}
+
+	s, b = f.call("supervisor", "PUT", "/recipe-consumption", map[string]any{"consume": true, "stock_policy": "block"})
+	wantStatus(t, s, b, 200)
+	a := read("mozo")
+	portions := map[uint]int{}
+	for _, d := range a.Dishes {
+		portions[d.ProductID] = *d.Portions
+		if !d.All {
+			t.Fatalf("sin presentaciones, todas llevan receta: %+v", d)
+		}
+	}
+	if !a.Active || a.StockPolicy != "block" || portions[f.burger] != 13 || portions[double] != 6 || len(a.Dishes) != 2 {
+		t.Fatalf("porciones: %+v %v", a, portions)
+	}
+
+	// Cada plato alcanza por separado, pero comparten la carne: 10×0.15 + 3×0.30 = 2.4 kg y hay 2.
+	if b := check(0, order(f.burger, 13), order(drink, 5)); !strings.Contains(b, `"shortages":[]`) {
+		t.Fatal(b)
+	}
+	b = check(0, order(f.burger, 10), order(double, 3))
+	if !strings.Contains(b, `"name":"Carne"`) || !strings.Contains(b, `"required":2.4`) || !strings.Contains(b, `"available":2`) ||
+		!strings.Contains(b, `"dishes":["Doble","Hamburguesa"]`) || strings.Contains(b, "Pan") {
+		t.Fatal(b)
+	}
+
+	// Lo ya pedido en la mesa y sin cobrar cuenta; lo anulado o ya cobrado, no.
+	session := database.TenantTableSession{BranchID: 1, Status: "open", OpenedAt: time.Now()}
+	ok(t, f.db.Create(&session).Error)
+	now := time.Now()
+	burger := f.burger
+	for _, c := range []database.TenantComanda{
+		{SessionID: session.ID, ProductID: &burger, ProductName: "Hamburguesa", Quantity: 10},
+		{SessionID: session.ID, ProductID: &burger, ProductName: "Hamburguesa", Quantity: 10, CancelledAt: &now},
+		{SessionID: session.ID, ProductID: &burger, ProductName: "Hamburguesa", Quantity: 10, BilledAt: &now},
+	} {
+		ok(t, f.db.Create(&c).Error)
+	}
+	if b := check(session.ID, order(f.burger, 3)); !strings.Contains(b, `"shortages":[]`) {
+		t.Fatal("13 en total alcanzan: " + b)
+	}
+	if b := check(session.ID, order(f.burger, 4)); !strings.Contains(b, `"required":2.1`) {
+		t.Fatal("14 en total no alcanzan: " + b)
+	}
+
+	// Combo: cuenta la receta de cada componente elegido. Presentación: la suya, tal como la manda el POS.
+	combo := f.newDish("COMBO", "Combo", 25, nil)
+	ok(t, f.db.Model(&database.TenantProduct{}).Where("id = ?", combo).Update("has_combo", true).Error)
+	group := database.TenantComboGroup{ProductID: combo, Name: "Plato", SelectionType: "fixed", Active: true}
+	ok(t, f.db.Create(&group).Error)
+	ok(t, f.db.Create(&database.TenantComboGroupItem{GroupID: group.ID, ProductID: f.burger, DefaultQuantity: 2, IsDefault: true, Active: true}).Error)
+	if b := check(0, order(combo, 7)); !strings.Contains(b, `"required":2.1`) {
+		t.Fatal("7 combos de 2 hamburguesas: " + b)
+	}
+	big := database.TenantProductPresentation{ProductID: double, Name: "XL", SalePrice: 30, Active: true}
+	ok(t, f.db.Create(&big).Error)
+	ok(t, f.db.Model(&database.TenantProduct{}).Where("id = ?", double).Update("has_variants", true).Error)
+	s, b = f.save("supervisor", double, big.ID, 1, line(f.meat, 500, "GRM", 0))
+	wantStatus(t, s, b, 200)
+	variant := order(double, 5)
+	variant["modifiers_json"] = fmt.Sprintf(`[{"type":"variant","option_id":%d}]`, big.ID)
+	if b := check(0, variant); !strings.Contains(b, `"required":2.5`) {
+		t.Fatal("5 de la presentación XL: " + b)
 	}
 }
 

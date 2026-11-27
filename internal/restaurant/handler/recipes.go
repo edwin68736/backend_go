@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	recipesvc "tukifac/internal/recipes/service"
+	"tukifac/internal/restaurant/service"
 	"tukifac/pkg/branch"
 	"tukifac/pkg/database"
 	"tukifac/pkg/middleware"
@@ -166,6 +167,42 @@ func (h *RestaurantHandler) UpdateRecipeConsumption(c fiber.Ctx) error {
 		return supplyBadRequest(c, err.Error())
 	}
 	return h.GetRecipeConsumption(c)
+}
+
+// GetRecipeAvailability: platos que descuentan insumos y sus porciones en la sucursal.
+func (h *RestaurantHandler) GetRecipeAvailability(c fiber.Ctx) error {
+	branchID := recipeBranch(c)
+	out, err := recipesvc.New(db(c)).Availability(branchID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": out, "branch_id": branchID})
+}
+
+// CheckRecipeSupplies: qué insumos no alcanzan para el carrito (más lo pendiente de la mesa). No escribe nada.
+func (h *RestaurantHandler) CheckRecipeSupplies(c fiber.Ctx) error {
+	var body struct {
+		SessionID uint                   `json:"session_id"`
+		Items     []service.NewOrderItem `json:"items"`
+	}
+	if err := c.Bind().JSON(&body); err != nil || len(body.Items) > 200 {
+		return supplyBadRequest(c, "datos inválidos")
+	}
+	out, err := svc(c).CheckSupplies(recipeBranch(c), body.SessionID, body.Items)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": out})
+}
+
+// GetRecipeChecklist: qué revisar antes de encender el descuento.
+func (h *RestaurantHandler) GetRecipeChecklist(c fiber.Ctx) error {
+	branchID := recipeBranch(c)
+	out, err := recipesvc.New(db(c)).Checklist(branchID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"data": out, "branch_id": branchID})
 }
 
 func (h *RestaurantHandler) ApplyRecipePrice(c fiber.Ctx) error {
