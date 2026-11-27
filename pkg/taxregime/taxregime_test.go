@@ -68,3 +68,15 @@ func TestCapabilitiesShape(t *testing.T) {
 		t.Fatalf("General allowed_sale_doc_codes = %v, se esperaba 3 (00,03,01)", caps.AllowedSaleDocCodes)
 	}
 }
+
+// Las guías remitente (09) y transportista (31) son del mismo régimen: General emite ambas, el Nuevo RUS ninguna.
+func TestGuiasDeRemisionPorRegimen(t *testing.T) {
+	for _, code := range []string{"09", "31"} {
+		if !For("general").CanEmit(code) {
+			t.Fatalf("General debe poder emitir la guía %s", code)
+		}
+		if For("nrus").CanEmit(code) {
+			t.Fatalf("Nuevo RUS no emite la guía %s", code)
+		}
+	}
+}
