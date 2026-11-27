@@ -12,6 +12,7 @@ import (
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
+	"tukifac/pkg/sunatnote"
 )
 
 // Nota de crédito POR MONTO.
@@ -44,15 +45,9 @@ func IsAmountCreditNoteReason(reasonCode string) bool {
 	return amountCreditNoteReasonCodes[strings.TrimSpace(reasonCode)]
 }
 
-// noStockReturnCreditNoteReasonCodes motivos cuyo efecto es de precio: el cliente se queda con la
-// mercadería, así que aunque la nota traiga líneas con cantidad NO se repone stock.
-var noStockReturnCreditNoteReasonCodes = map[string]bool{
-	"04": true, "05": true, "09": true,
-}
-
 // CreditNoteReturnsStock: false cuando el motivo es un ajuste de precio (el stock no vuelve).
 func CreditNoteReturnsStock(reasonCode string) bool {
-	return !noStockReturnCreditNoteReasonCodes[strings.TrimSpace(reasonCode)]
+	return sunatnote.CreditReasonReturnsStock(reasonCode)
 }
 
 // isAmountNote: la solicitud pide un importe (total repartido o por línea).

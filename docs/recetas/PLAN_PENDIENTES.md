@@ -65,7 +65,7 @@ Trabajo:
 - [x] Interruptor con lista de verificación (platos sin receta, insumos sin stock o sin costo) y política
 - [x] Aviso de insumo insuficiente al pedir y porciones disponibles en el POS
 
-### 3.3 F6 — reportes (Tukichef, por sucursal): propuesta en `F6_PROPUESTA.md`, pendiente de aprobación
+### 3.3 F6 — reportes (Tukichef, por sucursal): aprobada; **F6a (backend) HECHA** el 27-nov-2026 (`F6a_INFORME.md`), falta F6b
 - [ ] Existencias y valorización · historial de compras por insumo · consumo de ingredientes
 - [ ] Costo por plato · food cost · margen por plato (con `recipe_cost`) · platos de mayor costo · insumos de mayor consumo
 - [ ] Disponibilidad · mermas
@@ -127,9 +127,9 @@ Pruebas:
 go test $(go list ./... | grep -v '/pkg/saas$') -count=1      # backend
 npx tsc -b && npx vitest run                                  # Tukichef
 ```
-MariaDB estricto (la base se borra entera: su nombre debe contener `test`; correr paquete por paquete):
+MySQL con el `sql_mode` de producción (la base se borra entera: su nombre debe contener `test`; correr paquete por paquete):
 ```bash
-export TUKIFAC_TEST_MYSQL_DSN="root:@tcp(127.0.0.1:3306)/tukifac_x_test?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true&sql_mode='STRICT_ALL_TABLES'&innodb_lock_wait_timeout=5"
+export TUKIFAC_TEST_MYSQL_DSN="root:@tcp(127.0.0.1:3306)/tukifac_x_test?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true&sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'&innodb_lock_wait_timeout=5"
 go test ./internal/restaurant/ -run 'TestRecipe|TestSupply' -count=1
 ```
 
@@ -139,7 +139,7 @@ go test ./internal/restaurant/ -run 'TestRecipe|TestSupply' -count=1
 - Producción: solo lectura salvo permiso explícito.
 - Fiscal: probar por el flujo real, verificar el `payload_json`/XML final, test de regresión y decir qué no se probó.
 - Columnas nuevas o ensanchadas: migración versionada antes de desplegar. La base local no es estricta y trunca en silencio.
-- La siguiente migración libre es **V200**.
+- La siguiente migración libre es **V201**.
 
 ## 9. Lo que no está en la rama
 - **Ya subido** (trabajo de otras sesiones): en Tukichef, el commit «Ajustes de impresoras y series» (**sin revisar**); en Tukifac, el

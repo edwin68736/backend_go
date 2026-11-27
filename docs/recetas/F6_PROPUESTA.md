@@ -1,6 +1,6 @@
 # F6: reportes de insumos y recetas (propuesta)
 
-27-nov-2026. **Pendiente de aprobación; no hay código.**
+27-nov-2026. **Aprobada como se recomienda.** La decisión 4 se ajustó al implementar: ver `F6a_INFORME.md`.
 
 ## 1. Cómo está hoy (revisado en la rama)
 

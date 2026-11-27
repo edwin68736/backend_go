@@ -152,4 +152,14 @@ func RegisterSupplyRoutes(r fiber.Router, h *handler.RestaurantHandler) {
 	r.Get("/recipes/:productId/price-history", h.RequireRecipesEnabled, h.RequireRecipeTables, viewCost, h.RecipePriceHistory)
 	r.Post("/recipes/:productId/apply-price", h.RequireRecipesEnabled, h.RequireRecipeTables, manageRecipes, viewCost, manageDishes,
 		h.ApplyRecipePrice)
+
+	// Reportes (F6a). Los de insumos ocultan costos a quien no los ve; la rentabilidad de platos exige verlos. «Costos de la carta»
+	// no tiene ruta propia: es GET /recipes.
+	r.Get("/reports/supply-stock", h.RequireRecipesEnabled, h.RequireReportData, viewSupplies, h.SupplyStockReport)
+	r.Get("/reports/supply-purchases", h.RequireRecipesEnabled, h.RequireReportData, viewSupplies, h.SupplyPurchasesReport)
+	r.Get("/reports/supply-waste", h.RequireRecipesEnabled, h.RequireReportData, viewSupplies, h.SupplyWasteReport)
+	r.Get("/reports/supply-consumption", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, viewSupplies,
+		h.SupplyConsumptionReport)
+	r.Get("/reports/dish-profitability", h.RequireRecipesEnabled, h.RequireRecipeTables, h.RequireConsumptionTables, viewCost,
+		h.DishProfitReport)
 }

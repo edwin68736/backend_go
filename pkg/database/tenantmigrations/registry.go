@@ -171,6 +171,7 @@ var TenantMigrations = []TenantMigration{
 	V197PurchaseIdempotencyKey{},
 	V198Recipes{},
 	V199RecipeConsumption{},
+	V200RecipeReportIndexes{},
 }
 
 // ByVersion mapa versión → migración.

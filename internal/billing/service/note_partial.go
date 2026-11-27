@@ -3,12 +3,12 @@ package service
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	"tukifac/pkg/database"
 	"tukifac/pkg/money"
 
 	"gorm.io/gorm"
+	"tukifac/pkg/sunatnote"
 )
 
 // NoteItemSelection un ítem de la venta original y la cantidad que la nota devuelve/ajusta.
@@ -21,25 +21,10 @@ type NoteItemSelection struct {
 	Amount float64 `json:"amount,omitempty"`
 }
 
-// partialCreditNoteReasonCodes motivos del catálogo SUNAT 09 que implican devolver o
-// descontar bienes concretos — ahí tiene sentido elegir ítems y cantidades en vez de
-// copiar el 100% de la venta. El resto (02/03 corrección de datos, 11/12/13 ajustes de
-// exportación/IVAP/fecha de pago) no mueve mercadería: siguen copiando todo, como antes
-// de esta fase.
-var partialCreditNoteReasonCodes = map[string]bool{
-	"04": true, // Descuento global
-	"05": true, // Descuento por ítem
-	"06": true, // Devolución total
-	"07": true, // Devolución por ítem
-	"08": true, // Bonificación
-	"09": true, // Disminución en el valor
-	"10": true, // Otros conceptos
-}
-
 // IsPartialCreditNoteReason expone el catálogo de motivos "parciales" al handler, para
 // que el frontend sepa cuándo tiene sentido pedir ítems/cantidades.
 func IsPartialCreditNoteReason(reasonCode string) bool {
-	return partialCreditNoteReasonCodes[strings.TrimSpace(reasonCode)]
+	return sunatnote.IsPartialCreditReason(reasonCode)
 }
 
 // sumReturnedQuantitiesByOriginalItem suma, por línea original (OriginalSaleItemID), la cantidad

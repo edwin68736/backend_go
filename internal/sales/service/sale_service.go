@@ -2336,6 +2336,17 @@ type ProfitDetailParams struct {
 // commissions-detail): una fila por línea de venta con su ganancia. Mismo scope que
 // SalesByProduct (ScopeCommercial + status != cancelled) — evita el doble conteo de una boleta/
 // factura emitida por conversión de una NV ya contada, y excluye ventas anuladas.
+// profitCostExpr: costo unitario de la utilidad. Un plato con receta usa el costo de sus insumos al venderse (F6a); sin receta,
+// el costo guardado en la línea o el del producto, como siempre.
+func (s *SaleService) profitCostExpr() string {
+	if database.CachedSchemaProbe(s.db, "column:tenant_sale_items.recipe_cost", func() bool {
+		return s.db.Migrator().HasColumn(&database.TenantSaleItem{}, "recipe_cost")
+	}) {
+		return "COALESCE(tenant_sale_items.recipe_cost, tenant_sale_items.purchase_price, p.purchase_price, 0)"
+	}
+	return "COALESCE(tenant_sale_items.purchase_price, p.purchase_price, 0)"
+}
+
 func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow, ProfitDetailSummary, error) {
 	q := s.db.Table("tenant_sale_items").
 		Select(`tenant_sale_items.id as sale_item_id,
@@ -2348,7 +2359,7 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 			COALESCE(ct.doc_number, '') as contact_doc,
 			COALESCE(NULLIF(TRIM(p.name), ''), tenant_sale_items.description) as product_name,
 			tenant_sale_items.quantity as quantity,
-			COALESCE(tenant_sale_items.purchase_price, p.purchase_price, 0) as purchase_price,
+			` + s.profitCostExpr() + ` as purchase_price,
 			tenant_sale_items.unit_price as sale_price,
 			tenant_sale_items.subtotal as line_subtotal,
 			tenant_sale_items.line_discount_subtotal as line_discount_subtotal,
