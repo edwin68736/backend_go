@@ -76,7 +76,8 @@ Trabajo:
 - [ ] Decidir la **carga inicial masiva (Excel)**: la propuesta la mencionaba (§13); hoy se carga insumo por insumo
 - [ ] Subir la versión de Tukichef y compilar las apps (Android y escritorio)
 - [x] MySQL 8.0.30 y simulacro de actualización desde `main` (27-nov-2026, `CIERRE2_MYSQL_Y_ACTUALIZACION_INFORME.md`)
-- [ ] Antes de desplegar, en producción y solo lectura: tamaño de las tablas que toca la migración y saldos duplicados
+- [x] Revisión de producción en solo lectura: tamaños y duplicados (27-nov-2026, `CIERRE3_REVISION_PRODUCCION.md`)
+- [ ] Antes de desplegar: subir el `command_timeout` del despliegue (la migración de todas las empresas puede pasar de 30 min)
 - [x] Probar el interruptor del panel central en pantalla (27-nov-2026)
 - [ ] Gaveta 58 mm: probar con impresora real
 
