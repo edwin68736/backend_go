@@ -17,7 +17,7 @@ git fetch origin
 git checkout insumos-recetas
 ```
 
-- **No fusionar a `main` ni desplegar hasta terminar** (decisión: se sube todo junto cuando funcione al 100 %).
+- **Fusionado a `main` el 27-nov-2026** por decisión del usuario; sin subir ni desplegar. Ver `DESPLIEGUE_Y_VUELTA_ATRAS.md`.
 - `main` queda como estaba: se pueden desplegar otros arreglos sin arrastrar el módulo.
 - La rama también lleva dos arreglos que no son del módulo y siguen sin desplegar: **una compra ya no se anula dos veces** y
   **un traslado se confirma una sola vez**. Si urgen, se aplican aparte sobre `main` (el de traslados necesita F0a).
@@ -77,7 +77,9 @@ Trabajo:
 - [ ] Subir la versión de Tukichef y compilar las apps (Android y escritorio)
 - [x] MySQL 8.0.30 y simulacro de actualización desde `main` (27-nov-2026, `CIERRE2_MYSQL_Y_ACTUALIZACION_INFORME.md`)
 - [x] Revisión de producción en solo lectura: tamaños y duplicados (27-nov-2026, `CIERRE3_REVISION_PRODUCCION.md`)
-- [ ] Antes de desplegar: subir el `command_timeout` del despliegue (la migración de todas las empresas puede pasar de 30 min)
+- [x] `command_timeout` del despliegue a 90 minutos
+- [x] Pruebas en pantalla antes de fusionar (27-nov-2026): módulo apagado y encendido; Tukichef actual de `main` contra el servidor nuevo
+- [x] Despliegue y vuelta atrás escritos en `DESPLIEGUE_Y_VUELTA_ATRAS.md` (sin ensayar en el servidor)
 - [x] Probar el interruptor del panel central en pantalla (27-nov-2026)
 - [ ] Gaveta 58 mm: probar con impresora real
 
