@@ -65,11 +65,11 @@ Trabajo:
 - [x] Interruptor con lista de verificación (platos sin receta, insumos sin stock o sin costo) y política
 - [x] Aviso de insumo insuficiente al pedir y porciones disponibles en el POS
 
-### 3.3 F6 — reportes (Tukichef, por sucursal): aprobada; **F6a (backend) HECHA** el 27-nov-2026 (`F6a_INFORME.md`), falta F6b
-- [ ] Existencias y valorización · historial de compras por insumo · consumo de ingredientes
-- [ ] Costo por plato · food cost · margen por plato (con `recipe_cost`) · platos de mayor costo · insumos de mayor consumo
-- [ ] Disponibilidad · mermas
-- [ ] Decidir quién ve la utilidad: `/api/sales/profit-detail` no tiene permiso propio en el backend
+### 3.3 F6 — reportes (Tukichef, por sucursal): HECHA el 27-nov-2026, ver `F6a_INFORME.md` y `F6b_INFORME.md`
+- [x] Existencias y valorización · historial de compras por insumo · consumo de ingredientes
+- [x] Costo por plato · food cost · margen por plato (con `recipe_cost`) · platos de mayor costo · insumos de mayor consumo
+- [x] Disponibilidad · mermas
+- [x] Quién ve la utilidad: `/api/sales/profit-detail` exige `reports.profit`
 
 ### 3.4 Antes de dar el módulo por terminado
 - [ ] Decidir la **carga inicial masiva (Excel)**: la propuesta la mencionaba (§13); hoy se carga insumo por insumo
@@ -87,6 +87,8 @@ rendimiento de compra, importación por Excel, vista previa del costo antes de g
 Probado: descuento con combos, delivery, para llevar, mozo, cajera y cocina, dos sucursales, apagado y anulación; recetas (quitar,
 aviso de precio, precio propio de sucursal, incompleta, merma y rendimiento); compras e insumos; panel central; Tukifac (nueva nota
 de venta, punto de venta, anulación, traslado y orden de compra). «Editar sin ver costos» no existe como rol en Tukichef.
+
+Reportes (F6b): las seis pantallas, Excel, PDF, módulo apagado, selector de sucursal y celular.
 
 **Sin probar:** factura y boleta con receta desde la pantalla, SUNAT, MySQL 8.0.46, apps compiladas, impresora real.
 
