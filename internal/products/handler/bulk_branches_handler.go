@@ -3,6 +3,7 @@ package handler
 import (
 	"tukifac/pkg/branch"
 	"tukifac/pkg/productbranch"
+	"tukifac/pkg/supplies"
 
 	"github.com/gofiber/fiber/v3"
 	"gorm.io/gorm"
@@ -42,6 +43,9 @@ func (h *ProductHandler) BulkBranchesAPI(c fiber.Ctx) error {
 		if pid != 0 && !productVisibleToUser(c, db(c), pid) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "producto no encontrado"})
 		}
+	}
+	if err := supplies.Reject(db(c), body.ProductIDs...); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "los insumos están disponibles en todas las sucursales: quítalos de la selección"})
 	}
 	var forbidden bool
 	err := db(c).Transaction(func(tx *gorm.DB) error {

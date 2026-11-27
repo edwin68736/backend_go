@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tukifac/pkg/categorybranch"
+	recipesvc "tukifac/internal/recipes/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/modifierkind"
@@ -14,9 +15,11 @@ import (
 	"tukifac/pkg/productbranch"
 	"tukifac/pkg/saleunit"
 	"tukifac/pkg/sunat"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/tax"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ProductService struct {
@@ -41,6 +44,8 @@ type ProductListParams struct {
 	ManageStockOnly          bool   // solo productos con manage_stock (para transferencias/inventario)
 	NoManageStockOnly        bool   // solo productos sin control de stock (reporte restaurante)
 	RestaurantOnly           bool   // solo productos con is_restaurant (para panel restaurante)
+	// SupplyMode: supplies.ModeExclude (por defecto), ModeOnly o ModeInclude. Los insumos nunca salen si no se piden.
+	SupplyMode               string
 	CombosOnly               bool   // solo combos (has_combo)
 	ExcludeCombos            bool   // sin combos: candidatos a componente de un combo
 	PreparationArea          string // filtrar por slug (legacy)
@@ -146,8 +151,23 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 	} else if params.NoManageStockOnly {
 		q = q.Where(p+"manage_stock = ?", false)
 	}
+	suppliesReady := supplies.Ready(s.db)
+	supplyMode := params.SupplyMode
+	switch {
+	case supplyMode == supplies.ModeOnly && !suppliesReady:
+		q = q.Where("1 = 0")
+	case supplyMode == supplies.ModeOnly:
+		q = q.Where(p+"is_supply = ?", true)
+	case supplyMode == supplies.ModeExclude && suppliesReady:
+		q = q.Where(supplies.NotSupplySQL("tenant_products"))
+	}
 	if params.RestaurantOnly {
-		q = q.Where(p+"is_restaurant = ?", true)
+		switch {
+		case supplyMode == supplies.ModeInclude && suppliesReady:
+			q = q.Where("("+p+"is_restaurant = ? OR "+p+"is_supply = ?)", true, true)
+		case supplyMode != supplies.ModeOnly:
+			q = q.Where(p+"is_restaurant = ?", true)
+		}
 	}
 	if params.ShowInDigitalCatalogOnly {
 		q = q.Where(p+"show_in_digital_catalog = ?", true)
@@ -212,6 +232,10 @@ func (s *ProductService) buildListQuery(params ProductListParams) *gorm.DB {
 					WHERE pr0.product_id = tenant_products.id
 				)
 			))`
+			// Un insumo se ve en todas las sucursales aunque solo tenga stock en una (con 0 en las demás).
+			if supplyMode != supplies.ModeExclude && suppliesReady {
+				legacy = "(tenant_products.is_supply = 1 OR " + legacy + ")"
+			}
 			// Último OR = producto "sin vincular": sin ninguna fila de stock (ni de presentaciones)
 			// en NINGUNA sucursal. No pertenece a una en particular, así que se ve en todas con
 			// stock 0 (vender o transferir sigue exigiendo stock). La fila de stock deja de ser
@@ -751,6 +775,8 @@ type ProductInput struct {
 	HasVariants          bool
 	HasModifiers         bool
 	IsRestaurant         bool
+	// IsSupply: alta de un INSUMO. Solo lo ponen las rutas de insumos; en una edición manda lo que ya es la fila (inmutable).
+	IsSupply             bool
 	ShowInDigitalCatalog bool
 	PreparationAreaID    *uint
 	PreparationArea      string // slug legacy; se sincroniza desde preparation_area_id
@@ -823,7 +849,15 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 	// esa barrera está en SaleService.Create (validateSaleItemPrices), no aquí.
 	// Sin código el producto no se puede facturar (SUNAT lo exige por línea) y el error
 	// aparecía recién al emitir. Se completa aquí para que nunca nazca uno inutilizable.
+	if input.IsSupply {
+		if err := s.prepareSupplyInput(&input); err != nil {
+			return nil, nil, err
+		}
+	}
 	if err := s.ensureProductCode(&input); err != nil {
+		return nil, nil, err
+	}
+	if err := s.ensureCodeNotCrossingSupplies(input.Code, input.IsSupply, 0); err != nil {
 		return nil, nil, err
 	}
 
@@ -835,6 +869,10 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 		}
 		if existing != nil {
 			if isProductSoftDeleted(existing) {
+				// Reactivar no puede cambiar la clase de la fila (producto/insumo): su historial es de lo que era.
+				if existing.IsSupply != input.IsSupply {
+					return nil, nil, errSupplyClassCode(input.Code, existing.IsSupply)
+				}
 				return s.reactivateProductFromInput(existing.ID, input)
 			}
 			return nil, nil, fmt.Errorf("el código '%s' ya está en uso en esta sucursal", input.Code)
@@ -905,7 +943,18 @@ func (s *ProductService) Create(input ProductInput) (*database.TenantProduct, []
 		return nil, nil, errors.New("la unidad ZZ es solo para servicios: use Inventario → Servicios")
 	}
 
-	if err := s.db.Create(p).Error; err != nil {
+	if input.IsSupply {
+		// Alta y marca juntas: un insumo a medio crear quedaría como producto vendible.
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(p).Error; err != nil {
+				return err
+			}
+			return supplies.Mark(tx, p.ID)
+		}); err != nil {
+			return nil, nil, err
+		}
+		p.IsSupply, p.SupplyKind = true, supplies.KindRaw
+	} else if err := s.db.Create(p).Error; err != nil {
 		return nil, nil, err
 	}
 	if err := gormutil.PersistBoolWithDefault(s.db, p, "price_includes_igv", input.PriceIncludesIgv); err != nil {
@@ -1048,6 +1097,19 @@ func (s *ProductService) Update(id uint, input ProductInput) ([]PresentationSync
 	var existing database.TenantProduct
 	if err := s.db.First(&existing, id).Error; err != nil {
 		return nil, err
+	}
+	// La clase no se cambia al editar: manda la fila, venga lo que venga en el cuerpo.
+	input.IsSupply = existing.IsSupply
+	if existing.IsSupply {
+		if strings.TrimSpace(input.Code) == "" {
+			input.Code = existing.Code
+		}
+		forceSupplyFields(&input)
+	}
+	if input.Code != existing.Code {
+		if err := s.ensureCodeNotCrossingSupplies(input.Code, existing.IsSupply, id); err != nil {
+			return nil, err
+		}
 	}
 
 	igvType := input.IgvAffectationType
@@ -1354,6 +1416,9 @@ func (s *ProductService) ListProductPresentations(productID uint) ([]database.Te
 }
 
 func (s *ProductService) Delete(id uint) error {
+	if recipesvc.UsedAsIngredient(s.db, id) {
+		return errors.New("el insumo está en una receta: quítalo de la receta antes de eliminarlo")
+	}
 	s.db.Where("product_id = ?", id).Delete(&database.TenantProductPresentation{})
 	return s.db.Delete(&database.TenantProduct{}, id).Error
 }
@@ -1463,6 +1528,7 @@ func (s *ProductService) ListCategoriesWithCountsScoped(scope func(*gorm.DB) *go
 	if err := s.db.Model(&database.TenantProduct{}).
 		Select("category_id, COUNT(*) AS count").
 		Where("category_id IN ?", ids).
+		Scopes(supplies.Exclude(s.db)).
 		Group("category_id").
 		Scan(&counts).Error; err != nil {
 		return nil, err
@@ -1638,6 +1704,7 @@ func (s *ProductService) ListBrandsWithCounts() ([]BrandListItem, error) {
 	if err := s.db.Model(&database.TenantProduct{}).
 		Select("brand_id, COUNT(*) AS count").
 		Where("brand_id IN ?", ids).
+		Scopes(supplies.Exclude(s.db)).
 		Group("brand_id").
 		Scan(&counts).Error; err != nil {
 		return nil, err
@@ -1758,7 +1825,7 @@ func validateSaleUnitInput(db *gorm.DB, productID uint, in SaleUnitInput, requir
 	if in.IsBase && in.ConversionFactor != 1 {
 		return "", "", errors.New("la unidad base debe tener factor de conversión igual a 1")
 	}
-	if in.Price1 <= 0 {
+	if in.Price1 <= 0 && !supplies.IsSupply(db, productID) {
 		return "", "", errors.New("price1 debe ser mayor a cero")
 	}
 	if in.Price2 != nil && *in.Price2 <= 0 {
@@ -1843,6 +1910,9 @@ func (s *ProductService) CreateSaleUnit(productID uint, in SaleUnitInput) (*data
 	if err := s.db.Model(&database.TenantProductPresentation{}).Where("product_id = ? AND active = ?", productID, true).Count(&presCount).Error; err == nil && presCount > 0 {
 		return nil, errors.New("este producto tiene presentaciones: no se pueden agregar unidades de venta. Elimina las presentaciones o usa solo unidades de venta")
 	}
+	if product.IsSupply {
+		in.Price1, in.Price2, in.Price3 = 0, nil, nil
+	}
 	name, unitCode, err := validateSaleUnitInput(s.db, productID, in, true)
 	if err != nil {
 		return nil, err
@@ -1879,6 +1949,9 @@ func (s *ProductService) UpdateSaleUnit(productID, id uint, in SaleUnitInput) (*
 	var row database.TenantProductSaleUnit
 	if err := s.db.Where("id = ? AND product_id = ?", id, productID).First(&row).Error; err != nil {
 		return nil, errors.New("unidad de venta no encontrada")
+	}
+	if supplies.IsSupply(s.db, productID) {
+		in.Price1, in.Price2, in.Price3 = 0, nil, nil
 	}
 	name, unitCode, err := validateSaleUnitInput(s.db, productID, in, false)
 	if err != nil {
@@ -1979,6 +2052,9 @@ func (s *ProductService) GetSaleUnitBranchPrice(productID, saleUnitID, branchID 
 // real). El índice único de BD es el resguardo final contra una creación duplicada por carrera
 // entre dos requests concurrentes; este chequeo previo solo da un mensaje legible en el caso común.
 func (s *ProductService) CreateSaleUnitBranchPrice(productID, saleUnitID, branchID uint, in SaleUnitBranchPriceInput) (*database.TenantProductSaleUnitBranchPrice, error) {
+	if err := supplies.Reject(s.db, productID); err != nil {
+		return nil, err
+	}
 	if _, err := s.getSaleUnitOwnedByProduct(productID, saleUnitID); err != nil {
 		return nil, err
 	}
@@ -2031,6 +2107,9 @@ func isDuplicateBranchPriceError(err error) bool {
 
 // UpdateSaleUnitBranchPrice actualiza precios y estado activo de un override existente.
 func (s *ProductService) UpdateSaleUnitBranchPrice(productID, saleUnitID, branchID uint, in SaleUnitBranchPriceInput) (*database.TenantProductSaleUnitBranchPrice, error) {
+	if err := supplies.Reject(s.db, productID); err != nil {
+		return nil, err
+	}
 	if _, err := s.getSaleUnitOwnedByProduct(productID, saleUnitID); err != nil {
 		return nil, err
 	}
@@ -2123,6 +2202,9 @@ func (s *ProductService) GetProductBranchPrice(productID, branchID uint) (*datab
 // CreateProductBranchPrice crea el override de precio de un producto para una sucursal. Rechaza si
 // ya existe una fila para ese par — se edita con UpdateProductBranchPrice en vez de duplicar.
 func (s *ProductService) CreateProductBranchPrice(productID, branchID uint, in ProductBranchPriceInput) (*database.TenantProductBranchPrice, error) {
+	if err := supplies.Reject(s.db, productID); err != nil {
+		return nil, err
+	}
 	if _, err := s.getProductForBranchPrice(productID); err != nil {
 		return nil, err
 	}
@@ -2165,6 +2247,9 @@ func isDuplicateProductBranchPriceError(err error) bool {
 
 // UpdateProductBranchPrice actualiza precio y estado activo de un override existente.
 func (s *ProductService) UpdateProductBranchPrice(productID, branchID uint, in ProductBranchPriceInput) (*database.TenantProductBranchPrice, error) {
+	if err := supplies.Reject(s.db, productID); err != nil {
+		return nil, err
+	}
 	if _, err := s.getProductForBranchPrice(productID); err != nil {
 		return nil, err
 	}
@@ -2597,6 +2682,7 @@ func (s *ProductService) ListPreparationAreasWithCounts() ([]PreparationAreaList
 	if err := s.db.Model(&database.TenantProduct{}).
 		Select("preparation_area_id, COUNT(*) AS count").
 		Where("preparation_area_id IN ?", ids).
+		Scopes(supplies.Exclude(s.db)).
 		Group("preparation_area_id").
 		Scan(&counts).Error; err != nil {
 		return nil, err
@@ -2877,6 +2963,14 @@ func (s *ProductService) BulkUpdateCatalog(input BulkUpdateCatalogInput) (*BulkA
 		return nil, errors.New("se requiere al menos un producto")
 	}
 
+	// Publicar, llevar a la carta o quitar el control de stock no aplica a un insumo.
+	if (input.IsRestaurant != nil && *input.IsRestaurant) || (input.ShowInDigitalCatalog != nil && *input.ShowInDigitalCatalog) ||
+		(input.ManageStock != nil && !*input.ManageStock) {
+		if err := supplies.Reject(s.db, input.ProductIDs...); err != nil {
+			return nil, err
+		}
+	}
+
 	updates := make(map[string]interface{})
 	if input.Active != nil {
 		updates["active"] = *input.Active
@@ -2944,5 +3038,6 @@ func linkProductsToBranchStock(tx *gorm.DB, productIDs []uint, branchID uint) er
 	if len(rows) == 0 {
 		return nil
 	}
-	return tx.Create(&rows).Error
+	// Con el índice único, otra operación pudo crear alguna a la vez: se ignora el conflicto.
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }

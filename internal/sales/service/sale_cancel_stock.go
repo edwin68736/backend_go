@@ -46,6 +46,9 @@ func restoreStockFromKardexTx(tx *gorm.DB, sale *database.TenantSale, ref string
 		uid = sale.UserID
 	}
 	inv := invsvc.NewInventoryService(tx)
+	if err := invsvc.LockStockRowsTx(tx, movementStockKeys(outs)); err != nil {
+		return err
+	}
 	for i := range outs {
 		mv := &outs[i]
 		if mv.Quantity <= 0 {
@@ -150,6 +153,21 @@ func RestorePartialStockFromKardexTx(tx *gorm.DB, noteSale *database.TenantSale,
 		uid = noteSale.UserID
 	}
 	inv := invsvc.NewInventoryService(tx)
+	originalIDs := make([]uint, 0, len(noteItems))
+	for _, ni := range noteItems {
+		if ni.OriginalSaleItemID != nil {
+			originalIDs = append(originalIDs, *ni.OriginalSaleItemID)
+		}
+	}
+	var toRestore []database.TenantStockMovement
+	if len(originalIDs) > 0 {
+		if err := tx.Where("sale_item_id IN ? AND type = ?", originalIDs, "out").Find(&toRestore).Error; err != nil {
+			return err
+		}
+	}
+	if err := invsvc.LockStockRowsTx(tx, movementStockKeys(toRestore)); err != nil {
+		return err
+	}
 	for _, ni := range noteItems {
 		if ni.OriginalSaleItemID == nil || ni.Quantity <= 0 {
 			continue
@@ -239,4 +257,13 @@ func releaseSerialsForSaleTx(tx *gorm.DB, items []database.TenantSaleItem) error
 		}
 	}
 	return nil
+}
+
+// movementStockKeys: claves de saldo de unos movimientos, para bloquearlas en orden estable antes de reponer (F0a-3).
+func movementStockKeys(movs []database.TenantStockMovement) []invsvc.StockKey {
+	keys := make([]invsvc.StockKey, 0, len(movs))
+	for _, m := range movs {
+		keys = append(keys, invsvc.StockKey{ProductID: m.ProductID, PresentationID: m.PresentationID, BranchID: m.BranchID})
+	}
+	return keys
 }

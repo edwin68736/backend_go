@@ -15,6 +15,7 @@ import (
 	detraccionsvc "tukifac/internal/detraccion"
 	salecontext "tukifac/internal/fiscal/salecontext"
 	invsvc "tukifac/internal/inventory/service"
+	recipesvc "tukifac/internal/recipes/service"
 	prepaymentsvc "tukifac/internal/prepayment"
 	"tukifac/internal/exportacion"
 	"tukifac/internal/sales/nvdisplay"
@@ -148,6 +149,9 @@ type SaleItemInput struct {
 	// endpoint de ventas jamás puede poblarlo, así que ningún cliente puede autoexcluirse de
 	// validateAuthorizedPrices. Ver sale_price_authorization.go.
 	PriceAuthorized bool `json:"-"`
+	// comboComponents: componentes (producto → cantidad ya multiplicada) del combo de esta línea. Lo llena resolveComboItems; sirve
+	// para descontar las recetas de lo realmente elegido y saber de qué línea salió cada una.
+	comboComponents map[uint]float64
 }
 
 // ExtraStockMovement salida de kardex de un producto que no es línea de la venta
@@ -270,6 +274,10 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	}
 	input.Items = resolvedItems
 	input.ExtraStockMovements = append(input.ExtraStockMovements, comboStock...)
+	// Un insumo no se vende, ni como línea ni como salida de combo o extra, venga el id de donde venga.
+	if err := rejectSupplyLines(s.db, input); err != nil {
+		return nil, err
+	}
 	// SUNAT exige código en cada línea: sin él la venta se guardaba y reventaba recién al
 	// emitir, con el cliente esperando. Se completa antes de calcular nada.
 	fillMissingItemCodes(s.db, input.Items)
@@ -528,6 +536,13 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 	// Validar stock y series antes de la transacción (omitir si la NV ya descontó inventario).
 	emitFromNV := input.IssuedFromNotaSaleID != nil && *input.IssuedFromNotaSaleID > 0
 	skipStockCheck := input.SkipInventory || emitFromNV
+	// F5a: qué insumos consume la venta (nil con el descuento apagado). Un plato con receta no descuenta su propio stock.
+	var consumption *recipesvc.Plan
+	if !skipStockCheck {
+		if consumption, err = planSaleConsumption(s.db, input.Items); err != nil {
+			return nil, err
+		}
+	}
 	if !skipStockCheck {
 		for _, item := range input.Items {
 			if item.ProductID == nil {
@@ -546,6 +561,8 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 					return nil, presErr
 				}
 				switch {
+				case consumption.HasRecipe(product.ID, presentationID(item.PresentationID)):
+					// Se descuentan sus insumos, no su stock.
 				case product.HasVariants && item.PresentationID != nil && *item.PresentationID > 0:
 					var pstock database.TenantProductPresentationStock
 					s.db.Where("presentation_id = ? AND branch_id = ?", *item.PresentationID, input.BranchID).First(&pstock)
@@ -835,7 +852,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 
 		// Crear TenantSalePayment y distribuir cada pago a caja o cuenta bancaria
-		cbSvc := cashbanksvc.NewCashBankService(s.db)
+		cbSvc := cashbanksvc.NewCashBankService(tx) // con tx: no pedir una segunda conexión
 		if !skipPay {
 			payLines := make([]cashbanksvc.PaymentLineInput, 0, len(payments))
 			for _, p := range payments {
@@ -900,6 +917,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 		}
 
 		if skipInv {
+			if emitFromNV {
+				if err := recipesvc.CopyLineCostTx(tx, *input.IssuedFromNotaSaleID, saleItems); err != nil {
+					return err
+				}
+			}
 			if err := s.persistFiscalContextTx(tx, sale, input, seriesLocked); err != nil {
 				return err
 			}
@@ -920,6 +942,20 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 
 		// Descontar stock y marcar seriales como vendidos (productos con series)
 		inv := invsvc.NewInventoryService(tx)
+		// F0a-3: solo ordena los bloqueos de saldo para evitar bloqueos mutuos; no cambia la lógica de la venta.
+		lockKeys := make([]invsvc.StockKey, 0, len(input.Items)+len(input.ExtraStockMovements))
+		for _, it := range input.Items {
+			if it.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: input.BranchID})
+			}
+		}
+		for _, mv := range input.ExtraStockMovements {
+			lockKeys = append(lockKeys, invsvc.StockKey{ProductID: mv.ProductID, BranchID: input.BranchID})
+		}
+		lockKeys = append(lockKeys, consumption.StockKeys(input.BranchID)...)
+		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for i, item := range input.Items {
 			if item.ProductID == nil {
 				continue
@@ -933,6 +969,9 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 				continue
 			}
 			if !product.ManageStock || productIsCatalogService(&product) {
+				continue
+			}
+			if consumption.HasRecipe(product.ID, presentationID(item.PresentationID)) {
 				continue
 			}
 
@@ -1034,7 +1073,7 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			if tx.First(&comp, mv.ProductID).Error != nil {
 				continue
 			}
-			if !comp.ManageStock || productIsCatalogService(&comp) {
+			if !comp.ManageStock || productIsCatalogService(&comp) || consumption.HasRecipe(comp.ID, 0) {
 				continue
 			}
 			if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
@@ -1048,6 +1087,11 @@ func (s *SaleService) Create(input CreateSaleInput) (*database.TenantSale, error
 			}); err != nil {
 				return err
 			}
+		}
+		if err := consumption.ApplyTx(tx, recipesvc.ConsumeInput{
+			SaleID: sale.ID, Number: sale.Number, BranchID: input.BranchID, UserID: input.UserID, Items: saleItems,
+		}); err != nil {
+			return err
 		}
 		if err := s.persistFiscalContextTx(tx, sale, input, seriesLocked); err != nil {
 			return err
@@ -2292,6 +2336,17 @@ type ProfitDetailParams struct {
 // commissions-detail): una fila por línea de venta con su ganancia. Mismo scope que
 // SalesByProduct (ScopeCommercial + status != cancelled) — evita el doble conteo de una boleta/
 // factura emitida por conversión de una NV ya contada, y excluye ventas anuladas.
+// profitCostExpr: costo unitario de la utilidad. Un plato con receta usa el costo de sus insumos al venderse (F6a); sin receta,
+// el costo guardado en la línea o el del producto, como siempre.
+func (s *SaleService) profitCostExpr() string {
+	if database.CachedSchemaProbe(s.db, "column:tenant_sale_items.recipe_cost", func() bool {
+		return s.db.Migrator().HasColumn(&database.TenantSaleItem{}, "recipe_cost")
+	}) {
+		return "COALESCE(tenant_sale_items.recipe_cost, tenant_sale_items.purchase_price, p.purchase_price, 0)"
+	}
+	return "COALESCE(tenant_sale_items.purchase_price, p.purchase_price, 0)"
+}
+
 func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow, ProfitDetailSummary, error) {
 	q := s.db.Table("tenant_sale_items").
 		Select(`tenant_sale_items.id as sale_item_id,
@@ -2304,7 +2359,7 @@ func (s *SaleService) ProfitDetail(params ProfitDetailParams) ([]ProfitDetailRow
 			COALESCE(ct.doc_number, '') as contact_doc,
 			COALESCE(NULLIF(TRIM(p.name), ''), tenant_sale_items.description) as product_name,
 			tenant_sale_items.quantity as quantity,
-			COALESCE(tenant_sale_items.purchase_price, p.purchase_price, 0) as purchase_price,
+			` + s.profitCostExpr() + ` as purchase_price,
 			tenant_sale_items.unit_price as sale_price,
 			tenant_sale_items.subtotal as line_subtotal,
 			tenant_sale_items.line_discount_subtotal as line_discount_subtotal,
@@ -2479,7 +2534,6 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 	}
 
 	ref := "ANULACION VENTA/" + sale.Number
-	cashSvc := cashbanksvc.NewCashBankService(s.db)
 	if cancelBeforeTxHook != nil {
 		cancelBeforeTxHook()
 	}
@@ -2488,10 +2542,10 @@ func (s *SaleService) CancelNotaVenta(id uint, userID uint, reason string) error
 		if err := claimCancellationTx(tx, sale.ID); err != nil {
 			return err
 		}
-		if err := reverseSaleCashTx(tx, cashSvc, &sale, ref, reason, userID); err != nil {
+		if err := reverseSaleCashTx(tx, cashbanksvc.NewCashBankService(tx), &sale, ref, reason, userID); err != nil {
 			return err
 		}
-		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
+		if err := restoreSaleStockTx(tx, &sale, ref, userID); err != nil {
 			return err
 		}
 		if err := releaseSerialsForSaleTx(tx, items); err != nil {
@@ -2530,7 +2584,6 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		return err
 	}
 	ref := "ANULACION VENTA/" + sale.Number
-	cashSvc := cashbanksvc.NewCashBankService(s.db)
 	if cancelBeforeTxHook != nil {
 		cancelBeforeTxHook()
 	}
@@ -2538,7 +2591,7 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		if err := claimCancellationTx(tx, sale.ID); err != nil {
 			return err
 		}
-		if err := restoreStockFromKardexTx(tx, &sale, ref, userID); err != nil {
+		if err := restoreSaleStockTx(tx, &sale, ref, userID); err != nil {
 			return err
 		}
 		if err := releaseSerialsForSaleTx(tx, items); err != nil {
@@ -2546,7 +2599,7 @@ func (s *SaleService) Cancel(id uint, userID uint, reason string) error {
 		}
 		// La anulación por nota de crédito también devuelve el dinero: antes solo revertía
 		// stock y el cobro quedaba vivo en caja, así que el arqueo cuadraba de más.
-		if err := reverseSaleCashTx(tx, cashSvc, &sale, ref, reason, userID); err != nil {
+		if err := reverseSaleCashTx(tx, cashbanksvc.NewCashBankService(tx), &sale, ref, reason, userID); err != nil {
 			return err
 		}
 		cancelNotes := strings.TrimSpace(sale.Notes)

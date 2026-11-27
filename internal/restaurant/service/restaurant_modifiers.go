@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/modifierkind"
 	"tukifac/pkg/money"
 
@@ -70,6 +71,9 @@ func resolveRestaurantOrderItem(tx *gorm.DB, item *NewOrderItem) (*database.Tena
 	}
 	if !product.Active {
 		return nil, errors.New("producto inactivo")
+	}
+	if product.IsSupply {
+		return nil, fmt.Errorf("«%s» %w", product.Name, supplies.ErrNotSellable)
 	}
 	// Un combo no tiene presentaciones ni extras: su precio es fijo + los sobreprecios de las
 	// opciones elegidas. Lo resuelve resolveComboOrderItem, que necesita el unit_price del

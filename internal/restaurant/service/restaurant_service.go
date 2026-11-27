@@ -13,12 +13,14 @@ import (
 	cashbanksvc "tukifac/internal/cashbank/service"
 	invsvc "tukifac/internal/inventory/service"
 	"tukifac/internal/restaurant/staff"
+	recipesvc "tukifac/internal/recipes/service"
 	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
 	"tukifac/pkg/docseries"
 	"tukifac/pkg/gormutil"
 	"tukifac/pkg/money"
 	"tukifac/pkg/saas/docusage"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/tax"
 
 	"golang.org/x/crypto/bcrypt"
@@ -1294,6 +1296,13 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		input.CloseSession = len(comandas) == len(allPending) && len(partialQty) == 0
 	}
 
+	// El cobro de mesa arma las líneas sin pasar por SaleService.Create: se rechaza aquí una comanda que apunte a un insumo.
+	for _, c := range comandas {
+		if err := supplies.RejectPtr(s.db, c.ProductID); err != nil {
+			return nil, err
+		}
+	}
+
 	resolvedCash, err := s.resolveCashSessionForSale(sess.BranchID, input.UserID, input.EmployeeType, input.CashSessionID, input.Payments)
 	if err != nil {
 		return nil, err
@@ -1484,6 +1493,12 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 		billAfterReadHook()
 	}
 
+	// F5a: insumos que consume este cobro (nil con el descuento apagado). Se arma de las comandas, que son lo realmente servido.
+	consumption, err := planBillConsumption(s.db, comandas, mapKeys)
+	if err != nil {
+		return nil, err
+	}
+
 	now := time.Now()
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var lockedSess database.TenantTableSession
@@ -1537,6 +1552,22 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 
 		// Descontar stock y registrar kardex para productos con control de stock
 		inv := invsvc.NewInventoryService(tx)
+		// F0a-3: solo ordena los bloqueos de saldo para evitar bloqueos mutuos; no cambia la lógica del cobro.
+		lockKeys := make([]invsvc.StockKey, 0, len(saleItems)+len(comandas))
+		for _, it := range saleItems {
+			if it.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: sess.BranchID})
+			}
+		}
+		for _, c := range comandas {
+			if c.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *c.ProductID, BranchID: sess.BranchID})
+			}
+		}
+		lockKeys = append(lockKeys, consumption.StockKeys(sess.BranchID)...)
+		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for _, item := range saleItems {
 			if item.ProductID == nil {
 				continue
@@ -1549,7 +1580,7 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			if product.HasCombo {
 				continue
 			}
-			if !product.ManageStock {
+			if !product.ManageStock || consumption.HasRecipe(product.ID, uintValue(item.PresentationID)) {
 				continue
 			}
 			var itemPresentationID *uint
@@ -1578,12 +1609,18 @@ func (s *RestaurantService) BillTable(input BillInput, taxCfg tax.Config) (*data
 			BranchID:  sess.BranchID,
 			Reference: "VENTA/" + sale.Number,
 			UserID:    input.UserID,
+			Skip:      func(productID uint) bool { return consumption.HasRecipe(productID, 0) },
+		}); err != nil {
+			return err
+		}
+		if err := consumption.ApplyTx(tx, recipesvc.ConsumeInput{
+			SaleID: sale.ID, Number: sale.Number, BranchID: sess.BranchID, UserID: input.UserID, Items: saleItems,
 		}); err != nil {
 			return err
 		}
 
 		// Registrar pagos múltiples: distribuir a caja o cuenta bancaria según método
-		cbSvc := cashbanksvc.NewCashBankService(s.db)
+		cbSvc := cashbanksvc.NewCashBankService(tx) // con tx: no pedir una segunda conexión
 		var recordLines []money.SalePaymentLine
 		for _, p := range input.Payments {
 			if p.Amount <= 0 || p.Method == "" {
@@ -1821,8 +1858,8 @@ func (s *RestaurantService) RegisterPayments(saleID uint, payments []PaymentInpu
 		)
 	}
 
-	cbSvc := cashbanksvc.NewCashBankService(s.db)
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		cbSvc := cashbanksvc.NewCashBankService(tx) // con tx: no pedir una segunda conexión
 		var recordLines []money.SalePaymentLine
 		for _, p := range payments {
 			if p.Amount <= 0 || p.Method == "" {

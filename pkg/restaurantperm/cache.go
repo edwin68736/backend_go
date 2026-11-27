@@ -14,7 +14,7 @@ import (
 const cacheTTL = 15 * time.Minute
 
 // PermissionSchemaVersion incrementar al cambiar plantillas EmployeeTypeToKeys / LegacyRoleToKeys.
-const PermissionSchemaVersion uint = 2
+const PermissionSchemaVersion uint = 5
 
 type memEntry struct {
 	keys    []string

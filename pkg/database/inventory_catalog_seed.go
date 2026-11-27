@@ -23,8 +23,10 @@ var inventoryOperationTypeSeeds = []inventoryOpSeed{
 	{Direction: "IN", Code: "OTHER_IN", Name: "Otros", SunatCode: "99", AllowManual: true, RequiresDocument: false, SortOrder: 90},
 	{Direction: "IN", Code: "INVENTORY_ADJUSTMENT_IN", Name: "Ajuste de Inventario (+)", SunatCode: "99", AllowManual: true, RequiresDocument: false, SortOrder: 85},
 	{Direction: "IN", Code: "TRANSFER", Name: "Transferencia entre almacenes", SunatCode: "11", AllowManual: false, RequiresDocument: false, SortOrder: 95},
+	{Direction: "IN", Code: "RECIPE_REVERSAL", Name: "Reversa de receta", SunatCode: "99", AllowManual: false, RequiresDocument: false, SortOrder: 96},
 	// OUT
 	{Direction: "OUT", Code: "SALE", Name: "Venta", SunatCode: "01", AllowManual: false, RequiresDocument: true, SortOrder: 10},
+	{Direction: "OUT", Code: "RECIPE_CONSUMPTION", Name: "Consumo de receta", SunatCode: "10", AllowManual: false, RequiresDocument: false, SortOrder: 15},
 	{Direction: "OUT", Code: "RETURN_OUT", Name: "Devolución entregada", SunatCode: "06", AllowManual: true, RequiresDocument: true, SortOrder: 20},
 	{Direction: "OUT", Code: "DONATION", Name: "Donación", SunatCode: "09", AllowManual: true, RequiresDocument: false, SortOrder: 30},
 	{Direction: "OUT", Code: "PRODUCTION_OUT", Name: "Salida a producción", SunatCode: "10", AllowManual: true, RequiresDocument: false, SortOrder: 40},

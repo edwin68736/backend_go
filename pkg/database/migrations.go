@@ -1107,6 +1107,10 @@ type TenantProduct struct {
 	HasModifiers       bool    `gorm:"default:false" json:"has_modifiers"`
 	HasCombo           bool    `gorm:"default:false" json:"has_combo"`
 	IsRestaurant       bool    `gorm:"default:false" json:"is_restaurant"`
+	// Insumo (V195): se compra y se mueve en inventario, nunca se vende (ver pkg/supplies). Solo lectura para GORM a propósito:
+	// así un tenant todavía sin V195 puede seguir creando productos; se escribe únicamente con supplies.Mark.
+	IsSupply   bool   `gorm:"->;not null;default:false;index" json:"is_supply"`
+	SupplyKind string `gorm:"->;size:12;not null;default:'raw'" json:"-"`
 	// Canales de difusión — independientes de IsRestaurant (que es del módulo Restaurante/comandas).
 	ShowInDigitalCatalog bool `gorm:"default:false" json:"show_in_digital_catalog"`
 	// Reservado para el futuro Menú Digital; sin UI todavía.
@@ -1429,6 +1433,8 @@ type TenantProductStock struct {
 	BranchID  uint      `gorm:"not null;index" json:"branch_id"`
 	Quantity  float64   `gorm:"type:decimal(15,3);default:0" json:"quantity"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// AvgUnitCost (V196): costo promedio, solo insumos. Solo lectura para GORM (lo escribe el servicio de inventario).
+	AvgUnitCost *float64 `gorm:"->;type:decimal(15,6)" json:"-"`
 }
 
 // TenantProductPresentationStock: saldo de stock POR VARIANTE (ej. color/talla) de un producto
@@ -1483,6 +1489,10 @@ type TenantStockMovement struct {
 	PurchaseItemID *uint     `gorm:"index" json:"purchase_item_id,omitempty"`
 	UserID         uint      `gorm:"index" json:"user_id"`
 	CreatedAt      time.Time `json:"created_at"`
+	// V196, solo insumos (solo lectura para GORM): promedio previo, si este movimiento lo cambió y si salió sin costo conocido.
+	AvgBefore   *float64 `gorm:"->;type:decimal(15,6)" json:"-"`
+	CostApplied bool     `gorm:"->;not null;default:false" json:"-"`
+	CostUnknown bool     `gorm:"->;not null;default:false" json:"cost_unknown,omitempty"`
 }
 
 // TenantInventoryOperationType catálogo de tipos de operación (Tabla 12 SUNAT). Seed por migración; sin CRUD.
@@ -1533,7 +1543,7 @@ type TenantInventoryDocumentDetail struct {
 	// presentación con stock propio.
 	PresentationID *uint     `gorm:"index" json:"presentation_id,omitempty"`
 	Quantity       float64   `gorm:"type:decimal(15,3);not null" json:"quantity"`
-	UnitCost       float64   `gorm:"type:decimal(15,2)" json:"unit_cost"`
+	UnitCost       float64   `gorm:"type:decimal(15,6)" json:"unit_cost"` // (15,6) desde V194: costos por gramo/ml
 	SerialsJSON    string    `gorm:"type:text" json:"serials_json,omitempty"`
 	SortOrder      int       `gorm:"not null;default:0" json:"sort_order"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -1569,6 +1579,8 @@ type TenantTransferLog struct {
 	Notes          string     `gorm:"type:text" json:"notes"`
 	CreatedAt      time.Time  `json:"created_at"`
 	RevertedAt     *time.Time `gorm:"index" json:"reverted_at"` // legacy: si no nil, anulada (flujo antiguo)
+	// UnitCost (V196): costo del insumo al despacharlo, congelado para la confirmación o cancelación. Solo lectura para GORM.
+	UnitCost *float64 `gorm:"->;type:decimal(15,6)" json:"-"`
 }
 
 type TenantSale struct {
@@ -2221,6 +2233,8 @@ type TenantPurchase struct {
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+	// IdempotencyKey (V197): solo lectura para GORM; lo escribe el servicio de compras.
+	IdempotencyKey *string `gorm:"->;size:64" json:"-"`
 }
 
 // TenantPurchasePayable cuenta por pagar (CxP) de una compra a crédito — 1:1 con TenantPurchase,
@@ -2728,6 +2742,8 @@ type TenantRestaurantSetting struct {
 	DeletionPin      string    `gorm:"size:72" json:"-"` // hash bcrypt del PIN de anulación (no se expone en JSON)
 	StaffV2Enabled   bool      `gorm:"default:false" json:"staff_v2_enabled"`
 	PermCacheVersion uint      `gorm:"default:0" json:"perm_cache_version"`
+	// RecipesEnabled (V195): módulo de insumos y recetas. Solo lectura para GORM: lo activa el superadmin.
+	RecipesEnabled bool `gorm:"->;not null;default:false" json:"recipes_enabled"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

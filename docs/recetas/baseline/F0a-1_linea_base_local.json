@@ -1,0 +1,96 @@
+{
+  "generated_at": "2026-11-24T17:38:35.6430248-05:00",
+  "db_host": "127.0.0.1",
+  "options": {
+    "branch": 0,
+    "max_detail": 0,
+    "product": 0
+  },
+  "tenants": [
+    {
+      "slug": "demo",
+      "db_name": "saas_tenant_demo",
+      "report": {
+        "summary": {
+          "product_stock_rows": 320,
+          "presentation_stock_rows": 15,
+          "movements": 723,
+          "duplicate_groups": 0,
+          "duplicate_extra_rows": 0,
+          "zero_or_null_key_rows": 0,
+          "mismatches": 2,
+          "stock_without_kardex": 0,
+          "kardex_without_stock": 0,
+          "negative_balances": 0,
+          "chain_breaks": 2,
+          "initial_offsets": 4,
+          "unknown_type_movements": 0
+        },
+        "diffs": [
+          {
+            "category": "DIFERENCIA",
+            "kind": "product",
+            "entity_id": 302,
+            "branch_id": 1,
+            "stock": 9,
+            "kardex_balance": 42,
+            "delta": -33,
+            "last_movement_id": 738,
+            "movements": 28
+          },
+          {
+            "category": "DIFERENCIA",
+            "kind": "product",
+            "entity_id": 309,
+            "branch_id": 1,
+            "stock": 1,
+            "kardex_balance": 6,
+            "delta": -5,
+            "last_movement_id": 648,
+            "movements": 22
+          }
+        ],
+        "chain_breaks": [
+          {
+            "kind": "product",
+            "entity_id": 309,
+            "branch_id": 1,
+            "movement_id": 642,
+            "type": "out",
+            "quantity": 1,
+            "previous_balance": 0,
+            "expected_balance": -1,
+            "stored_balance": 4
+          },
+          {
+            "kind": "product",
+            "entity_id": 302,
+            "branch_id": 1,
+            "movement_id": 737,
+            "type": "out",
+            "quantity": 24,
+            "previous_balance": 9,
+            "expected_balance": -15,
+            "stored_balance": 45
+          }
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "cadenas_rotas": 2,
+    "claves_nulas_o_cero": 0,
+    "diferencias_saldo_vs_kardex": 2,
+    "filas_duplicadas_sobrantes": 0,
+    "filas_saldo_presentacion": 15,
+    "filas_saldo_producto": 320,
+    "grupos_duplicados": 0,
+    "inicios_sin_saldo_previo": 4,
+    "kardex_sin_stock": 0,
+    "movimientos": 723,
+    "saldos_negativos": 0,
+    "stock_sin_kardex": 0,
+    "tenants_auditados": 1,
+    "tenants_con_anomalias": 1
+  }
+}

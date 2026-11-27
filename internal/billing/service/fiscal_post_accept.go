@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	prepaymentsvc "tukifac/internal/prepayment"
+	recipesvc "tukifac/internal/recipes/service"
 	salesvc "tukifac/internal/sales/service"
 	"tukifac/pkg/billingstate"
 	"tukifac/pkg/database"
@@ -150,6 +151,16 @@ func (s *BillingService) applyPartialCreditNoteSideEffects(saleID uint, sale *da
 			slog.Uint64("tenant_id", uint64(s.centralTenantID)),
 			slog.Uint64("nc_sale_id", uint64(saleID)),
 		)
+		// F5a: los insumos de las líneas devueltas. En su propia transacción y repetible: un fallo no impide lo demás.
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			return recipesvc.ReversePartialTx(tx, sale, 0)
+		}); err != nil {
+			logger.L.Warn("nc_partial_restore_supplies_failed",
+				slog.Uint64("tenant_id", uint64(s.centralTenantID)),
+				slog.Uint64("nc_sale_id", uint64(saleID)),
+				slog.Any("error", err),
+			)
+		}
 	}
 
 	// Devuelve el dinero en Cuentas/Bancos si la venta original se cobró ahí (independiente del

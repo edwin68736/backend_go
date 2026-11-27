@@ -34,8 +34,8 @@ func TestV085InventoryDocumentSource(t *testing.T) {
 
 	var opCount int64
 	db.Model(&database.TenantInventoryOperationType{}).Count(&opCount)
-	if opCount != 20 {
-		t.Fatalf("operation types = %d, want 20", opCount)
+	if opCount != 22 {
+		t.Fatalf("operation types = %d, want 22", opCount)
 	}
 
 	if err := mig.Up(db); err != nil {
@@ -43,7 +43,7 @@ func TestV085InventoryDocumentSource(t *testing.T) {
 	}
 	var opCount2 int64
 	db.Model(&database.TenantInventoryOperationType{}).Count(&opCount2)
-	if opCount2 != 20 {
-		t.Fatalf("after re-run operation types = %d, want 20", opCount2)
+	if opCount2 != 22 {
+		t.Fatalf("after re-run operation types = %d, want 22", opCount2)
 	}
 }

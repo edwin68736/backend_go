@@ -81,6 +81,10 @@ type CreatePurchaseInput struct {
 	// PurchaseOrderID: orden de compra (V180) que origina esta compra. La orden pasa a
 	// "received" en la MISMA transacción; 1 orden → 1 compra.
 	PurchaseOrderID *uint
+	// IdempotencyKey: clave del intento; repetirla devuelve la compra ya creada con ErrIdempotentReplay.
+	IdempotencyKey string
+	// RejectDuplicateDocument: no admitir otra compra vigente del mismo proveedor con la misma serie y número.
+	RejectDuplicateDocument bool
 }
 
 // normalizePurchaseCurrency valida moneda (PEN/USD) y TC: USD exige TC > 0; PEN lo descarta.
@@ -184,6 +188,11 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	}
 	if input.Series == "" || input.Number == "" {
 		return nil, errors.New("serie y número del documento son requeridos")
+	}
+	// Antes de validar nada: un reintento de una compra ya guardada no debe fallar porque la caja se cerró después.
+	input.IdempotencyKey = normalizeIdempotencyKey(input.IdempotencyKey)
+	if existing := findByIdempotencyKey(s.db, input.UserID, input.IdempotencyKey); existing != nil {
+		return existing, ErrIdempotentReplay
 	}
 	if err := validatePurchaseItems(input.Items); err != nil {
 		return nil, err
@@ -327,9 +336,20 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 	}
 	docNumber := input.Series + "-" + input.Number
 
-	return purchase, s.db.Transaction(func(tx *gorm.DB) error {
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		if input.RejectDuplicateDocument {
+			if err := ensureNewDocument(tx, input.ContactID, input.Series, input.Number); err != nil {
+				return err
+			}
+		}
 		if err := tx.Create(purchase).Error; err != nil {
 			return err
+		}
+		// La clave se escribe dentro de la transacción: el índice único hace esperar y fallar a un intento simultáneo.
+		if input.IdempotencyKey != "" && IdempotencyReady(tx) {
+			if err := tx.Table("tenant_purchases").Where("id = ?", purchase.ID).Update("idempotency_key", input.IdempotencyKey).Error; err != nil {
+				return err
+			}
 		}
 		if input.PurchaseOrderID != nil && *input.PurchaseOrderID > 0 {
 			if err := posvc.MarkReceivedTx(tx, *input.PurchaseOrderID, purchase.ID, currency); err != nil {
@@ -386,6 +406,16 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		}
 		// Actualizar precios de catálogo, ingresar stock y registrar seriales por cada ítem
 		inv := invsvc.NewInventoryService(tx)
+		// F0a-3: solo ordena los bloqueos de saldo; no cambia la lógica de la compra.
+		lockKeys := make([]invsvc.StockKey, 0, len(input.Items))
+		for _, it := range input.Items {
+			if it.ProductID != nil {
+				lockKeys = append(lockKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: input.BranchID})
+			}
+		}
+		if err := invsvc.LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for i, item := range input.Items {
 			if item.ProductID == nil {
 				continue
@@ -427,6 +457,12 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 			// Costo base en SOLES (la compra en USD se convierte con su TC): lo que entra al precio de
 			// compra del catálogo y al kardex. El costo del documento (item.UnitCost) queda en su moneda.
 			baseUnitCostPEN := baseUnitCost * penFactor
+			if product.IsSupply {
+				baseUnitCostPEN = supplyBaseCost(tx, purchaseItems[i], penFactor, baseQuantity)
+			}
+			if item.UpdateSalePrice && product.IsSupply {
+				return fmt.Errorf("«%s» es un insumo: no tiene precio de venta que actualizar", product.Name)
+			}
 			priceUpdates, err := catalogPriceUpdates(item, baseUnitCostPEN)
 			if err != nil {
 				return err
@@ -489,6 +525,13 @@ func (s *PurchaseService) Create(input CreatePurchaseInput) (*database.TenantPur
 		}
 		return nil
 	})
+	if txErr != nil {
+		// Si otro intento con la misma clave ganó, se devuelve su compra en vez del error.
+		if winner := findByIdempotencyKey(s.db, input.UserID, input.IdempotencyKey); winner != nil {
+			return winner, ErrIdempotentReplay
+		}
+	}
+	return purchase, txErr
 }
 
 type PurchaseListParams struct {
@@ -598,13 +641,18 @@ func (s *PurchaseService) GetItems(purchaseID uint) ([]database.TenantPurchaseIt
 const StatusCancelled = "cancelled"
 
 // Void anula la compra: revierte stock, registra salida en kardex y elimina seriales vinculados.
+// voidBeforeTxHook solo lo usan las pruebas: se ejecuta entre la lectura del estado y la transacción de anulación.
+var voidBeforeTxHook func()
+
+var errPurchaseAlreadyVoided = errors.New("la compra ya está anulada")
+
 func (s *PurchaseService) Void(purchaseID, userID uint) error {
 	var p database.TenantPurchase
 	if err := s.db.First(&p, purchaseID).Error; err != nil {
 		return err
 	}
 	if p.Status == StatusCancelled {
-		return errors.New("la compra ya está anulada")
+		return errPurchaseAlreadyVoided
 	}
 
 	items, err := s.GetItems(purchaseID)
@@ -615,7 +663,20 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 	ref := "ANULACION COMPRA/" + p.Series + "-" + p.Number
 	docNumber := p.Series + "-" + p.Number
 
+	if voidBeforeTxHook != nil {
+		voidBeforeTxHook()
+	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// La lectura de arriba solo da un mensaje rápido; quien decide es este cambio condicional, antes de tocar caja o stock. De
+		// varias anulaciones simultáneas solo una lo consigue; las demás esperan y fallan. Si algo falla después, se revierte con todo.
+		claim := tx.Model(&database.TenantPurchase{}).Where("id = ? AND status <> ?", purchaseID, StatusCancelled).
+			Update("status", StatusCancelled)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return errPurchaseAlreadyVoided
+		}
 		// Si la compra venía de una orden de compra, la orden vuelve a quedar disponible.
 		if p.PurchaseOrderID != nil {
 			if err := posvc.ReleaseOnPurchaseVoidTx(tx, purchaseID); err != nil {
@@ -667,7 +728,17 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 		}
 
 		inv := invsvc.NewInventoryService(tx)
-		for _, item := range items {
+		voidKeys := make([]invsvc.StockKey, 0, len(items))
+		for _, it := range items {
+			if it.ProductID != nil {
+				voidKeys = append(voidKeys, invsvc.StockKey{ProductID: *it.ProductID, PresentationID: it.PresentationID, BranchID: p.BranchID})
+			}
+		}
+		if err := invsvc.LockStockRowsTx(tx, voidKeys); err != nil {
+			return err
+		}
+		for i := len(items) - 1; i >= 0; i-- {
+			item := items[i]
 			if item.ProductID == nil {
 				continue
 			}
@@ -693,8 +764,10 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 				var saleUnitID *uint
 				var saleUnitQuantity, conversionFactor *float64
 				presentationID := item.PresentationID
+				var reverses *uint
 				if err := tx.Where("purchase_item_id = ? AND type = ?", item.ID, "in").
 					First(&original).Error; err == nil {
+					reverses = &original.ID
 					quantity = original.Quantity
 					unitCost = original.UnitCost
 					saleUnitID = original.SaleUnitID
@@ -705,6 +778,7 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 					}
 				}
 				if err := inv.RecordMovementTx(tx, invsvc.MovementInput{
+					ReversesMovementID: reverses,
 					ProductID:        *item.ProductID,
 					PresentationID:   presentationID,
 					BranchID:         p.BranchID,
@@ -727,7 +801,7 @@ func (s *PurchaseService) Void(purchaseID, userID uint) error {
 			}
 		}
 
-		return tx.Model(&database.TenantPurchase{}).Where("id = ?", purchaseID).Update("status", StatusCancelled).Error
+		return nil
 	})
 }
 

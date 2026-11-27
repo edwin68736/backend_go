@@ -10,6 +10,7 @@ import (
 
 	salessvc "tukifac/internal/sales/service"
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/money"
 	"tukifac/pkg/salecurrency"
 	"tukifac/pkg/sunat"
@@ -166,6 +167,9 @@ func (s *QuotationService) buildQuotation(
 			}
 			if !prod.Active {
 				return out, fmt.Errorf("%s: el producto está inactivo", label)
+			}
+			if err := supplies.Reject(s.db, *it.ProductID); err != nil {
+				return out, fmt.Errorf("%s: %w", label, err)
 			}
 			// Línea de catálogo sin descripción: se completa con el nombre del producto.
 			if strings.TrimSpace(it.Description) == "" {

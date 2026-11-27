@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"tukifac/pkg/database"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/categorybranch"
 	"tukifac/pkg/productbranch"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type InventoryService struct {
@@ -57,6 +59,11 @@ type MovementInput struct {
 	SaleUnitID       *uint
 	SaleUnitQuantity *float64
 	ConversionFactor *float64
+	// AllowNegative permite que una salida deje el saldo en negativo (F0a-3). Apagado por defecto: ningún llamador actual lo usa.
+	AllowNegative bool
+	// ReversesMovementID: este movimiento anula a otro (compra o documento). En un insumo usa su costo y, si corresponde, devuelve
+	// el promedio al de antes.
+	ReversesMovementID *uint
 }
 
 func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *MovementInput) error {
@@ -87,36 +94,44 @@ func (s *InventoryService) resolveMovementOperationType(tx *gorm.DB, input *Move
 //
 // Si el producto no existe devuelve nil: quien llama ya valida eso por su cuenta.
 func CheckProductPresentation(tx *gorm.DB, productID uint, presentationID *uint, requireActive bool) (productName, presentationName string, err error) {
+	_, productName, presentationName, err = checkProductPresentation(tx, productID, presentationID, requireActive)
+	return productName, presentationName, err
+}
+
+// checkProductPresentation devuelve además si el producto es un insumo (se lee la fila completa: en un tenant sin V195 la columna no
+// está y queda en false).
+func checkProductPresentation(tx *gorm.DB, productID uint, presentationID *uint, requireActive bool) (isSupply bool, productName, presentationName string, err error) {
 	var product database.TenantProduct
-	if tx.Select("id", "name", "has_variants").First(&product, productID).Error != nil {
-		return "", "", nil
+	if tx.First(&product, productID).Error != nil {
+		return false, "", "", nil
 	}
+	isSupply = product.IsSupply
 	byPresentation := presentationID != nil && *presentationID > 0
 	if !product.HasVariants {
 		if byPresentation {
-			return product.Name, "", fmt.Errorf("«%s» no maneja presentaciones", product.Name)
+			return isSupply, product.Name, "", fmt.Errorf("«%s» no maneja presentaciones", product.Name)
 		}
-		return product.Name, "", nil
+		return isSupply, product.Name, "", nil
 	}
 	if !byPresentation {
 		var n int64
 		tx.Model(&database.TenantProductPresentation{}).Where("product_id = ?", productID).Count(&n)
 		if n == 0 {
-			return product.Name, "", nil // marcado con variantes pero sin ninguna creada: sin qué elegir
+			return isSupply, product.Name, "", nil // marcado con variantes pero sin ninguna creada: sin qué elegir
 		}
-		return product.Name, "", fmt.Errorf("«%s» maneja stock por presentación: seleccione una presentación", product.Name)
+		return isSupply, product.Name, "", fmt.Errorf("«%s» maneja stock por presentación: seleccione una presentación", product.Name)
 	}
 	var pres database.TenantProductPresentation
 	if tx.First(&pres, *presentationID).Error != nil {
-		return product.Name, "", fmt.Errorf("la presentación indicada no existe para «%s»", product.Name)
+		return isSupply, product.Name, "", fmt.Errorf("la presentación indicada no existe para «%s»", product.Name)
 	}
 	if pres.ProductID != productID {
-		return product.Name, pres.Name, fmt.Errorf("la presentación «%s» no pertenece a «%s»", pres.Name, product.Name)
+		return isSupply, product.Name, pres.Name, fmt.Errorf("la presentación «%s» no pertenece a «%s»", pres.Name, product.Name)
 	}
 	if requireActive && !pres.Active {
-		return product.Name, pres.Name, fmt.Errorf("la presentación «%s» de «%s» está inactiva", pres.Name, product.Name)
+		return isSupply, product.Name, pres.Name, fmt.Errorf("la presentación «%s» de «%s» está inactiva", pres.Name, product.Name)
 	}
-	return product.Name, pres.Name, nil
+	return isSupply, product.Name, pres.Name, nil
 }
 
 // stockLabel arma «Producto» o «Producto» (Presentación) para los mensajes de stock.
@@ -135,33 +150,46 @@ func stockLabel(productName, presentationName string) string {
 // Si input.PresentationID viene informado, el saldo afectado es el de esa variante
 // (TenantProductPresentationStock) en vez del agregado del producto (TenantProductStock).
 func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) error {
+	_, err := s.recordMovementTx(tx, input)
+	return err
+}
+
+// RecordMovementResultTx es RecordMovementTx devolviendo el movimiento creado (el consumo de recetas necesita su costo).
+func (s *InventoryService) RecordMovementResultTx(tx *gorm.DB, input MovementInput) (database.TenantStockMovement, error) {
+	return s.recordMovementTx(tx, input)
+}
+
+// recordMovementTx es RecordMovementTx devolviendo el movimiento creado (con su costo, si es un insumo).
+func (s *InventoryService) recordMovementTx(tx *gorm.DB, input MovementInput) (database.TenantStockMovement, error) {
+	var none database.TenantStockMovement
 	if input.ProductID == 0 || input.BranchID == 0 {
-		return errors.New("producto y sucursal son requeridos")
+		return none, errors.New("producto y sucursal son requeridos")
 	}
 	if input.Quantity <= 0 {
-		return errors.New("la cantidad debe ser mayor a cero")
+		return none, errors.New("la cantidad debe ser mayor a cero")
 	}
 	if err := s.resolveMovementOperationType(tx, &input); err != nil {
-		return err
+		return none, err
 	}
 	isOut := input.Type == "out" || input.Type == "adjustment_out"
-	productName, presentationName, err := CheckProductPresentation(tx, input.ProductID, input.PresentationID, isOut)
+	isSupply, productName, presentationName, err := checkProductPresentation(tx, input.ProductID, input.PresentationID, isOut)
 	if err != nil {
-		return err
+		return none, err
 	}
 
 	byPresentation := input.PresentationID != nil && *input.PresentationID > 0
 
-	var currentQty float64
-	var stock database.TenantProductStock
-	var pstock database.TenantProductPresentationStock
+	// Fila de saldo bloqueada (F0a-3): el saldo se lee ya confirmado por quien lo tuviera, así dos movimientos simultáneos no se
+	// pisan. El bloqueo dura hasta el fin de la transacción del llamador.
+	target := stockTarget{entityID: input.ProductID, branchID: input.BranchID}
 	if byPresentation {
-		tx.Where("presentation_id = ? AND branch_id = ?", *input.PresentationID, input.BranchID).First(&pstock)
-		currentQty = pstock.Quantity
-	} else {
-		tx.Where("product_id = ? AND branch_id = ?", input.ProductID, input.BranchID).First(&stock)
-		currentQty = stock.Quantity
+		target = stockTarget{byPresentation: true, entityID: *input.PresentationID, branchID: input.BranchID}
 	}
+	row, hasRow, err := acquireStockRow(tx, target)
+	if err != nil {
+		return none, err
+	}
+	currentQty := row.Quantity
 
 	var newBalance float64
 	switch input.Type {
@@ -169,14 +197,14 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 		newBalance = currentQty + input.Quantity
 	case "out", "adjustment_out":
 		newBalance = currentQty - input.Quantity
-		if newBalance < 0 {
-			return fmt.Errorf("stock insuficiente para %s: requiere %.2f, hay %.2f",
+		if newBalance < 0 && !input.AllowNegative {
+			return none, fmt.Errorf("%w para %s: requiere %.2f, hay %.2f", ErrInsufficientStock,
 				stockLabel(productName, presentationName), input.Quantity, currentQty)
 		}
 	case "adjustment":
 		newBalance = input.Quantity
 	default:
-		return errors.New("tipo de movimiento inválido")
+		return none, errors.New("tipo de movimiento inválido")
 	}
 
 	movement := database.TenantStockMovement{
@@ -188,8 +216,17 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 		SaleUnitID: input.SaleUnitID, SaleUnitQuantity: input.SaleUnitQuantity, ConversionFactor: input.ConversionFactor,
 		CreatedAt: time.Now(),
 	}
+	// Costo de insumos (F2b): se decide con el saldo ya bloqueado, antes de crear el movimiento.
+	var cost supplyCost
+	costed := isSupply && !byPresentation && SupplyCostsReady(tx)
+	if costed {
+		if cost, err = planSupplyCost(tx, input, currentQty); err != nil {
+			return none, err
+		}
+		movement.UnitCost = cost.unitCost
+	}
 	if err := tx.Create(&movement).Error; err != nil {
-		return err
+		return none, err
 	}
 
 	// Entra stock a una sucursal donde el producto no está asignado (y sí lo está a otras):
@@ -197,31 +234,40 @@ func (s *InventoryService) RecordMovementTx(tx *gorm.DB, input MovementInput) er
 	// sin asignación (= todas) no se toca. Ver pkg/productbranch.
 	if input.Type == "in" || input.Type == "adjustment_in" || (input.Type == "adjustment" && newBalance > 0) {
 		if err := productbranch.AssignIfRestricted(tx, input.ProductID, input.BranchID); err != nil {
-			return err
+			return none, err
 		}
 		// Y si su categoría es exclusiva de otra sucursal, se amplía a todas: el producto ya se vende también aquí y no
 		// debe quedar sin categoría visible (ver categorybranch.WidenForBranch).
 		if err := categorybranch.WidenForBranch(tx, input.ProductID, input.BranchID); err != nil {
-			return err
+			return none, err
 		}
 	}
 
-	if byPresentation {
-		if pstock.ID == 0 {
+	if err := saveStockBalance(tx, target, input, row, hasRow, newBalance); err != nil {
+		return none, err
+	}
+	if costed {
+		if err := saveSupplyCost(tx, movement.ID, input.ProductID, input.BranchID, cost); err != nil {
+			return none, err
+		}
+		movement.CostUnknown, movement.CostApplied = cost.unknown, cost.applied
+	}
+	return movement, nil
+}
+
+func saveStockBalance(tx *gorm.DB, target stockTarget, input MovementInput, row stockRowState, hasRow bool, newBalance float64) error {
+	byPresentation := target.byPresentation
+	if !hasRow { // solo con el interruptor INVENTORY_ROW_LOCKS=off: comportamiento anterior
+		if byPresentation {
 			return tx.Create(&database.TenantProductPresentationStock{
 				PresentationID: *input.PresentationID, BranchID: input.BranchID, Quantity: newBalance,
 			}).Error
 		}
-		return tx.Model(&pstock).Updates(map[string]interface{}{
-			"quantity": newBalance, "updated_at": time.Now(),
-		}).Error
-	}
-	if stock.ID == 0 {
 		return tx.Create(&database.TenantProductStock{
 			ProductID: input.ProductID, BranchID: input.BranchID, Quantity: newBalance,
 		}).Error
 	}
-	return tx.Model(&stock).Updates(map[string]interface{}{
+	return tx.Model(target.model()).Where("id = ?", row.ID).Updates(map[string]interface{}{
 		"quantity": newBalance, "updated_at": time.Now(),
 	}).Error
 }
@@ -239,7 +285,8 @@ func (s *InventoryService) EnsureProductBranchLink(productID, branchID uint) err
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	return s.db.Create(&database.TenantProductStock{
+	// Con el índice único, otra petición pudo crearla a la vez: se ignora el conflicto.
+	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&database.TenantProductStock{
 		ProductID: productID,
 		BranchID:  branchID,
 		Quantity:  0,
@@ -329,7 +376,7 @@ func (s *InventoryService) GetPresentationStockByProduct(productID, branchID uin
 // RecordMovement registra un movimiento de inventario y actualiza el stock (fuera de una
 // transacción existente). Envuelve RecordMovementTx en su propia transacción.
 func (s *InventoryService) RecordMovement(input MovementInput) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
 		return s.RecordMovementTx(tx, input)
 	})
 }
@@ -340,8 +387,20 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 		return errors.New("las sucursales origen y destino deben ser diferentes")
 	}
 
+	// Salida, entrada y registro van juntos: si algo falla, no queda stock fuera de las dos sucursales.
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		return s.transferTx(tx, productID, fromBranchID, toBranchID, quantity, userID, notes)
+	})
+}
+
+func (s *InventoryService) transferTx(tx *gorm.DB, productID, fromBranchID, toBranchID uint, quantity float64, userID uint, notes string) error {
+	if err := LockStockRowsTx(tx, []StockKey{
+		{ProductID: productID, BranchID: fromBranchID}, {ProductID: productID, BranchID: toBranchID},
+	}); err != nil {
+		return err
+	}
 	ref := "TRANSFER"
-	if err := s.RecordMovement(MovementInput{
+	sent, err := s.recordMovementTx(tx, MovementInput{
 		ProductID:     productID,
 		BranchID:      fromBranchID,
 		Type:          "out",
@@ -350,11 +409,13 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 		Notes:         notes,
 		UserID:        userID,
 		OperationCode: "TRANSFER",
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
-	if err := s.RecordMovement(MovementInput{
+	if err := s.RecordMovementTx(tx, MovementInput{
+		UnitCost:      frozenCost(sent),
 		ProductID:     productID,
 		BranchID:      toBranchID,
 		Type:          "in",
@@ -368,7 +429,7 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 	}
 
 	// Registrar en log para poder anular
-	return s.db.Create(&database.TenantTransferLog{
+	return tx.Create(&database.TenantTransferLog{
 		ProductID:    productID,
 		FromBranchID: fromBranchID,
 		ToBranchID:   toBranchID,
@@ -378,6 +439,21 @@ func (s *InventoryService) Transfer(productID, fromBranchID, toBranchID uint, qu
 		Notes:        notes,
 		CreatedAt:    time.Now(),
 	}).Error
+}
+
+// frozenCost: costo con el que salió la mercadería (0 si no es un insumo o no se conoce).
+func frozenCost(m database.TenantStockMovement) float64 {
+	if m.CostUnknown {
+		return 0
+	}
+	return m.UnitCost
+}
+
+func logCost(l database.TenantTransferLog) float64 {
+	if l.UnitCost == nil {
+		return 0
+	}
+	return *l.UnitCost
 }
 
 // TransferByProduct transfiere stock: si el producto maneja series, usa TransferWithSerials con los primeros N seriales disponibles; si no, usa Transfer por cantidad.
@@ -452,13 +528,15 @@ func (s *InventoryService) TransferWithSerials(productID, fromBranchID, toBranch
 		// Reasignar seriales: cambiar branch_id a destino (disponibles de inmediato)
 		// Para un flujo de confirmación, cambiar Status a "reserved" hasta que el destino confirme recepción
 		for _, serial := range serials {
-			tx.Model(&database.TenantProductSerial{}).
+			if err := tx.Model(&database.TenantProductSerial{}).
 				Where("product_id = ? AND branch_id = ? AND serial = ?", productID, fromBranchID, serial).
 				Updates(map[string]interface{}{
 					"branch_id":  toBranchID,
 					"status":     "available",
 					"updated_at": time.Now(),
-				})
+				}).Error; err != nil {
+				return err
+			}
 		}
 
 		serialsJSON, _ := json.Marshal(serials)
@@ -497,10 +575,31 @@ func (s *InventoryService) ReverseTransfer(logID, userID uint) error {
 	if err := s.db.First(&logRow, logID).Error; err != nil {
 		return err
 	}
+	if logRow.TransferID != nil {
+		// El destino puede no haber recibido nada (pendiente o cancelada): revertir por línea movería stock ajeno.
+		return errors.New("esta transferencia no se anula por línea: cancélala desde la transferencia")
+	}
 	if logRow.RevertedAt != nil {
-		return errors.New("la transferencia ya fue anulada")
+		return errTransferAlreadyReverted
 	}
 
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		// Primero se reclama la línea: una segunda anulación simultánea espera aquí y luego no encuentra nada que reclamar.
+		claim := tx.Model(&database.TenantTransferLog{}).
+			Where("id = ? AND reverted_at IS NULL", logRow.ID).Update("reverted_at", time.Now())
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			return errTransferAlreadyReverted
+		}
+		return NewInventoryService(tx).reverseMovements(logRow, userID)
+	})
+}
+
+var errTransferAlreadyReverted = errors.New("la transferencia ya fue anulada")
+
+func (s *InventoryService) reverseMovements(logRow database.TenantTransferLog, userID uint) error {
 	notes := "Anulación transferencia"
 	// Revertir: mover de destino (ToBranchID) hacia origen (FromBranchID)
 	if logRow.SerialsJSON != "" {
@@ -516,9 +615,7 @@ func (s *InventoryService) ReverseTransfer(logID, userID uint) error {
 			return err
 		}
 	}
-
-	now := time.Now()
-	return s.db.Model(&logRow).Update("reverted_at", now).Error
+	return nil
 }
 
 // ListTransferLogs devuelve el historial de transferencias (líneas) para compatibilidad.
@@ -565,6 +662,13 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 		transferIDOut = tr.ID
 
 		ref := "TRANSFER-PENDING"
+		lockKeys := make([]StockKey, 0, len(lines))
+		for _, line := range lines {
+			lockKeys = append(lockKeys, StockKey{ProductID: line.ProductID, PresentationID: line.PresentationID, BranchID: fromBranchID})
+		}
+		if err := LockStockRowsTx(tx, lockKeys); err != nil {
+			return err
+		}
 		for _, line := range lines {
 			if line.ProductID == 0 || line.Quantity <= 0 {
 				return errors.New("producto y cantidad requeridos en cada línea")
@@ -613,11 +717,12 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 			}
 
 			// Salida en origen
-			if err := s.RecordMovementTx(tx, MovementInput{
+			sent, err := s.recordMovementTx(tx, MovementInput{
 				ProductID: line.ProductID, PresentationID: line.PresentationID, BranchID: fromBranchID, Type: "out",
 				Quantity: qty, Reference: ref, Notes: notes, UserID: userID,
 				OperationCode: "TRANSFER", TransferID: &tr.ID,
-			}); err != nil {
+			})
+			if err != nil {
 				return err
 			}
 
@@ -636,6 +741,12 @@ func (s *InventoryService) CreateTransferWithLines(fromBranchID, toBranchID, use
 			if err := tx.Create(&logRow).Error; err != nil {
 				return err
 			}
+			// Insumo: se guarda el costo despachado para confirmar o cancelar con él.
+			if cost := frozenCost(sent); cost > 0 && product.IsSupply && SupplyCostsReady(tx) {
+				if err := tx.Table("tenant_transfer_logs").Where("id = ?", logRow.ID).Update("unit_cost", cost).Error; err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})
@@ -652,16 +763,26 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 		return err
 	}
 	if tr.Status != "pending" {
-		return errors.New("solo se puede confirmar una transferencia en estado pendiente")
+		return errNotPendingConfirm
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		now := time.Now()
+		// La lectura de arriba solo da un mensaje rápido; quien decide es este cambio condicional, que además deja la cabecera
+		// bloqueada hasta el final: de varias confirmaciones o cancelaciones simultáneas solo una encuentra «pending».
+		if err := claimPendingTransfer(tx, transferID, map[string]interface{}{
+			"status": "confirmed", "confirmed_at": now, "confirmed_by": userID,
+		}, errNotPendingConfirm); err != nil {
+			return err
+		}
 		var logs []database.TenantTransferLog
-		if err := tx.Where("transfer_id = ?", transferID).Find(&logs).Error; err != nil {
+		if err := tx.Where("transfer_id = ?", transferID).Order("id").Find(&logs).Error; err != nil {
+			return err
+		}
+		if err := lockTransferStock(tx, logs, func(l database.TenantTransferLog) uint { return l.ToBranchID }); err != nil {
 			return err
 		}
 		ref := "TRANSFER-CONFIRMED"
-		now := time.Now()
 		for _, logRow := range logs {
 			if logRow.SerialsJSON != "" {
 				var serials []string
@@ -688,18 +809,40 @@ func (s *InventoryService) ConfirmTransfer(transferID, userID uint) error {
 			// Entrada en destino
 			if err := s.RecordMovementTx(tx, MovementInput{
 				ProductID: logRow.ProductID, PresentationID: logRow.PresentationID, BranchID: logRow.ToBranchID, Type: "in",
-				Quantity: logRow.Quantity, Reference: ref, Notes: logRow.Notes, UserID: userID,
+				Quantity: logRow.Quantity, UnitCost: logCost(logRow), Reference: ref, Notes: logRow.Notes, UserID: userID,
 				OperationCode: "TRANSFER", TransferID: &transferID,
 			}); err != nil {
 				return err
 			}
 		}
-		return tx.Model(&tr).Updates(map[string]interface{}{
-			"status":       "confirmed",
-			"confirmed_at": now,
-			"confirmed_by": userID,
-		}).Error
+		return nil
 	})
+}
+
+var (
+	errNotPendingConfirm = errors.New("solo se puede confirmar una transferencia en estado pendiente")
+	errNotPendingCancel  = errors.New("solo se puede cancelar una transferencia en estado pendiente")
+)
+
+// claimPendingTransfer cambia el estado solo si sigue pendiente. Si la transacción falla, el cambio se revierte con ella.
+func claimPendingTransfer(tx *gorm.DB, transferID uint, changes map[string]interface{}, notPending error) error {
+	res := tx.Model(&database.TenantTransfer{}).Where("id = ? AND status = ?", transferID, "pending").Updates(changes)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return notPending
+	}
+	return nil
+}
+
+// lockTransferStock toma los saldos de todas las líneas en orden estable (evita interbloqueos entre traslados).
+func lockTransferStock(tx *gorm.DB, logs []database.TenantTransferLog, branchOf func(database.TenantTransferLog) uint) error {
+	keys := make([]StockKey, 0, len(logs))
+	for _, l := range logs {
+		keys = append(keys, StockKey{ProductID: l.ProductID, PresentationID: l.PresentationID, BranchID: branchOf(l)})
+	}
+	return LockStockRowsTx(tx, keys)
 }
 
 // CancelTransfer cancela una transferencia pendiente: devuelve stock/series al origen. Solo permitido si status = pending.
@@ -709,12 +852,18 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 		return err
 	}
 	if tr.Status != "pending" {
-		return errors.New("solo se puede cancelar una transferencia en estado pendiente")
+		return errNotPendingCancel
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return runInventoryTx(s.db, func(tx *gorm.DB) error {
+		if err := claimPendingTransfer(tx, transferID, map[string]interface{}{"status": "cancelled"}, errNotPendingCancel); err != nil {
+			return err
+		}
 		var logs []database.TenantTransferLog
-		if err := tx.Where("transfer_id = ?", transferID).Find(&logs).Error; err != nil {
+		if err := tx.Where("transfer_id = ?", transferID).Order("id").Find(&logs).Error; err != nil {
+			return err
+		}
+		if err := lockTransferStock(tx, logs, func(l database.TenantTransferLog) uint { return l.FromBranchID }); err != nil {
 			return err
 		}
 		ref := "TRANSFER-CANCELLED"
@@ -738,13 +887,13 @@ func (s *InventoryService) CancelTransfer(transferID, userID uint) error {
 			// Devolver stock al origen (entrada en origen = revertir la salida)
 			if err := s.RecordMovementTx(tx, MovementInput{
 				ProductID: logRow.ProductID, PresentationID: logRow.PresentationID, BranchID: logRow.FromBranchID, Type: "in",
-				Quantity: logRow.Quantity, Reference: ref, Notes: "Cancelación transferencia", UserID: userID,
+				Quantity: logRow.Quantity, UnitCost: logCost(logRow), Reference: ref, Notes: "Cancelación transferencia", UserID: userID,
 				OperationCode: "TRANSFER", TransferID: &transferID,
 			}); err != nil {
 				return err
 			}
 		}
-		return tx.Model(&tr).Update("status", "cancelled").Error
+		return nil
 	})
 }
 
@@ -1028,7 +1177,11 @@ func (s *InventoryService) GetKardex(params KardexParams) ([]database.TenantStoc
 	if needProductJoin {
 		q = q.Joins("INNER JOIN tenant_products p ON p.id = tenant_stock_movements.product_id")
 		if params.RestaurantOnly {
-			q = q.Where("p.is_restaurant = ? AND p.manage_stock = ?", true, true)
+			if supplies.Ready(s.db) {
+				q = q.Where("(p.is_restaurant = ? OR p.is_supply = ?) AND p.manage_stock = ?", true, true, true)
+			} else {
+				q = q.Where("p.is_restaurant = ? AND p.manage_stock = ?", true, true)
+			}
 		}
 		if params.CategoryID > 0 {
 			q = q.Where("p.category_id = ?", params.CategoryID)
@@ -1095,7 +1248,7 @@ func (s *InventoryService) GetKardex(params KardexParams) ([]database.TenantStoc
 		q = q.Offset(params.Offset).Limit(params.Limit)
 	}
 
-	err := q.Order("tenant_stock_movements.created_at DESC").Find(&movements).Error
+	err := q.Order("tenant_stock_movements.created_at DESC, tenant_stock_movements.id DESC").Find(&movements).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1114,6 +1267,7 @@ type StockSummary struct {
 	Quantity    float64
 	MinStock    float64
 	IsLow       bool
+	IsSupply    bool // para rotularlo: los insumos sí cuentan en inventario y stock bajo
 }
 
 func (s *InventoryService) StockSummary(branchID uint) ([]StockSummary, error) {
@@ -1125,11 +1279,16 @@ func (s *InventoryService) StockSummary(branchID uint) ([]StockSummary, error) {
 		BranchName  string  `json:"branch_name"`
 		Quantity    float64 `json:"quantity"`
 		MinStock    float64 `json:"min_stock"`
+		IsSupply    bool    `json:"is_supply"`
 	}
 
+	columns := "ps.product_id, p.name as product_name, p.code as product_code, ps.branch_id, b.name as branch_name, ps.quantity, p.min_stock"
+	if supplies.Ready(s.db) {
+		columns += ", p.is_supply"
+	}
 	var results []result
 	q := s.db.Table("tenant_product_stocks ps").
-		Select("ps.product_id, p.name as product_name, p.code as product_code, ps.branch_id, b.name as branch_name, ps.quantity, p.min_stock").
+		Select(columns).
 		Joins("JOIN tenant_products p ON p.id = ps.product_id").
 		Joins("JOIN tenant_branches b ON b.id = ps.branch_id").
 		Where("p.manage_stock = ? AND p.active = ?", true, true)
@@ -1153,6 +1312,7 @@ func (s *InventoryService) StockSummary(branchID uint) ([]StockSummary, error) {
 			Quantity:    r.Quantity,
 			MinStock:    r.MinStock,
 			IsLow:       r.Quantity <= r.MinStock,
+			IsSupply:    r.IsSupply,
 		}
 	}
 	return summaries, nil

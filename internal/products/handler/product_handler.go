@@ -22,6 +22,7 @@ import (
 	"tukifac/pkg/saas"
 	"tukifac/pkg/tax"
 	"tukifac/pkg/tenantstorage"
+	"tukifac/pkg/supplies"
 	"tukifac/pkg/uploadlimits"
 
 	"github.com/gofiber/fiber/v3"
@@ -670,6 +671,9 @@ func (h *ProductHandler) SearchAPI(c fiber.Ctx) error {
 		CombosOnly:        c.Query("combos_only") == "true" || c.Query("combos_only") == "1",
 		ExcludeCombos:     c.Query("exclude_combos") == "true" || c.Query("exclude_combos") == "1",
 		PreparationArea:   c.Query("preparation_area"),
+	}
+	if mode := supplies.ParseMode(c.Query("supplies")); mode != supplies.ModeExclude && middleware.CanListSupplies(c) {
+		params.SupplyMode = mode
 	}
 	if prepAreaID, err := strconv.ParseUint(c.Query("preparation_area_id"), 10, 32); err == nil && prepAreaID > 0 {
 		params.PreparationAreaID = uint(prepAreaID)

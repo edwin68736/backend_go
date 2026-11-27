@@ -39,8 +39,8 @@ func TestV083InventoryIngressEgress_SeedIdempotent(t *testing.T) {
 	if err := db.Model(&database.TenantInventoryOperationType{}).Count(&opCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if opCount != 20 {
-		t.Fatalf("operation types = %d, want 20", opCount)
+	if opCount != 22 {
+		t.Fatalf("operation types = %d, want 22", opCount)
 	}
 
 	var seriesCount int64
@@ -66,8 +66,8 @@ func TestV083InventoryIngressEgress_SeedIdempotent(t *testing.T) {
 	}
 	var opCount2 int64
 	db.Model(&database.TenantInventoryOperationType{}).Count(&opCount2)
-	if opCount2 != 20 {
-		t.Fatalf("after re-run operation types = %d, want 20", opCount2)
+	if opCount2 != 22 {
+		t.Fatalf("after re-run operation types = %d, want 22", opCount2)
 	}
 }
 

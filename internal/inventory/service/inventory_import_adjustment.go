@@ -338,6 +338,19 @@ func (s *InventoryDocumentService) resolveImportAdjustment(
 		}
 
 		unitCost := avgCosts[product.ID]
+		lineCost := unitCost
+		if product.IsSupply && SupplyCostsReady(s.db) {
+			// Un conteo no cambia el promedio de un insumo: se muestra el vigente y la línea viaja sin costo (el movimiento se
+			// valoriza al promedio dentro del bloqueo de la fila).
+			avg, err := readAvgCost(s.db, product.ID, branchID)
+			if err != nil {
+				return nil, nil, nil, ImportAdjustmentPreviewSummary{}, err
+			}
+			unitCost, lineCost = 0, 0
+			if avg != nil {
+				unitCost = *avg
+			}
+		}
 		if delta > 0 {
 			pr.Direction = "IN"
 			pr.UnitCost = unitCost
@@ -349,7 +362,7 @@ func (s *InventoryDocumentService) resolveImportAdjustment(
 			inLines = append(inLines, DocumentLineInput{
 				ProductID: product.ID,
 				Quantity:  delta,
-				UnitCost:  unitCost,
+				UnitCost:  lineCost,
 			})
 		} else {
 			qty := -delta
@@ -369,7 +382,7 @@ func (s *InventoryDocumentService) resolveImportAdjustment(
 			outLines = append(outLines, DocumentLineInput{
 				ProductID: product.ID,
 				Quantity:  qty,
-				UnitCost:  unitCost,
+				UnitCost:  lineCost,
 			})
 		}
 	}

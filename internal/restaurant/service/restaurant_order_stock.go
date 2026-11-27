@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	recipesvc "tukifac/internal/recipes/service"
 	"tukifac/pkg/database"
 
 	"gorm.io/gorm"
@@ -44,6 +45,10 @@ func checkOrderItemStock(
 	key := orderStockKey{productID: product.ID}
 	if item.PresentationID != nil {
 		key.presentationID = *item.PresentationID
+	}
+	// F5a: con el descuento encendido un plato con receta no descuenta su stock, así que tampoco se le exige al pedirlo.
+	if recipesvc.SkipsOwnStock(tx, product.ID, key.presentationID) {
+		return nil
 	}
 	requested[key] += item.Quantity
 

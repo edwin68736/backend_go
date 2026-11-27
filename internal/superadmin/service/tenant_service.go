@@ -565,6 +565,37 @@ func (s *TenantService) GetModules(tenantID uint) ([]database.TenantModule, erro
 // SetModule: activación/desactivación MANUAL de un módulo a un tenant por el superadmin
 // (cortesía o revocación puntual). Marca source='manual' para que la decisión sobreviva a la
 // reconciliación con el plan (ver saas.ReconcileTenantModulesFromPlan).
+// SetRestaurantRecipes enciende o apaga insumos y recetas (restaurant_recipes) en la BD de una empresa.
+func (s *TenantService) SetRestaurantRecipes(tenantID uint, enabled bool) error {
+	var tenant database.Tenant
+	if err := s.db.First(&tenant, tenantID).Error; err != nil {
+		return errors.New("empresa no encontrada")
+	}
+	tenantDB, err := database.GetTenantDB(tenant.DBName)
+	if err != nil {
+		return fmt.Errorf("conectando BD del tenant: %w", err)
+	}
+	defer database.ReleaseTenantDB(tenant.DBName)
+	return database.SetRecipesEnabled(tenantDB, enabled)
+}
+
+// GetRestaurantRecipes: estado del módulo de una empresa. available=false si su BD aún no tiene la migración V195.
+func (s *TenantService) GetRestaurantRecipes(tenantID uint) (enabled, available bool, err error) {
+	var tenant database.Tenant
+	if err := s.db.First(&tenant, tenantID).Error; err != nil {
+		return false, false, errors.New("empresa no encontrada")
+	}
+	tenantDB, err := database.GetTenantDB(tenant.DBName)
+	if err != nil {
+		return false, false, fmt.Errorf("conectando BD del tenant: %w", err)
+	}
+	defer database.ReleaseTenantDB(tenant.DBName)
+	if !tenantDB.Migrator().HasColumn(&database.TenantRestaurantSetting{}, "recipes_enabled") {
+		return false, false, nil
+	}
+	return database.RecipesEnabled(tenantDB), true, nil
+}
+
 func (s *TenantService) SetModule(tenantID uint, moduleKey string, enabled bool) error {
 	var mod database.TenantModule
 	err := s.db.Where("tenant_id = ? AND module_key = ?", tenantID, moduleKey).First(&mod).Error
