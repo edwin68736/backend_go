@@ -72,6 +72,7 @@ Trabajo:
 - [x] Quién ve la utilidad: `/api/sales/profit-detail` exige `reports.profit`
 
 ### 3.4 Antes de dar el módulo por terminado
+- [x] Factura y boleta con receta desde la pantalla, contra SUNAT beta (27-nov-2026, `CIERRE1_FACTURA_BOLETA_INFORME.md`)
 - [ ] Decidir la **carga inicial masiva (Excel)**: la propuesta la mencionaba (§13); hoy se carga insumo por insumo
 - [ ] Subir la versión de Tukichef y compilar las apps (Android y escritorio)
 - [ ] Probar todo en **MySQL 8** (producción). El 26-nov-2026 pasaron en MySQL 8.0.30 local las pruebas de inventario, restaurante e
@@ -90,7 +91,9 @@ de venta, punto de venta, anulación, traslado y orden de compra). «Editar sin 
 
 Reportes (F6b): las seis pantallas, Excel, PDF, módulo apagado, selector de sucursal y celular.
 
-**Sin probar:** factura y boleta con receta desde la pantalla, SUNAT, MySQL 8.0.46, apps compiladas, impresora real.
+Factura, boleta y nota de crédito total contra SUNAT beta (`CIERRE1_FACTURA_BOLETA_INFORME.md`).
+
+**Sin probar:** SUNAT producción, MySQL 8.0.46, apps compiladas, impresora real.
 
 Observado y sin cambiar: la cajera no ve el aviso de faltantes al cobrar una mesa ya pedida; quitar una receta devuelve el plato a
 su stock propio sin avisarlo; menos de 0.5 g de un insumo en kg no se descuenta (3 decimales).
