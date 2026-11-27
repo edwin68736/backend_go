@@ -75,8 +75,8 @@ Trabajo:
 - [x] Factura y boleta con receta desde la pantalla, contra SUNAT beta (27-nov-2026, `CIERRE1_FACTURA_BOLETA_INFORME.md`)
 - [ ] Decidir la **carga inicial masiva (Excel)**: la propuesta la mencionaba (§13); hoy se carga insumo por insumo
 - [ ] Subir la versión de Tukichef y compilar las apps (Android y escritorio)
-- [ ] Probar todo en **MySQL 8** (producción). El 26-nov-2026 pasaron en MySQL 8.0.30 local las pruebas de inventario, restaurante e
-  insumos; en ventas, dos de anulación solo fallan si comparten la base con otras (pasan en una base nueva). Falta probar en 8.0.46 y las pantallas.
+- [x] MySQL 8.0.30 y simulacro de actualización desde `main` (27-nov-2026, `CIERRE2_MYSQL_Y_ACTUALIZACION_INFORME.md`)
+- [ ] Antes de desplegar, en producción y solo lectura: tamaño de las tablas que toca la migración y saldos duplicados
 - [x] Probar el interruptor del panel central en pantalla (27-nov-2026)
 - [ ] Gaveta 58 mm: probar con impresora real
 
@@ -93,7 +93,7 @@ Reportes (F6b): las seis pantallas, Excel, PDF, módulo apagado, selector de suc
 
 Factura, boleta y nota de crédito total contra SUNAT beta (`CIERRE1_FACTURA_BOLETA_INFORME.md`).
 
-**Sin probar:** SUNAT producción, MySQL 8.0.46, apps compiladas, impresora real.
+**Sin probar:** SUNAT producción, MySQL 8.0.46, migración con volumen real, apps compiladas, impresora real.
 
 Observado y sin cambiar: la cajera no ve el aviso de faltantes al cobrar una mesa ya pedida; quitar una receta devuelve el plato a
 su stock propio sin avisarlo; menos de 0.5 g de un insumo en kg no se descuenta (3 decimales).

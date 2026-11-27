@@ -1109,7 +1109,7 @@ type TenantProduct struct {
 	IsRestaurant       bool    `gorm:"default:false" json:"is_restaurant"`
 	// Insumo (V195): se compra y se mueve en inventario, nunca se vende (ver pkg/supplies). Solo lectura para GORM a propósito:
 	// así un tenant todavía sin V195 puede seguir creando productos; se escribe únicamente con supplies.Mark.
-	IsSupply   bool   `gorm:"->;default:false;index" json:"is_supply"`
+	IsSupply   bool   `gorm:"->;not null;default:false;index" json:"is_supply"`
 	SupplyKind string `gorm:"->;size:12;not null;default:'raw'" json:"-"`
 	// Canales de difusión — independientes de IsRestaurant (que es del módulo Restaurante/comandas).
 	ShowInDigitalCatalog bool `gorm:"default:false" json:"show_in_digital_catalog"`
