@@ -66,6 +66,24 @@ func TestDestinatarioEmisor_EnVenta_SigueRechazado(t *testing.T) {
 	}
 }
 
+// En la guía remitente, «Otros» admite la propia empresa como destinatario sin forzarla; la
+// devolución sigue rechazándola.
+func TestDestinatarioEmisor_Remitente_OtrosAdmite_DevolucionRechaza(t *testing.T) {
+	in := baseTraslado04()
+	in.Envio.CodTraslado, in.Envio.DesTraslado = greMotivoOtros, "Feria"
+	if err := validateDespatchBusinessRules(in, "09", testEmisorRUC); err != nil {
+		t.Fatalf("«Otros» debía admitir destinatario = emisor: %v", err)
+	}
+	applyDespatchMotivoParties(&in, "09", testEmisorRUC, "Emisor SAC", "x", "150101")
+	if in.Destinatario.RznSocial != "Emisor SAC" || in.Destinatario.Address != "" {
+		t.Fatalf("«Otros» no debe reescribir el destinatario elegido: %+v", in.Destinatario)
+	}
+	in.Envio.CodTraslado = greMotivoDevolucion
+	if err := validateDespatchBusinessRules(in, "09", testEmisorRUC); err == nil {
+		t.Fatal("en una devolución el destinatario no puede ser el RUC del emisor")
+	}
+}
+
 // La empresa que emite la guía transportista puede ser el remitente, el destinatario o ambos.
 func TestGuiaTransportista_AdmiteLaPropiaEmpresa(t *testing.T) {
 	const otro = "20555555555"

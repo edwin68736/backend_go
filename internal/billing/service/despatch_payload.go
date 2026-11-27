@@ -258,11 +258,12 @@ func validateDespatchBusinessRules(input CreateDespatchInput, sunatCode, emisorR
 	}
 	emisorRUC = strings.TrimSpace(emisorRUC)
 	destDoc := strings.TrimSpace(input.Destinatario.NumDoc)
-	// Guía remitente: el destinatario puede ser la propia empresa solo cuando el motivo lo exige
-	// (traslado entre locales y compra); en cualquier otro caso SUNAT lo trata como un envío a sí mismo.
+	// Guía remitente: el destinatario puede ser la propia empresa cuando el motivo lo exige (traslado
+	// entre locales y compra) o cuando lo permite («Otros»). En venta y devolución se rechaza.
 	// Guía transportista: la empresa que la emite puede figurar como remitente y/o destinatario.
-	if sunatCode == "09" && emisorRUC != "" && destDoc == emisorRUC && !despatchDestinatarioEsEmpresa(sunatCode, despatchMotivo(input.Envio)) {
-		return fmt.Errorf("el destinatario (%s) no puede ser el mismo RUC del emisor; seleccione un cliente distinto", destDoc)
+	motivo := despatchMotivo(input.Envio)
+	if sunatCode == "09" && emisorRUC != "" && destDoc == emisorRUC && motivo != greMotivoOtros && !despatchDestinatarioEsEmpresa(sunatCode, motivo) {
+		return fmt.Errorf("el destinatario (%s) no puede ser el mismo RUC del emisor con este motivo; seleccione un cliente distinto o use el motivo «Otros»", destDoc)
 	}
 	if err := validateDespatchMotivoRules(input, sunatCode); err != nil {
 		return err
