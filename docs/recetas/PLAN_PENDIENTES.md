@@ -65,7 +65,7 @@ Trabajo:
 - [x] Interruptor con lista de verificación (platos sin receta, insumos sin stock o sin costo) y política
 - [x] Aviso de insumo insuficiente al pedir y porciones disponibles en el POS
 
-### 3.3 F6 — reportes (Tukichef, por sucursal)
+### 3.3 F6 — reportes (Tukichef, por sucursal): propuesta en `F6_PROPUESTA.md`, pendiente de aprobación
 - [ ] Existencias y valorización · historial de compras por insumo · consumo de ingredientes
 - [ ] Costo por plato · food cost · margen por plato (con `recipe_cost`) · platos de mayor costo · insumos de mayor consumo
 - [ ] Disponibilidad · mermas
@@ -76,20 +76,22 @@ Trabajo:
 - [ ] Subir la versión de Tukichef y compilar las apps (Android y escritorio)
 - [ ] Probar todo en **MySQL 8** (producción). El 26-nov-2026 pasaron en MySQL 8.0.30 local las pruebas de inventario, restaurante e
   insumos; en ventas, dos de anulación solo fallan si comparten la base con otras (pasan en una base nueva). Falta probar en 8.0.46 y las pantallas.
-- [ ] Probar el interruptor del panel central en pantalla
+- [x] Probar el interruptor del panel central en pantalla (27-nov-2026)
 - [ ] Gaveta 58 mm: probar con impresora real
 
 ### 3.5 Para una versión 2 (no ahora)
 Preparaciones intermedias y subrecetas, extras y modificadores con insumo, desglose de combos, consumo teórico vs real, costos adicionales,
 rendimiento de compra, importación por Excel, vista previa del costo antes de guardar.
 
-## 4. Pendiente de probar en pantalla (lo ya hecho)
-- Descuento: combos, delivery y para llevar, mozo o cajero con PIN, apagarlo, varias sucursales.
-- Tukifac «Nueva venta» con un plato que descuenta por receta y tiene control de stock.
-- Recetas: quitar receta, aviso «el precio cambió», sucursal con precio propio, plato incompleto, merma y rendimiento distinto de 1,
-  usuario que edita sin ver costos, negocio con el módulo apagado, vender en el POS el plato con precio nuevo.
-- Compras: compra a crédito, crear proveedor, usuario sin permisos, negocio sin módulo de compras.
-- Insumos: traslados y órdenes de compra de Tukifac con un insumo.
+## 4. Pruebas en pantalla (27-nov-2026, local, empresa desechable)
+Probado: descuento con combos, delivery, para llevar, mozo, cajera y cocina, dos sucursales, apagado y anulación; recetas (quitar,
+aviso de precio, precio propio de sucursal, incompleta, merma y rendimiento); compras e insumos; panel central; Tukifac (nueva nota
+de venta, punto de venta, anulación, traslado y orden de compra). «Editar sin ver costos» no existe como rol en Tukichef.
+
+**Sin probar:** factura y boleta con receta desde la pantalla, SUNAT, MySQL 8.0.46, apps compiladas, impresora real.
+
+Observado y sin cambiar: la cajera no ve el aviso de faltantes al cobrar una mesa ya pedida; quitar una receta devuelve el plato a
+su stock propio sin avisarlo; menos de 0.5 g de un insumo en kg no se descuenta (3 decimales).
 
 ## 5. Defectos conocidos sin corregir
 - Anular una compra revierte stock según el control de stock **actual** del producto, no el de cuando se compró.
