@@ -42,7 +42,7 @@ type Policy struct {
 var registry = map[Regime]Policy{
 	General: {
 		Regime:               General,
-		allowedDocTypes:      map[string]bool{"00": true, "01": true, "03": true, "07": true, "08": true, "09": true, "20": true, "40": true},
+		allowedDocTypes:      map[string]bool{"00": true, "01": true, "03": true, "07": true, "08": true, "09": true, "31": true, "20": true, "40": true},
 		ShowIgvBreakdown:     true,
 		DefaultOperationType: "0101",
 	},
