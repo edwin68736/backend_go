@@ -66,12 +66,25 @@ func TestDestinatarioEmisor_EnVenta_SigueRechazado(t *testing.T) {
 	}
 }
 
-func TestDestinatarioEmisor_EnGuiaTransportista_SigueRechazado(t *testing.T) {
-	in := baseTraslado04()
-	in.Remitente = DespatchDestinatarioInput{NumDoc: "20555555555", RznSocial: "Remitente", Address: "x", Ubigeo: "150101"}
-	in.Envio.TransportistaPlaca = "ABC123"
-	if err := validateDespatchBusinessRules(in, "31", testEmisorRUC); err == nil {
-		t.Fatal("la guía transportista no admite destinatario = emisor")
+// La empresa que emite la guía transportista puede ser el remitente, el destinatario o ambos.
+func TestGuiaTransportista_AdmiteLaPropiaEmpresa(t *testing.T) {
+	const otro = "20555555555"
+	cases := []struct{ name, remitente, destinatario string }{
+		{"remitente es la empresa", testEmisorRUC, otro},
+		{"destinatario es la empresa", otro, testEmisorRUC},
+		{"ambos son la empresa", testEmisorRUC, testEmisorRUC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := baseTraslado04()
+			in.Destinatario = DespatchDestinatarioInput{TipoDoc: "6", NumDoc: tc.destinatario, RznSocial: "Destinatario"}
+			in.Remitente = DespatchDestinatarioInput{NumDoc: tc.remitente, RznSocial: "Remitente", Address: "x", Ubigeo: "150101"}
+			in.Envio.TransportistaPlaca = "ABC123"
+			in.Envio.ChoferDoc, in.Envio.ChoferLicencia = "12345678", "Q12345678"
+			if err := validateDespatchBusinessRules(in, "31", testEmisorRUC); err != nil {
+				t.Fatalf("la guía transportista debía aceptarse: %v", err)
+			}
+		})
 	}
 }
 

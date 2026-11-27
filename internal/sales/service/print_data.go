@@ -595,6 +595,17 @@ func enrichDespatchPrintData(db *gorm.DB, sale *database.TenantSale, pd *PrintDa
 		return
 	}
 
+	// Cuando el destinatario es la propia empresa la guía no tiene contacto: sin esto el ticket
+	// imprimiría «Cliente genérico» en lugar de la empresa que recibe.
+	if (sale.ContactID == nil || *sale.ContactID == 0) && strings.TrimSpace(payload.Destinatario.NumDoc) != "" {
+		pd.Client = &PrintClient{
+			DocType:      payload.Destinatario.TipoDoc,
+			DocNumber:    payload.Destinatario.NumDoc,
+			BusinessName: payload.Destinatario.RznSocial,
+			Address:      despatchPartyAddress(payload.Destinatario.Address),
+		}
+	}
+
 	out := &PrintDespatch{
 		Destinatario: PrintDespatchParty{
 			DocType:   payload.Destinatario.TipoDoc,

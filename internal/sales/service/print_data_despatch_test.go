@@ -70,3 +70,39 @@ func TestBuildPrintDataForSale_guiaConPartesSinDireccion(t *testing.T) {
 		})
 	}
 }
+
+// Guía transportista cuyo destinatario es la propia empresa: no hay contacto en el directorio, pero
+// la impresión debe mostrar a la empresa y no «Cliente genérico».
+func TestBuildPrintDataForSale_guiaALaPropiaEmpresa(t *testing.T) {
+	const payload = `{"serie":"V001","correlativo":"1","tipoDoc":"31","version":"2022",
+"company":{"ruc":"20000000001","razonSocial":"TRANSPORTES SAC"},
+"destinatario":{"tipoDoc":"6","numDoc":"20000000001","rznSocial":"TRANSPORTES SAC","address":{"direccion":"Av. Central 100","ubigueo":"150101","codigoPais":"PE"}},
+"tercero":{"tipoDoc":"6","numDoc":"20000000001","rznSocial":"TRANSPORTES SAC"},
+"envio":{"codTraslado":"01","desTraslado":"Venta","modTraslado":"02","fecTraslado":"2026-11-27T08:00:00-05:00","numBultos":1,"pesoTotal":1,"undPesoTotal":"KGM"},
+"details":[{"cantidad":1,"codigo":"X","descripcion":"ITEM","unidad":"NIU"}]}`
+	db, _, branch := setupSnapshotDB(t)
+	if err := db.AutoMigrate(&database.TenantDespatch{}, &database.TenantSale{}, &database.TenantSaleItem{}); err != nil {
+		t.Fatal(err)
+	}
+	saleID := uint(1700)
+	sale := &database.TenantSale{
+		ID: saleID, BranchID: branch.ID, DocType: "GUIA_TRANSPORTISTA", Series: "V001", Number: "V001-00000001",
+		IssueDate: time.Date(2026, 11, 27, 13, 0, 0, 0, time.UTC), Currency: "PEN", Status: "paid", BillingStatus: "pending",
+	}
+	if err := db.Create(sale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantSaleItem{SaleID: saleID, Description: "ITEM", Quantity: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.TenantDespatch{SaleID: &saleID, PayloadJSON: payload}).Error; err != nil {
+		t.Fatal(err)
+	}
+	pd, err := BuildPrintDataForSale(db, saleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pd.Client == nil || pd.Client.DocNumber != "20000000001" || pd.Client.BusinessName != "TRANSPORTES SAC" {
+		t.Fatalf("la impresión debe mostrar al destinatario de la guía: %+v", pd.Client)
+	}
+}

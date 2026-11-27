@@ -258,9 +258,10 @@ func validateDespatchBusinessRules(input CreateDespatchInput, sunatCode, emisorR
 	}
 	emisorRUC = strings.TrimSpace(emisorRUC)
 	destDoc := strings.TrimSpace(input.Destinatario.NumDoc)
-	// El destinatario puede ser la propia empresa solo cuando el motivo lo exige (traslado entre
-	// locales y compra); en cualquier otro caso SUNAT lo trata como un envío a sí mismo.
-	if emisorRUC != "" && destDoc == emisorRUC && !despatchDestinatarioEsEmpresa(sunatCode, despatchMotivo(input.Envio)) {
+	// Guía remitente: el destinatario puede ser la propia empresa solo cuando el motivo lo exige
+	// (traslado entre locales y compra); en cualquier otro caso SUNAT lo trata como un envío a sí mismo.
+	// Guía transportista: la empresa que la emite puede figurar como remitente y/o destinatario.
+	if sunatCode == "09" && emisorRUC != "" && destDoc == emisorRUC && !despatchDestinatarioEsEmpresa(sunatCode, despatchMotivo(input.Envio)) {
 		return fmt.Errorf("el destinatario (%s) no puede ser el mismo RUC del emisor; seleccione un cliente distinto", destDoc)
 	}
 	if err := validateDespatchMotivoRules(input, sunatCode); err != nil {
@@ -276,9 +277,6 @@ func validateDespatchBusinessRules(input CreateDespatchInput, sunatCode, emisorR
 		}
 		if strings.TrimSpace(r.Address) == "" || strings.TrimSpace(r.Ubigeo) == "" {
 			return fmt.Errorf("dirección y ubigeo del remitente son obligatorios en guía transportista (31)")
-		}
-		if emisorRUC != "" && strings.TrimSpace(r.NumDoc) == emisorRUC {
-			return fmt.Errorf("el remitente no puede ser el mismo RUC del transportista emisor")
 		}
 		if strings.TrimSpace(input.Envio.TransportistaPlaca) == "" {
 			return fmt.Errorf("la placa del vehículo es obligatoria en guía transportista (31)")
